@@ -1,0 +1,11 @@
+# Backup files
+*.bak
+
+# Knowledge documents
+knowledge/
+
+# Build artifacts / dependencies
+node_modules/
+
+# References
+references/

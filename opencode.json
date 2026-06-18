@@ -1,0 +1,53 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": ["opencode-md-table-formatter"],
+  "default_agent": "overseer",
+  "agent": {
+    "build": {
+      "disable": true
+    },
+    "plan": {
+      "disable": true
+    },
+    "general": {
+      "disable": true
+    },
+    "explore": {
+      "disable": true
+    },
+    "scout": {
+      "disable": true
+    },
+
+    "overseer": {
+      "model": "opencode/big-pickle"
+    },
+    "explorer": {
+      "model": "opencode/big-pickle"
+    },
+    "spec-weaver": {
+      "model": "opencode/big-pickle"
+    },
+    "pathfinder": {
+      "model": "opencode/big-pickle"
+    },
+    "analyzer": {
+      "model": "opencode/big-pickle"
+    },
+    "artisan": {
+      "model": "opencode/big-pickle"
+    },
+    "committer": {
+      "model": "opencode/big-pickle"
+    },
+    "inspector": {
+      "model": "opencode/big-pickle"
+    },
+    "scribe": {
+      "model": "opencode/big-pickle"
+    },
+    "habit-builder": {
+      "model": "opencode/big-pickle"
+    }
+  }
+}
