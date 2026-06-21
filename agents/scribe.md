@@ -1,5 +1,5 @@
 ---
-description: "Knowledge management, documentation, and context assembly. Composes patterns and context sets per agent, compresses verbose and stale docs, maintains cross-references, updates AGENTS.md and README.md."
+description: "Lifecycle KD composition and capture. Composes COMPOSED KDs, compresses verbose KDs, maintains cross-references, updates AGENTS.md and README.md."
 mode: subagent
 temperature: 0.2
 top_p: 0.6
