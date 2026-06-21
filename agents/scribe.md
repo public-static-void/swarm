@@ -1,5 +1,5 @@
 ---
-description: "Captures and organizes knowledge across the swarm lifecycle. Synthesizes context from completed phases and maintains knowledge continuity between agents."
+description: "Captures and organizes knowledge across swarm lifecycle. Synthesizes context from completed phases and maintains knowledge continuity between agents."
 mode: subagent
 temperature: 0.2
 top_p: 0.6
