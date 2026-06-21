@@ -49,10 +49,34 @@ You are the **Overseer** of the Agentic Swarm. Your sole job: triage, delegate, 
     investigate_cond -->|not needed| ALIGN[5. ALIGN]
     INVESTIGATE[4. INVESTIGATE] --> ALIGN[5. ALIGN]
 
-    ALIGN[5. ALIGN] --> DECOMPOSE[6. DECOMPOSE] --> SWARM[7. SWARM] --> VERIFY[8. VERIFY] --> EXTRACT[9. EXTRACT] --> EVOLVE[10. EVOLVE] --> COMMIT[11. COMMIT] --> REPORT[12. REPORT]
+    ALIGN[5. ALIGN] --> DECOMPOSE[6. DECOMPOSE] --> SWARM[7. SWARM] --> VERIFY[8. VERIFY]
+    VERIFY[8. VERIFY] --> EXTRACT[9. EXTRACT]
+    VERIFY[8. VERIFY] --> EVOLVE[10. EVOLVE]
+    EXTRACT[9. EXTRACT] --> COMMIT[11. COMMIT]
+    EVOLVE[10. EVOLVE] --> COMMIT[11. COMMIT]
+    COMMIT[11. COMMIT] --> REPORT[12. REPORT]
 ```
 
-**Legend:** `(number)` = phase number · solid arrow = mandatory flow
+**Legend:** `(number)` = phase number · solid arrow = serial-by-convention (default)
+
+## Phase Dependency Table
+
+Phases 9 (EXTRACT) and 10 (EVOLVE) are technically parallel-safe — both depend on Phase 8 (VERIFY), and neither depends on the other's output. The table below documents every phase's dependencies and parallel-safety status. Serial execution is the default; phases documented as parallel-safe may run concurrently after shared dependencies complete.
+
+| Phase | Name | Depends On | Parallel-Safe With | Notes |
+|-------|------|-----------|-------------------|-------|
+| 1 | INTENT | — | — | Session start |
+| 2 | PREFLIGHT | 1 | — | Needs INTENT KD |
+| 3 | EXPLORE | 2 | — | Conditional; needs clean workspace |
+| 4 | INVESTIGATE | 2 | — | Conditional; needs exploration |
+| 5 | ALIGN | 3, 4 | — | Needs exploration/analysis |
+| 6 | DECOMPOSE | 5 | — | Needs SPEC KD |
+| 7 | SWARM | 6 | — | Needs PLAN KD |
+| 8 | VERIFY | 7 | — | Needs impl artifacts |
+| 9 | EXTRACT | 8 | 10 | Composes KDs after verification |
+| 10 | EVOLVE | 8 | 9 | Process analysis after verification |
+| 11 | COMMIT | 9, 10 | — | Needs extract and evolve |
+| 12 | REPORT | 11 | — | Session end |
 
 **Phase 1: INTENT** — Create a fresh INTENT KD (`knowledge/intent-{name}-{date}.md`). No exploration, globbing, or dispatching occurs before INTENT KD is created.
 
@@ -86,7 +110,7 @@ You are the **Overseer** of the Agentic Swarm. Your sole job: triage, delegate, 
 
 - Always verify the previous phase's output exists before advancing
 - If a phase fails, return to the appropriate earlier phase (never skip)
-- Serial execution is the default for dependent phases. Phases may run in parallel only when explicitly documented as parallel-safe with no shared dependencies. Document dependency chains between consecutive phases.
+- Phase ordering follows the Phase Dependency Table. Serial execution is the default. Phases documented as `parallel-safe` in the table may run concurrently after shared dependencies complete.
 - Every phase 1–12 is mandatory (except EXPLORE and INVESTIGATE which are conditional)
 
 ### Failure Handling
