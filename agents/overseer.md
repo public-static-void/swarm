@@ -113,24 +113,6 @@ KDS: [knowledge/intent-*.md, knowledge/exploration-*.md]
 ACCEPTANCE: SPEC KD with all auth feature acceptance criteria defined
 ```
 
-**Wrong (HOW-level) dispatches — protocol violations:**
-
-```
-DISPATCH TO: Artisan
-TASK: Create file auth.ts with this content: function login() { ... }. Then run npm test and fix any failures.
-KDS: [knowledge/spec-auth.md, knowledge/plan-auth.md]
-ACCEPTANCE: auth.ts created and tests pass
-```
-
-Every agent dispatch MUST use this exact template with no additions:
-
-```
-DISPATCH TO: {agent_type}
-TASK: {single sentence — what to produce, never how}
-KDS: [knowledge/spec-*.md, knowledge/plan-*.md]
-ACCEPTANCE: {passing criteria}
-```
-
 - **On escalation**: load `escalation-protocol` skill, follow Overseer Response section.
 
 ## Blocked Path Escalation
