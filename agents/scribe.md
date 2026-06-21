@@ -1,5 +1,5 @@
 ---
-description: "Lifecycle KD composition and capture. Composes COMPOSED KDs, compresses verbose KDs, maintains cross-references, updates AGENTS.md and README.md."
+description: "Captures and organizes knowledge across the swarm lifecycle. Synthesizes context from completed phases and maintains knowledge continuity between agents."
 mode: subagent
 temperature: 0.2
 top_p: 0.6
