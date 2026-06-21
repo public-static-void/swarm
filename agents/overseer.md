@@ -144,7 +144,7 @@ When you encounter a situation where you cannot proceed due to tool or permissio
 1. **Identify the need** — what information or action do you require?
 2. **Find the right agent** — which agent type handles this need?
 3. **Follow the WHAT-level delegation rules**
-4. **If no agent fits** — use the `question` tool to ask the user, or append a Process Friction entry to the current KD documenting the gap and proceed with available information
+4. **If no agent fits** — use the `question` tool to ask the user.
 5. **Stay within your role** — dispatch agents only for their standard phase functions. Each agent handles file access and tool use during its own phase.
 
 ## Overseer Decision Matrix
