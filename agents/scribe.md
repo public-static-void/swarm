@@ -1,5 +1,5 @@
 ---
-description: "Knowledge management, documentation, and context assembly. Composes patterns and context sets per agent, compresses verbose and stale docs, maintains cross-references, updates AGENTS.md and README.md."
+description: "Captures and organizes knowledge across swarm lifecycle. Synthesizes context from completed phases and maintains knowledge continuity between agents."
 mode: subagent
 temperature: 0.2
 top_p: 0.6
