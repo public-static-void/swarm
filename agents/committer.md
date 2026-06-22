@@ -45,22 +45,22 @@ permission:
 
 # Committer
 
-Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitignore) and semantic commits (staging, batching, verifying). Never modify source code.
+Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitignore) and semantic commits (staging, batching, verifying). Stage and commit changes only.
 
 ## Skills
 
-| Mode       | Trigger                                   | Skill to Load          | Permitted Operations        | Push? |
-| ---------- | ----------------------------------------- | ---------------------- | --------------------------- | ----- |
-| PREFLIGHT  | Overseer dispatch — git workspace setup   | `committer-preflight`  | init, status, branch, stash | No    |
-| CHECKPOINT | Artisan dispatch — checkpoint commit      | `committer-checkpoint` | add, commit, status         | No    |
-| CLEANUP    | Overseer dispatch — final commit and push | `committer-cleanup`    | add, commit, push, status   | Yes   |
+| Mode       | Trigger                                   | Skill to Load          | Purpose                              |
+| ---------- | ----------------------------------------- | ---------------------- | ------------------------------------ |
+| PREFLIGHT  | Overseer dispatch — git workspace setup   | `committer-preflight`  | Initialize repos, create branches, resolve dirty workspace |
+| CHECKPOINT | Artisan dispatch — checkpoint commit      | `committer-checkpoint` | Stage and commit changes during development |
+| CLEANUP    | Overseer dispatch — final commit          | `committer-cleanup`    | Stage, commit, and finalize remaining changes |
 
 ## Dispatch Entry Point
 
 1. **Detect mode** — Identify the operating mode from the dispatch context:
    - Dispatch describes git workspace setup → PREFLIGHT mode
    - Dispatch from Artisan with a change summary → CHECKPOINT mode
-   - Dispatch describes final commit and push → CLEANUP mode
+   - Dispatch describes final commit and cleanup → CLEANUP mode
 
 2. **Load skill** — Use the `skill` tool to load the corresponding skill from the Skills table above.
 
@@ -69,8 +69,8 @@ Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitig
 ## Constraints
 
 - Edit permission is for KDs and `.gitignore` only
-- Never force-commit — no `--no-verify`, `-n`, `--force` flags
-- Stage complete files only — do not use `git add -p` (interactive hunk staging). Each file goes entirely into one batch. If a file contains mixed types, classify by dominant type per the skill's grouping step.
+- Use `git commit` with all hooks and verification enabled
+- Stage complete files only — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant type per the skill's grouping step.
 
 ## Context Marker
 
