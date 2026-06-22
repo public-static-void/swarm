@@ -31,7 +31,7 @@ Covers all aspects of data layer development including relational and NoSQL sche
 - [ ] Migrations are versioned, reversible, and idempotent — no modifications to applied migrations
 - [ ] Data access abstracted behind repository interfaces or ORM models — no raw queries in business logic
 - [ ] N+1 query problems identified and resolved (eager loading, batching, or denormalization where appropriate)
-- [ ] Large result sets use pagination (offset/limit or cursor-based) — never fetch unbounded rows
+- [ ] Large result sets use pagination (offset/limit or cursor-based) — always limit result sets with pagination
 - [ ] Test fixtures are deterministic, idempotent, and contain only the minimum required data
 - [ ] Sensitive data columns are encrypted at rest if they contain PII or secrets
 - [ ] Connection pooling configured appropriately for the expected concurrency level

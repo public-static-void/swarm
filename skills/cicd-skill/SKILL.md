@@ -30,7 +30,7 @@ This skill covers the end-to-end continuous integration and continuous delivery 
 - [ ] Deployment gates verify health before marking deployment successful or proceeding to next stage
 - [ ] Artifacts are versioned with immutable identifiers (semver for releases, commit SHA for builds)
 - [ ] Artifact retention policies are defined per environment
-- [ ] Pipeline logs redact sensitive data and do not expose secrets in output
+- [ ] Pipeline logs redact sensitive data and keep secrets excluded from output
 - [ ] Security scanning (SAST, SCA, container image scan) is integrated into the pipeline before deployment
 - [ ] Pipeline failure notifications are configured with appropriate channels and severity routing
 - [ ] Infrastructure changes are version-controlled alongside pipeline definitions (IaC as code)

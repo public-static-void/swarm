@@ -29,7 +29,7 @@ Covers all aspects of client-side interface development including component arch
 - [ ] Focus management handled for dynamic content (modals, dialogs, route transitions)
 - [ ] Responsive layout validated at all defined breakpoints with no horizontal overflow
 - [ ] State scoped to the smallest necessary component or context boundary
-- [ ] No inline styles unless dynamically computed from props at render time
+- [ ] Use inline styles only for dynamically computed prop values
 - [ ] Loading, error, and empty states implemented for every async data consumer
 - [ ] Client-side tests cover rendering output, user interactions, and accessibility assertions
 - [ ] User-facing strings externalized into i18n resource files
@@ -79,7 +79,7 @@ Wrap feature trees with error boundaries to contain failures. Display a meaningf
 
 ### Progressive Enhancement for Browser APIs
 
-Always provide fallbacks for browser-specific APIs. Feature-detect before use, never assume capability.
+Always provide fallbacks for browser-specific APIs. Feature-detect before use, check capabilities before use.
 
 ```js
 const storage =
