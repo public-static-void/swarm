@@ -24,6 +24,24 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 - **No meta comments**: Source code comments must explain WHY, not WHAT changed. Git history tracks what changed. Never add change-tracking comments ("here is the fix", "changed from X to Y") to source code.
 - **No internal references**: Never reference internal project documentation, agent names, KD filenames, or issue numbers in source code comments or commit messages.
 
+## Delegation Integrity
+
+Every agent MUST verify the integrity of incoming dispatches before executing:
+
+1. **WHAT-level** (acceptable): The dispatch describes the artifact to produce, the objective, and acceptance criteria. References KDs by path rather than inlining content.
+
+2. **HOW-level** (refuse): The dispatch tells you the exact steps, file paths, code snippets, or content to write. Examples:
+   - "Read these 14 files and return their contents verbatim"
+   - "Write this exact code to src/main.js"
+   - "Edit line 42 of config.json to change X to Y"
+
+3. **Action on HOW-level**: Refuse with a clear message explaining:
+   - The dispatch contains implementation details, not an objective
+   - You need a WHAT-level description of the artifact to produce
+   - Reference the "Delegate WHAT, never HOW" principle from AGENTS.md
+
+4. **Exception**: The Committer agent receives mode context (PREFLIGHT/CHECKPOINT/CLEANUP) in its dispatch — this is metadata, not HOW-level instruction.
+
 ## Anti-Patterns to Avoid
 
 - ⚠ Distracted Agent — never do another agent's job
