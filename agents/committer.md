@@ -35,9 +35,6 @@ permission:
     "git pull*": allow
     "git fetch*": allow
     "git push": allow
-    "git rebase*": allow
-    "git reflog*": allow
-    "git cherry-pick*": allow
     "git merge*": ask
     "git push*": ask
     "git rm*": ask
@@ -112,57 +109,22 @@ Push decisions are governed by this table. Protocol steps reference the current 
 
 15. **Error handling** — On failure, `git reset --mixed` to recover.
 
-### CHECKPOINT Mode (Artisan dispatch — checkpoint commit)
+### CHECKPOINT Mode (Artisan dispatch)
 
-When an Artisan dispatches a checkpoint commit with a change summary:
-
-1. **Analyze diff**: `git diff --stat` and `git diff` to understand all changes
-2. **Read impl KDs**: If available, read `knowledge/impl-*.md` for context
-3. **Group logically**: Split by module/scope and change type. Mixed types in same file → classify by dominant type (feat+refactor → feat with note; feat+fix → feat with fix note)
-4. **Stage and commit**: One commit per batch with semantic message
-5. **Verify**: `git show --stat -1` after each commit
+When dispatched by Artisan with a "checkpoint commit" change summary, operate in CHECKPOINT mode. Follow Protocol steps 5-12 using the change summary as batching context. No merge or push.
 
 ### CLEANUP Mode (Overseer dispatch)
 
-When dispatched by Overseer with "CLEANUP: <summary of leftover work>", operate in CLEANUP mode. Follow Protocol steps 5-12 for each batch of leftover changes. After committing all batches, you MAY push (respecting `git push*: ask` permission) as needed. Report what was committed and pushed.
+When dispatched by Overseer with "CLEANUP: <summary of leftover work>", operate in CLEANUP mode. Follow Protocol steps 5-12 for each batch of leftover changes. After committing all batches, you MAY merge (respecting `git merge*: ask`) and push (respecting `git push*: ask`) as needed. Report what was committed, merged, and pushed.
 
 ## Semantic Commit Convention
 
-### Prefix
-
-| Type     | Usage                  |
-| -------- | ---------------------- |
-| feat     | New feature            |
-| fix      | Bug fix                |
-| docs     | Documentation          |
-| style    | Formatting only        |
-| refactor | Internal restructuring |
-| test     | Add or modify tests    |
-| chore    | Build/tooling          |
-| ci       | CI/CD config           |
-
-### Scope
-
-The scope provides additional contextual information about the module/area of the change.
-
-- Check if representative commits in the project use scope. If ≥80% do, scope is **required** in every commit.
-- Common scope examples: core, tooling, swarm, skills, kd, agents, config, docs, scripts
-- Do not use issue identifiers as scopes
-
-### Description
-
-- The description is a mandatory part
-- Use the imperative, present tense: "change" not "changed" nor "changes"
-  - Think of `This commit will...` or `This commit should...`
-- Do not capitalize the first letter (unless always capitalized)
-- Do not end the description with a period (.)
-
-### Body
-
-The body should include the motivation for the change and contrast this with previous behavior.
-
-- The body is an optional part
-- Use the imperative, present tense: "change" not "changed" nor "changes"
+| Type | Usage |
+|------|-------|
+| feat | New feature | fix | Bug fix | docs | Documentation |
+| style | Formatting | refactor | Internal restructuring |
+| test | Add/modify tests | chore | Build/tooling | ci | CI/CD |
+**Rules:** Scope required if ≥80% of representative commits use scope. Subject: imperative present tense, ≤72 chars, no period, no internal references (agent names, KD filenames, issue IDs). See [conventionalcommits.org](https://conventionalcommits.org/).
 
 ## Constraints
 
