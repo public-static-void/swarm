@@ -15,7 +15,7 @@ Structured reasoning techniques for agents that need to weigh options, reason fr
 - Evaluate each against explicit criteria: complexity, maintainability, correctness, and fit
 - Document why the chosen approach wins — not "best" but "best because..."
 - If approaches are too similar to distinguish, merge them and find a genuinely different third path
-- Avoid anchoring on the first idea; the first approach is rarely the best
+- Generate enough alternatives to distinguish the first idea from the best approach
 
 ## First-Principles Analysis
 
@@ -48,7 +48,7 @@ Structured reasoning techniques for agents that need to weigh options, reason fr
 
 ## CONSTRAINTS
 
-- Do not choose an approach without generating at least one alternative — even if both are evaluated and one wins
-- Do not skip the purpose check for time; an irrelevant correct solution is worse than a delayed relevant one
-- Do not document trade-offs after the fact as justification — document them during the decision
-- Do not treat conventions as constraints; always ask whether the convention serves the current context
+- Generate at least one alternative approach before choosing
+- Always verify the solution solves the user's actual problem
+- Document trade-offs during the decision process
+- Treat conventions as defaults; evaluate whether they serve the current context

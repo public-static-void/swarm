@@ -11,14 +11,14 @@ Covers all aspects of client-side interface development including component arch
 
 ## CONVENTIONS
 
-- Detect the project's framework (React, Vue, Angular, Svelte, vanilla JS) before applying any patterns. Never assume a framework.
+- Detect the project's framework (React, Vue, Angular, Svelte, vanilla JS) before applying any patterns.
 - Components must be single-responsibility, composable, and accept configuration exclusively through props/attributes — no global mutable state leakage.
 - All interactive elements must support keyboard navigation (Tab, Enter, Escape, Arrow keys) and carry appropriate ARIA attributes where semantic HTML is insufficient.
 - Color contrast ratios must meet WCAG 2.1 AA minimum: 4.5:1 for normal text, 3:1 for large text and UI components.
 - Responsive design follows mobile-first breakpoint strategy with breakpoints defined in a centralized token system, not scattered magic numbers.
 - State management follows the colocation principle: local component state first, then context/provider lifting, then global store only when data crosses unrelated component tree branches.
-- Styling methodology must match the existing project convention (CSS Modules, Tailwind, Styled Components, Sass, vanilla CSS). Never introduce a new methodology unless the project has none.
-- All user-facing strings must be externalized into translation-ready resources. No hardcoded literals in templates.
+- Use the project's existing styling methodology (CSS Modules, Tailwind, Styled Components, Sass, vanilla CSS).
+- Externalize all user-facing strings into translation-ready resources.
 
 ## CHECKLIST
 
@@ -29,7 +29,7 @@ Covers all aspects of client-side interface development including component arch
 - [ ] Focus management handled for dynamic content (modals, dialogs, route transitions)
 - [ ] Responsive layout validated at all defined breakpoints with no horizontal overflow
 - [ ] State scoped to the smallest necessary component or context boundary
-- [ ] No inline styles unless dynamically computed from props at render time
+- [ ] Use inline styles only for dynamically computed prop values
 - [ ] Loading, error, and empty states implemented for every async data consumer
 - [ ] Client-side tests cover rendering output, user interactions, and accessibility assertions
 - [ ] User-facing strings externalized into i18n resource files
@@ -58,7 +58,7 @@ Prefer composing smaller components into larger ones rather than deep prop drill
 
 ### Responsive Breakpoint Tokens
 
-Define breakpoints as design tokens consumed by both CSS and JavaScript. Never hardcode pixel values in component logic.
+Define breakpoints as design tokens consumed by both CSS and JavaScript.
 
 ```css
 :root {
@@ -79,7 +79,7 @@ Wrap feature trees with error boundaries to contain failures. Display a meaningf
 
 ### Progressive Enhancement for Browser APIs
 
-Always provide fallbacks for browser-specific APIs. Feature-detect before use, never assume capability.
+Always provide fallbacks for browser-specific APIs. Feature-detect before use, check capabilities before use.
 
 ```js
 const storage =
@@ -90,10 +90,10 @@ const storage =
 
 ## CONSTRAINTS
 
-- Do not modify build configuration, bundler settings, or CI/CD pipeline files.
-- Do not introduce a new styling methodology if one already exists in the project.
-- Do not hardcode dimensions; use relative units (rem, em, %, vw/vh) and design tokens exclusively.
-- Do not skip accessibility checks for any user-facing element — this is non-negotiable.
-- Do not store sensitive data (API keys, auth tokens, PII) in client-side code or localStorage without explicit security review approval.
-- Do not create components that directly manipulate the DOM; use the framework's abstraction layer exclusively.
-- Do not couple components to specific routing implementations; abstract route transitions behind a navigation service.
+- Modify only frontend source code, styles, and client logic within this skill's scope.
+- Use the project's existing styling methodology.
+- Use relative units and design tokens for all dimensions.
+- Verify accessibility compliance for every user-facing element.
+- Store sensitive data only with explicit security review approval.
+- Use the framework's abstraction layer for all DOM interactions.
+- Abstract route transitions behind a navigation service.

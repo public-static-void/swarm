@@ -11,13 +11,13 @@ Covers all aspects of data layer development including relational and NoSQL sche
 
 ## CONVENTIONS
 
-- Detect the project's database technology (PostgreSQL, MySQL, SQLite, MongoDB, Redis, etc.) and ORM/query builder (Prisma, TypeORM, Sequelize, SQLAlchemy, Mongoose, raw SQL) before applying patterns. Never assume a database engine.
+- Detect the project's database technology (PostgreSQL, MySQL, SQLite, MongoDB, Redis, etc.) and ORM/query builder (Prisma, TypeORM, Sequelize, SQLAlchemy, Mongoose, raw SQL) before applying patterns.
 - Schema naming follows the project convention: tables use plural snake_case (`user_orders`), columns use singular snake_case (`created_at`), primary keys are `id` (auto-incrementing integer or UUID), foreign keys follow `{referenced_table}_id`.
-- All tables include `created_at` and `updated_at` timestamps unless there is a documented reason to exclude them.
+- Include `created_at` and `updated_at` timestamps on all tables; omit only with documented justification.
 - Migrations are versioned, reversible, and idempotent. Each migration has a forward and backward operation.
 - Indexes are created based on actual query patterns, not speculation. Composite indexes follow the leftmost-prefix principle with equality columns before range columns.
 - Data access is abstracted behind repository interfaces or ORM models. Raw queries are confined to dedicated query files with clear documentation of their purpose and performance characteristics.
-- NULL handling is explicit: every column is declared `NULL` or `NOT NULL` with a default value if nullable. Avoid `NULL` in columns that will be indexed or used in JOIN conditions.
+- NULL handling is explicit: every column is declared `NULL` or `NOT NULL` with a default value if nullable. Use `NOT NULL` on columns that are indexed or used in JOIN conditions.
 - Test fixtures use seed scripts that are deterministic, idempotent, and scoped to the minimum data required for each test scenario.
 
 ## CHECKLIST
@@ -31,7 +31,7 @@ Covers all aspects of data layer development including relational and NoSQL sche
 - [ ] Migrations are versioned, reversible, and idempotent — no modifications to applied migrations
 - [ ] Data access abstracted behind repository interfaces or ORM models — no raw queries in business logic
 - [ ] N+1 query problems identified and resolved (eager loading, batching, or denormalization where appropriate)
-- [ ] Large result sets use pagination (offset/limit or cursor-based) — never fetch unbounded rows
+- [ ] Large result sets use pagination (offset/limit or cursor-based) — always limit result sets with pagination
 - [ ] Test fixtures are deterministic, idempotent, and contain only the minimum required data
 - [ ] Sensitive data columns are encrypted at rest if they contain PII or secrets
 - [ ] Connection pooling configured appropriately for the expected concurrency level
@@ -115,10 +115,10 @@ const seedUser = (overrides?: Partial<User>) => ({
 
 ## CONSTRAINTS
 
-- Do not modify applied migrations. Create a new migration for every schema change.
-- Do not add indexes without verifying their benefit through query plan analysis (EXPLAIN).
-- Do not use raw SQL in business logic or service layers — confine to repository implementations or dedicated query modules.
-- Do not fetch unbounded result sets — always apply pagination or limiting on list queries.
-- Do not store sensitive data (passwords, tokens, PII) in plaintext — use appropriate encryption or hashing.
-- Do not couple application code to database-specific features without an abstraction layer that allows swapping implementations.
-- Do not drop columns or tables without a deprecation migration phase if other services depend on them.
+- Create a new migration for every schema change.
+- Add indexes only after verifying their benefit through query plan analysis (EXPLAIN).
+- Confine raw SQL to repository implementations or dedicated query modules.
+- Always apply pagination or limiting on list queries.
+- Encrypt or hash sensitive data before storage.
+- Abstract database-specific features behind an interface layer.
+- Drop columns or tables only after a deprecation migration phase.

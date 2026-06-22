@@ -122,7 +122,7 @@ Phase Output ──► Gate ──► Next Phase
 5. Check for orphan code: every artifact must trace to at least one requirement
 6. Check for uncovered requirements: every requirement must have a verification entry
 7. Findings are terse and actionable (Noise Cancellation)
-8. Inspector does NOT suggest fixes (avoids Answer Injection)
+8. Inspector reports findings with evidence and severity; all fix implementation is the artisan's responsibility
 
 ## Gate Protocol
 

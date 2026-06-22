@@ -102,9 +102,9 @@ Validate configuration against a security baseline:
 
 ## CONSTRAINTS
 
-- Do NOT perform active exploitation, penetration testing, or any action that could disrupt production systems. This skill is for static analysis and configuration review only.
-- Do NOT store or transmit detected secrets in audit reports. Redact sensitive values and reference their location instead.
-- Do NOT introduce security tooling that conflicts with the project's existing CI/CD pipeline without explicit approval. Flag gaps rather than mandate specific tools.
-- Do NOT assess hardware security, physical access controls, or network infrastructure beyond application-layer configuration.
-- Do NOT provide legal compliance opinions. Compliance checks are technical gap analyses only; engage qualified legal counsel for regulatory interpretation.
-- Do NOT flag false positives from test fixtures, example code, or intentionally insecure demonstration modules without noting their context.
+- Limit assessment to static analysis and configuration review.
+- Redact detected secrets in audit reports; reference their location.
+- Flag security gaps and recommend tooling that integrates with existing CI/CD pipeline.
+- Scope assessments to application-layer configuration only.
+- Limit compliance checks to technical gap analyses.
+- Note the context of any finding from test fixtures or example code.

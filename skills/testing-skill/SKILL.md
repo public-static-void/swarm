@@ -11,14 +11,14 @@ Covers comprehensive testing strategy across all levels of the test pyramid: uni
 
 ## CONVENTIONS
 
-- Detect the project's test framework (Jest, Vitest, Mocha, Pytest, JUnit, Go testing, etc.) and assertion library before applying patterns. Never assume a testing stack.
+- Detect the project's test framework (Jest, Vitest, Mocha, Pytest, JUnit, Go testing, etc.) and assertion library before applying patterns.
 - Test pyramid ratio guideline: 70% unit tests, 20% integration tests, 10% acceptance/e2e tests. Adjust based on project risk profile but maintain the principle that most tests are fast and isolated.
 - Tests follow the Arrange-Act-Assert (AAA) structure. Each test has a single assertion focus — one behavioral expectation per test case.
 - Test names describe the behavior being verified, not the implementation: `should_reject_negative_quantity()` not `test_validateQuantity()`.
 - Test data is isolated per test. Tests do not share mutable state with each other. Use factories, builders, or fixtures that produce fresh data for each test execution.
 - Mocks simulate external dependencies (HTTP clients, databases, file systems, message queues). Stubs provide fixed return values for internal collaborators. Prefer stubs over mocks when the implementation detail of the collaborator is irrelevant.
 - Coverage targets: 80%+ line coverage for business logic modules, 60%+ for infrastructure/glue code. Coverage is a floor, not a goal — prioritize meaningful assertions over hitting arbitrary percentages.
-- TDD workflow: write a failing test that describes the desired behavior -> implement the minimal code to pass -> refactor while keeping tests green. Never write production code without a preceding failing test in TDD mode.
+- TDD workflow: write a failing test that describes the desired behavior -> implement the minimal code to pass -> refactor while keeping tests green. Write a failing test before implementing production code in TDD mode.
 
 ## CHECKLIST
 
@@ -113,10 +113,10 @@ Systematically identify edge cases by varying input dimensions.
 
 ## CONSTRAINTS
 
-- Do not write tests that verify implementation details (private methods, internal state) — test observable behavior only.
-- Do not use real external services (live APIs, production databases) in unit tests — always mock or stub.
-- Do not share mutable state between tests — each test must be independently executable in any order.
-- Do not skip negative test cases — error paths are as important as happy paths.
-- Do not treat coverage percentage as the sole quality metric — a 100% covered module with trivial assertions provides no confidence.
-- Do not write flaky tests with timing dependencies, random data without seeding, or network-dependent assertions.
-- Do not test third-party library behavior — assume external libraries work correctly and test only your integration with them.
+- Test only observable behavior through public APIs.
+- Mock or stub all external services in unit tests.
+- Keep each test independently executable with isolated mutable state.
+- Include negative test cases for every code path.
+- Use coverage as a minimum threshold; measure quality by assertion meaningfulness.
+- Write deterministic tests with seeded random data and explicit timing control.
+- Test only your integration with third-party libraries.

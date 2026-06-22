@@ -4,8 +4,23 @@
 # Knowledge documents
 knowledge/
 
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Log files
+*.log
+
 # Build artifacts / dependencies
 node_modules/
+
+# OS metadata
+.DS_Store
+
+# Editor swap files
+*.swp
+*.swo
 
 # References
 references/

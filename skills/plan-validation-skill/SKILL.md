@@ -88,9 +88,9 @@ Maintain a structured risk register for plan-level risks:
 
 ## CONSTRAINTS
 
-- Do NOT modify the plan during validation. Report findings and recommendations separately; plan modification is the planner's responsibility.
-- Do NOT validate implementation details within tasks (e.g., algorithm choice, code structure). This skill validates plan-level properties: completeness, ordering, feasibility, and risk coverage.
-- Do NOT assume team velocity or capacity without explicit data. If velocity data is unavailable, flag the assumption and request historical metrics before rendering a feasibility judgment.
-- Do NOT approve a plan with unresolved circular dependencies. Cycle detection failures are blocking issues that prevent execution.
-- Do NOT treat external dependencies as controllable. Flag them explicitly and require contingency plans; do not assume they will resolve on schedule.
-- Do NOT skip cross-cutting concern validation. Plans that omit testing, documentation, monitoring, or deployment tasks are incomplete regardless of feature coverage.
+- Report findings and recommendations separately; leave plan modification to the planner.
+- Validate only plan-level properties: completeness, ordering, feasibility, risk coverage.
+- Request historical metrics for team velocity before rendering feasibility judgment.
+- Approve plans only after resolving all circular dependencies.
+- Flag external dependencies explicitly and require contingency plans.
+- Validate cross-cutting concerns (testing, documentation, monitoring, deployment) in every plan.

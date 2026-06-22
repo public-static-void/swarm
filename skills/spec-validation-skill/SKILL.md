@@ -100,9 +100,9 @@ Validate each API endpoint against a completeness template:
 
 ## CONSTRAINTS
 
-- Do NOT modify the specification during validation. Report findings, gaps, and recommendations separately; specification revision is the author's responsibility.
-- Do NOT validate implementation details or architectural decisions within requirements. This skill validates specification quality: completeness, clarity, testability, and consistency — not technical correctness of proposed solutions.
-- Do NOT flag requirements as ambiguous solely because they allow implementation flexibility. Distinguish between intentional flexibility ("the system shall use a caching strategy") and genuine ambiguity ("the system should handle caching well").
-- Do NOT require acceptance criteria for out-of-scope items explicitly excluded by the specification. Validate that exclusions are clearly stated, then skip coverage checks for those areas.
-- Do NOT assume domain knowledge not documented in the specification. If a term or concept is undefined, flag it as a terminology gap rather than inferring meaning from context.
-- Do NOT treat examples as specifications. Examples illustrate requirements but do not replace formal definitions. Flag cases where behavior is defined only by example without a corresponding general rule.
+- Report findings, gaps, and recommendations separately; leave spec revision to the author.
+- Validate specification quality (completeness, clarity, testability, consistency).
+- Distinguish between intentional flexibility and genuine ambiguity.
+- Skip coverage checks for out-of-scope items that the spec explicitly excludes.
+- Flag undefined terms as terminology gaps; use only knowledge documented in the spec.
+- Treat examples as illustrations that support formal definitions.
