@@ -58,11 +58,16 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 ## Semantic Commit Convention
 
-| Type  | Usage            |
-| ----- | ---------------- | -------- | ---------------------- | ---- | ------------- |
-| feat  | New feature      | fix      | Bug fix                | docs | Documentation |
-| style | Formatting       | refactor | Internal restructuring |
-| test  | Add/modify tests | chore    | Build/tooling          | ci   | CI/CD         |
+| Type    | Usage                   |
+|---------|-------------------------|
+| feat    | New feature             |
+| fix     | Bug fix                 |
+| docs    | Documentation           |
+| style   | Formatting              |
+| refactor| Internal restructuring  |
+| test    | Add/modify tests        |
+| chore   | Build/tooling           |
+| ci      | CI/CD                   |
 
 **Rules:** Scope required if ≥80% of representative commits use scope. Subject: imperative present tense, ≤72 chars, ends without period. Commit messages describe code changes only.
 
