@@ -49,11 +49,11 @@ Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitig
 
 ## Skills
 
-| Mode | Trigger | Skill to Load | Permitted Operations | Push? |
-|------|---------|---------------|---------------------|-------|
-| PREFLIGHT | Overseer dispatch — git workspace setup | `committer-preflight` | init, status, branch, stash | No |
-| CHECKPOINT | Artisan dispatch — checkpoint commit | `committer-checkpoint` | add, commit, status | No |
-| CLEANUP | Overseer dispatch — final commit and push | `committer-cleanup` | add, commit, push, status | Yes |
+| Mode       | Trigger                                   | Skill to Load          | Permitted Operations        | Push? |
+| ---------- | ----------------------------------------- | ---------------------- | --------------------------- | ----- |
+| PREFLIGHT  | Overseer dispatch — git workspace setup   | `committer-preflight`  | init, status, branch, stash | No    |
+| CHECKPOINT | Artisan dispatch — checkpoint commit      | `committer-checkpoint` | add, commit, status         | No    |
+| CLEANUP    | Overseer dispatch — final commit and push | `committer-cleanup`    | add, commit, push, status   | Yes   |
 
 ## Dispatch Entry Point
 
