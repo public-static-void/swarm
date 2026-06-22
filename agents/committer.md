@@ -35,6 +35,9 @@ permission:
     "git pull*": allow
     "git fetch*": allow
     "git push": allow
+    "git rebase*": allow
+    "git reflog*": allow
+    "git cherry-pick*": allow
     "git merge*": ask
     "git push*": ask
     "git rm*": ask
