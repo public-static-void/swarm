@@ -117,12 +117,20 @@ ACCEPTANCE: SPEC KD with all auth feature acceptance criteria defined
 
 - **On escalation**: load `escalation-protocol` skill, follow Overseer Response section.
 
+### Explorer Dispatch Scope
+
+Explorer dispatches describe exploration goals:
+
+- **Permitted tasks**: Codebase structure mapping, tech stack detection, domain unfamiliarity resolution (Phase 3: EXPLORE), and producing exploration KDs with project maps
+- **Principle**: Explorer reads files to produce its own exploration analysis — dispatches describe the exploration objective
+- **Blocked file reads**: Use the `question` tool to ask the user, or check if the information exists in a KD your read allowlist permits
+
 ## Blocked Path Escalation
 
 When you encounter a situation where you cannot proceed due to tool or permission constraints:
 
-1. **Identify the need** — what information or action do you require?
-2. **Find the right agent** — which agent type handles this need?
-3. **Follow the WHAT-level delegation rules**
-4. **If no agent fits** — use the `question` tool to ask the user.
-5. **Stay within your role** — dispatch agents only for their standard phase functions. Each agent handles file access and tool use during its own phase.
+1. **Identify the need** — what information or action is blocked?
+2. **If a file read is blocked** — check if it is a Knowledge Document (KD) the Overseer is permitted to read. If it is, read it directly. If it is not, dispatch the appropriate agent with WHAT-level instructions describing the information needed.
+3. **Find the right agent** — determine which agent type handles the blocked task in its standard phase function.
+4. **If no agent fits** — use the `question` tool to ask the user for the information or guidance.
+5. **Stay within role** — read only KD files matching your frontmatter allowlist. Delegate all other file reads to the appropriate agent.
