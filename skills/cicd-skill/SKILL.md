@@ -12,10 +12,10 @@ This skill covers the end-to-end continuous integration and continuous delivery 
 ## CONVENTIONS
 
 - Detect the existing CI/CD platform (GitHub Actions, GitLab CI, Jenkins, Azure DevOps, etc.) before introducing new pipeline syntax. Follow the project's native DSL and stage naming conventions.
-- Pipeline stages must follow a strict linear dependency: source checkout → dependency resolution → lint/static analysis → unit tests → build → integration tests → security scan → artifact packaging → deploy to target environment. No stage may be skipped in production pipelines; dev pipelines may allow selective bypass with explicit opt-in flags.
-- Environment configurations (dev, staging, prod) must be managed through parameterized pipeline inputs or environment-specific configuration files, never hardcoded into the pipeline definition. Maintain structural parity: the same pipeline runs against all environments with only configuration differences.
+- Pipeline stages must follow a strict linear dependency: source checkout → dependency resolution → lint/static analysis → unit tests → build → integration tests → security scan → artifact packaging → deploy to target environment. Execute all pipeline stages sequentially in production pipelines; dev pipelines may allow selective bypass with explicit opt-in flags.
+- Manage environment configurations (dev, staging, prod) through parameterized pipeline inputs or environment-specific configuration files. Maintain structural parity: the same pipeline runs against all environments with only configuration differences.
 - Deployment strategies must be selected based on service criticality and downtime tolerance. Blue-green for zero-downtime full swaps, canary for gradual traffic shifting with automated rollback thresholds, rolling for stateless services where partial availability is acceptable.
-- Secrets must never appear in pipeline definitions, logs, or artifact metadata. Use the platform's native secrets store (e.g., GitHub Actions secrets, HashiCorp Vault, AWS Secrets Manager) and inject at runtime via environment variables or mounted files with restricted permissions.
+- Inject secrets at runtime via the platform's native secrets store (e.g., GitHub Actions secrets, HashiCorp Vault, AWS Secrets Manager). Use environment variables or mounted files with restricted permissions.
 - Artifacts must be versioned using immutable identifiers: semantic versions for releases, commit SHAs for builds, and content-addressable hashes where supported. Artifact retention policies must be defined per environment to control storage costs.
 - Health checks must be implemented at both the infrastructure level (port probes, DNS resolution) and the application level (readiness and liveness endpoints). Deployment gates must verify health before proceeding to the next stage or marking a deployment as successful.
 
@@ -106,7 +106,7 @@ strategy:
 
 ### Secrets Management
 
-Inject secrets at runtime from a dedicated secrets manager. Never store secrets in version control, pipeline definitions, or build artifacts.
+Inject secrets at runtime from a dedicated secrets manager via the platform's native secrets store.
 
 ```yaml
 # Pipeline references secrets by name; values resolved at runtime
@@ -171,11 +171,11 @@ health-gates:
 
 ## CONSTRAINTS
 
-- Do not hardcode secrets, credentials, or tokens in pipeline definitions, scripts, or configuration files under any circumstances.
-- Do not skip security scanning stages in production pipelines. Dev pipelines may allow opt-out with explicit, documented justification.
-- Do not deploy directly to production without an intermediate staging environment that mirrors production configuration.
-- Do not use mutable artifact identifiers (e.g., `latest` tags) in production deployment configurations. Use immutable versioned references only.
-- Do not implement rollback as a manual-only process. Rollback must be automated and triggerable from pipeline failure conditions.
-- Do not store environment-specific secrets in shared configuration files. Each environment must have isolated secret scopes.
-- Do not allow pipeline definitions to execute arbitrary code from untrusted sources without explicit security review and approval gates.
-- Do not conflate CI (build/test) and CD (deploy) concerns into a single monolithic pipeline file. Separate them into composable, independently maintainable configurations.
+- Reference all secrets through the platform's native secrets store with runtime injection.
+- Execute security scanning stages in every production pipeline run. Dev pipelines may allow opt-out with explicit, documented justification.
+- Deploy to production only after passing through an intermediate staging environment that mirrors production configuration.
+- Use immutable versioned artifact references in production deployments.
+- Implement rollback as an automated process.
+- Store environment-specific secrets in isolated secret scopes per environment.
+- Allow pipeline execution of external code only after security review and approval.
+- Separate CI and CD concerns into composable, independently maintainable files.

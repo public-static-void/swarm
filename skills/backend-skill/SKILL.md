@@ -11,14 +11,14 @@ Covers all aspects of server-side application development including API design (
 
 ## CONVENTIONS
 
-- Detect the project's framework (Express, Fastify, NestJS, Spring Boot, ASP.NET, Django, FastAPI, Go chi, etc.) before applying patterns. Never assume a framework or language.
+- Detect the project's framework and language before applying patterns.
 - API endpoints follow resource-oriented naming for REST (`/resources/{id}`), operation-based naming for GraphQL mutations, and protobuf service definitions for gRPC. Maintain consistency within the project's chosen paradigm.
 - Business logic must be isolated from transport layer (routes/controllers). Controllers handle request parsing and response formatting; services contain domain rules; repositories handle data access.
-- Authentication follows the project's existing scheme (JWT, OAuth2, API keys, session cookies). Never introduce a new auth mechanism without architectural review.
-- All inputs are untrusted. Validate at the boundary (request body, query params, path params, headers) before any business logic executes. Use schema validators matching the project convention (Zod, Joi, class-validator, Pydantic, etc.).
+- Authentication follows the project's existing scheme (JWT, OAuth2, API keys, session cookies). Introduce new auth mechanisms only after architectural review and approval.
+- Validate every input at the boundary (request body, query params, path params, headers) before business logic executes. Use schema validators matching the project convention (Zod, Joi, class-validator, Pydantic, etc.).
 - Error responses follow a consistent envelope: `{ "error": { "code": string, "message": string, "details?: object } }`. HTTP status codes must accurately reflect the error category (4xx client, 5xx server).
 - Middleware is ordered: logging -> auth -> validation -> business logic -> response serialization. Each middleware has a single responsibility.
-- Logging uses structured format with correlation IDs for request tracing. Never log sensitive data (passwords, tokens, PII).
+- Log structured data with correlation IDs for request tracing; exclude sensitive fields (passwords, tokens, PII).
 
 ## CHECKLIST
 
@@ -100,10 +100,10 @@ Idempotency-Key: uuid-v4-unique-per-client-request
 
 ## CONSTRAINTS
 
-- Do not modify CI/CD pipeline definitions, Dockerfiles, or infrastructure-as-code files.
-- Do not introduce a new authentication mechanism without explicit architectural review.
-- Do not place business logic in controllers, route handlers, or middleware — keep it in the service layer.
-- Do not log sensitive data: passwords, tokens, API keys, PII, or full request/response bodies containing secrets.
-- Do not return internal error details (stack traces, query strings, file paths) in production error responses.
-- Do not use raw SQL queries in service or controller layers — route all data access through the repository abstraction.
-- Do not couple API contracts to internal data models — define explicit DTOs for all input and output boundaries.
+- Modify only application source code, configuration, and API contracts within this skill's scope.
+- Introduce new authentication mechanisms only after architectural review and explicit approval.
+- Keep business logic exclusively in the service layer, separate from controllers and route handlers.
+- Log only non-sensitive operational data.
+- Return user-safe error responses that omit internal details.
+- Route all data access through the repository abstraction.
+- Define explicit DTOs for all input and output boundaries.

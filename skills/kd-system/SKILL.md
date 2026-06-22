@@ -118,7 +118,7 @@ After writing the KD file:
 4. Body follows expected structure for the KD type
 5. (optional) If Process Friction section is present, verify table columns: ID, Issue, Severity, Status, Fixed by
 
-**Do not conclude your task until all checks pass.**
+**Complete all checks before concluding your task.**
 
 ## Usage
 

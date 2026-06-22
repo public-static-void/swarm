@@ -34,7 +34,7 @@ Proposed resolution: <delegate to Agent X, grant permission Y, or use tool Z>
 
 ### Step 2 (fallback): Overseer → User
 
-If the Overseer cannot resolve the issue, the Overseer uses the `question` tool to escalate to the user for guidance. Individual agents do not bypass the Overseer by using `question` directly for escalation.
+If the Overseer cannot resolve the issue, the Overseer uses the `question` tool to escalate to the user for guidance. Agents escalate solely through the Overseer.
 
 ## Trigger Conditions
 
@@ -57,10 +57,10 @@ On receiving an escalation, the Overseer must:
    - Adjust permissions (if within the Overseer's power)
    - Dispatch a different agent whose skillset matches the requirement
    - Escalate to the user via the `question` tool (Step 2)
-3. **Prohibition** — Never instruct the agent to "try harder" or "work around" the restriction
+3. **Resolution** — Resolve restrictions by adjusting permissions, dispatching a different agent, or escalating to the user
 
-## Prohibited Behaviors
+## Agent Conduct Rules
 
-- Do NOT attempt to break out of restrictions (e.g., writing to disallowed paths, using disallowed tools)
-- Do NOT fabricate workarounds or incomplete results
-- Do NOT silently return partial output without explaining what's missing
+- Operate within granted permissions; escalate when a required action is denied
+- Report complete, accurate results or escalate unresolved issues
+- Clearly communicate any incomplete output and specify what remains unresolved

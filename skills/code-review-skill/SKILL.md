@@ -12,9 +12,9 @@ Covers systematic code review processes including review criteria evaluation, V-
 ## CONVENTIONS
 
 - Reviews follow a structured checklist approach rather than ad-hoc inspection. Every review evaluates the same categories consistently.
-- V-Model traceability: every implementation change must be traceable to a requirement, user story, or bug report. Orphaned code without a traced origin is flagged for justification.
+- Require every implementation change to trace to a requirement, user story, or bug report.
 - Architecture alignment: changes must conform to the project's established architectural patterns (layering, module boundaries, dependency direction). Violations require explicit justification and architectural review approval.
-- Convention compliance: code must follow the project's established conventions for naming, formatting, error handling, logging, and testing. Deviations are flagged unless they improve clarity or correctness.
+- Convention compliance: code must follow the project's established conventions for naming, formatting, error handling, logging, and testing. Flag deviations; approve only those that improve clarity or correctness.
 - Documentation completeness: changes affecting public APIs, configuration, or user-facing behavior must include corresponding documentation updates (API docs, README, inline comments for non-trivial logic).
 - Review comments distinguish between blocking issues (must fix before merge) and suggestions (improvements that can be addressed later). Blocking issues are clearly marked.
 
@@ -103,10 +103,10 @@ When changes deviate from established patterns, document the rationale.
 
 ## CONSTRAINTS
 
-- Do not approve code changes that have blocking issues unresolved — the merge gate is non-negotiable.
-- Do not introduce new conventions during review — evaluate against existing project standards only.
-- Do not request changes for stylistic preferences that are not codified in project conventions.
-- Do not approve changes without corresponding tests for new or modified business logic.
-- Do not overlook traceability — code without a linked requirement, story, or bug report must be justified.
-- Do not perform security penetration testing as part of code review — flag suspicious patterns and escalate to the security-audit-skill.
-- Do not approve changes that introduce circular dependencies between modules or layers.
+- Approve code changes only after all blocking issues are resolved.
+- Evaluate code changes against existing project conventions only.
+- Request changes only for violations of codified project conventions.
+- Approve changes only when new business logic includes corresponding tests.
+- Verify traceability for every change.
+- Flag suspicious security patterns during review and escalate to security-audit-skill.
+- Approve changes only when they maintain acyclic dependency graphs.

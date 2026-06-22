@@ -20,7 +20,7 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
    - **Clean repo**: Create feature branch with `git checkout -b <branch-name>`.
    - **Dirty repo**: `git stash` pending changes. If stash succeeds, note stashed changes in return message, create branch. If stash fails, report back with a clear message about what is stuck (files preventing stash, merge conflicts, etc.).
 
-2. **Gitignore management** — Check if `.gitignore` exists. If not, create with project-appropriate patterns. If it exists, review and add missing standard patterns (e.g., `node_modules/`, `.env`, `*.log`, build output). Use the tech stack to determine relevant patterns. Preserve all existing entries.
+2. **Gitignore management** — Check if `.gitignore` exists. If not, create with project-appropriate patterns. If it exists, review and verify all standard gitignore patterns for the project's tech stack are included (e.g., `node_modules/`, `.env`, `*.log`, build output). Preserve all existing entries.
 
 3. **Feature branch** — If a branch name was provided, use it. Otherwise, `git branch --show-current`. If on main/default, `git checkout -b improve/{short-description}`. If already on a feature branch, use it. Skip for subsequent checkpoint commits.
 
