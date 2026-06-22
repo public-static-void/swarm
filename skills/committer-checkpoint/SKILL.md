@@ -24,7 +24,6 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 4. **Analyze diff** — `git diff --stat` for file-level overview, then `git diff` for content. Classify each changed file by type (feat/fix/refactor/docs/test/chore).
 
 5. **Group into batches** — Split by module/scope:
-
    - One module/scope per batch; one type per batch where possible
    - If a module has changes of same type, batch together
    - If changes span multiple modules, separate batches per module
@@ -35,13 +34,11 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 6. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage. Confirm `knowledge/` is listed in `.gitignore` — if missing, report the gap and halt. Files from `knowledge/` are excluded from staging, even if not gitignored. If any knowledge files appear staged, unstage them immediately. Stage and commit only tracked, non-ignored files. Silently skip ignored files; report which files were skipped if relevant.
 
 7. **Edge cases**:
-
    - **Empty commit**: If no files to commit after filtering, report "no changes to commit" and exit cleanly.
    - **Ambiguity**: If change fits multiple types, classify by dominant change. If still ambiguous, check paths, diff, and impl KDs. Only commit if a legitimate type is determinable. If truly unable, report back to the dispatching agent without committing.
    - **Uncertainty**: If unresolvable, report back to dispatching agent.
 
 8. **Enforce commit conventions** — All commits MUST use:
-
    - Same language as representative commits (not system locale)
    - Same scope format (if ≥80% use `type(scope):`, you MUST include scope)
    - Imperative present tense
@@ -61,11 +58,11 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 ## Semantic Commit Convention
 
-| Type | Usage |
-|------|-------|
-| feat | New feature | fix | Bug fix | docs | Documentation |
-| style | Formatting | refactor | Internal restructuring |
-| test | Add/modify tests | chore | Build/tooling | ci | CI/CD |
+| Type  | Usage            |
+| ----- | ---------------- | -------- | ---------------------- | ---- | ------------- |
+| feat  | New feature      | fix      | Bug fix                | docs | Documentation |
+| style | Formatting       | refactor | Internal restructuring |
+| test  | Add/modify tests | chore    | Build/tooling          | ci   | CI/CD         |
 
 **Rules:** Scope required if ≥80% of representative commits use scope. Subject: imperative present tense, ≤72 chars, ends without period, internal references excluded (agent names, KD filenames, issue IDs).
 

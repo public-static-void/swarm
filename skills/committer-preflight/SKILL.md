@@ -16,7 +16,6 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 ## Protocol
 
 1. **Accept branch name** — Accept a branch name parameter from the dispatching agent. Use the provided name instead of generating one independently. Fall back to `feature/unnamed` if none provided. Check `.git/` existence.
-
    - **No `.git/`**: `git init`, then `git checkout -b <branch-name>`.
    - **Clean repo**: Create feature branch with `git checkout -b <branch-name>`.
    - **Dirty repo**: `git stash` pending changes. If stash succeeds, note stashed changes in return message, create branch. If stash fails, report back with a clear message about what is stuck (files preventing stash, merge conflicts, etc.).
