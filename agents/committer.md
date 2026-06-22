@@ -47,9 +47,21 @@ permission:
 
 Git lifecycle: pre-flight setup (init, branch, dirty resolution, gitignore) and semantic commits (staging, batching, verifying). Never modify source code.
 
+## Operating Modes
+
+Your operating mode is determined by the dispatch context string. Detect mode before executing any protocol step.
+
+| Mode | Dispatched By | Permitted Operations | Push Allowed? |
+|------|---------------|---------------------|---------------|
+| PREFLIGHT | Overseer | init, status, branch, stash | No |
+| CHECKPOINT | Artisan | add, commit, status | No |
+| CLEANUP | Overseer | add, commit, push, status | Yes |
+
+Push decisions are governed by this table. Protocol steps reference the current mode for push permission. Bash permission entries remain as defined in frontmatter — mode may further restrict but never expand them.
+
 ## Protocol
 
-0. **Pre-flight setup** — When dispatched by Overseer for PREFLIGHT: accept a branch name parameter from the dispatching agent. Use the provided branch name instead of generating one independently. If no branch name is provided, fall back to `feature/unnamed`. Then check `.git/` existence.
+0. **\[PREFLIGHT mode\]** — When dispatched by Overseer for PREFLIGHT: accept a branch name parameter from the dispatching agent. Use the provided branch name instead of generating one independently. If no branch name is provided, fall back to `feature/unnamed`. Then check `.git/` existence.
    - **No `.git/`**: `git init`, then `git checkout -b <branch-name>`.
    - **Clean repo**: Create feature branch with `git checkout -b <branch-name>`.
    - **Dirty repo**: `git stash` pending changes. If stash succeeds, note stashed changes in return message, create branch. If stash fails, report back to Overseer with a clear message about what's stuck (files preventing stash, merge conflicts, etc.). Overseer can then decide to escalate to the user.
@@ -100,7 +112,7 @@ Git lifecycle: pre-flight setup (init, branch, dirty resolution, gitignore) and 
 
 15. **Error handling** — On failure, `git reset --mixed` to recover.
 
-### Batch Commit Mode (Artisan dispatch)
+### CHECKPOINT Mode (Artisan dispatch — checkpoint commit)
 
 When an Artisan dispatches a checkpoint commit with a change summary:
 
@@ -109,6 +121,10 @@ When an Artisan dispatches a checkpoint commit with a change summary:
 3. **Group logically**: Split by module/scope and change type. Mixed types in same file → classify by dominant type (feat+refactor → feat with note; feat+fix → feat with fix note)
 4. **Stage and commit**: One commit per batch with semantic message
 5. **Verify**: `git show --stat -1` after each commit
+
+### CLEANUP Mode (Overseer dispatch)
+
+When dispatched by Overseer with "CLEANUP: <summary of leftover work>", operate in CLEANUP mode. Follow Protocol steps 5-12 for each batch of leftover changes. After committing all batches, you MAY push (respecting `git push*: ask` permission) as needed. Report what was committed and pushed.
 
 ## Semantic Commit Convention
 
