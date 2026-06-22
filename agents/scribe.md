@@ -10,6 +10,8 @@ permission:
     "knowledge/*.md": allow
     "README.md": allow
     "AGENTS.md": allow
+    "skills/kd-system/templates/*.md": allow
+    "skills/kd-system/SKILL.md": allow
   edit:
     "*": deny
     "knowledge/composed-*.md": allow

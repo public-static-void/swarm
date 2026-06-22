@@ -10,6 +10,8 @@ permission:
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
     "knowledge/composed-*.md": allow
+    "skills/kd-system/templates/*.md": allow
+    "skills/kd-system/SKILL.md": allow
   grep: deny
   edit:
     "*": ask
