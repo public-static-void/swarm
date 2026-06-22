@@ -40,8 +40,6 @@ Every agent MUST verify the integrity of incoming dispatches before executing:
    - You need a WHAT-level description of the artifact to produce
    - Reference the "Delegate WHAT, never HOW" principle from AGENTS.md
 
-4. **Exception**: The Committer agent receives mode context (PREFLIGHT/CHECKPOINT/CLEANUP) in its dispatch — this is metadata, not HOW-level instruction.
-
 ## Anti-Patterns to Avoid
 
 - ⚠ Distracted Agent — never do another agent's job

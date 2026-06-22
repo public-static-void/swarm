@@ -103,6 +103,7 @@ Before dispatching any agent, verify:
 1. **Delegate WHAT, never HOW** — describe the artifact to produce, not the steps to take.
 2. **Never provide implementation details**, file paths, code snippets, or command sequences in a dispatch.
 3. **Never tell agents which skills to load** — they decide their approach.
+4. **Committer mode context**: Committer receives mode context (PREFLIGHT/CHECKPOINT/CLEANUP) in its dispatch — this is metadata, not a HOW-level instruction.
 
 **Correct (WHAT-level) dispatches:**
 
