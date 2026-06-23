@@ -3,10 +3,11 @@ title: "REVIEW: {{artifact reviewed}}"
 version: 1.0.0
 status: draft
 type: review
-created: {{YYYY-MM-DD}}
+created: "{{YYYY-MM-DD}}"
 author: Inspector
 superseded_by: null
 ---
+
 <!-- Filename: knowledge/review-{{artifact}}-{{YYYY-MM-DD}}.md -->
 
 # REVIEW: {{artifact}}
@@ -33,7 +34,7 @@ superseded_by: null
 Summarize test execution results relevant to each finding.
 
 | Test Suite | Tests Run | Passed | Failed | Coverage |
-|------------|-----------|--------|--------|----------|
+| ---------- | --------- | ------ | ------ | -------- |
 |            |           |        |        |          |
 
 ### Pass Rate (optional)
@@ -48,6 +49,6 @@ Overall acceptance criteria pass rate.
 
 _This section is optional — include only if friction was encountered during work._
 
-| ID | Issue | Severity | Status | Fixed by |
-|-----|-------|----------|--------|----------|
+| ID     | Issue                       | Severity            | Status                  | Fixed by            |
+| ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |
 | PF-001 | {{description of friction}} | {{low/medium/high}} | {{unresolved/resolved}} | {{agent or PR ref}} |

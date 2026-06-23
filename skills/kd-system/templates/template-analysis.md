@@ -3,10 +3,11 @@ title: "ANALYSIS: {{topic investigated}}"
 version: 1.0.0
 status: draft
 type: analysis
-created: {{YYYY-MM-DD}}
+created: "{{YYYY-MM-DD}}"
 author: Explorer/Analyzer
 superseded_by: null
 ---
+
 <!-- Filename: knowledge/analysis-{{topic}}-{{YYYY-MM-DD}}.md -->
 
 # ANALYSIS: {{topic}}
@@ -32,8 +33,8 @@ superseded_by: null
 
 _This section is optional — include only if friction was encountered during work._
 
-| ID | Issue | Severity | Status | Fixed by |
-|-----|-------|----------|--------|----------|
+| ID     | Issue                       | Severity            | Status                  | Fixed by            |
+| ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |
 | PF-001 | {{description of friction}} | {{low/medium/high}} | {{unresolved/resolved}} | {{agent or PR ref}} |
 
 ## References

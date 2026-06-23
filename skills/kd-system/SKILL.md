@@ -11,19 +11,19 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 
 ## KD Types
 
-| Type                   | Prefix        | Producer           | Consumer                       | Template File                                  |
-| ---------------------- | ------------- | ------------------ | ------------------------------ | ---------------------------------------------- |
-| INTENT                 | `intent-`     | Overseer           | Spec Weaver, Pathfinder        | `templates/template-intent.md`                 |
-| SPEC                   | `spec-`       | Spec Weaver        | Pathfinder, Artisan, Inspector | `templates/template-spec.md`                   |
-| PLAN                   | `plan-`       | Pathfinder         | Artisan, Inspector             | `templates/template-plan.md`                   |
-| IMPLEMENTATION SUMMARY | `impl-`       | Artisan            | Inspector, Scribe              | `templates/template-implementation-summary.md` |
-| REVIEW                 | `review-`     | Inspector          | Artisan (for fixes), Overseer  | `templates/template-review.md`                 |
-| AUDIT                  | `audit-`      | Inspector          | Overseer                       | `templates/template-audit.md`                  |
-| ANALYSIS               | `analysis-`   | Analyzer           | Spec Weaver, Pathfinder        | `templates/template-analysis.md`               |
-| REPORT                 | `report-`     | Overseer           | User                           | `templates/template-report.md`                 |
-| PROCESS                | `process-`    | Habit Builder      | All agents                     | `templates/template-process.md`                |
-| COMPOSED               | `composed-`   | Scribe             | Assigned agent                 | `templates/template-composed.md`               |
-| EXPLORATION            | `exploration-`| Explorer           | Spec Weaver, Pathfinder        | `templates/template-exploration.md`            |
+| Type                   | Prefix         | Producer      | Consumer                       | Template File                                  |
+| ---------------------- | -------------- | ------------- | ------------------------------ | ---------------------------------------------- |
+| INTENT                 | `intent-`      | Overseer      | Spec Weaver, Pathfinder        | `templates/template-intent.md`                 |
+| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector | `templates/template-spec.md`                   |
+| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector             | `templates/template-plan.md`                   |
+| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe              | `templates/template-implementation-summary.md` |
+| REVIEW                 | `review-`      | Inspector     | Artisan (for fixes), Overseer  | `templates/template-review.md`                 |
+| AUDIT                  | `audit-`       | Inspector     | Overseer                       | `templates/template-audit.md`                  |
+| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Pathfinder        | `templates/template-analysis.md`               |
+| REPORT                 | `report-`      | Overseer      | User                           | `templates/template-report.md`                 |
+| PROCESS                | `process-`     | Habit Builder | All agents                     | `templates/template-process.md`                |
+| COMPOSED               | `composed-`    | Scribe        | Assigned agent                 | `templates/template-composed.md`               |
+| EXPLORATION            | `exploration-` | Explorer      | Spec Weaver, Pathfinder        | `templates/template-exploration.md`            |
 
 ## KD Structure
 
@@ -131,5 +131,3 @@ When creating a KD:
 5. Save to `knowledge/{prefix}-{name}-{date}.md`
 6. Run Post-Creation Verification
 7. Set `status: draft` initially, advance through states as it moves through gates
-
-

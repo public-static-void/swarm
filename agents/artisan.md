@@ -90,10 +90,9 @@ Read the specification and plan, implement each step, write tests, produce an im
    - **Substantive Comments**: Comment only when the rationale is not obvious from the code. Comments explain the reasoning behind the code
    - **External References**: Reference only public APIs, specs, or external documentation in code
    - **Self-check**: Review all added comments. Verify against these examples:
-       - ✅ `// Uses BigNumber to avoid floating-point precision errors` (comment WHY)
-       - ✅ No comment above `function calculateTotal()` (self-documenting code)
-       - ✅ Comments match the project's predominant language
-
+     - ✅ `// Uses BigNumber to avoid floating-point precision errors` (comment WHY)
+     - ✅ No comment above `function calculateTotal()` (self-documenting code)
+     - ✅ Comments match the project's predominant language
 
 ## Checkpoint Commit Protocol
 

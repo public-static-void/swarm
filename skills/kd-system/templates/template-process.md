@@ -3,10 +3,11 @@ title: "PROCESS: {{process name}}"
 version: 1.0.0
 status: draft
 type: process
+created: "{{YYYY-MM-DD}}"
 author: Habit Builder
-created: {{YYYY-MM-DD}}
 superseded_by: null
 ---
+
 <!-- Filename: knowledge/process-{{pattern}}-{{YYYY-MM-DD}}.md -->
 
 # PROCESS: {{process name}}
@@ -39,6 +40,6 @@ superseded_by: null
 
 _This section is optional — include only if friction was encountered during work._
 
-| ID | Issue | Severity | Status | Fixed by |
-|-----|-------|----------|--------|----------|
+| ID     | Issue                       | Severity            | Status                  | Fixed by            |
+| ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |
 | PF-001 | {{description of friction}} | {{low/medium/high}} | {{unresolved/resolved}} | {{agent or PR ref}} |

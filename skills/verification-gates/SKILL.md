@@ -38,11 +38,11 @@ Tests ──► Implementation ──► Plan step ──► Requirement (SPEC K
 
 Every REVIEW KD must include a traceability matrix like this:
 
-| Req ID | Plan Step | Artifact | Test/Check | Status |
-|--------|-----------|----------|------------|--------|
-| R001   | P001      | `src/auth.ts` | `npm test auth` | PASS / FAIL |
-| R002   | P002      | `src/login.tsx` | `npm test login` | PASS / FAIL |
-| R003   | P003      | `config/auth.yml` | Lint passes | PASS / FAIL |
+| Req ID | Plan Step | Artifact          | Test/Check       | Status      |
+| ------ | --------- | ----------------- | ---------------- | ----------- |
+| R001   | P001      | `src/auth.ts`     | `npm test auth`  | PASS / FAIL |
+| R002   | P002      | `src/login.tsx`   | `npm test login` | PASS / FAIL |
+| R003   | P003      | `config/auth.yml` | Lint passes      | PASS / FAIL |
 
 ### Enforcement Rules
 
@@ -71,14 +71,14 @@ Phase Output ──► Gate ──► Next Phase
 
 ## Verification Matrix
 
-| Producer                     | Artifact            | Verified By          | Gate Type                       |
-| ---------------------------- | ------------------- | -------------------- | ------------------------------- |
-| Spec Weaver                  | SPEC KD             | Inspector (Spec)     | REVIEW — requirements quality   |
-| Pathfinder                   | PLAN KD             | Inspector (Plan)     | REVIEW — plan feasibility       |
-| Artisan                      | Code + IMPL SUMMARY | Inspector (Code)     | REVIEW — implementation quality |
-| Artisan (security-sensitive) | Code                | Inspector           | AUDIT — vulnerability scan      |
-| Scribe                       | Documentation + KD composition | Overseer            | REVIEW — cross-ref integrity + composition quality |
-| ---                          | ---                            | ---                 | --- |
+| Producer                     | Artifact                       | Verified By      | Gate Type                                          |
+| ---------------------------- | ------------------------------ | ---------------- | -------------------------------------------------- |
+| Spec Weaver                  | SPEC KD                        | Inspector (Spec) | REVIEW — requirements quality                      |
+| Pathfinder                   | PLAN KD                        | Inspector (Plan) | REVIEW — plan feasibility                          |
+| Artisan                      | Code + IMPL SUMMARY            | Inspector (Code) | REVIEW — implementation quality                    |
+| Artisan (security-sensitive) | Code                           | Inspector        | AUDIT — vulnerability scan                         |
+| Scribe                       | Documentation + KD composition | Overseer         | REVIEW — cross-ref integrity + composition quality |
+| ---                          | ---                            | ---              | ---                                                |
 
 ## Gate Checklist
 
@@ -136,11 +136,11 @@ Phase Output ──► Gate ──► Next Phase
 
 ## Verdicts
 
-| Verdict              | Meaning                        | Next Action                       |
-| -------------------- | ------------------------------ | --------------------------------- |
-| PASS                 | All criteria met, clean        | Advance to next phase             |
-| FAIL (clear cause)   | Specific fixable issues        | Return to producer for fix        |
-| FAIL (fundamental)   | Design-level flaw              | Revert (Happy to Delete), re-spec |
+| Verdict            | Meaning                 | Next Action                       |
+| ------------------ | ----------------------- | --------------------------------- |
+| PASS               | All criteria met, clean | Advance to next phase             |
+| FAIL (clear cause) | Specific fixable issues | Return to producer for fix        |
+| FAIL (fundamental) | Design-level flaw       | Revert (Happy to Delete), re-spec |
 
 ## Feedback Loop
 
