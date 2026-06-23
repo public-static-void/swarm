@@ -11,7 +11,6 @@ permission:
     "knowledge/report-*.md": allow
     "knowledge/composed-*.md": allow
     "skills/kd-system/templates/*.md": allow
-    "skills/kd-system/SKILL.md": allow
   grep: deny
   edit:
     "*": ask
@@ -24,7 +23,9 @@ permission:
   question: allow
   webfetch: deny
   websearch: deny
-  external_directory: ask
+  external_directory:
+    "*": ask
+    "skills/kd-system/templates/": allow
   doom_loop: ask
   todowrite: allow
   bash:

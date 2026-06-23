@@ -11,7 +11,6 @@ permission:
     "README.md": allow
     "AGENTS.md": allow
     "skills/kd-system/templates/*.md": allow
-    "skills/kd-system/SKILL.md": allow
   edit:
     "*": ask
     "knowledge/composed-*.md": allow
@@ -25,7 +24,9 @@ permission:
   question: allow
   webfetch: allow
   websearch: allow
-  external_directory: ask
+  external_directory:
+    "*": ask
+    "skills/kd-system/templates/": allow
   doom_loop: ask
   todowrite: allow
   bash:

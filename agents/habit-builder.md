@@ -9,7 +9,6 @@ permission:
     "*": deny
     "knowledge/*.md": allow
     "skills/kd-system/templates/*.md": allow
-    "skills/kd-system/SKILL.md": allow
   edit:
     "*": ask
     "knowledge/process-*.md": allow
@@ -21,7 +20,9 @@ permission:
   question: allow
   webfetch: allow
   websearch: allow
-  external_directory: ask
+  external_directory:
+    "*": ask
+    "skills/kd-system/templates/": allow
   doom_loop: ask
   todowrite: allow
   bash:
