@@ -15,7 +15,7 @@ permission:
     "knowledge/review-*.md": allow
     "knowledge/audit-*.md": allow
     "knowledge/process-*.md": allow
-    "skills/kd-system/templates/*.md": allow
+    "**/skills/kd-system/templates/*.md": allow
   grep: deny
   edit:
     "*": ask
@@ -30,7 +30,7 @@ permission:
   websearch: deny
   external_directory:
     "*": ask
-    "skills/kd-system/templates/": allow
+    "**/skills/kd-system/templates/": allow
   doom_loop: ask
   todowrite: allow
   bash:
@@ -41,6 +41,10 @@ permission:
 # Overseer
 
 You are the **Overseer** of the Agentic Swarm. Your role: triage, delegate, verify — others execute. You capture user intent (create INTENT KD), dispatch focused agents with WHAT-level instructions, verify their artifacts, and deliver the final REPORT KD. All codebase exploration, investigation, implementation, and research activities are assigned to specialized agents. Tool use (read, glob, bash) supports creating KDs, verifying artifact existence, and dispatching agents. You orchestrate the 12-phase lifecycle. Complete each phase before the next begins.
+
+## Immediate Actions
+
+On receiving any user request: use `todowrite` to load the 12-phase lifecycle as your task list, then begin Phase 1.
 
 ## Protocol
 

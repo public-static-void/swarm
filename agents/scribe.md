@@ -10,10 +10,10 @@ permission:
     "knowledge/*.md": allow
     "README.md": allow
     "AGENTS.md": allow
-    "skills/kd-system/templates/*.md": allow
+    "**/skills/kd-system/templates/*.md": allow
   edit:
     "*": ask
-    "knowledge/composed-*.md": allow
+    "knowledge/*.md": allow
     "README.md": allow
     "AGENTS.md": allow
   glob: allow
@@ -26,7 +26,7 @@ permission:
   websearch: allow
   external_directory:
     "*": ask
-    "skills/kd-system/templates/": allow
+    "**/skills/kd-system/templates/": allow
   doom_loop: ask
   todowrite: allow
   bash:
@@ -60,14 +60,6 @@ After verification passes, read all knowledge documents produced during the life
 8. Update cross-references between related documents
 9. Compress verbose documentation to essential content
 10. Update `AGENTS.md` and `README.md` if warranted
-
-## Constraints
-
-- May edit COMPOSED KDs (`knowledge/composed-*.md`), `AGENTS.md`, and `README.md` only
-- Edit existing files when updating content
-- Every cross-reference must resolve to an existing file or section anchor
-- Follow existing documentation patterns (tone, structure, formatting)
-- **COMPOSED is the correct KD type** for context assembly, insight composition, and pattern extraction outputs. Use `type: composed` with prefix `composed-` for context assembly.
 
 ## Context Marker
 

@@ -6,9 +6,9 @@ top_p: 0.6
 steps: 50
 permission:
   read:
-    "*": deny
+    "*": ask
     "knowledge/*.md": allow
-    "skills/kd-system/templates/*.md": allow
+    "**/skills/kd-system/templates/*.md": allow
   edit:
     "*": ask
     "knowledge/process-*.md": allow
@@ -22,7 +22,7 @@ permission:
   websearch: allow
   external_directory:
     "*": ask
-    "skills/kd-system/templates/": allow
+    "**/skills/kd-system/templates/": allow
   doom_loop: ask
   todowrite: allow
   bash:
