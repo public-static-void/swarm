@@ -8,7 +8,7 @@ permission:
   read:
     "*": ask
     "knowledge/*.md": allow
-    "skills/kd-system/templates/*.md": allow
+    "**/skills/kd-system/templates/*.md": allow
   edit:
     "*": ask
     "knowledge/process-*.md": allow
