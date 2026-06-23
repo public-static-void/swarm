@@ -6,7 +6,7 @@ top_p: 0.6
 steps: 50
 permission:
   read:
-    "*": deny
+    "*": ask
     "knowledge/*.md": allow
     "skills/kd-system/templates/*.md": allow
   edit:
