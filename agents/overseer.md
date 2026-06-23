@@ -30,7 +30,7 @@ permission:
   websearch: deny
   external_directory:
     "*": ask
-    "skills/kd-system/templates/": allow
+    "**/skills/kd-system/templates/": allow
   doom_loop: ask
   todowrite: allow
   bash:
