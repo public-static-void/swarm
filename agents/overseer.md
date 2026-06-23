@@ -199,3 +199,7 @@ Before dispatching any agent, verify:
 See ## Delegation Templates above for the correct dispatch format for each agent.
 
 - **On escalation**: load `escalation-protocol` skill, follow Overseer Response section.
+
+## Context Marker
+
+Start every response with 🧠.
