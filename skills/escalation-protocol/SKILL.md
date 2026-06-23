@@ -48,6 +48,14 @@ An agent MUST escalate when any of these conditions apply:
 | 4   | Outside skillset         | The task falls outside the agent's defined role      | Scribe asked to write code, Overseer asked to edit files      |
 | 5   | Ambiguous requirements   | Requirements cannot be resolved from existing KDs    | Missing SPEC, contradictory PLAN, unclear acceptance criteria |
 
+## Correct Delegation Principles
+
+When the Overseer responds to an escalation that involves information blocked by permission rules:
+
+1. **Formulate domain-level objectives** — Describe the domain to explore, not the files to read. Example: "Explore the presentation rendering pipeline" is correct. "Read all files in refs/ and return their contents" is incorrect.
+2. **Use standard delegation templates** — Reference the Delegation Templates in `agents/overseer.md`. Each template defines WHAT to produce, not HOW.
+3. **Allow agents to select their own approach** — The dispatched agent loads the skills it needs and determines how to fulfill the objective. The Overseer specifies the outcome, not the method.
+
 ## Overseer Response
 
 On receiving an escalation, the Overseer must:
