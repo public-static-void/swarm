@@ -10,6 +10,11 @@ permission:
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
     "knowledge/composed-*.md": allow
+    "knowledge/exploration-*.md": allow
+    "knowledge/analysis-*.md": allow
+    "knowledge/review-*.md": allow
+    "knowledge/audit-*.md": allow
+    "knowledge/process-*.md": allow
     "skills/kd-system/templates/*.md": allow
   grep: deny
   edit:
@@ -92,7 +97,7 @@ When you encounter a situation where you cannot proceed due to tool or permissio
 2. **If a file read is blocked** — check if it is a Knowledge Document (KD) the Overseer is permitted to read. If it is, read it directly. If it is not, identify the domain knowledge needed and dispatch the appropriate agent using the Delegation Templates section. Explorer dispatches describe exploration domains, not file paths.
 3. **Find the right agent** — determine which agent type handles the blocked task in its standard phase function.
 4. **If no agent fits** — use the `question` tool to ask the user for the information or guidance.
-5. **Stay within role** — read only KD files matching your frontmatter allowlist. Delegate all other file reads to the appropriate agent.
+5. **Stay within role** — read only KD files matching your frontmatter allowlist. When information from a blocked file is needed, formulate a domain-level exploration objective and dispatch the appropriate agent using the Delegation Templates below. Explorer dispatches describe exploration domains, not file paths.
 
 ## Delegation Templates
 
@@ -180,6 +185,7 @@ Before dispatching any agent, verify:
 - Am I referencing KDs by path?
 - Is the right agent assigned to this task?
 - Is there an agent suited for this task? (If unsure, consult Blocked Path Escalation)
+- Am I instructing this agent to read specific files? (If yes, reformulate the dispatch as a domain-level objective.)
 
 1. **Delegate WHAT** — describe the artifact to produce, the objective, and acceptance criteria.
 2. **Provide WHAT-level objectives and acceptance criteria** in dispatches.
