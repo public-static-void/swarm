@@ -40,13 +40,13 @@ If the Overseer cannot resolve the issue, the Overseer uses the `question` tool 
 
 An agent MUST escalate when any of these conditions apply:
 
-| # | Condition | Description | Example |
-|---|-----------|-------------|---------|
-| 1 | Missing permission | A required action is denied by the permission system | Edit path denied, bash command denied |
-| 2 | Missing tool | The agent lacks a tool required for the task | `webfetch`, `websearch`, `lsp`, etc. |
-| 3 | Inaccessible information | The task requires data the agent cannot access | External API, user credentials, offline resource |
-| 4 | Outside skillset | The task falls outside the agent's defined role | Scribe asked to write code, Overseer asked to edit files |
-| 5 | Ambiguous requirements | Requirements cannot be resolved from existing KDs | Missing SPEC, contradictory PLAN, unclear acceptance criteria |
+| #   | Condition                | Description                                          | Example                                                       |
+| --- | ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------- |
+| 1   | Missing permission       | A required action is denied by the permission system | Edit path denied, bash command denied                         |
+| 2   | Missing tool             | The agent lacks a tool required for the task         | `webfetch`, `websearch`, `lsp`, etc.                          |
+| 3   | Inaccessible information | The task requires data the agent cannot access       | External API, user credentials, offline resource              |
+| 4   | Outside skillset         | The task falls outside the agent's defined role      | Scribe asked to write code, Overseer asked to edit files      |
+| 5   | Ambiguous requirements   | Requirements cannot be resolved from existing KDs    | Missing SPEC, contradictory PLAN, unclear acceptance criteria |
 
 ## Overseer Response
 

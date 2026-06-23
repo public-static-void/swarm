@@ -3,10 +3,11 @@ title: "AUDIT: {{artifact audited}}"
 version: 1.0.0
 status: draft
 type: audit
-created: {{YYYY-MM-DD}}
+created: "{{YYYY-MM-DD}}"
 author: Inspector
 superseded_by: null
 ---
+
 <!-- Filename: knowledge/audit-{{artifact}}-{{YYYY-MM-DD}}.md -->
 
 # AUDIT: {{artifact}}
@@ -36,6 +37,6 @@ superseded_by: null
 
 _This section is optional — include only if friction was encountered during work._
 
-| ID | Issue | Severity | Status | Fixed by |
-|-----|-------|----------|--------|----------|
+| ID     | Issue                       | Severity            | Status                  | Fixed by            |
+| ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |
 | PF-001 | {{description of friction}} | {{low/medium/high}} | {{unresolved/resolved}} | {{agent or PR ref}} |

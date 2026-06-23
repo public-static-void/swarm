@@ -7,7 +7,7 @@ steps: 50
 permission:
   read: allow
   edit:
-    "*": deny
+    "*": ask
     "knowledge/review-*.md": allow
     "knowledge/audit-*.md": allow
   glob: allow
@@ -18,7 +18,9 @@ permission:
   question: allow
   webfetch: allow
   websearch: allow
-  external_directory: ask
+  external_directory:
+    "*": ask
+    "skills/kd-system/templates/": allow
   doom_loop: ask
   todowrite: allow
   bash:
