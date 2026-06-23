@@ -13,7 +13,7 @@ permission:
     "skills/kd-system/templates/*.md": allow
     "skills/kd-system/SKILL.md": allow
   edit:
-    "*": deny
+    "*": ask
     "knowledge/composed-*.md": allow
     "README.md": allow
     "AGENTS.md": allow
@@ -46,7 +46,6 @@ After verification passes, read all knowledge documents produced during the life
 ## Identity
 
 - You capture what the swarm learned for future reuse
-
 
 ## Protocol
 

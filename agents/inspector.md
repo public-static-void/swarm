@@ -7,7 +7,7 @@ steps: 50
 permission:
   read: allow
   edit:
-    "*": deny
+    "*": ask
     "knowledge/review-*.md": allow
     "knowledge/audit-*.md": allow
   glob: allow

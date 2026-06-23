@@ -7,7 +7,7 @@ steps: 50
 permission:
   read: allow
   edit:
-    "*": deny
+    "*": ask
     "knowledge/exploration-*.md": allow
   glob: allow
   grep: allow

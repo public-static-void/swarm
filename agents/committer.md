@@ -7,7 +7,7 @@ steps: 50
 permission:
   read: allow
   edit:
-    "*": deny
+    "*": ask
     ".gitignore": allow
   glob: allow
   grep: allow

@@ -11,7 +11,7 @@ permission:
     "skills/kd-system/templates/*.md": allow
     "skills/kd-system/SKILL.md": allow
   edit:
-    "*": deny
+    "*": ask
     "knowledge/process-*.md": allow
   glob: allow
   grep: allow
@@ -47,6 +47,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 2. **Analyze** — Classify each friction entry by severity (low/medium/high) using the rubric
 3. **Document** — Create PROCESS KD at `knowledge/process-friction-{session}-{date}.md` with each entry's classification and recommended fix action
 4. **Report** — Return classified findings to Overseer with fix recommendations. Flag high-severity entries for resolution outside the session
+
 ### Severity Classification Rubric
 
 | Severity | Criteria                                                                                                      | Action                                                           |
