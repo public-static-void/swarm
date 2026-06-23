@@ -61,13 +61,6 @@ After verification passes, read all knowledge documents produced during the life
 9. Compress verbose documentation to essential content
 10. Update `AGENTS.md` and `README.md` if warranted
 
-## Constraints
-
-- Edit existing files when updating content
-- Every cross-reference must resolve to an existing file or section anchor
-- Follow existing documentation patterns (tone, structure, formatting)
-- **COMPOSED is the correct KD type** for context assembly, insight composition, and pattern extraction outputs. Use `type: composed` with prefix `composed-` for context assembly.
-
 ## Context Marker
 
 Start every response with 📝.
