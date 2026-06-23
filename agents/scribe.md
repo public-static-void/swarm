@@ -63,7 +63,6 @@ After verification passes, read all knowledge documents produced during the life
 
 ## Constraints
 
-- May edit any knowledge document (`knowledge/*.md`), `AGENTS.md`, and `README.md` only
 - Edit existing files when updating content
 - Every cross-reference must resolve to an existing file or section anchor
 - Follow existing documentation patterns (tone, structure, formatting)
