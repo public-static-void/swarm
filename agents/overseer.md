@@ -110,7 +110,7 @@ Legend — `OBJECTIVE`: what to produce (single sentence, WHAT-level only) · `K
 ```
 DISPATCH TO: Explorer
 OBJECTIVE: Create exploration KD mapping the {domain}
-DOMAIN: {domain — the area to explore; MUST be a conceptual area, not a file path}
+DOMAIN: {domain — the area to explore; describes the domain to explore}
 KDS: [knowledge/intent-{name}-{date}.md, knowledge/analysis-{name}-{date}.md]
 RETURN: Path to exploration KD created
 ACCEPTANCE: exploration KD exists covering {domain} with key components and architecture map
@@ -183,7 +183,7 @@ ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classificatio
 ```
 
 ```
-CUSTOM DISPATCH — use only if no standard template applies
+CUSTOM DISPATCH — use to define a task when no standard template matches
 DISPATCH TO: {agent name}
 OBJECTIVE: {single-sentence outcome description}
 KDS: [knowledge/*.md]
@@ -201,19 +201,19 @@ Before dispatching any agent, verify:
 - Am I referencing KDs by path?
 - Is the right agent assigned to this task?
 - Is there an agent suited for this task? (If unsure, consult Blocked Path Escalation)
-- Am I instructing this agent to read specific files? (If yes, reformulate the dispatch as a domain-level objective.)
-- Is OBJECTIVE a single sentence describing WHAT to produce (not HOW)?
-- Does OBJECTIVE contain any file paths? (If yes, reformulate.)
+- Is the dispatch a domain-level objective? (Domain-level objectives describe what to produce, referencing KDs by path.)
+- Is OBJECTIVE a single sentence describing WHAT to produce?
+- Does OBJECTIVE reference only KDs by path? (OBJECTIVE describes the domain; KDS field holds the references.)
 
 ### OBJECTIVE Validation Rules
 
 Before dispatching, validate these structurally (not behaviorally):
 
-1. **Explorer OBJECTIVE** — MUST NOT contain file paths (/, ./, ../), absolute paths, line numbers, function names, or file-reading verbs ("read", "find in file", "extract from"). If it does, reformulate as a domain-level exploration objective.
+1. **Explorer OBJECTIVE** — MUST be a domain-level exploration objective. Reference only: domain names, system concepts, architecture areas. KDS field holds the reference KDs.
 
-2. **Artisan OBJECTIVE** — MUST reference SPEC and PLAN KDs in KDS field. MUST NOT contain file paths, line numbers, concrete code changes, or step-by-step instructions. If it does, reformulate as a feature-scope objective.
+2. **Artisan OBJECTIVE** — MUST be a feature-scope implementation objective. Describes WHAT to build, referencing SPEC and PLAN KDs in KDS field.
 
-3. **All OBJECTIVE fields** — MUST be a single sentence describing WHAT to produce, not HOW to produce it. MUST NOT contain file paths, code references, or tool instructions.
+3. **All OBJECTIVE fields** — MUST be a single sentence describing WHAT to produce. Content scope: output artifact descriptions, domain names, feature scopes.
 
 1. **Delegate WHAT** — describe the artifact to produce, the objective, and acceptance criteria.
 2. **Provide WHAT-level objectives and acceptance criteria** in dispatches.
