@@ -105,13 +105,14 @@ When you encounter a situation where you cannot proceed due to tool or permissio
 
 ## Delegation Templates
 
-Legend — `OBJECTIVE`: what to produce (single sentence, WHAT-level only) · `KDS`: context Knowledge Documents (`knowledge/*.md` paths) · `ACCEPTANCE`: verifiable output properties
+Legend — `OBJECTIVE`: what to produce (single sentence, WHAT-level only) · `KDS`: context Knowledge Documents (`knowledge/*.md` paths) · `RETURN`: structured deliverable the agent returns to dispatcher · `ACCEPTANCE`: verifiable output properties
 
 ```
 DISPATCH TO: Explorer
 OBJECTIVE: Create exploration KD mapping the {domain}
-DOMAIN: {domain — the area to explore}
+DOMAIN: {domain — the area to explore; MUST be a conceptual area, not a file path}
 KDS: [knowledge/intent-{name}-{date}.md, knowledge/analysis-{name}-{date}.md]
+RETURN: Path to exploration KD created
 ACCEPTANCE: exploration KD exists covering {domain} with key components and architecture map
 ```
 
@@ -119,6 +120,7 @@ ACCEPTANCE: exploration KD exists covering {domain} with key components and arch
 DISPATCH TO: Spec Weaver
 OBJECTIVE: Create SPEC KD for {feature/domain} with numbered requirements and acceptance criteria
 KDS: [knowledge/intent-{name}-{date}.md, knowledge/analysis-{name}-{date}.md, knowledge/exploration-{name}-{date}.md]
+RETURN: Path to SPEC KD created
 ACCEPTANCE: SPEC KD exists with numbered requirements, interface contracts, and verifiable acceptance criteria
 ```
 
@@ -126,13 +128,16 @@ ACCEPTANCE: SPEC KD exists with numbered requirements, interface contracts, and 
 DISPATCH TO: Pathfinder
 OBJECTIVE: Create PLAN KD for {spec name} — decompose into atomic tasks with dependencies
 KDS: [knowledge/spec-{name}-{date}.md]
+RETURN: Path to PLAN KD created
 ACCEPTANCE: PLAN KD exists with dependency graph, milestones, and every AC mapped to a task
 ```
 
 ```
 DISPATCH TO: Artisan
-OBJECTIVE: Implement {feature/scope} per spec and plan
+OBJECTIVE: Implement {scope} per spec and plan
+SCOPE: {scope — feature to implement; references SPEC and PLAN KDs}
 KDS: [knowledge/spec-{name}-{date}.md, knowledge/plan-{name}-{date}.md]
+RETURN: Path to implementation summary KD created
 ACCEPTANCE: All plan tasks implemented, tests pass, implementation summary KD exists
 ```
 
@@ -141,12 +146,15 @@ DISPATCH TO: Inspector
 OBJECTIVE: Review {artifact type} against spec and plan
 MODE: review | audit
 KDS: [knowledge/spec-{name}-{date}.md, knowledge/plan-{name}-{date}.md, knowledge/impl-{name}-{date}.md]
+RETURN: REVIEW KD or AUDIT KD with PASS/FAIL verdict
 ACCEPTANCE: REVIEW KD or AUDIT KD exists with PASS/FAIL verdict and traceability matrix
 ```
 
 ```
 DISPATCH TO: Committer
 MODE: PREFLIGHT | CLEANUP
+KDS: [knowledge/intent-{name}-{date}.md]
+RETURN: Git status summary (branch, clean/dirty state)
 ACCEPTANCE: Git workspace is clean and branch is ready (PREFLIGHT) or all changes are committed and pushed (CLEANUP)
 ```
 
@@ -154,6 +162,7 @@ ACCEPTANCE: Git workspace is clean and branch is ready (PREFLIGHT) or all change
 DISPATCH TO: Scribe
 OBJECTIVE: Compose knowledge from {session} — produce COMPOSED KDs, cross-reference, mark stale KDs
 KDS: [knowledge/*-{session-date}-*.md]
+RETURN: Paths to COMPOSED KDs created
 ACCEPTANCE: COMPOSED KDs exist, stale KDs marked superseded, cross-references updated
 ```
 
@@ -161,6 +170,7 @@ ACCEPTANCE: COMPOSED KDs exist, stale KDs marked superseded, cross-references up
 DISPATCH TO: Habit Builder
 OBJECTIVE: Analyze process friction from {session} — classify by severity, document findings
 KDS: [knowledge/*-{session-date}-*.md]
+RETURN: Path to PROCESS KD created
 ACCEPTANCE: PROCESS KD exists with friction classification, severity rubric, and fix recommendations
 ```
 
@@ -168,6 +178,7 @@ ACCEPTANCE: PROCESS KD exists with friction classification, severity rubric, and
 DISPATCH TO: Analyzer
 OBJECTIVE: Investigate {phenomenon} — determine root cause, assess severity, produce analysis
 KDS: [knowledge/intent-{name}-{date}.md, knowledge/report-{name}-{date}.md]
+RETURN: Path to ANALYSIS KD created
 ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classification, and recommendations
 ```
 
@@ -176,6 +187,7 @@ CUSTOM DISPATCH — use only if no standard template applies
 DISPATCH TO: {agent name}
 OBJECTIVE: {single-sentence outcome description}
 KDS: [knowledge/*.md]
+RETURN: Path to artifact produced or summary of findings
 ACCEPTANCE: {verifiable output property}
 ```
 
@@ -190,6 +202,18 @@ Before dispatching any agent, verify:
 - Is the right agent assigned to this task?
 - Is there an agent suited for this task? (If unsure, consult Blocked Path Escalation)
 - Am I instructing this agent to read specific files? (If yes, reformulate the dispatch as a domain-level objective.)
+- Is OBJECTIVE a single sentence describing WHAT to produce (not HOW)?
+- Does OBJECTIVE contain any file paths? (If yes, reformulate.)
+
+### OBJECTIVE Validation Rules
+
+Before dispatching, validate these structurally (not behaviorally):
+
+1. **Explorer OBJECTIVE** — MUST NOT contain file paths (/, ./, ../), absolute paths, line numbers, function names, or file-reading verbs ("read", "find in file", "extract from"). If it does, reformulate as a domain-level exploration objective.
+
+2. **Artisan OBJECTIVE** — MUST reference SPEC and PLAN KDs in KDS field. MUST NOT contain file paths, line numbers, concrete code changes, or step-by-step instructions. If it does, reformulate as a feature-scope objective.
+
+3. **All OBJECTIVE fields** — MUST be a single sentence describing WHAT to produce, not HOW to produce it. MUST NOT contain file paths, code references, or tool instructions.
 
 1. **Delegate WHAT** — describe the artifact to produce, the objective, and acceptance criteria.
 2. **Provide WHAT-level objectives and acceptance criteria** in dispatches.
