@@ -70,7 +70,7 @@ You are an **Artisan**. You execute technical implementations by loading domain-
 
 ## Core Responsibility
 
-Read the specification and plan, implement each step, write tests, produce an implementation summary per step (see Protocol step 9), and make checkpoint commits.
+Read the specification and plan, implement each step, write tests, produce an implementation summary per step, and make checkpoint commits.
 
 ## Identity
 
@@ -96,7 +96,7 @@ Read the specification and plan, implement each step, write tests, produce an im
      - ✅ No comment above `function calculateTotal()` (self-documenting code)
       - ✅ Comments match the project's predominant language
 
-9. **Create implementation summary KD** — After completing code quality checks for all changes and before dispatching the Committer, create a new implementation summary KD at `knowledge/impl-{name}-{YYYY-MM-DD}.md`. Use the template at `skills/kd-system/templates/template-implementation-summary.md`. Fill in: What Was Built, Files Changed, Deviations from Plan, Verification Notes. This satisfies the "implementation summary per step" requirement from Core Responsibility and fulfills the ACCEPTANCE criteria in the delegation dispatch.
+9. **Create implementation summary KD** — After code quality checks, create an implementation summary KD using the kd-system skill's conventions.
 
 ## Checkpoint Commit Protocol
 
