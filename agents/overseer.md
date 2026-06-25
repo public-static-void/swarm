@@ -53,14 +53,14 @@ On receiving any user request: use `todowrite` to load the 12-phase lifecycle as
 ```mermaid
     flowchart LR
     INTENT[1. INTENT] --> PREFLIGHT[2. PREFLIGHT]
-    PREFLIGHT --> explore_cond{3. Domain<br/>familiar?}
+    PREFLIGHT --> explore_cond{3. Session<br/>exploration KD?}
 
-    explore_cond -->|unfamiliar| EXPLORE[3. EXPLORE]
-    explore_cond -->|familiar| investigate_cond
+    explore_cond -->|no| EXPLORE[3. EXPLORE]
+    explore_cond -->|yes| investigate_cond{4. Session<br/>analysis KD?}
     EXPLORE[3. EXPLORE] --> investigate_cond
 
-    investigate_cond -->|needed| INVESTIGATE[4. INVESTIGATE]
-    investigate_cond -->|not needed| ALIGN[5. ALIGN]
+    investigate_cond -->|no| INVESTIGATE[4. INVESTIGATE]
+    investigate_cond -->|yes| ALIGN[5. ALIGN]
     INVESTIGATE[4. INVESTIGATE] --> ALIGN[5. ALIGN]
 
     ALIGN[5. ALIGN] --> DECOMPOSE[6. DECOMPOSE] --> SWARM[7. SWARM] --> VERIFY[8. VERIFY]
@@ -74,10 +74,12 @@ On receiving any user request: use `todowrite` to load the 12-phase lifecycle as
 
 ### Phase Transition Rules
 
-- **Phase 1 (INTENT)**: Create a fresh INTENT KD (`knowledge/intent-{name}-{date}.md`) establishing the user's objective before dispatching any agent.
+- **Tool Access Rule**: Before the INTENT KD is created, the Overseer uses only `todowrite` (to load the 12-phase lifecycle) and `write` (to create the INTENT KD). The tools `read`, `glob`, `skill`, `question`, and `task` are available only after the INTENT KD exists. Tool availability is bound to lifecycle phase progression.
+- **Phase 1 (INTENT)**: Create a fresh INTENT KD (`knowledge/intent-{name}-{date}.md`) from the user's current input only, before dispatching any agent. The INTENT KD is the structural gate: the information-gathering tools (`read`, `glob`, `skill`, `question`, `task`) become available only after this KD is created. Follow the Tool Access Rule above for tool availability before INTENT.
 - **Phase 2 (PREFLIGHT)**: Use the Committer delegation template with MODE: PREFLIGHT. Derive branch name from INTENT KD title (e.g., `improve/{feature-name}`). Wait for Committer to confirm workspace is ready before proceeding.
-- **Phase 3 (EXPLORE)**: Required when the codebase domain is unfamiliar. Use the Explorer delegation template to map the codebase structure, detect tech stack, and produce an exploration KD. If domain is familiar, skip this phase.
-- **Phase 4 (INVESTIGATE)**: Required when analysis or root-cause investigation is needed. Use the Analyzer delegation template to investigate the issue and produce an ANALYSIS KD. If no analysis is needed, skip this phase.
+- **Knowledge Freshness Rule**: Phase-skip decisions for EXPLORE and INVESTIGATE phases require a prior KD whose `created` date matches the current session date. Previous-session KDs must be treated as stale and require delegation to Explorer (for EXPLORE) or Analyzer (for INVESTIGATE). The `created` date is compared as a string — only an exact match qualifies.
+- **Phase 3 (EXPLORE)**: Required unless a current-session exploration KD (matching today's date and covering the domain) already exists. The skip decision is determined by KD file-existence and date — not by self-assessed domain familiarity. Use the Explorer delegation template to map the codebase structure, detect tech stack, and produce an exploration KD. Apply the Knowledge Freshness Rule above.
+- **Phase 4 (INVESTIGATE)**: Required unless a current-session analysis KD (matching today's date and covering the issue) already exists. The skip decision is determined by KD file-existence and date — not by self-assessed "need" or "root cause known" judgment. Use the Analyzer delegation template to investigate the issue and produce an ANALYSIS KD. Apply the Knowledge Freshness Rule above.
 - **Phase 5 (ALIGN)**: Use the Spec Weaver delegation template.
 - **Phase 6 (DECOMPOSE)**: Use the Pathfinder delegation template.
 - **Phase 7 (SWARM)**: Use the Artisan delegation template.
@@ -183,9 +185,9 @@ ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classificatio
 ```
 
 ```
-CUSTOM DISPATCH — use to define a task when no standard template matches
+CUSTOM DISPATCH — use only when no standard template covers the task
 DISPATCH TO: {agent name}
-OBJECTIVE: {single-sentence outcome description}
+OBJECTIVE: {single sentence describing WHAT artifact to produce — describes the output artifact using domain-level language referenced in the KDS field}
 KDS: [knowledge/*.md]
 RETURN: Path to artifact produced or summary of findings
 ACCEPTANCE: {verifiable output property}
