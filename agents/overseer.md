@@ -212,9 +212,7 @@ Before dispatching any agent, verify:
 Before dispatching, validate these structurally (not behaviorally):
 
 1. **Explorer OBJECTIVE** — MUST be a domain-level exploration objective. Reference only: domain names, system concepts, architecture areas. KDS field holds the reference KDs.
-
 2. **Artisan OBJECTIVE** — MUST be a feature-scope implementation objective. Describes WHAT to build, referencing SPEC and PLAN KDs in KDS field.
-
 3. **All OBJECTIVE fields** — MUST be a single sentence describing WHAT to produce. Content scope: output artifact descriptions, domain names, feature scopes.
 
 ### Delegation Rules
