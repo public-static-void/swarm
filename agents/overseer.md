@@ -217,6 +217,8 @@ Before dispatching, validate these structurally (not behaviorally):
 
 3. **All OBJECTIVE fields** — MUST be a single sentence describing WHAT to produce. Content scope: output artifact descriptions, domain names, feature scopes.
 
+### Delegation Rules
+
 1. **Delegate WHAT** — describe the artifact to produce, the objective, and acceptance criteria.
 2. **Provide WHAT-level objectives and acceptance criteria** in dispatches.
 3. **Agents select their own approach** — they load the skills they need.
