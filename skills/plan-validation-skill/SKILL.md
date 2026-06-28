@@ -1,6 +1,6 @@
 ---
 name: plan-validation-skill
-description: Plan validation and feasibility assessment skill covering resource estimation, dependency graph verification, task completeness, milestone sequencing, and risk identification — trigger on: plan validation, feasibility, task plan, milestone check.
+description: "Plan validation and feasibility assessment skill covering resource estimation, dependency graph verification, task completeness, milestone sequencing, and risk identification — trigger on: plan validation, feasibility, task plan, milestone check."
 ---
 
 # Plan Validation Skill

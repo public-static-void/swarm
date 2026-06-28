@@ -1,6 +1,6 @@
 ---
 name: cicd-skill
-description: CI/CD pipeline and deployment skill covering pipeline design, deployment configurations, environment management, rollback procedures, health checks, secrets management, and artifact versioning. Trigger on: CI/CD, pipeline, deployment, infrastructure, DevOps.
+description: "CI/CD pipeline and deployment skill covering pipeline design, deployment configurations, environment management, rollback procedures, health checks, secrets management, and artifact versioning. Trigger on: CI/CD, pipeline, deployment, infrastructure, DevOps."
 ---
 
 # CI/CD Pipeline and Deployment Skill

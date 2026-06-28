@@ -1,6 +1,6 @@
 ---
 name: frontend-skill
-description: Frontend UI development skill covering component architecture, WCAG accessibility, responsive design, state management, client-side testing, and styling methodologies. Trigger on: frontend, UI, component, accessibility, styling.
+description: "Frontend UI development skill covering component architecture, WCAG accessibility, responsive design, state management, client-side testing, and styling methodologies. Trigger on: frontend, UI, component, accessibility, styling."
 ---
 
 # Frontend Skill

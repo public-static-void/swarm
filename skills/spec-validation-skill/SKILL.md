@@ -1,6 +1,6 @@
 ---
 name: spec-validation-skill
-description: Specification validation and requirements analysis skill covering requirement coverage, ambiguity detection, testability verification, interface completeness, and acceptance criteria quality — trigger on: spec validation, requirements check, acceptance criteria, specification review.
+description: "Specification validation and requirements analysis skill covering requirement coverage, ambiguity detection, testability verification, interface completeness, and acceptance criteria quality — trigger on: spec validation, requirements check, acceptance criteria, specification review."
 ---
 
 # Spec Validation Skill
