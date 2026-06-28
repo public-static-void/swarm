@@ -36,6 +36,8 @@ permission:
     "git checkout*": allow
     "git pull*": allow
     "git fetch*": allow
+    "git remote*": allow
+    "git rev-list*": allow
     "git push": allow
     "git rebase*": allow
     "git reflog*": allow

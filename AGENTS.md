@@ -22,17 +22,9 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 - **Standard Commits**: Use standard git workflow with hooks enabled for all commits.
 - **Comment Intent**: Source code comments must explain WHY. Git history documents changes; comments capture engineering rationale.
 - **External References**: Reference only external APIs, public documentation, and standard conventions in source code comments and commit messages.
-- **Knowledge Freshness Rule**: Only reference KDs from the current session date (matching today's date) unless explicitly directed otherwise. KDs from prior sessions are treated as stale and must not influence INTENT creation or session triage. Detailed KD types (exploration, analysis, review, audit, process) are consumed by the agents that produce them — the Overseer references only INTENT, REPORT, and COMPOSED KDs for orchestration.
-
 ## Delegation Integrity
 
 Every agent verifies integrity of incoming dispatches before executing. Agents accept WHAT-level dispatches that describe the artifact to produce, the objective, and acceptance criteria, referencing KDs by path.
-
-## Pre-Authorized Paths
-
-- The path `skills/kd-system/templates/` is pre-authorized for all agents without additional permission requests
-- Agents should use the `read` tool (not `external_directory`) to access template files
-- Permission errors for these paths indicate a configuration bug, not a real restriction
 
 ## Anti-Patterns to Avoid
 

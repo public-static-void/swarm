@@ -69,9 +69,6 @@ Example: `spec-auth-flow-2026-05-22.md`
 
 - Runtime KDs live under project-relative `knowledge/` directory
 - Templates are bundled with this skill at `templates/*.md` (relative to SKILL.md location)
-- When reading template files, use the `read` tool (not `external_directory`)
-- Template access is pre-authorized for all agents — agents must not request additional permission
-- The correct read pattern for templates is `**/skills/kd-system/templates/*.md`
 
 ## Pre-Creation Compliance Checklist
 
