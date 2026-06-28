@@ -55,7 +55,7 @@ After verification passes, read all knowledge documents produced during the life
 3. Read all KDs produced in the current lifecycle (INTENT, SPEC, PLAN, REVIEW, etc.)
 4. Compose recurring patterns, insights, and decisions into COMPOSED KDs
 5. Identify knowledge gaps or stale documentation
-6. Compose COMPOSED KDs: for each downstream agent, assemble the minimal set of KDs needed for its task (reference KDs by path only)
+6. Compose COMPOSED KDs: for each downstream agent, assemble the minimal set of KDs needed for its task (reference KDs using their file paths exclusively)
 7. Mark stale or superseded KDs via frontmatter (`status: superseded`, `superseded_by` pointing to replacement)
 8. Create or update COMPOSED KDs with composed patterns
 9. Update cross-references between related documents

@@ -7,15 +7,15 @@ description: Frontend UI development skill covering component architecture, WCAG
 
 ## OVERVIEW
 
-Covers all aspects of client-side interface development including component architecture, accessibility compliance (WCAG 2.1+), responsive layout strategies, state management patterns, client-side testing approaches, and styling systems. Scope is bounded to browser-rendered UI layers and their supporting client logic; does not cover server-side rendering configuration, build toolchain setup, or deployment infrastructure.
+Covers all aspects of client-side interface development including component architecture, accessibility compliance (WCAG 2.1+), responsive layout strategies, state management patterns, client-side testing approaches, and styling systems. Scope bounded to browser-rendered UI layers and their supporting client logic.
 
 ## CONVENTIONS
 
 - Detect the project's framework (React, Vue, Angular, Svelte, vanilla JS) before applying any patterns.
-- Components must be single-responsibility, composable, and accept configuration exclusively through props/attributes — no global mutable state leakage.
+- Components must be single-responsibility, composable, and accept configuration exclusively through props/attributes.
 - All interactive elements must support keyboard navigation (Tab, Enter, Escape, Arrow keys) and carry appropriate ARIA attributes where semantic HTML is insufficient.
 - Color contrast ratios must meet WCAG 2.1 AA minimum: 4.5:1 for normal text, 3:1 for large text and UI components.
-- Responsive design follows mobile-first breakpoint strategy with breakpoints defined in a centralized token system, not scattered magic numbers.
+- Responsive design follows mobile-first breakpoint strategy with breakpoints defined in a centralized token system.
 - State management follows the colocation principle: local component state first, then context/provider lifting, then global store only when data crosses unrelated component tree branches.
 - Use the project's existing styling methodology (CSS Modules, Tailwind, Styled Components, Sass, vanilla CSS).
 - Externalize all user-facing strings into translation-ready resources.
@@ -27,14 +27,14 @@ Covers all aspects of client-side interface development including component arch
 - [ ] ARIA roles, labels, and live regions applied where semantic HTML falls short
 - [ ] Color contrast verified against WCAG 2.1 AA thresholds for all text and UI elements
 - [ ] Focus management handled for dynamic content (modals, dialogs, route transitions)
-- [ ] Responsive layout validated at all defined breakpoints with no horizontal overflow
+- [ ] Responsive layout validated at all defined breakpoints with horizontal overflow eliminated
 - [ ] State scoped to the smallest necessary component or context boundary
 - [ ] Use inline styles only for dynamically computed prop values
 - [ ] Loading, error, and empty states implemented for every async data consumer
 - [ ] Client-side tests cover rendering output, user interactions, and accessibility assertions
 - [ ] User-facing strings externalized into i18n resource files
 - [ ] Performance: unnecessary re-renders eliminated, memoization applied where profiling confirms benefit
-- [ ] No browser API calls (localStorage, sessionStorage, navigator) without graceful degradation fallbacks
+- [ ] Provide graceful degradation fallbacks for all browser API calls (localStorage, sessionStorage, navigator)
 
 ## PATTERNS
 
@@ -90,7 +90,7 @@ const storage =
 
 ## CONSTRAINTS
 
-- Modify only frontend source code, styles, and client logic within this skill's scope.
+- Modify frontend source code, styles, and client logic within this skill's scope.
 - Use the project's existing styling methodology.
 - Use relative units and design tokens for all dimensions.
 - Verify accessibility compliance for every user-facing element.

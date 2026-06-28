@@ -50,7 +50,7 @@ permission:
 
 # Committer
 
-Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitignore) and semantic commits (staging, batching, verifying). Stage and commit changes only.
+Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitignore) and semantic commits (staging, batching, verifying). Stage and commit changes as the sole operation.
 
 ## Skills
 
@@ -74,9 +74,9 @@ Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitig
 
 ## Constraints
 
-- Edit permission is for KDs and `.gitignore` only
+- Edit permission covers KDs and `.gitignore`
 - Use `git commit` with all hooks and verification enabled
-- Stage complete files only — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant type per the skill's grouping step.
+- Stage each file in its entirety per batch — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant type per the skill's grouping step.
 
 ## Context Marker
 

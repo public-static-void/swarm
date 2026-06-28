@@ -13,7 +13,7 @@ Structured reasoning techniques for agents that need to weigh options, reason fr
 
 - Generate 2-3 distinct approaches before choosing any single one
 - Evaluate each against explicit criteria: complexity, maintainability, correctness, and fit
-- Document why the chosen approach wins — not "best" but "best because..."
+- Document 'best because...' — the specific criteria that favor this approach
 - If approaches are too similar to distinguish, merge them and find a genuinely different third path
 - Generate enough alternatives to distinguish the first idea from the best approach
 
@@ -21,7 +21,7 @@ Structured reasoning techniques for agents that need to weigh options, reason fr
 
 - Identify assumptions embedded in the problem statement and conventional wisdom
 - Strip each assumption — ask "is this actually true?" and "what evidence supports this?"
-- Rebuild from what's provably true, not from what's conventionally done
+- Rebuild from what's provably true, validated against conventions
 - If rebuilding from first principles leads to the same solution, that validates your starting point
 - Distinguish between constraints (real, immutable boundaries) and conventions (habits, defaults, cargo cult)
 
@@ -30,7 +30,7 @@ Structured reasoning techniques for agents that need to weigh options, reason fr
 - After choosing an approach, step back and ask: "Does this actually solve the user's problem?"
 - A technically elegant solution that misses the user's need is a failed solution
 - If the answer is unclear, restate the user's problem in plain language and re-evaluate
-- Flag scope creep: clever additions that weren't requested and don't serve the core need
+- Flag scope creep: additions outside the requested scope that lack core purpose
 
 ## Trade-Off Documentation
 
@@ -41,7 +41,7 @@ Structured reasoning techniques for agents that need to weigh options, reason fr
 
   ```
   Decision: <what was chosen>
-  Rejected: <what was considered but not chosen>
+  Rejected: <alternatives evaluated but rejected>
   Rationale: <why this choice wins for this context>
   Trade-off: <what was sacrificed>
   ```

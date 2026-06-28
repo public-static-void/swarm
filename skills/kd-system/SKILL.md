@@ -7,7 +7,7 @@ description: "Knowledge Document System for the Agentic Swarm. Use when creating
 
 ## Overview
 
-The Knowledge Document System (KDS) is the communication backbone of the Agentic Swarm. All state passes through KDs. Agents never communicate directly.
+The Knowledge Document System (KDS) is the communication backbone of the Agentic Swarm. All state passes through KDs. All agent communication flows through KDs.
 
 ## KD Types
 
@@ -106,7 +106,7 @@ Before creating any KD, verify each of these:
 - [ ] If friction was encountered during this work, append a `## Process Friction` section at the end of the body (after Content, before References)
 - [ ] Table columns: ID, Issue, Severity, Status, Fixed by
 - [ ] Severity follows the rubric in `agents/habit-builder.md` (low/medium/high)
-- [ ] If no friction encountered, omit the section entirely
+- [ ] Omit the section when friction is absent
 
 ## Post-Creation Verification
 

@@ -7,7 +7,7 @@ description: Plan validation and feasibility assessment skill covering resource 
 
 ## OVERVIEW
 
-This skill provides a systematic methodology for validating implementation plans before execution begins. It covers feasibility assessment (resource estimation, timeline realism, technical risk), dependency graph verification (cycle detection, missing prerequisites, ordering correctness), task completeness checks (spec coverage, orphaned tasks), milestone sequencing validation (logical progression, gate criteria), and proactive risk identification (single points of failure, external dependencies, unknown unknowns). The scope is limited to plan-level analysis; it does not execute tasks or modify implementation code.
+This skill provides a systematic methodology for validating implementation plans before execution begins. It covers feasibility assessment (resource estimation, timeline realism, technical risk), dependency graph verification (cycle detection, missing prerequisites, ordering correctness), task completeness checks (spec coverage, orphaned tasks), milestone sequencing validation (logical progression, gate criteria), and proactive risk identification (single points of failure, external dependencies, unknown unknowns). Scope limited to plan-level analysis.
 
 ## CONVENTIONS
 
@@ -15,25 +15,25 @@ This skill provides a systematic methodology for validating implementation plans
 - Treat the specification document as the single source of truth for requirement coverage analysis.
 - Use the project's defined task granularity level (epic to story to task to subtask) consistently throughout validation.
 - Validate dependency graphs using topological sort principles; flag any cycles or unreachable nodes immediately.
-- Assess feasibility against the team's known velocity and capacity, not theoretical maximums.
+- Assess feasibility against the team's known velocity and capacity.
 - Distinguish between hard dependencies (blocking, must-complete-first) and soft dependencies (preferable ordering, non-blocking).
 
 ## CHECKLIST
 
 - [ ] **Resource Estimation**: Verify each task has an effort estimate (story points, hours, or t-shirt size). Cross-reference total estimated effort against available team capacity for the planned timeline. Flag tasks with missing estimates or estimates that exceed sprint or phase boundaries.
-- [ ] **Timeline Realism**: Validate that planned start and end dates respect dependency ordering. Check for parallel task assignments that exceed team member availability. Verify buffer time is allocated for integration, testing, and unforeseen blockers. Confirm no task is scheduled before its prerequisites are planned to complete.
-- [ ] **Technical Risk Assessment**: Identify tasks involving unfamiliar technologies, unproven integrations, or architectural changes. Flag tasks with high uncertainty and verify that risk mitigation strategies (spikes, prototypes, proof-of-concepts) are included in the plan. Check that technical debt items are accounted for, not deferred indefinitely.
+- [ ] **Timeline Realism**: Validate that planned start and end dates respect dependency ordering. Check for parallel task assignments that exceed team member availability. Verify buffer time is allocated for integration, testing, and unforeseen blockers. Verify every task is scheduled after its prerequisites.
+- [ ] **Technical Risk Assessment**: Identify tasks involving unfamiliar technologies, unproven integrations, or architectural changes. Flag tasks with high uncertainty and verify that risk mitigation strategies (spikes, prototypes, proof-of-concepts) are included in the plan. Check that technical debt items are accounted for with scheduled remediation.
 - [ ] **Dependency Graph — Cycle Detection**: Construct a directed graph of task dependencies and verify it is acyclic. Report any circular dependencies with the full cycle path (e.g., Task A to Task B to Task C to Task A). Circular dependencies indicate a design flaw that must be resolved before execution.
 - [ ] **Dependency Graph — Missing Prerequisites**: Verify every task's declared dependencies reference existing tasks in the plan. Flag dangling references to non-existent tasks. Check that external dependencies (third-party APIs, infrastructure provisioning, stakeholder approvals) are explicitly listed with responsible parties and expected delivery dates.
-- [ ] **Dependency Graph — Ordering Correctness**: Validate that the planned execution order respects all dependency constraints. Confirm no task is scheduled in an earlier phase than its prerequisites. Verify that integration tasks are positioned after all component tasks they depend on.
+- [ ] **Dependency Graph — Ordering Correctness**: Validate that the planned execution order respects all dependency constraints. Verify every task follows its prerequisite ordering. Verify that integration tasks are positioned after all component tasks they depend on.
 - [ ] **Task Completeness — Spec Coverage**: Map every requirement from the specification document to at least one task in the plan. Flag uncovered requirements as gaps requiring new tasks. Verify both functional requirements (features, behaviors) and non-functional requirements (performance, security, accessibility) have corresponding implementation tasks.
-- [ ] **Task Completeness — No Orphaned Tasks**: Verify every task in the plan traces back to a specification requirement or an explicitly approved out-of-scope addition. Flag orphaned tasks (tasks with no spec linkage) for review, as they may represent scope creep or residual work from previous iterations.
-- [ ] **Milestone Sequencing — Logical Progression**: Validate that milestones follow a logical build order: foundation to core features to integration to testing to deployment. Confirm each milestone delivers a verifiable increment of value, not just internal progress. Check that earlier milestones do not depend on later milestone deliverables.
+- [ ] **Task Completeness — Trace to Specification**: Verify every task in the plan traces back to a specification requirement or an explicitly approved out-of-scope addition. Flag tasks missing specification linkage for review, as they may represent scope creep or residual work from previous iterations.
+- [ ] **Milestone Sequencing — Logical Progression**: Validate that milestones follow a logical build order: foundation to core features to integration to testing to deployment. Confirm each milestone delivers a verifiable increment of value. Check that earlier milestones do not depend on later milestone deliverables.
 - [ ] **Milestone Sequencing — Gate Criteria Defined**: Verify each milestone has explicit, measurable gate criteria that determine whether the team can proceed to the next phase. Gate criteria must be objective (e.g., "all critical tests passing," "API contract signed off") rather than subjective (e.g., "looks good," "seems ready"). Flag milestones with missing or vague gate criteria.
 - [ ] **Risk — Single Points of Failure**: Identify tasks or milestones that depend on a single individual, a single external service, or a single untested technology. Flag these as single points of failure and verify that contingency plans (knowledge sharing, fallback options, parallel exploration) are documented.
-- [ ] **Risk — External Dependencies**: Catalog all external dependencies (third-party services, vendor deliverables, regulatory approvals, infrastructure provisioning). Verify each has a named owner, expected delivery date, and escalation path if delayed. Flag external dependencies with no confirmed commitment as high-risk.
-- [ ] **Risk — Unknown Unknowns**: Identify areas where the plan assumes knowledge that has not been validated (e.g., "API will support feature X," "database can handle Y throughput"). Recommend discovery tasks (spikes, proof-of-concepts, load tests) to convert unknowns into known risks before committing to timelines.
-- [ ] **Cross-Cutting Concerns**: Verify the plan includes tasks for logging, monitoring, error handling, documentation, and deployment configuration — not just feature implementation. Flag plans that treat cross-cutting concerns as afterthoughts or assume they are "handled elsewhere" without evidence.
+- [ ] **Risk — External Dependencies**: Catalog all external dependencies (third-party services, vendor deliverables, regulatory approvals, infrastructure provisioning). Verify each has a named owner, expected delivery date, and escalation path if delayed. Flag external dependencies lacking confirmed commitment as high-risk.
+- [ ] **Risk — Unknown Unknowns**: Identify areas where the plan assumes knowledge requiring validation (e.g., "API will support feature X," "database can handle Y throughput"). Recommend discovery tasks (spikes, proof-of-concepts, load tests) to convert unknowns into known risks before committing to timelines.
+- [ ] **Cross-Cutting Concerns**: Verify the plan includes tasks for logging, monitoring, error handling, documentation, and deployment configuration. Flag plans that treat cross-cutting concerns as afterthoughts or assume they are "handled elsewhere" without evidence.
 
 ## PATTERNS
 
@@ -89,7 +89,7 @@ Maintain a structured risk register for plan-level risks:
 ## CONSTRAINTS
 
 - Report findings and recommendations separately; leave plan modification to the planner.
-- Validate only plan-level properties: completeness, ordering, feasibility, risk coverage.
+- Validate plan-level properties: completeness, ordering, feasibility, risk coverage.
 - Request historical metrics for team velocity before rendering feasibility judgment.
 - Approve plans only after resolving all circular dependencies.
 - Flag external dependencies explicitly and require contingency plans.

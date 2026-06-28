@@ -7,7 +7,7 @@ description: CI/CD pipeline and deployment skill covering pipeline design, deplo
 
 ## OVERVIEW
 
-This skill covers the end-to-end continuous integration and continuous delivery lifecycle: designing build/test/deploy pipelines, configuring deployment strategies (blue-green, canary, rolling), maintaining environment parity across dev/staging/prod, implementing rollback procedures, establishing health checks and monitoring, managing secrets securely, and versioning artifacts reliably. Scope is limited to pipeline definitions, deployment configurations, infrastructure-as-code tooling, and DevOps automation — not application code or runtime service logic.
+This skill covers the end-to-end continuous integration and continuous delivery lifecycle: designing build/test/deploy pipelines, configuring deployment strategies (blue-green, canary, rolling), maintaining environment parity across dev/staging/prod, implementing rollback procedures, establishing health checks and monitoring, managing secrets securely, and versioning artifacts reliably. Scope limited to pipeline definitions, deployment configurations, infrastructure-as-code tooling, and DevOps automation.
 
 ## CONVENTIONS
 
@@ -25,7 +25,7 @@ This skill covers the end-to-end continuous integration and continuous delivery 
 - [ ] No secrets are hardcoded in pipeline definitions, scripts, or configuration files
 - [ ] Environment configurations are parameterized and structurally identical across dev/staging/prod
 - [ ] Deployment strategy matches service criticality (blue-green for zero-downtime, canary for gradual rollout, rolling for stateless)
-- [ ] Rollback procedure is defined, tested, and automated — not manual-only
+- [ ] Rollback procedure is defined, tested, and automated with a defined, tested procedure
 - [ ] Health checks exist at infrastructure level (port/DNS) and application level (readiness/liveness endpoints)
 - [ ] Deployment gates verify health before marking deployment successful or proceeding to next stage
 - [ ] Artifacts are versioned with immutable identifiers (semver for releases, commit SHA for builds)
@@ -130,7 +130,7 @@ Version artifacts immutably and enforce retention policies to balance traceabili
 artifact-versioning:
   release-pattern: "{service}-{semver}-{sha-short}"
   build-pattern: "{service}-{branch}-{sha-full}-{timestamp}"
-  immutability: true # once published, artifact cannot be overwritten
+  immutability: true # once published, artifacts are immutable
 
 retention:
   dev: 7d
@@ -173,9 +173,9 @@ health-gates:
 
 - Reference all secrets through the platform's native secrets store with runtime injection.
 - Execute security scanning stages in every production pipeline run. Dev pipelines may allow opt-out with explicit, documented justification.
-- Deploy to production only after passing through an intermediate staging environment that mirrors production configuration.
+- Deploy to production after passing through an intermediate staging environment that mirrors production configuration.
 - Use immutable versioned artifact references in production deployments.
 - Implement rollback as an automated process.
 - Store environment-specific secrets in isolated secret scopes per environment.
-- Allow pipeline execution of external code only after security review and approval.
+- Execute external pipeline code after security review and approval.
 - Separate CI and CD concerns into composable, independently maintainable files.

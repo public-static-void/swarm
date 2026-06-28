@@ -7,7 +7,7 @@ description: Data engineering skill covering schema design, migration strategies
 
 ## OVERVIEW
 
-Covers all aspects of data layer development including relational and NoSQL schema design, migration strategy and lifecycle management, query performance optimization, indexing strategies, data access layer patterns, and test fixture generation. Scope is bounded to database schemas, migrations, queries, and data access code; does not cover infrastructure provisioning, backup/restore procedures, or data warehouse architecture.
+Covers all aspects of data layer development including relational and NoSQL schema design, migration strategy and lifecycle management, query performance optimization, indexing strategies, data access layer patterns, and test fixture generation. Scope bounded to database schemas, migrations, queries, and data access code.
 
 ## CONVENTIONS
 
@@ -15,7 +15,7 @@ Covers all aspects of data layer development including relational and NoSQL sche
 - Schema naming follows the project convention: tables use plural snake_case (`user_orders`), columns use singular snake_case (`created_at`), primary keys are `id` (auto-incrementing integer or UUID), foreign keys follow `{referenced_table}_id`.
 - Include `created_at` and `updated_at` timestamps on all tables; omit only with documented justification.
 - Migrations are versioned, reversible, and idempotent. Each migration has a forward and backward operation.
-- Indexes are created based on actual query patterns, not speculation. Composite indexes follow the leftmost-prefix principle with equality columns before range columns.
+- Indexes are created based on actual query patterns verified via EXPLAIN ANALYZE. Composite indexes follow the leftmost-prefix principle with equality columns before range columns.
 - Data access is abstracted behind repository interfaces or ORM models. Raw queries are confined to dedicated query files with clear documentation of their purpose and performance characteristics.
 - NULL handling is explicit: every column is declared `NULL` or `NOT NULL` with a default value if nullable. Use `NOT NULL` on columns that are indexed or used in JOIN conditions.
 - Test fixtures use seed scripts that are deterministic, idempotent, and scoped to the minimum data required for each test scenario.
@@ -25,11 +25,11 @@ Covers all aspects of data layer development including relational and NoSQL sche
 - [ ] Schema follows project naming conventions (table/column naming, key patterns)
 - [ ] All tables have primary keys and appropriate foreign key constraints with cascading rules defined
 - [ ] Timestamp columns (`created_at`, `updated_at`) present unless explicitly excluded with justification
-- [ ] Column nullability is explicit — no implicit NULL defaults on columns that should be NOT NULL
+- [ ] Column nullability is explicit — every column declares NULL or NOT NULL
 - [ ] Indexes align with actual query patterns (verified via EXPLAIN/EXPLAIN ANALYZE)
 - [ ] Composite indexes ordered correctly: equality columns first, then range/sort columns
-- [ ] Migrations are versioned, reversible, and idempotent — no modifications to applied migrations
-- [ ] Data access abstracted behind repository interfaces or ORM models — no raw queries in business logic
+- [ ] Migrations are versioned, reversible, and idempotent — applied migrations remain immutable
+- [ ] Business logic accesses data through repository interfaces or ORM models
 - [ ] N+1 query problems identified and resolved (eager loading, batching, or denormalization where appropriate)
 - [ ] Large result sets use pagination (offset/limit or cursor-based) — always limit result sets with pagination
 - [ ] Test fixtures are deterministic, idempotent, and contain only the minimum required data
@@ -59,7 +59,7 @@ CREATE INDEX idx_user_preferences_user_id ON user_preferences(user_id);
 
 ### Repository Pattern for Data Access
 
-Abstract data access behind typed interfaces. Business logic depends on the interface, not the implementation.
+Abstract data access behind typed interfaces. Business logic depends on the interface, with the implementation abstracted behind it.
 
 ```typescript
 interface OrderRepository {

@@ -90,7 +90,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 9. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
    - **Comment Rationale**: Remove comments that restate what the code does — git history tracks changes
    - **Match project language**: Comments and naming must match the project's primary language. Before writing any comment, detect the predominant comment language from existing code
-   - **Substantive Comments**: Comment only when the rationale is not obvious from the code. Comments explain the reasoning behind the code
+   - **Substantive Comments**: Add comments to explain rationale that is unobvious from the code itself. Comments explain the reasoning behind the code
    - **External References**: Reference only public APIs, specs, or external documentation in code
    - **Self-check**: Review all added comments. Verify against these examples:
      - ✅ `// Uses BigNumber to avoid floating-point precision errors` (comment WHY)

@@ -57,7 +57,7 @@ Phases execute serially. Phase N+1 begins when Phase N artifact exists on disk w
 - The Mermaid diagram below shows solid arrows with a sequential-execution note
 - The Knowledge Freshness Rule delegates date evaluation to the receiving agent — the Overseer forwards KD paths, and each agent determines whether its source KDs are current
 - Before dispatching any agent, confirm the previous phase's artifact has been verified
-- If a phase artifact fails verification, re-dispatch the same phase with refined scope rather than advancing
+- If a phase artifact fails verification, re-dispatch the same phase with refined scope; advance only after verification passes
 - The `todowrite` task list reflects exactly one active phase at a time
 
 ### CP2: Structured Dispatch
@@ -90,7 +90,7 @@ When a tool or permission constraint blocks progress:
 1. **Identify the information need** — what knowledge is required to advance the phase?
 2. **If a KD read is blocked** — check whether the INTENT KD has been created. If not, return to Phase 1. If the file falls inside the read allowlist (intent, report, composed, kd-system templates), read it directly. If the file falls outside the allowlist, forward the information need to the next phase agent by including the relevant KD paths in the KDS field. The receiving agent reads what it needs independently.
 3. **Find the right agent** — determine which agent type handles the blocked task in its standard phase function.
-4. **If no agent fits** — use the `question` tool to ask the user for the information or guidance.
+4. **When the blocked task has no matching standard-phase agent** — use the `question` tool to ask the user for the information or guidance.
 5. **Document blocked file reads** in the REPORT KD for downstream context.
 
 Agents receive KD paths in their KDS field and read the files they need independently. Each agent determines its own approach to information retrieval.
@@ -167,8 +167,8 @@ Phases execute serially — each phase completes and its artifact is verified be
 - **Phase 1 (INTENT)**: Create a fresh INTENT KD (`knowledge/intent-{name}-{date}.md`) from the user's current input, before dispatching any agent.
 - **Phase 2 (PREFLIGHT)**: Dispatch the Committer with MODE: PREFLIGHT. Derive branch name from INTENT KD title (e.g., `improve/{feature-name}`). Wait for Committer to confirm workspace is ready before proceeding.
 - **Knowledge Freshness Rule**: The receiving agent evaluates whether its source KDs are current. The Overseer provides KD paths in the KDS field — the agent reads them and determines freshness based on its own criteria.
-- **Phase 3 (EXPLORE)**: Required unless a current-session exploration KD covering the domain already exists. The Overseer verifies file existence to determine whether exploration is needed. Use the Explorer delegation template to produce an exploration KD mapping the codebase.
-- **Phase 4 (INVESTIGATE)**: Required unless a current-session analysis KD covering the issue already exists. The Overseer verifies file existence to determine whether investigation is needed. Use the Analyzer delegation template to produce an ANALYSIS KD.
+- **Phase 3 (EXPLORE)**: Required when no current-session exploration KD covering the domain exists. The Overseer verifies file existence to determine whether exploration is needed. Use the Explorer delegation template to produce an exploration KD mapping the codebase.
+- **Phase 4 (INVESTIGATE)**: Required when no current-session analysis KD covering the issue exists. The Overseer verifies file existence to determine whether investigation is needed. Use the Analyzer delegation template to produce an ANALYSIS KD.
 - **Phase 5 (ALIGN)**: Use the Spec Weaver delegation template.
 - **Phase 6 (DECOMPOSE)**: Use the Pathfinder delegation template.
 - **Phase 7 (SWARM)**: Use the Artisan delegation template.
