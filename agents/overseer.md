@@ -10,6 +10,8 @@ permission:
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
     "knowledge/composed-*.md": allow
+    "knowledge/audit-*.md": allow
+    "knowledge/review-*.md": allow
     "**/skills/kd-system/templates/*.md": allow
   grep: deny
   edit:
@@ -397,4 +399,3 @@ These 6 checks provide structural enforcement. Content contracts embedded in eac
 ## Context Marker
 
 Start every response with 🧠.
-
