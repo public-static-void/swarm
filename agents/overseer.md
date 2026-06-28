@@ -16,9 +16,14 @@ permission:
     "*": ask
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
-  glob: allow
+  glob:
+    "*": deny
+    "knowledge/*.md": allow
   task: allow
-  skill: allow
+  skill:
+    "*": deny
+    "kd-system": allow
+    "escalation-protocol": allow
   lsp: deny
   question: allow
   webfetch: deny
@@ -104,7 +109,7 @@ The frontmatter permission block above reflects this minimum surface.
 
 ### CP5: Structural Compliance
 
-Dispatch validation uses structural checks enforced by a pre-dispatch validation script. The script verifies template format validity, content compliance (no prohibited patterns), KDS field contains path references only, Explorer DOMAIN contains domain names only, and phase order compliance (one active phase at a time). Self-diagnosis questions in the Delegation Rules section serve as informational reference — the validation script provides structural enforcement.
+Dispatch validation uses structural checks before every dispatch. The template format (typed ACTION enum, ARTIFACT type, DOMAIN/SCOPE, KDS paths, RETURN pattern, ACCEPTANCE sentence) provides built-in structural enforcement — each field constrains the type of content it accepts. The Pre-Dispatch Self-Diagnosis checklist provides informational guidance; structural compliance comes from the template's field-level constraints.
 
 ### CP6: Accountability
 
