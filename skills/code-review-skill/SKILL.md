@@ -1,6 +1,6 @@
 ---
 name: code-review-skill
-description: Code review skill covering review criteria checklist, V-Model traceability verification, architecture alignment validation, convention compliance checking, and documentation completeness assessment. Trigger on: review, code review, quality gate, traceability.
+description: "Code review skill covering review criteria checklist, V-Model traceability verification, architecture alignment validation, convention compliance checking, and documentation completeness assessment. Trigger on: review, code review, quality gate, traceability."
 ---
 
 # Code Review Skill
@@ -83,11 +83,11 @@ See verification-gates skill for V-Model traceability matrix format.
 
 Classify findings into three categories to guide resolution priority.
 
-| Category   | Symbol | Action                                | Example                                      |
-| ---------- | ------ | ------------------------------------- | -------------------------------------------- |
-| Blocking   | 🚫     | Must fix before merge                 | Security vulnerability, broken functionality |
-| Suggestion | 💡     | Fix if feasible; merge proceeds          | Naming improvement, minor refactoring        |
-| Question   | ❓     | Clarify intent; change is optional    | Unfamiliar pattern — request explanation     |
+| Category   | Symbol | Action                             | Example                                      |
+| ---------- | ------ | ---------------------------------- | -------------------------------------------- |
+| Blocking   | 🚫     | Must fix before merge              | Security vulnerability, broken functionality |
+| Suggestion | 💡     | Fix if feasible; merge proceeds    | Naming improvement, minor refactoring        |
+| Question   | ❓     | Clarify intent; change is optional | Unfamiliar pattern — request explanation     |
 
 ### Architecture Decision Documentation
 

@@ -1,6 +1,6 @@
 ---
 name: testing-skill
-description: Testing strategy skill covering unit, integration, and acceptance test design, coverage goals, test data patterns, mocking/stubbing strategies, TDD workflows, and edge case identification. Trigger on: test, QA, coverage, TDD, integration test.
+description: "Testing strategy skill covering unit, integration, and acceptance test design, coverage goals, test data patterns, mocking/stubbing strategies, TDD workflows, and edge case identification. Trigger on: test, QA, coverage, TDD, integration test."
 ---
 
 # Testing Skill

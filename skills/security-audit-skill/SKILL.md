@@ -1,6 +1,6 @@
 ---
 name: security-audit-skill
-description: Security audit and vulnerability detection skill covering OWASP Top 10, compliance frameworks, risk scoring, dependency auditing, secrets detection, and secure configuration — trigger on: security, audit, vulnerability, compliance, OWASP.
+description: "Security audit and vulnerability detection skill covering OWASP Top 10, compliance frameworks, risk scoring, dependency auditing, secrets detection, and secure configuration — trigger on: security, audit, vulnerability, compliance, OWASP."
 ---
 
 # Security Audit Skill

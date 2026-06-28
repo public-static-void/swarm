@@ -1,6 +1,6 @@
 ---
 name: data-engineering-skill
-description: Data engineering skill covering schema design, migration strategies, query optimization, indexing, data access layers, and fixture generation. Trigger on: database, schema, migration, query, data model.
+description: "Data engineering skill covering schema design, migration strategies, query optimization, indexing, data access layers, and fixture generation. Trigger on: database, schema, migration, query, data model."
 ---
 
 # Data Engineering Skill

@@ -1,6 +1,6 @@
 ---
 name: backend-skill
-description: Backend API and service development skill covering REST/GraphQL/gRPC design, business logic architecture, authentication patterns, error handling, server-side validation, and middleware. Trigger on: backend, API, service, business logic, server-side.
+description: "Backend API and service development skill covering REST/GraphQL/gRPC design, business logic architecture, authentication patterns, error handling, server-side validation, and middleware. Trigger on: backend, API, service, business logic, server-side."
 ---
 
 # Backend Skill
