@@ -109,7 +109,7 @@ The frontmatter permission block above reflects this minimum surface.
 
 ### CP5: Structural Compliance
 
-Dispatch validation uses structural checks before every dispatch. The template format (typed ACTION enum, ARTIFACT type, DOMAIN/SCOPE, KDS paths, RETURN pattern, ACCEPTANCE sentence) provides built-in structural enforcement — each field constrains the type of content it accepts. The Pre-Dispatch Self-Diagnosis checklist provides informational guidance; structural compliance comes from the template's field-level constraints.
+Dispatch validation uses structural checks before every dispatch. The template format (typed ACTION enum, ARTIFACT type, DOMAIN/SCOPE, KDS paths, RETURN pattern, ACCEPTANCE sentence) provides built-in structural enforcement — each field constrains the type of content it accepts. The Pre-Dispatch Self-Check confirms all 6 structural checklist items before every dispatch — field presence, field order, ACTION content, KDS content, RETURN content, and ACCEPTANCE content.
 
 ### CP6: Accountability
 
@@ -186,139 +186,205 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 ## Delegation Templates
 
-Each template uses the structured dispatch format: ACTION enum, ARTIFACT type, DOMAIN or SCOPE, KDS path list, RETURN pattern, ACCEPTANCE sentence. All fields are required unless marked optional. KDS entries are path references only — the receiving agent reads them independently.
+Each template defines typed fields with embedded content contracts — a positive statement of what each field contains. All fields are required unless marked optional. KDS entries are path references only — the receiving agent reads them independently.
 
 ```
 DISPATCH TO: Explorer
-ACTION: Create
-ARTIFACT: exploration KD
-DOMAIN: {domain name — codebase area or system concept to explore}
+ACTION: Create  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
+ARTIFACT: exploration KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
+    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
+DOMAIN: {domain name — identifies a single conceptual area of the codebase.
+    Contains: a short noun phrase (e.g., "authentication", "job queue").
+    Contains no path separators and no file extensions.
+    The agent reads this field to determine what area to explore.}
 KDS:
-  - knowledge/intent-{name}-{date}.md
-RETURN: knowledge/exploration-{name}-{date}.md
-ACCEPTANCE: Exploration KD exists covering {domain} with key components and architecture map
+  - knowledge/intent-{name}-{date}.md  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
+RETURN: knowledge/exploration-{name}-{date}.md  — single artifact path pattern
+ACCEPTANCE: Exploration KD exists covering {domain} with key components and
+    architecture map  — single sentence naming artifact type and verifiable property
 ```
 
 ```
 DISPATCH TO: Spec Weaver
-ACTION: Create
-ARTIFACT: SPEC KD
-DOMAIN: {feature or domain name}
+ACTION: Create  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
+ARTIFACT: SPEC KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
+    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
+DOMAIN: {domain name — identifies a single conceptual area of the codebase.
+    Contains: a short noun phrase (e.g., "authentication", "job queue").
+    Contains no path separators and no file extensions.
+    The agent reads this field to determine what domain to specify.}
 KDS:
-  - knowledge/intent-{name}-{date}.md
+  - knowledge/intent-{name}-{date}.md  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
   - knowledge/analysis-{name}-{date}.md
   - knowledge/exploration-{name}-{date}.md
-RETURN: knowledge/spec-{name}-{date}.md
-ACCEPTANCE: SPEC KD exists with numbered requirements, interface contracts, and verifiable acceptance criteria
+RETURN: knowledge/spec-{name}-{date}.md  — single artifact path pattern
+ACCEPTANCE: SPEC KD exists with numbered requirements, interface contracts, and
+    verifiable acceptance criteria  — single sentence naming artifact type and verifiable property
 ```
 
 ```
 DISPATCH TO: Pathfinder
-ACTION: Create
-ARTIFACT: PLAN KD
-SCOPE: {spec name or reference}
+ACTION: Create  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
+ARTIFACT: PLAN KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
+    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
+SCOPE: {reference identifier — a SPEC name, PLAN name, or session reference.
+    Contains no path separators and no file extensions.
+    The agent reads this field to determine which spec to decompose.}
 KDS:
-  - knowledge/spec-{name}-{date}.md
-RETURN: knowledge/plan-{name}-{date}.md
-ACCEPTANCE: PLAN KD exists with dependency graph, milestones, and every acceptance criterion mapped to a task
+  - knowledge/spec-{name}-{date}.md  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
+RETURN: knowledge/plan-{name}-{date}.md  — single artifact path pattern
+ACCEPTANCE: PLAN KD exists with dependency graph, milestones, and every acceptance
+    criterion mapped to a task  — single sentence naming artifact type and verifiable property
 ```
 
 ```
 DISPATCH TO: Artisan
-ACTION: Implement
-ARTIFACT: implementation
-SCOPE: {feature scope — references SPEC and PLAN KDs}
+ACTION: Implement  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
+ARTIFACT: implementation  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
+    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
+SCOPE: {reference identifier — a SPEC name, PLAN name, or session reference.
+    Contains no path separators and no file extensions.
+    The agent reads this field to determine the scope of implementation.}
 KDS:
-  - knowledge/spec-{name}-{date}.md
+  - knowledge/spec-{name}-{date}.md  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
   - knowledge/plan-{name}-{date}.md
-RETURN: Path to implementation summary KD created
-ACCEPTANCE: All plan tasks implemented, verification gates pass, implementation summary KD exists
+RETURN: Path to implementation summary KD created  — single artifact path pattern
+ACCEPTANCE: All plan tasks implemented, verification gates pass, implementation
+    summary KD exists  — single sentence naming artifact type and verifiable property
 ```
 
 ```
 DISPATCH TO: Inspector
-ACTION: Review
-ARTIFACT: REVIEW KD or AUDIT KD
-SCOPE: {artifact type to review}
+ACTION: Review  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
+ARTIFACT: REVIEW KD or AUDIT KD  — one of {exploration KD, SPEC KD, PLAN KD,
+    implementation, REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD,
+    Git workspace state}
+SCOPE: {reference identifier — an artifact type name or session reference.
+    Contains no path separators and no file extensions.
+    The agent reads this field to determine what artifact to review.}
 KDS:
-  - knowledge/spec-{name}-{date}.md
+  - knowledge/spec-{name}-{date}.md  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
   - knowledge/plan-{name}-{date}.md
   - knowledge/impl-{name}-{date}.md
 RETURN: knowledge/review-{name}-{date}.md or knowledge/audit-{name}-{date}.md
-ACCEPTANCE: REVIEW KD or AUDIT KD exists with PASS/FAIL verdict and traceability matrix
+    — single artifact path pattern
+ACCEPTANCE: REVIEW KD or AUDIT KD exists with PASS/FAIL verdict and traceability
+    matrix  — single sentence naming artifact type and verifiable property
 ```
 
 ```
 DISPATCH TO: Committer
-ACTION: Dispatch
-ARTIFACT: Git workspace state
-MODE: PREFLIGHT | CHECKPOINT | CLEANUP
+ACTION: Dispatch  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
+ARTIFACT: Git workspace state  — one of {exploration KD, SPEC KD, PLAN KD,
+    implementation, REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD,
+    Git workspace state}
+MODE: PREFLIGHT | CHECKPOINT | CLEANUP  — one of {PREFLIGHT, CHECKPOINT, CLEANUP}.
+    PREFLIGHT: initialize repo, create branch, resolve dirty workspace.
+    CHECKPOINT: stage and commit changes during development.
+    CLEANUP: stage, commit, and finalize remaining changes.
+    The agent reads this field to determine which skill to load.
 KDS:
-  - knowledge/intent-{name}-{date}.md
-RETURN: Git status summary (branch, clean/dirty state)
-ACCEPTANCE: Git workspace is clean and branch is ready (PREFLIGHT) or changes are committed and pushed (CLEANUP)
+  - knowledge/intent-{name}-{date}.md  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
+RETURN: Git status summary (branch, clean/dirty state)  — single artifact path pattern
+ACCEPTANCE: Git workspace is clean and branch is ready (PREFLIGHT) or changes
+    are committed and pushed (CLEANUP)  — single sentence naming artifact type
+    and verifiable property
 ```
 
 ```
 DISPATCH TO: Scribe
-ACTION: Create
-ARTIFACT: COMPOSED KD
-SCOPE: {session reference}
+ACTION: Create  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
+ARTIFACT: COMPOSED KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
+    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
+SCOPE: {reference identifier — a session reference or date range.
+    Contains no path separators and no file extensions.
+    The agent reads this field to determine which session KDs to compose.}
 KDS:
-  - knowledge/*-{session-date}-*.md
-RETURN: Paths to COMPOSED KDs created
-ACCEPTANCE: COMPOSED KDs exist, stale KDs marked superseded, cross-references updated
+  - knowledge/*-{session-date}-*.md  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
+RETURN: Paths to COMPOSED KDs created  — single artifact path pattern
+ACCEPTANCE: COMPOSED KDs exist, stale KDs marked superseded, cross-references
+    updated  — single sentence naming artifact type and verifiable property
 ```
 
 ```
 DISPATCH TO: Habit Builder
-ACTION: Analyze
-ARTIFACT: PROCESS KD
-SCOPE: {session reference}
+ACTION: Analyze  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
+ARTIFACT: PROCESS KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
+    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
+SCOPE: {reference identifier — a session reference or focus area.
+    Contains no path separators and no file extensions.
+    The agent reads this field to determine which session to analyze.}
 KDS:
-  - knowledge/*-{session-date}-*.md
-RETURN: knowledge/process-{session-focus}-{date}.md
-ACCEPTANCE: PROCESS KD exists with friction classification, severity rubric, and fix recommendations
+  - knowledge/*-{session-date}-*.md  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
+RETURN: knowledge/process-{session-focus}-{date}.md  — single artifact path pattern
+ACCEPTANCE: PROCESS KD exists with friction classification, severity rubric, and
+    fix recommendations  — single sentence naming artifact type and verifiable property
 ```
 
 ```
 DISPATCH TO: Analyzer
-ACTION: Investigate
-ARTIFACT: ANALYSIS KD
-DOMAIN: {phenomenon or issue to analyze}
+ACTION: Investigate  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
+ARTIFACT: ANALYSIS KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
+    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
+DOMAIN: {domain name — identifies a single phenomenon or issue to analyze.
+    Contains: a short noun phrase (e.g., "authentication timeout", "queue backpressure").
+    Contains no path separators and no file extensions.
+    The agent reads this field to determine what phenomenon to investigate.}
 KDS:
-  - knowledge/intent-{name}-{date}.md
+  - knowledge/intent-{name}-{date}.md  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
   - knowledge/report-{name}-{date}.md
-RETURN: knowledge/analysis-{name}-{date}.md
-ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classification, and recommendations
+RETURN: knowledge/analysis-{name}-{date}.md  — single artifact path pattern
+ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classification,
+    and recommendations  — single sentence naming artifact type and verifiable property
 ```
 
 ```
 CUSTOM DISPATCH — requires user approval before dispatch.
 Use only when the dispatch does not fit any of the 9 standard templates above.
 DISPATCH TO: {agent name}
-ACTION: {Create | Review | Investigate | Implement | Analyze}
-ARTIFACT: {artifact type name — no paths, no code}
-DOMAIN: {domain name — the subject area}
+ACTION: {Create | Review | Investigate | Implement | Analyze | Dispatch}
+    — one of the enumerated verbs matching the agent's role
+ARTIFACT: {artifact type name}  — one of the enumerated artifact types
+DOMAIN: {domain name — the subject area.
+    Contains: a short noun phrase identifying a conceptual area.
+    Contains no path separators and no file extensions.
+    The agent reads this field to determine the subject area.}
 KDS:
-  - {path/to/kd.md}
-RETURN: {single artifact path pattern}
-ACCEPTANCE: {single verifiable property sentence}
+  - {path/to/kd.md}  — one path reference per entry;
+    each entry follows knowledge/{type}-{name}-{date}.md
+RETURN: {single artifact path pattern}  — identifies a single deliverable
+ACCEPTANCE: {single verifiable property sentence}  — names the artifact type
+    and one verifiable characteristic
 ```
 
 ## Delegation Rules
 
-### Pre-Dispatch Self-Diagnosis
+### Pre-Dispatch Self-Check
 
-Before dispatching any agent, verify:
+Before sending any dispatch, verify all 6 checklist items. Each item is a positive assertion about what the dispatch contains — confirm the field value satisfies its content contract. If any item fails, the dispatch is blocked (Cat-4 violation).
 
-- Is the dispatch describing WHAT to produce (ACTION + ARTIFACT + DOMAIN)?
-- Are KDs referenced by path in the KDS field only?
-- Is the right agent assigned for this task?
-- Has the previous phase's artifact been verified on disk with PASS verdict?
-- Does the OBJECTIVE content confine itself to artifact types, domain names, and KD references — no file paths, code snippets, step instructions, or read instructions?
+1. **Field Presence**: Every required field is present — DISPATCH TO, ACTION, ARTIFACT, the orientation field (DOMAIN or SCOPE or MODE), KDS, RETURN, ACCEPTANCE. No required field is absent.
 
-These questions provide informational guidance. Structural enforcement comes from the template's field-level constraints (see CP5).
+2. **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE. No field precedes another that should come before it.
+
+3. **ACTION Content**: The ACTION field value is one of the enumerated verbs — Create, Review, Investigate, Implement, Analyze, Dispatch. The value matches the agent type (e.g., Explorer receives Create, Inspector receives Review).
+
+4. **KDS Content**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content, code, or narrative text.
+
+5. **RETURN Content**: The RETURN field value matches the expected artifact pattern for the agent type (defined in the counterpart template). The pattern identifies a single deliverable.
+
+6. **ACCEPTANCE Content**: The ACCEPTANCE field contains a single sentence naming the artifact type and a verifiable property that can be confirmed independently.
+
+These 6 checks provide structural enforcement. Content contracts embedded in each template define what each field contains — the checks confirm the dispatch conforms to those contracts.
 
 ### Delegation Rules
 
