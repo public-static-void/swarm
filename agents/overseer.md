@@ -10,11 +10,6 @@ permission:
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
     "knowledge/composed-*.md": allow
-    "knowledge/exploration-*.md": allow
-    "knowledge/analysis-*.md": allow
-    "knowledge/review-*.md": allow
-    "knowledge/audit-*.md": allow
-    "knowledge/process-*.md": allow
     "**/skills/kd-system/templates/*.md": allow
   grep: deny
   edit:
@@ -30,7 +25,7 @@ permission:
   websearch: deny
   external_directory:
     "*": ask
-    "**/skills/kd-system/templates/": allow
+    "**/skills/kd-system/templates/**": allow
   doom_loop: ask
   todowrite: allow
   bash:

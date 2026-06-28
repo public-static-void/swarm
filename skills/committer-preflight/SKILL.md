@@ -17,11 +17,21 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 
 1. **Accept branch name** — Accept a branch name parameter from the dispatching agent. Use the provided name instead of generating one independently. Fall back to `feature/unnamed` if none provided. Check `.git/` existence.
    - **No `.git/`**: `git init`, then `git checkout -b <branch-name>`. Skip pull — no remote configured yet.
-   - **Clean repo**: Check `git remote -v`. If a remote is configured, run `git pull --ff-only`.
-     - On success: create feature branch with `git checkout -b <branch-name>`.
-     - On failure: report the failure reason, proceed with `git checkout -b <branch-name>`.
-     - No remote configured: skip pull, proceed with `git checkout -b <branch-name>`.
-   - **Dirty repo**: `git stash` pending changes. If stash succeeds, apply the same pull logic as the clean repo path (check remote, pull --ff-only, handle failure) before branching. If stash fails, report back with a clear message about what is stuck (files preventing stash, merge conflicts, etc.) — do not attempt pull on an unstable working tree.
+   - **Clean repo**: Run `git remote -v` to check remote configuration.
+     - **No remote configured**: Log a warning that no remote is available. Skip fetch and pull. Proceed with `git checkout -b <branch-name>` from current local state.
+     - **Remote configured**: Proceed with the default-branch pull flow:
+       1. `git fetch origin` — update all remote tracking refs
+       2. Detect default branch: try `main`, fall back to `master`, then `git branch --show-current`. Log a warning if fallback used.
+       3. **Detached HEAD check**: Check HEAD status with `git branch --show-current`. If detached, log a warning, skip `git checkout <default-branch>`. Proceed with `git pull --ff-only`, then `git checkout -b <branch-name>`.
+       4. `git checkout <default-branch>` — switch to the default branch (skip if detached)
+       5. `git pull --ff-only` — fast-forward to latest remote state
+       6. On success: `git checkout -b <branch-name>` — create feature branch from latest state
+       7. On pull failure: report the failure reason, proceed with `git checkout -b <branch-name>` from current state
+   - **Dirty repo**:
+     - **Stash**: Run `git stash push` to save pending changes.
+       - If stash fails: log the error with details about what prevented the stash (files preventing stash, merge conflicts, etc.) and abort. Do not attempt pull on an unstable working tree.
+     - **Pull flow**: Apply the same default-branch pull flow as the clean-repo remote-configured path (steps 1-7 above), including the detached HEAD check.
+     - **Restore**: After branch creation, run `git stash pop` to restore stashed changes. If pop fails, log a warning but continue.
 
 2. **Gitignore management** — Check if `.gitignore` exists. If not, create with project-appropriate patterns. If it exists, review and verify all standard gitignore patterns for the project's tech stack are included (e.g., `node_modules/`, `.env`, `*.log`, build output). Preserve all existing entries.
 

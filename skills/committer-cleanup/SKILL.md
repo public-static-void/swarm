@@ -56,13 +56,23 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
 
 13. **Error handling** — On failure, `git reset --mixed` to recover.
 
+## Post-Commit Verification
+
+After all commit batches are complete and before pushing:
+
+1. **Fetch remote refs** — Run `git fetch origin` to update all remote tracking refs
+2. **Check divergence** — Run `git rev-list --count origin/main..HEAD` to count local commits not on `origin/main`
+3. **Warn if ahead** — If the count is greater than 0, log a warning that the local branch has commits not on `origin/main`. This may indicate push or PR merge is pending.
+
 ## Push Protocol
 
-After all batches are committed:
+After verification passes:
 
 1. **Push** — Push to remote. Respect bash permissions: `git push*: ask` — request confirmation before pushing with `*` patterns. If remote is not configured or push fails, report the issue back to the dispatching agent.
 
 2. **Merge (optional)** — If merging is needed, `git merge*: ask` — request confirmation before merging.
+
+3. **Post-push alignment check** — After successful push, run `git fetch origin` and verify `origin/main` is reachable from the current branch's base. If divergence is detected, log a warning and report the gap to the dispatching agent.
 
 ## Semantic Commit Convention
 

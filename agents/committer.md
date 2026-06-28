@@ -17,7 +17,9 @@ permission:
   question: deny
   webfetch: deny
   websearch: deny
-  external_directory: ask
+  external_directory:
+    "*": ask
+    "**/skills/kd-system/templates/**": allow
   doom_loop: ask
   todowrite: allow
   bash:
@@ -34,6 +36,8 @@ permission:
     "git checkout*": allow
     "git pull*": allow
     "git fetch*": allow
+    "git remote*": allow
+    "git rev-list*": allow
     "git push": allow
     "git rebase*": allow
     "git reflog*": allow
