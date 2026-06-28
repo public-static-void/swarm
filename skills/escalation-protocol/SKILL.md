@@ -7,7 +7,7 @@ description: "Escalation protocol for the Agentic Swarm. Use when encountering a
 
 ## Overview
 
-When an agent encounters a situation beyond its resolution scope, it escalates directly; it never works around restrictions or fabricates results. This skill defines the complete escalation protocol — the single source of truth for all agents and the Overseer.
+When an agent encounters a situation beyond its resolution scope, it escalates directly and produces only verified results. This skill defines the complete escalation protocol — the single source of truth for all agents and the Overseer.
 
 ## When to Load This Skill
 

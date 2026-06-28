@@ -39,7 +39,7 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
    - **Uncertainty**: If unresolvable, report back to dispatching agent.
 
 8. **Enforce commit conventions** — All commits MUST use:
-   - Match the language of representative commits, not the system locale
+   - Match the language of representative commits over the system locale
    - Same scope format (if ≥80% use `type(scope):`, you MUST include scope)
    - Imperative present tense
    - Subject line omits trailing period

@@ -86,7 +86,7 @@ Classify findings into three categories to guide resolution priority.
 | Category   | Symbol | Action                                | Example                                      |
 | ---------- | ------ | ------------------------------------- | -------------------------------------------- |
 | Blocking   | 🚫     | Must fix before merge                 | Security vulnerability, broken functionality |
-| Suggestion | 💡     | Fix if feasible; does not block merge | Naming improvement, minor refactoring        |
+| Suggestion | 💡     | Fix if feasible; merge proceeds          | Naming improvement, minor refactoring        |
 | Question   | ❓     | Clarify intent; change is optional    | Unfamiliar pattern — request explanation     |
 
 ### Architecture Decision Documentation
