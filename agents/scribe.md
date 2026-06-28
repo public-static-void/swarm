@@ -50,26 +50,17 @@ After verification passes, read all knowledge documents produced during the life
 
 ## Protocol
 
-### Dispatch Acceptance Gate
-
-Before performing any work, validate the incoming dispatch against these 5 checks. Each check is a positive assertion about what the dispatch contains. If any check fails, do not process the dispatch — report the failure using the escalation protocol format and await a corrected dispatch.
-
-1. **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, DOMAIN or SCOPE or MODE, KDS, RETURN, ACCEPTANCE.
-2. **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
-3. **Agent Identity**: The DISPATCH TO field matches this agent's name.
-4. **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
-5. **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern, not a narrative description or multi-sentence spec.
-
-1. Load the kd-system skill before creating any KD
-2. Read all KDs produced in the current lifecycle (INTENT, SPEC, PLAN, REVIEW, etc.)
-3. Compose recurring patterns, insights, and decisions into COMPOSED KDs
-4. Identify knowledge gaps or stale documentation
-5. Compose COMPOSED KDs: for each downstream agent, assemble the minimal set of KDs needed for its task (reference KDs by path only)
-6. Mark stale or superseded KDs via frontmatter (`status: superseded`, `superseded_by` pointing to replacement)
-7. Create or update COMPOSED KDs with composed patterns
-8. Update cross-references between related documents
-9. Compress verbose documentation to essential content
-10. Update `AGENTS.md` and `README.md` if warranted
+1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+2. Load the kd-system skill before creating any KD
+3. Read all KDs produced in the current lifecycle (INTENT, SPEC, PLAN, REVIEW, etc.)
+4. Compose recurring patterns, insights, and decisions into COMPOSED KDs
+5. Identify knowledge gaps or stale documentation
+6. Compose COMPOSED KDs: for each downstream agent, assemble the minimal set of KDs needed for its task (reference KDs by path only)
+7. Mark stale or superseded KDs via frontmatter (`status: superseded`, `superseded_by` pointing to replacement)
+8. Create or update COMPOSED KDs with composed patterns
+9. Update cross-references between related documents
+10. Compress verbose documentation to essential content
+11. Update `AGENTS.md` and `README.md` if warranted
 
 ## Context Marker
 

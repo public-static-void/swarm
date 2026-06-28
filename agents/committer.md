@@ -62,24 +62,15 @@ Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitig
 
 ## Dispatch Entry Point
 
-### Dispatch Acceptance Gate
-
-Before performing any work, validate the incoming dispatch against these 5 checks. Each check is a positive assertion about what the dispatch contains. If any check fails, do not process the dispatch — report the failure using the escalation protocol format and await a corrected dispatch.
-
-1. **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, MODE, KDS, RETURN, ACCEPTANCE.
-2. **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → MODE → KDS → RETURN → ACCEPTANCE.
-3. **Agent Identity**: The DISPATCH TO field matches this agent's name.
-4. **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
-5. **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern, not a narrative description or multi-sentence spec.
-
-1. **Detect mode** — Identify the operating mode from the dispatch context:
+1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+2. **Detect mode** — Identify the operating mode from the dispatch context:
    - Dispatch describes git workspace setup → PREFLIGHT mode
    - Dispatch from Artisan with a change summary → CHECKPOINT mode
    - Dispatch describes final commit and cleanup → CLEANUP mode
 
-2. **Load skill** — Use the `skill` tool to load the corresponding skill from the Skills table above.
+3. **Load skill** — Use the `skill` tool to load the corresponding skill from the Skills table above.
 
-3. **Follow skill protocol** — Execute the skill's protocol exactly. Each skill is self-contained with its own steps, conventions, and exit criteria.
+4. **Follow skill protocol** — Execute the skill's protocol exactly. Each skill is self-contained with its own steps, conventions, and exit criteria.
 
 ## Constraints
 

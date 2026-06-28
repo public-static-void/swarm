@@ -60,19 +60,10 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 
 ## Protocol
 
-### Dispatch Acceptance Gate
-
-Before performing any work, validate the incoming dispatch against these 5 checks. Each check is a positive assertion about what the dispatch contains. If any check fails, do not process the dispatch — report the failure using the escalation protocol format and await a corrected dispatch.
-
-1. **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, DOMAIN or SCOPE or MODE, KDS, RETURN, ACCEPTANCE.
-2. **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
-3. **Agent Identity**: The DISPATCH TO field matches this agent's name.
-4. **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
-5. **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern, not a narrative description or multi-sentence spec.
-
-1. Load the appropriate validation skill (code-review-skill, spec-validation-skill, or plan-validation-skill). Load security-audit-skill for security audits. Also load verification-gates skill as the gate framework.
-2. **Determine mode**: For standard reviews, follow Standard Protocol below. For security audits, follow Audit Protocol.
-3. **Create a TODO checklist** using `todowrite` for each gate item — prevents skipping checks mid-review.
+1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+2. Load the appropriate validation skill (code-review-skill, spec-validation-skill, or plan-validation-skill). Load security-audit-skill for security audits. Also load verification-gates skill as the gate framework.
+3. **Determine mode**: For standard reviews, follow Standard Protocol below. For security audits, follow Audit Protocol.
+4. **Create a TODO checklist** using `todowrite` for each gate item — prevents skipping checks mid-review.
 
 ### Standard Protocol
 

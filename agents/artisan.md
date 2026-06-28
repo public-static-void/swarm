@@ -79,24 +79,15 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 ## Protocol
 
-### Dispatch Acceptance Gate
-
-Before performing any work, validate the incoming dispatch against these 5 checks. Each check is a positive assertion about what the dispatch contains. If any check fails, do not process the dispatch — report the failure using the escalation protocol format and await a corrected dispatch.
-
-1. **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, DOMAIN or SCOPE or MODE, KDS, RETURN, ACCEPTANCE.
-2. **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
-3. **Agent Identity**: The DISPATCH TO field matches this agent's name.
-4. **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
-5. **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern, not a narrative description or multi-sentence spec.
-
-1. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
-2. Scan project for existing conventions — detect tech stack, file structure, coding patterns
-3. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
-4. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
-5. Implement incrementally — one plan step at a time
-6. Write tests first (TDD: red → green → refactor)
-7. Check off completed items in the TODO list as you go
-8. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
+1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+2. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
+3. Scan project for existing conventions — detect tech stack, file structure, coding patterns
+4. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
+5. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
+6. Implement incrementally — one plan step at a time
+7. Write tests first (TDD: red → green → refactor)
+8. Check off completed items in the TODO list as you go
+9. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
    - **Comment Rationale**: Remove comments that restate what the code does — git history tracks changes
    - **Match project language**: Comments and naming must match the project's primary language. Before writing any comment, detect the predominant comment language from existing code
    - **Substantive Comments**: Comment only when the rationale is not obvious from the code. Comments explain the reasoning behind the code
@@ -106,7 +97,7 @@ Before performing any work, validate the incoming dispatch against these 5 check
      - ✅ No comment above `function calculateTotal()` (self-documenting code)
       - ✅ Comments match the project's predominant language
 
-9. **Create implementation summary KD** — After code quality checks, create an implementation summary KD using the kd-system skill's conventions.
+10. **Create implementation summary KD** — After code quality checks, create an implementation summary KD using the kd-system skill's conventions.
 
 ## Checkpoint Commit Protocol
 
