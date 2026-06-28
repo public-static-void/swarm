@@ -318,7 +318,7 @@ Before dispatching any agent, verify:
 - Has the previous phase's artifact been verified on disk with PASS verdict?
 - Does the OBJECTIVE content confine itself to artifact types, domain names, and KD references — no file paths, code snippets, step instructions, or read instructions?
 
-These questions provide informational guidance. Structural enforcement comes from the pre-dispatch validation script (see CP5).
+These questions provide informational guidance. Structural enforcement comes from the template's field-level constraints (see CP5).
 
 ### Delegation Rules
 
