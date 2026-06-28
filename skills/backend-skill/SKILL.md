@@ -7,7 +7,7 @@ description: Backend API and service development skill covering REST/GraphQL/gRP
 
 ## OVERVIEW
 
-Covers all aspects of server-side application development including API design (REST, GraphQL, gRPC), business logic layering, authentication and authorization patterns, error handling strategies, input validation, middleware pipelines, and service communication. Scope is bounded to backend source code, configuration, and API contracts; does not cover infrastructure provisioning, CI/CD pipeline definitions, or frontend implementation.
+Covers all aspects of server-side application development including API design (REST, GraphQL, gRPC), business logic layering, authentication and authorization patterns, error handling strategies, input validation, middleware pipelines, and service communication. Scope bounded to backend source code, configuration, and API contracts.
 
 ## CONVENTIONS
 
@@ -24,8 +24,8 @@ Covers all aspects of server-side application development including API design (
 
 - [ ] API endpoint follows project naming convention (resource-oriented for REST, operation-based for GraphQL)
 - [ ] Request/response schemas defined and validated at the transport boundary before business logic
-- [ ] Business logic isolated in service layer — no domain rules in controllers or route handlers
-- [ ] Data access abstracted behind repository/interface layer — no raw queries in services
+- [ ] Business logic resides in the service layer only
+- [ ] Data access flows through repository/interface layer
 - [ ] Authentication middleware applied to all protected endpoints with proper role/permission checks
 - [ ] Error responses use consistent envelope format with appropriate HTTP status codes
 - [ ] Input validation rejects malformed data before it reaches business logic (fail-fast)
@@ -100,7 +100,7 @@ Idempotency-Key: uuid-v4-unique-per-client-request
 
 ## CONSTRAINTS
 
-- Modify only application source code, configuration, and API contracts within this skill's scope.
+- Modify application source code, configuration, and API contracts within this skill's scope.
 - Introduce new authentication mechanisms only after architectural review and explicit approval.
 - Keep business logic exclusively in the service layer, separate from controllers and route handlers.
 - Log only non-sensitive operational data.

@@ -79,24 +79,25 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 ## Protocol
 
-1. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
-2. Scan project for existing conventions — detect tech stack, file structure, coding patterns
-3. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
-4. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
-5. Implement incrementally — one plan step at a time
-6. Write tests first (TDD: red → green → refactor)
-7. Check off completed items in the TODO list as you go
-8. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
+1. Execute the Dispatch Acceptance Gate
+2. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
+3. Scan project for existing conventions — detect tech stack, file structure, coding patterns
+4. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
+5. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
+6. Implement incrementally — one plan step at a time
+7. Write tests first (TDD: red → green → refactor)
+8. Check off completed items in the TODO list as you go
+9. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
    - **Comment Rationale**: Remove comments that restate what the code does — git history tracks changes
    - **Match project language**: Comments and naming must match the project's primary language. Before writing any comment, detect the predominant comment language from existing code
-   - **Substantive Comments**: Comment only when the rationale is not obvious from the code. Comments explain the reasoning behind the code
+   - **Substantive Comments**: Add comments to explain rationale that is unobvious from the code itself. Comments explain the reasoning behind the code
    - **External References**: Reference only public APIs, specs, or external documentation in code
    - **Self-check**: Review all added comments. Verify against these examples:
      - ✅ `// Uses BigNumber to avoid floating-point precision errors` (comment WHY)
      - ✅ No comment above `function calculateTotal()` (self-documenting code)
-      - ✅ Comments match the project's predominant language
+     - ✅ Comments match the project's predominant language
 
-9. **Create implementation summary KD** — After code quality checks, create an implementation summary KD using the kd-system skill's conventions.
+10. **Create implementation summary KD** — After code quality checks, create an implementation summary KD using the kd-system skill's conventions.
 
 ## Checkpoint Commit Protocol
 

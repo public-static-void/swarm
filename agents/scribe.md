@@ -50,16 +50,17 @@ After verification passes, read all knowledge documents produced during the life
 
 ## Protocol
 
-1. Load the kd-system skill before creating any KD
-2. Read all KDs produced in the current lifecycle (INTENT, SPEC, PLAN, REVIEW, etc.)
-3. Compose recurring patterns, insights, and decisions into COMPOSED KDs
-4. Identify knowledge gaps or stale documentation
-5. Compose COMPOSED KDs: for each downstream agent, assemble the minimal set of KDs needed for its task (reference KDs by path only)
-6. Mark stale or superseded KDs via frontmatter (`status: superseded`, `superseded_by` pointing to replacement)
-7. Create or update COMPOSED KDs with composed patterns
-8. Update cross-references between related documents
-9. Compress verbose documentation to essential content
-10. Update `AGENTS.md` and `README.md` if warranted
+1. Execute the Dispatch Acceptance Gate
+2. Load the kd-system skill before creating any KD
+3. Read all KDs produced in the current lifecycle (INTENT, SPEC, PLAN, REVIEW, etc.)
+4. Compose recurring patterns, insights, and decisions into COMPOSED KDs
+5. Identify knowledge gaps or stale documentation
+6. Compose COMPOSED KDs: for each downstream agent, assemble the minimal set of KDs needed for its task (reference KDs using their file paths exclusively)
+7. Mark stale or superseded KDs via frontmatter (`status: superseded`, `superseded_by` pointing to replacement)
+8. Create or update COMPOSED KDs with composed patterns
+9. Update cross-references between related documents
+10. Compress verbose documentation to essential content
+11. Update `AGENTS.md` and `README.md` if warranted
 
 ## Context Marker
 

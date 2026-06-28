@@ -50,7 +50,7 @@ permission:
 
 # Committer
 
-Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitignore) and semantic commits (staging, batching, verifying). Stage and commit changes only.
+Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitignore) and semantic commits (staging, batching, verifying). Stage and commit changes as the sole operation.
 
 ## Skills
 
@@ -62,20 +62,21 @@ Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitig
 
 ## Dispatch Entry Point
 
-1. **Detect mode** — Identify the operating mode from the dispatch context:
+1. Execute the Dispatch Acceptance Gate
+2. **Detect mode** — Identify the operating mode from the dispatch context:
    - Dispatch describes git workspace setup → PREFLIGHT mode
    - Dispatch from Artisan with a change summary → CHECKPOINT mode
    - Dispatch describes final commit and cleanup → CLEANUP mode
 
-2. **Load skill** — Use the `skill` tool to load the corresponding skill from the Skills table above.
+3. **Load skill** — Use the `skill` tool to load the corresponding skill from the Skills table above.
 
-3. **Follow skill protocol** — Execute the skill's protocol exactly. Each skill is self-contained with its own steps, conventions, and exit criteria.
+4. **Follow skill protocol** — Execute the skill's protocol exactly. Each skill is self-contained with its own steps, conventions, and exit criteria.
 
 ## Constraints
 
-- Edit permission is for KDs and `.gitignore` only
+- Edit permission covers KDs and `.gitignore`
 - Use `git commit` with all hooks and verification enabled
-- Stage complete files only — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant type per the skill's grouping step.
+- Stage each file in its entirety per batch — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant type per the skill's grouping step.
 
 ## Context Marker
 

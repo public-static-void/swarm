@@ -88,7 +88,7 @@ Phase Output ──► Gate ──► Next Phase
 - [ ] Acceptance criteria are checkboxes, independently verifiable
 - [ ] No ambiguous language
 - [ ] Active Partner was exercised (pushback on contradictions)
-- [ ] Point the Target used (positive framing, no negation)
+- [ ] Point the Target used — instructions use positive framing exclusively
 
 ### PLAN Gate (after DECOMPOSE)
 
@@ -118,7 +118,7 @@ Phase Output ──► Gate ──► Next Phase
 1. Inspector reads SPEC (requirements) + PLAN (steps) + artifact
 2. Build a **traceability matrix** mapping every acceptance criterion to plan steps and implementation artifacts
 3. Each finding traces to a specific requirement (R001, R002, ...) and plan step (P001, P002, ...)
-4. Each acceptance criterion gets a binary PASS/FAIL — no partial credit
+4. Each acceptance criterion receives a binary PASS/FAIL verdict
 5. Check for orphan code: every artifact must trace to at least one requirement
 6. Check for uncovered requirements: every requirement must have a verification entry
 7. Findings are terse and actionable (Noise Cancellation)
@@ -147,7 +147,7 @@ Phase Output ──► Gate ──► Next Phase
 On FAIL with clear cause:
 
 1. Producer receives REVIEW KD with specific findings
-2. Producer fixes within scope of findings only
+2. Producer addresses each finding specifically
 3. Producer re-submits with updated artifact
 4. Same Inspector re-reviews (consistency)
 5. Loop until PASS; abort on diminishing returns (2-3 cycles without progress) → escalate to fundamental flaw
@@ -161,4 +161,4 @@ Run separately from code reviews when:
 - External dependencies are added
 - Database queries change
 
-Security audit uses AUDIT KD type (not REVIEW) to keep concerns separated.
+Security audit uses AUDIT KD type separate from REVIEW to keep concerns separated.

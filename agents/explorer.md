@@ -45,11 +45,12 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 ## Protocol
 
-1. List root structure (exclude .git, node_modules, vendor, build, dist, venv)
-2. Detect tech stack from file extensions and config files
-3. Locate entry points, DB schemas, test directories, config files
-4. Scan for TODO/FIXME comments
-5. Generate exploration KD with project map report
+1. Execute the Dispatch Acceptance Gate
+2. List root structure (exclude .git, node_modules, vendor, build, dist, venv)
+3. Detect tech stack from file extensions and config files
+4. Locate entry points, DB schemas, test directories, config files
+5. Scan for TODO/FIXME comments
+6. Generate exploration KD with project map report
 
 ## Constraints
 

@@ -7,7 +7,7 @@ description: Security audit and vulnerability detection skill covering OWASP Top
 
 ## OVERVIEW
 
-This skill provides a structured methodology for conducting comprehensive security audits of codebases, configurations, and dependencies. It covers OWASP Top 10 vulnerability detection, compliance framework alignment (SOC2, GDPR, HIPAA), CVSS-based risk scoring, dependency auditing, secrets detection, and secure configuration validation. The scope includes application-layer security, infrastructure-as-code review, and third-party component assessment. It does not cover penetration testing, red teaming, or hardware-level security analysis.
+This skill provides a structured methodology for conducting comprehensive security audits of codebases, configurations, and dependencies. It covers OWASP Top 10 vulnerability detection, compliance framework alignment (SOC2, GDPR, HIPAA), CVSS-based risk scoring, dependency auditing, secrets detection, and secure configuration validation. Scope includes application-layer security, infrastructure-as-code review, and third-party component assessment.
 
 ## CONVENTIONS
 
@@ -21,7 +21,7 @@ This skill provides a structured methodology for conducting comprehensive securi
 ## CHECKLIST
 
 - [ ] **A01:2021 — Injection**: Scan for unsanitized user input in SQL queries, OS commands, LDAP filters, ORM raw queries, and template engines. Verify parameterized queries or prepared statements are used universally.
-- [ ] **A02:2021 — Broken Authentication**: Verify session management (secure flags, rotation, timeout), password hashing (bcrypt/scrypt/argon2, not MD5/SHA1), MFA enforcement where required, and credential storage practices.
+- [ ] **A02:2021 — Broken Authentication**: Verify session management (secure flags, rotation, timeout), password hashing (bcrypt/scrypt/argon2), MFA enforcement where required, and credential storage practices.
 - [ ] **A03:2021 — Sensitive Data Exposure**: Check for plaintext storage of PII, credentials, or tokens. Verify TLS enforcement, encryption at rest, proper CORS policies, and HSTS headers. Audit data minimization in logs and error responses.
 - [ ] **A04:2021 — Insecure Design**: Review architecture for missing security controls, inadequate threat modeling, and business logic flaws (e.g., race conditions, privilege escalation paths).
 - [ ] **A05:2021 — Security Misconfiguration**: Audit default credentials, verbose error messages, unnecessary services/ports, permissive CORS, missing security headers (CSP, X-Frame-Options, X-Content-Type-Options), and debug modes in production.
@@ -33,7 +33,7 @@ This skill provides a structured methodology for conducting comprehensive securi
 - [ ] **XXE Detection**: Check XML parsers for external entity processing, DTD loading, and schema validation bypasses. Ensure libxml2, SAX, and DOM parsers are configured securely.
 - [ ] **Cross-Site Scripting (XSS)**: Verify output encoding/escaping in HTML, JavaScript, CSS, and URL contexts. Check Content-Security-Policy headers and HTTPOnly/Secure cookie flags.
 - [ ] **Insecure Deserialization**: Audit deserialization of user-controlled data (JSON, YAML, pickle, Java objects). Verify type restrictions, allowlists, and safe parsing libraries.
-- [ ] **Broken Access Control**: Verify authorization checks at every access point (not just UI-level). Check for IDOR vulnerabilities, horizontal/vertical privilege escalation paths, and missing object-level permissions.
+- [ ] **Broken Access Control**: Verify authorization checks at every access point, including API and data-layer boundaries. Check for IDOR vulnerabilities, horizontal/vertical privilege escalation paths, and missing object-level permissions.
 - [ ] **Compliance — SOC2**: Verify access controls, change management procedures, incident response plans, and audit trail completeness against SOC2 Trust Service Criteria.
 - [ ] **Compliance — GDPR**: Check data processing lawfulness, consent mechanisms, data subject rights implementation (access, rectification, erasure), data breach notification procedures, and cross-border transfer safeguards.
 - [ ] **Compliance — HIPAA**: Verify PHI handling controls, access logging, encryption requirements, business associate agreements, and minimum necessary data access principles.
@@ -96,7 +96,7 @@ Validate configuration against a security baseline:
 
 - Disable debug/verbose modes in production
 - Enforce HTTPS-only with HSTS (min 1 year max-age)
-- Set restrictive CORS origins (no wildcards in production)
+- Set explicit CORS origins per environment
 - Enable security headers: CSP, X-Frame-Options DENY, X-Content-Type-Options nosniff, Referrer-Policy strict-origin-when-cross-origin
 - Remove default accounts and sample data before deployment
 
@@ -105,6 +105,6 @@ Validate configuration against a security baseline:
 - Limit assessment to static analysis and configuration review.
 - Redact detected secrets in audit reports; reference their location.
 - Flag security gaps and recommend tooling that integrates with existing CI/CD pipeline.
-- Scope assessments to application-layer configuration only.
+- Assess application-layer configuration.
 - Limit compliance checks to technical gap analyses.
 - Note the context of any finding from test fixtures or example code.

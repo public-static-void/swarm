@@ -7,11 +7,11 @@ description: Code review skill covering review criteria checklist, V-Model trace
 
 ## OVERVIEW
 
-Covers systematic code review processes including review criteria evaluation, V-Model requirement-to-implementation traceability, architectural pattern alignment verification, project convention compliance checking, and documentation completeness assessment. Scope is bounded to reviewing existing code changes for correctness, quality, and alignment; does not cover writing new code, performance profiling, or security penetration testing (though security concerns are flagged).
+Covers systematic code review processes including review criteria evaluation, V-Model requirement-to-implementation traceability, architectural pattern alignment verification, project convention compliance checking, and documentation completeness assessment. Scope covers reviewing existing code changes for correctness, quality, and alignment. Security concerns are flagged during review.
 
 ## CONVENTIONS
 
-- Reviews follow a structured checklist approach rather than ad-hoc inspection. Every review evaluates the same categories consistently.
+- Reviews follow a structured checklist approach; every review evaluates the same categories consistently.
 - Require every implementation change to trace to a requirement, user story, or bug report.
 - Architecture alignment: changes must conform to the project's established architectural patterns (layering, module boundaries, dependency direction). Violations require explicit justification and architectural review approval.
 - Convention compliance: code must follow the project's established conventions for naming, formatting, error handling, logging, and testing. Flag deviations; approve only those that improve clarity or correctness.
@@ -23,16 +23,16 @@ Covers systematic code review processes including review criteria evaluation, V-
 ### Correctness and Completeness
 
 - [ ] Implementation satisfies all acceptance criteria from the associated requirement or ticket
-- [ ] Edge cases and error conditions are handled, not just the happy path
+- [ ] Edge cases and error conditions are handled, including the happy path and edge cases
 - [ ] No partially implemented features, TODO placeholders, or commented-out code blocks
 - [ ] All new dependencies are justified and added to the project dependency manifest
 
 ### Architecture Alignment
 
 - [ ] Changes follow established layering (controller -> service -> repository) without cross-layer coupling
-- [ ] Module boundaries respected — no circular dependencies introduced
-- [ ] Dependency injection used where applicable — no hardcoded service instantiation
-- [ ] New abstractions are justified by actual variation points, not hypothetical future needs
+- [ ] Module boundaries respected — circular dependencies are absent
+- [ ] Dependency injection used consistently
+- [ ] New abstractions justified by actual variation points
 
 ### Convention Compliance
 
@@ -46,13 +46,13 @@ Covers systematic code review processes including review criteria evaluation, V-
 - [ ] New code has corresponding tests at the appropriate level (unit for logic, integration for boundaries)
 - [ ] Tests cover happy path, edge cases, and error conditions
 - [ ] V-Model traceability: every change links to a requirement, story, or bug report
-- [ ] Test names describe behavior, not implementation
+- [ ] Test names describe the behavior under test
 
 ### Documentation
 
 - [ ] Public API changes documented in API specification or OpenAPI/Swagger definitions
 - [ ] Configuration changes documented with defaults, valid values, and effects
-- [ ] Non-trivial logic has inline comments explaining the rationale (why), not the mechanics (what)
+- [ ] Non-trivial logic has inline comments explaining the rationale (why); the code itself documents the mechanics (what)
 - [ ] Breaking changes include migration guide or deprecation notice
 
 ### Security and Performance
@@ -83,11 +83,11 @@ See verification-gates skill for V-Model traceability matrix format.
 
 Classify findings into three categories to guide resolution priority.
 
-| Category   | Symbol | Action                             | Example                                      |
-| ---------- | ------ | ---------------------------------- | -------------------------------------------- |
-| Blocking   | 🚫     | Must fix before merge              | Security vulnerability, broken functionality |
-| Suggestion | 💡     | Fix if feasible, no block          | Naming improvement, minor refactoring        |
-| Question   | ❓     | Clarify intent, no change required | Unfamiliar pattern — request explanation     |
+| Category   | Symbol | Action                                | Example                                      |
+| ---------- | ------ | ------------------------------------- | -------------------------------------------- |
+| Blocking   | 🚫     | Must fix before merge                 | Security vulnerability, broken functionality |
+| Suggestion | 💡     | Fix if feasible; merge proceeds          | Naming improvement, minor refactoring        |
+| Question   | ❓     | Clarify intent; change is optional    | Unfamiliar pattern — request explanation     |
 
 ### Architecture Decision Documentation
 
@@ -96,7 +96,7 @@ When changes deviate from established patterns, document the rationale.
 ```markdown
 ## ADR-012: Direct Database Access in Reporting Module
 
-**Context**: The reporting module requires complex aggregations that the ORM cannot express efficiently.
+**Context**: The reporting module requires complex aggregations beyond the ORM's efficient expression capability.
 **Decision**: Allow raw SQL queries within the ReportingRepository implementation only.
 **Consequences**: Bypasses ORM abstraction for this module. Requires manual index management and migration coordination.
 ```
@@ -109,4 +109,4 @@ When changes deviate from established patterns, document the rationale.
 - Approve changes only when new business logic includes corresponding tests.
 - Verify traceability for every change.
 - Flag suspicious security patterns during review and escalate to security-audit-skill.
-- Approve changes only when they maintain acyclic dependency graphs.
+- Approve changes that maintain acyclic dependency graphs.

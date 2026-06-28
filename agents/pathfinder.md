@@ -45,13 +45,14 @@ Read the specification, break it into the smallest independently verifiable step
 
 ## Protocol
 
-1. Load the kd-system skill before creating any KD
-2. Read the SPEC KD fully — every requirement, criterion, and edge case
-3. Break into atomic tasks with explicit dependencies — each task must produce a verifiable output
-4. Group into milestones with completion criteria
-5. Identify risks, blockers, and ambiguous requirements — propose mitigations
-6. Create PLAN KD with dependency graph (Mermaid flowchart)
-7. Verify completeness: cross-check every acceptance criterion from SPEC against plan tasks
+1. Execute the Dispatch Acceptance Gate
+2. Load the kd-system skill before creating any KD
+3. Read the SPEC KD fully — every requirement, criterion, and edge case
+4. Break into atomic tasks with explicit dependencies — each task must produce a verifiable output
+5. Group into milestones with completion criteria
+6. Identify risks, blockers, and ambiguous requirements — propose mitigations
+7. Create PLAN KD with dependency graph (Mermaid flowchart)
+8. Verify completeness: cross-check every acceptance criterion from SPEC against plan tasks
 
 ## Constraints
 

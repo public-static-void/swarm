@@ -7,25 +7,25 @@ description: Testing strategy skill covering unit, integration, and acceptance t
 
 ## OVERVIEW
 
-Covers comprehensive testing strategy across all levels of the test pyramid: unit tests for isolated logic, integration tests for component interaction, and acceptance tests for end-to-end behavior. Includes coverage target definition, test data management, mocking and stubbing strategies, Test-Driven Development workflows, and systematic edge case identification. Scope is bounded to test code, test configuration, and test infrastructure; does not cover QA process documentation, performance testing tooling, or security penetration testing.
+Covers comprehensive testing strategy across all levels of the test pyramid: unit tests for isolated logic, integration tests for component interaction, and acceptance tests for end-to-end behavior. Includes coverage target definition, test data management, mocking and stubbing strategies, Test-Driven Development workflows, and systematic edge case identification. Scope bounded to test code, test configuration, and test infrastructure.
 
 ## CONVENTIONS
 
 - Detect the project's test framework (Jest, Vitest, Mocha, Pytest, JUnit, Go testing, etc.) and assertion library before applying patterns.
 - Test pyramid ratio guideline: 70% unit tests, 20% integration tests, 10% acceptance/e2e tests. Adjust based on project risk profile but maintain the principle that most tests are fast and isolated.
 - Tests follow the Arrange-Act-Assert (AAA) structure. Each test has a single assertion focus — one behavioral expectation per test case.
-- Test names describe the behavior being verified, not the implementation: `should_reject_negative_quantity()` not `test_validateQuantity()`.
-- Test data is isolated per test. Tests do not share mutable state with each other. Use factories, builders, or fixtures that produce fresh data for each test execution.
+- Test names describe the behavior being verified — e.g., `should_reject_negative_quantity()`.
+- Test data is isolated per test. Each test uses isolated data via factories, builders, or fixtures that produce fresh data for each test execution.
 - Mocks simulate external dependencies (HTTP clients, databases, file systems, message queues). Stubs provide fixed return values for internal collaborators. Prefer stubs over mocks when the implementation detail of the collaborator is irrelevant.
-- Coverage targets: 80%+ line coverage for business logic modules, 60%+ for infrastructure/glue code. Coverage is a floor, not a goal — prioritize meaningful assertions over hitting arbitrary percentages.
+- Coverage targets: 80%+ line coverage for business logic modules, 60%+ for infrastructure/glue code. Coverage is a minimum threshold; meaningful assertions take priority over meeting arbitrary percentages.
 - TDD workflow: write a failing test that describes the desired behavior -> implement the minimal code to pass -> refactor while keeping tests green. Write a failing test before implementing production code in TDD mode.
 
 ## CHECKLIST
 
 - [ ] Tests follow Arrange-Act-Assert structure with clear separation of setup, execution, and verification
-- [ ] Each test verifies a single behavioral expectation — no multiple assertions testing unrelated behaviors
-- [ ] Test names describe the behavior under test, not the implementation detail
-- [ ] Test data is isolated per test — no shared mutable state between tests
+- [ ] Each test verifies a single behavioral expectation
+- [ ] Test names describe the behavior under test
+- [ ] Test data is isolated per test execution
 - [ ] External dependencies (HTTP, DB, FS, queues) are mocked or stubbed in unit tests
 - [ ] Integration tests verify real component interaction with controlled test databases or containers
 - [ ] Acceptance tests cover critical user journeys without mocking the application under test
@@ -113,7 +113,7 @@ Systematically identify edge cases by varying input dimensions.
 
 ## CONSTRAINTS
 
-- Test only observable behavior through public APIs.
+- Test observable behavior through public APIs exclusively.
 - Mock or stub all external services in unit tests.
 - Keep each test independently executable with isolated mutable state.
 - Include negative test cases for every code path.

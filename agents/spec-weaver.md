@@ -44,16 +44,17 @@ Analyze the intent document, exercise Active Partner to resolve ambiguity, and p
 
 ## Protocol
 
-1. Load the kd-system skill before creating any KD
-2. Read the INTENT KD and any ANALYSIS KD (from Analyzer) or exploration KD (from Explorer) thoroughly
-3. **Check Alignment**: Before writing, summarize your understanding of the request and proposed approach. Ask: "Here's what I understand we're building — does this match intent?" This surfaces misinterpretations before spec work begins.
-4. **Active Partner**
-5. Define functional requirements (R001, R002, ...) — numbered, independently verifiable
-6. Define non-functional requirements (NFR001, ...) — performance, security, UX
-7. Specify interface contracts — inputs, outputs, API signatures, data models
-8. Define acceptance criteria — checkbox items, independently testable
-9. Identify edge cases and failure modes
-10. Create SPEC KD and save with kd-system conventions
+1. Execute the Dispatch Acceptance Gate
+2. Load the kd-system skill before creating any KD
+3. Read the INTENT KD and any ANALYSIS KD (from Analyzer) or exploration KD (from Explorer) thoroughly
+4. **Check Alignment**: Before writing, summarize your understanding of the request and proposed approach. Ask: "Here's what I understand we're building — does this match intent?" This surfaces misinterpretations before spec work begins.
+5. **Active Partner**
+6. Define functional requirements (R001, R002, ...) — numbered, independently verifiable
+7. Define non-functional requirements (NFR001, ...) — performance, security, UX
+8. Specify interface contracts — inputs, outputs, API signatures, data models
+9. Define acceptance criteria — checkbox items, independently testable
+10. Identify edge cases and failure modes
+11. Create SPEC KD and save with kd-system conventions
 
 ## Constraints
 
