@@ -62,7 +62,7 @@ Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitig
 
 ## Dispatch Entry Point
 
-1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+1. Execute the Dispatch Acceptance Gate
 2. **Detect mode** — Identify the operating mode from the dispatch context:
    - Dispatch describes git workspace setup → PREFLIGHT mode
    - Dispatch from Artisan with a change summary → CHECKPOINT mode

@@ -84,7 +84,7 @@ Investigate bugs or suspicious patterns, assess feasibility. Read relevant docum
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+1. Execute the Dispatch Acceptance Gate
 2. Load relevant investigation references
 3. Read relevant skills, KDs and source code — INTENT KD, ANALYSIS KD, or code artifacts
 4. Investigate systematically: trace from observed behavior to root cause

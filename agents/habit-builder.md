@@ -44,7 +44,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+1. Execute the Dispatch Acceptance Gate
 2. **Collect** — Read all KDs from the lifecycle, extract every `## Process Friction` section
 3. **Analyze** — Classify each friction entry by severity (low/medium/high) using the rubric
 4. **Document** — Create PROCESS KD at `knowledge/process-friction-{session}-{date}.md` with each entry's classification and recommended fix action

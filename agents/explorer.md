@@ -45,7 +45,7 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+1. Execute the Dispatch Acceptance Gate
 2. List root structure (exclude .git, node_modules, vendor, build, dist, venv)
 3. Detect tech stack from file extensions and config files
 4. Locate entry points, DB schemas, test directories, config files

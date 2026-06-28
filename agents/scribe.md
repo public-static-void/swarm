@@ -50,7 +50,7 @@ After verification passes, read all knowledge documents produced during the life
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+1. Execute the Dispatch Acceptance Gate
 2. Load the kd-system skill before creating any KD
 3. Read all KDs produced in the current lifecycle (INTENT, SPEC, PLAN, REVIEW, etc.)
 4. Compose recurring patterns, insights, and decisions into COMPOSED KDs

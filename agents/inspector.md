@@ -60,7 +60,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate (per AGENTS.md Delegation Integrity section)
+1. Execute the Dispatch Acceptance Gate
 2. Load the appropriate validation skill (code-review-skill, spec-validation-skill, or plan-validation-skill). Load security-audit-skill for security audits. Also load verification-gates skill as the gate framework.
 3. **Determine mode**: For standard reviews, follow Standard Protocol below. For security audits, follow Audit Protocol.
 4. **Create a TODO checklist** using `todowrite` for each gate item — prevents skipping checks mid-review.
