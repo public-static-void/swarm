@@ -18,7 +18,7 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 1. **Accept branch name** — Accept a branch name parameter from the dispatching agent. Use the provided name instead of generating one independently. Fall back to `feature/unnamed` if none provided. Check `.git/` existence.
    - **When `.git/` is absent**: `git init`, then `git checkout -b <branch-name>`. Skip pull — remote is absent at this stage.
    - **Clean repo**: Run `git remote -v` to check remote configuration.
-      - **When remote is absent**: Log a warning that no remote is available. Skip fetch and pull. Proceed with `git checkout -b <branch-name>` from current local state.
+     - **When remote is absent**: Log a warning that no remote is available. Skip fetch and pull. Proceed with `git checkout -b <branch-name>` from current local state.
      - **Remote configured**: Proceed with the default-branch pull flow:
        1. `git fetch origin` — update all remote tracking refs
        2. Detect default branch: try `main`, fall back to `master`, then `git branch --show-current`. Log a warning if fallback used.
@@ -29,7 +29,7 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
        7. On pull failure: report the failure reason, proceed with `git checkout -b <branch-name>` from current state
    - **Dirty repo**:
      - **Stash**: Run `git stash push` to save pending changes.
-        - If stash fails: log the error with details about what prevented the stash (files preventing stash, merge conflicts, etc.) and abort. Attempt pull only after the working tree is stable.
+       - If stash fails: log the error with details about what prevented the stash (files preventing stash, merge conflicts, etc.) and abort. Attempt pull only after the working tree is stable.
      - **Pull flow**: Apply the same default-branch pull flow as the clean-repo remote-configured path (steps 1-7 above), including the detached HEAD check.
      - **Restore**: After branch creation, run `git stash pop` to restore stashed changes. If pop fails, log a warning but continue.
 
