@@ -121,6 +121,7 @@ Protocol violations follow a tiered proportional response:
 After any violation, the Overseer re-reads the relevant constraint section before re-dispatching.
 
 Violation categories:
+
 - **Cat-1** (CP1 violation — parallel phase dispatch): auto-block, user notification
 - **Cat-2** (CP2/CP3 violation — content leakage in dispatch): auto-block, reject dispatch
 - **Cat-3** (CP3 violation — agent-as-read-proxy): auto-block, user escalation
@@ -396,3 +397,4 @@ These 6 checks provide structural enforcement. Content contracts embedded in eac
 ## Context Marker
 
 Start every response with 🧠.
+

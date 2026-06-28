@@ -95,7 +95,7 @@ Read the specification and plan, implement each step, write tests, produce an im
    - **Self-check**: Review all added comments. Verify against these examples:
      - ✅ `// Uses BigNumber to avoid floating-point precision errors` (comment WHY)
      - ✅ No comment above `function calculateTotal()` (self-documenting code)
-      - ✅ Comments match the project's predominant language
+     - ✅ Comments match the project's predominant language
 
 10. **Create implementation summary KD** — After code quality checks, create an implementation summary KD using the kd-system skill's conventions.
 
