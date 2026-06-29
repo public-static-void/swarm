@@ -68,7 +68,7 @@ After all commit batches are complete and before pushing:
 
 After verification passes:
 
-1. **Push** — Push to remote. Respect bash permissions: `git push*: ask` — request confirmation before pushing with `*` patterns. When remote is absent or push fails, report the issue back to the dispatching agent.
+1. **Push** — Use only the exact `git push` command to push to remote. When remote is absent or push fails, report the issue back to the dispatching agent.
 
 2. **Merge (optional)** — If merging is needed, `git merge*: ask` — request confirmation before merging.
 

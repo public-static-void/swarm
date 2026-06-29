@@ -23,12 +23,13 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 4. **Analyze diff** — `git diff --stat` for file-level overview, then `git diff` for content. Classify each changed file by type (feat/fix/refactor/docs/test/chore).
 
-5. **Group into batches** — Split by module/scope:
+5. **Group into batches** — Split by module/scope and functional concern:
    - One module/scope per batch; one type per batch where possible
-   - If a module has changes of same type, batch together
+   - Each batch MUST address exactly one coherent functional concern. If changes in the same module address different concerns (e.g., "add login validation" and "fix password hashing"), split into separate batches even if both are `feat` in `src/auth/`.
+   - A batch is a coherent, independently verifiable change set. Before creating a batch, verify: "Can this change stand alone without the other changes?"
    - If changes span multiple modules, separate batches per module
-   - A batch is ready when it forms a coherent, independently verifiable change set
    - Mixed types in one file: classify by dominant type (majority of lines changed). If roughly equal, flag to split across files if possible; otherwise classify by primary intent.
+   - If a single file's changes cross multiple concerns, classify by dominant concern. If roughly equal, flag for potential file-level split.
    - feat + refactor in same file: classify as feat with refactor note in body. Only split if refactor >50% of changed lines.
 
 6. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage. Confirm `knowledge/` is listed in `.gitignore` — if missing, report the gap and halt. Stage tracked files outside the `knowledge/` directory. If any knowledge files appear staged, unstage them immediately. Stage and commit all tracked files absent from `.gitignore`. Silently skip ignored files; report which files were skipped if relevant.
