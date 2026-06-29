@@ -104,7 +104,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 After completing a plan step:
 
 1. Summarize what changed (files modified, nature of changes — feat/fix/refactor)
-2. Dispatch the Committer with this summary using `task`
+2. Dispatch the Committer with this summary using `task`. Include `MODE: CHECKPOINT` between ARTIFACT and KDS in the dispatch, per the canonical field sequence (DISPATCH TO → ACTION → ARTIFACT → MODE → KDS → RETURN → ACCEPTANCE).
 3. Let the Committer decide commit message, batching, and execution strategy
 4. The Committer decides batching, wording, and execution based on its own domain knowledge
 

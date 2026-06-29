@@ -38,7 +38,6 @@ permission:
     "git fetch*": allow
     "git remote*": allow
     "git rev-list*": allow
-    "git push": allow
     "git rebase*": allow
     "git reflog*": allow
     "git cherry-pick*": allow
@@ -63,10 +62,12 @@ Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitig
 ## Dispatch Entry Point
 
 1. Execute the Dispatch Acceptance Gate
-2. **Detect mode** — Identify the operating mode from the dispatch context:
-   - Dispatch describes git workspace setup → PREFLIGHT mode
-   - Dispatch from Artisan with a change summary → CHECKPOINT mode
-   - Dispatch describes final commit and cleanup → CLEANUP mode
+2. **Detect mode** — Determine operating mode:
+   a. **Explicit MODE field**: If the dispatch includes a `MODE` field, use its value directly. Match against the Skills table to load the corresponding skill.
+   b. **Heuristic fallback**: If MODE field is absent, infer from dispatch context:
+      - Dispatch describes git workspace setup → PREFLIGHT mode
+      - Dispatch from Artisan with a change summary → CHECKPOINT mode
+      - Dispatch describes final commit and cleanup → CLEANUP mode
 
 3. **Load skill** — Use the `skill` tool to load the corresponding skill from the Skills table above.
 
@@ -76,7 +77,7 @@ Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitig
 
 - Edit permission covers KDs and `.gitignore`
 - Use `git commit` with all hooks and verification enabled
-- Stage each file in its entirety per batch — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant type per the skill's grouping step.
+- Stage each file in its entirety per batch — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant concern per the skill's grouping step. Each batch must form a coherent, independently verifiable change set — reference the committer-checkpoint skill's concern-separation rule.
 
 ## Context Marker
 
