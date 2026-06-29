@@ -167,9 +167,9 @@ Phases execute serially — each phase completes and its artifact is verified be
 ### Phase Transition Rules
 
 - **Tool Access Rule**: Before the INTENT KD is created, the Overseer uses `todowrite` (to load the 12-phase lifecycle) and `write` (to create the INTENT KD). The full tool set (`read`, `glob`, `bash`, `edit`, `task`, `skill`, `question`, `external_directory`, `doom_loop`) becomes available after the INTENT KD exists.
+- **INTENT KD Requirement**: Create the INTENT KD before dispatching any agent. This is a non-overridable constraint. Before any phase transition that requires agent dispatch, verify the INTENT KD file exists on disk.
 - **Phase 1 (INTENT)**: Create a fresh INTENT KD (`knowledge/intent-{name}-{date}.md`) from the user's current input, before dispatching any agent.
 - **Phase 2 (PREFLIGHT)**: Dispatch the Committer with MODE: PREFLIGHT. Derive branch name from INTENT KD title (e.g., `improve/{feature-name}`). Wait for Committer to confirm workspace is ready before proceeding.
-- **Knowledge Freshness Rule**: The receiving agent evaluates whether its source KDs are current. The Overseer provides KD paths in the KDS field — the agent reads them and determines freshness based on its own criteria.
 - **Phase 3 (EXPLORE)**: Required when no current-session exploration KD covering the domain exists. The Overseer verifies file existence to determine whether exploration is needed. Use the Explorer delegation template to produce an exploration KD mapping the codebase.
 - **Phase 4 (INVESTIGATE)**: Required when no current-session analysis KD covering the issue exists. The Overseer verifies file existence to determine whether investigation is needed. Use the Analyzer delegation template to produce an ANALYSIS KD.
 - **Phase 5 (ALIGN)**: Use the Spec Weaver delegation template.
@@ -185,169 +185,130 @@ Phases execute serially — each phase completes and its artifact is verified be
 
 ### Failure Handling
 
-If an agent fails during any phase, re-dispatch with refined scope. If failure persists, document the gap and proceed.
+If an agent fails during any phase, re-dispatch with refined scope. If failure persists, document the gap in a PROCESS KD, then escalate to the user via the `question` tool. Wait for user input before proceeding.
 
 ## Delegation Templates
 
 Each template defines typed fields with embedded content contracts — a positive statement of what each field contains. All fields are required; optional fields are explicitly noted. KDS entries are path references — the receiving agent reads each KD independently.
 
+### Field Reference
+
+The following valid values apply to all delegation templates below. Each field's value is a single, clean statement — no meta-comments, no enumerations inline.
+
+- **ACTION**: One of `Create`, `Review`, `Investigate`, `Implement`, `Analyze`, `Dispatch`. Select the verb that matches the receiving agent's role.
+- **ARTIFACT**: One of `exploration KD`, `SPEC KD`, `PLAN KD`, `implementation`, `REVIEW KD`, `AUDIT KD`, `ANALYSIS KD`, `COMPOSED KD`, `PROCESS KD`, `Git workspace state`.
+- **DOMAIN**: A short noun phrase (alphanumeric + hyphens) identifying a single conceptual area (e.g., "authentication", "job queue"). The agent reads this field to determine what area to work on.
+- **SCOPE**: A short plain-text label (alphanumeric + hyphens) identifying a reference identifier — a SPEC name, PLAN name, or session reference. The agent reads this field to determine scope.
+- **MODE**: One of `PREFLIGHT`, `CHECKPOINT`, `CLEANUP`. Selects which skill the Committer loads.
+- **KDS**: One or more path references following the pattern `knowledge/{type}-{name}-{date}.md`. Each entry is a single path reference — no narrative text.
+- **RETURN**: A single artifact path pattern (e.g., `knowledge/review-{name}-{date}.md`). Identifies a single deliverable.
+- **ACCEPTANCE**: A single verifiable property sentence naming the artifact type and one verifiable characteristic. No meta-comments.
+
+All fields are required unless explicitly noted as optional.
+
 ```
 DISPATCH TO: Explorer
-ACTION: Create  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
-ARTIFACT: exploration KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
-    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
-DOMAIN: {domain name — identifies a single conceptual area of the codebase.
-    Contains: a short noun phrase (e.g., "authentication", "job queue").
-    Uses a short plain-text label — alphanumeric characters and hyphens.
-    The agent reads this field to determine what area to explore.}
+ACTION: Create
+ARTIFACT: exploration KD
+DOMAIN: {domain name}
 KDS:
-  - knowledge/intent-{name}-{date}.md  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
-RETURN: knowledge/exploration-{name}-{date}.md  — single artifact path pattern
-ACCEPTANCE: Exploration KD exists covering {domain} with key components and
-    architecture map  — single sentence naming artifact type and verifiable property
+  - knowledge/intent-{name}-{date}.md
+RETURN: knowledge/exploration-{name}-{date}.md
+ACCEPTANCE: Exploration KD exists covering {domain} with key components and architecture map
 ```
 
 ```
 DISPATCH TO: Spec Weaver
-ACTION: Create  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
-ARTIFACT: SPEC KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
-    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
-DOMAIN: {domain name — identifies a single conceptual area of the codebase.
-    Contains: a short noun phrase (e.g., "authentication", "job queue").
-    Uses a short plain-text label — alphanumeric characters and hyphens.
-    The agent reads this field to determine what domain to specify.}
+ACTION: Create
+ARTIFACT: SPEC KD
+DOMAIN: {domain name}
 KDS:
-  - knowledge/intent-{name}-{date}.md  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
+  - knowledge/intent-{name}-{date}.md
   - knowledge/analysis-{name}-{date}.md
   - knowledge/exploration-{name}-{date}.md
-RETURN: knowledge/spec-{name}-{date}.md  — single artifact path pattern
-ACCEPTANCE: SPEC KD exists with numbered requirements, interface contracts, and
-    verifiable acceptance criteria  — single sentence naming artifact type and verifiable property
+RETURN: knowledge/spec-{name}-{date}.md
+ACCEPTANCE: SPEC KD exists with numbered requirements, interface contracts, and verifiable acceptance criteria
 ```
 
 ```
 DISPATCH TO: Pathfinder
-ACTION: Create  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
-ARTIFACT: PLAN KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
-    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
-SCOPE: {reference identifier — a SPEC name, PLAN name, or session reference.
-    Uses a short plain-text label — alphanumeric characters and hyphens.
-    The agent reads this field to determine which spec to decompose.}
+ACTION: Create
+ARTIFACT: PLAN KD
+SCOPE: {reference identifier}
 KDS:
-  - knowledge/spec-{name}-{date}.md  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
-RETURN: knowledge/plan-{name}-{date}.md  — single artifact path pattern
-ACCEPTANCE: PLAN KD exists with dependency graph, milestones, and every acceptance
-    criterion mapped to a task  — single sentence naming artifact type and verifiable property
+  - knowledge/spec-{name}-{date}.md
+RETURN: knowledge/plan-{name}-{date}.md
+ACCEPTANCE: PLAN KD exists with dependency graph, milestones, and every acceptance criterion mapped to a task
 ```
 
 ```
 DISPATCH TO: Artisan
-ACTION: Implement  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
-ARTIFACT: implementation  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
-    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
-SCOPE: {reference identifier — a SPEC name, PLAN name, or session reference.
-    Uses a short plain-text label — alphanumeric characters and hyphens.
-    The agent reads this field to determine the scope of implementation.}
+ACTION: Implement
+ARTIFACT: implementation
+SCOPE: {reference identifier}
 KDS:
-  - knowledge/spec-{name}-{date}.md  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
+  - knowledge/spec-{name}-{date}.md
   - knowledge/plan-{name}-{date}.md
-RETURN: Path to implementation summary KD created  — single artifact path pattern
-ACCEPTANCE: All plan tasks implemented, verification gates pass, implementation
-    summary KD exists  — single sentence naming artifact type and verifiable property
+RETURN: Path to implementation summary KD created
+ACCEPTANCE: All plan tasks implemented, verification gates pass, implementation summary KD exists
 ```
 
 ```
 DISPATCH TO: Inspector
-ACTION: Review  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
-ARTIFACT: REVIEW KD or AUDIT KD  — one of {exploration KD, SPEC KD, PLAN KD,
-    implementation, REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD,
-    Git workspace state}
-SCOPE: {reference identifier — an artifact type name or session reference.
-    Uses a short plain-text label — alphanumeric characters and hyphens.
-    The agent reads this field to determine what artifact to review.}
+ACTION: Review
+ARTIFACT: REVIEW KD or AUDIT KD
+SCOPE: {reference identifier}
 KDS:
-  - knowledge/spec-{name}-{date}.md  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
+  - knowledge/spec-{name}-{date}.md
   - knowledge/plan-{name}-{date}.md
   - knowledge/impl-{name}-{date}.md
 RETURN: knowledge/review-{name}-{date}.md or knowledge/audit-{name}-{date}.md
-    — single artifact path pattern
-ACCEPTANCE: REVIEW KD or AUDIT KD exists with PASS/FAIL verdict and traceability
-    matrix  — single sentence naming artifact type and verifiable property
+ACCEPTANCE: REVIEW KD or AUDIT KD exists with PASS/FAIL verdict and traceability matrix
 ```
 
 ```
 DISPATCH TO: Committer
-ACTION: Dispatch  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
-ARTIFACT: Git workspace state  — one of {exploration KD, SPEC KD, PLAN KD,
-    implementation, REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD,
-    Git workspace state}
-MODE: PREFLIGHT | CHECKPOINT | CLEANUP  — one of {PREFLIGHT, CHECKPOINT, CLEANUP}.
-    PREFLIGHT: initialize repo, create branch, resolve dirty workspace.
-    CHECKPOINT: stage and commit changes during development.
-    CLEANUP: stage, commit, and finalize remaining changes.
-    The agent reads this field to determine which skill to load.
+ACTION: Dispatch
+ARTIFACT: Git workspace state
+MODE: {PREFLIGHT | CHECKPOINT | CLEANUP}
 KDS:
-  - knowledge/intent-{name}-{date}.md  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
-RETURN: Git status summary (branch, clean/dirty state)  — single artifact path pattern
-ACCEPTANCE: Git workspace is clean and branch is ready (PREFLIGHT) or changes
-    are committed and pushed (CLEANUP)  — single sentence naming artifact type
-    and verifiable property
+  - knowledge/intent-{name}-{date}.md
+RETURN: Git status summary (branch, clean/dirty state)
+ACCEPTANCE: Git workspace is clean and branch is ready (PREFLIGHT) or changes are committed and pushed (CLEANUP)
 ```
 
 ```
 DISPATCH TO: Scribe
-ACTION: Create  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
-ARTIFACT: COMPOSED KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
-    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
-SCOPE: {reference identifier — a session reference or date range.
-    Uses a short plain-text label — alphanumeric characters and hyphens.
-    The agent reads this field to determine which session KDs to compose.}
+ACTION: Create
+ARTIFACT: COMPOSED KD
+SCOPE: {reference identifier}
 KDS:
-  - knowledge/*-{session-date}-*.md  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
-RETURN: Paths to COMPOSED KDs created  — single artifact path pattern
-ACCEPTANCE: COMPOSED KDs exist, stale KDs marked superseded, cross-references
-    updated  — single sentence naming artifact type and verifiable property
+  - knowledge/*-{session-date}-*.md
+RETURN: Paths to COMPOSED KDs created
+ACCEPTANCE: COMPOSED KDs exist, stale KDs marked superseded, cross-references updated
 ```
 
 ```
 DISPATCH TO: Habit Builder
-ACTION: Analyze  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
-ARTIFACT: PROCESS KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
-    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
-SCOPE: {reference identifier — a session reference or focus area.
-    Uses a short plain-text label — alphanumeric characters and hyphens.
-    The agent reads this field to determine which session to analyze.}
+ACTION: Analyze
+ARTIFACT: PROCESS KD
+SCOPE: {reference identifier}
 KDS:
-  - knowledge/*-{session-date}-*.md  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
-RETURN: knowledge/process-{session-focus}-{date}.md  — single artifact path pattern
-ACCEPTANCE: PROCESS KD exists with friction classification, severity rubric, and
-    fix recommendations  — single sentence naming artifact type and verifiable property
+  - knowledge/*-{session-date}-*.md
+RETURN: knowledge/process-{session-focus}-{date}.md
+ACCEPTANCE: PROCESS KD exists with friction classification, severity rubric, and fix recommendations
 ```
 
 ```
 DISPATCH TO: Analyzer
-ACTION: Investigate  — one of {Create, Review, Investigate, Implement, Analyze, Dispatch}
-ARTIFACT: ANALYSIS KD  — one of {exploration KD, SPEC KD, PLAN KD, implementation,
-    REVIEW KD, AUDIT KD, ANALYSIS KD, COMPOSED KD, PROCESS KD, Git workspace state}
-DOMAIN: {domain name — identifies a single phenomenon or issue to analyze.
-    Contains: a short noun phrase (e.g., "authentication timeout", "queue backpressure").
-    Uses a short plain-text label — alphanumeric characters and hyphens.
-    The agent reads this field to determine what phenomenon to investigate.}
+ACTION: Investigate
+ARTIFACT: ANALYSIS KD
+DOMAIN: {domain name}
 KDS:
-  - knowledge/intent-{name}-{date}.md  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
+  - knowledge/intent-{name}-{date}.md
   - knowledge/report-{name}-{date}.md
-RETURN: knowledge/analysis-{name}-{date}.md  — single artifact path pattern
-ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classification,
-    and recommendations  — single sentence naming artifact type and verifiable property
+RETURN: knowledge/analysis-{name}-{date}.md
+ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classification, and recommendations
 ```
 
 ```
@@ -355,18 +316,12 @@ CUSTOM DISPATCH — requires user approval before dispatch.
 Use for dispatches that fall outside the 9 standard templates above.
 DISPATCH TO: {agent name}
 ACTION: {Create | Review | Investigate | Implement | Analyze | Dispatch}
-    — one of the enumerated verbs matching the agent's role
-ARTIFACT: {artifact type name}  — one of the enumerated artifact types
-DOMAIN: {domain name — the subject area.
-    Contains: a short noun phrase identifying a conceptual area.
-    Uses a short plain-text label — alphanumeric characters and hyphens.
-    The agent reads this field to determine the subject area.}
+ARTIFACT: {artifact type name}
+DOMAIN: {domain name}
 KDS:
-  - {path/to/kd.md}  — one path reference per entry;
-    each entry follows knowledge/{type}-{name}-{date}.md
-RETURN: {single artifact path pattern}  — identifies a single deliverable
-ACCEPTANCE: {single verifiable property sentence}  — names the artifact type
-    and one verifiable characteristic
+  - {path/to/kd.md}
+RETURN: {single artifact path pattern}
+ACCEPTANCE: {single verifiable property sentence}
 ```
 
 ## Delegation Rules
