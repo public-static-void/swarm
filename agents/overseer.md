@@ -206,7 +206,7 @@ All fields are required unless explicitly noted as optional.
 DISPATCH TO: Explorer
 ACTION: Create
 ARTIFACT: exploration KD
-DOMAIN: {domain name — a conceptual area, not a file path}
+DOMAIN: {domain name — a noun phrase identifying a single conceptual area}
 KDS:
   - knowledge/intent-{name}-{date}.md
 RETURN: knowledge/exploration-{name}-{date}.md
@@ -324,12 +324,12 @@ ACCEPTANCE: {single verifiable property sentence}
 
 ### Pre-Dispatch Validation
 
-Before sending any dispatch, first validate format per the **Dispatch Acceptance Gate** in `AGENTS.md` (checks 1–6: Field Presence, Field Order, Agent Identity, KDS Are Paths, RETURN Is a Path Pattern, Content-Role Match). Then confirm these Overseer-specific checks:
+Before sending any dispatch, validate format against the Dispatch Acceptance Gate checks — Field Presence, Field Order, Agent Identity, KDS Are Paths, RETURN Is a Path Pattern, Content-Role Match (the DOMAIN and SCOPE fields describe conceptual objectives; the dispatch references KDs by path and describes WHAT each target agent should produce). Then confirm these Overseer-specific checks:
 
 1. **ACTION/Agent Match**: The ACTION verb matches the receiving agent's role (e.g., Explorer receives Create, Inspector receives Review).
 2. **ACCEPTANCE Verifiability**: The ACCEPTANCE criterion names the artifact type and one verifiable property confirmable by file inspection.
 3. **Phase Readiness**: The previous phase's artifact exists on disk with a confirmed PASS verdict before dispatching the next phase agent.
-4. **Explorer DOMAIN validation**: For dispatches to Explorer, confirm DOMAIN is a conceptual area (noun phrase) describing an area to explore — not a file path, tool name, or verbatim content request. Examples: `authentication` ✓, `src/main.rs` ✗.
+4. **WHAT-level dispatch**: The dispatch content describes a WHAT-level objective with a role-appropriate DOMAIN, SCOPE, or MODE reference. The DOMAIN field contains a conceptual area name. The SCOPE field references a spec or plan identifier. The MODE field selects a lifecycle mode.
 
 ### Delegation Rules
 

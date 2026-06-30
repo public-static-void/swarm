@@ -50,7 +50,8 @@ After verification passes, read all knowledge documents produced during the life
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate
+1. Execute the Dispatch Acceptance Gate — 5 checks (field presence, field order, agent identity, KDS paths, RETURN pattern) plus:
+   6. **Content-Role Match**: The SCOPE field references a session to compose. The dispatch describes knowledge to organize.
 2. Load the kd-system skill before creating any KD
 3. Read all KDs produced in the current lifecycle (INTENT, SPEC, PLAN, REVIEW, etc.)
 4. Compose recurring patterns, insights, and decisions into COMPOSED KDs

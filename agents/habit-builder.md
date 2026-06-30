@@ -44,7 +44,8 @@ Collect, analyze, classify, and document process friction findings from KDs.
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate
+1. Execute the Dispatch Acceptance Gate — 5 checks (field presence, field order, agent identity, KDS paths, RETURN pattern) plus:
+   6. **Content-Role Match**: The SCOPE field references a session to analyze. The dispatch describes a process analysis to produce.
 2. **Collect** — Read all KDs from the lifecycle, extract every `## Process Friction` section
 3. **Analyze** — Classify each friction entry by severity (low/medium/high) using the rubric
 4. **Document** — Create PROCESS KD at `knowledge/process-friction-{session}-{date}.md` with each entry's classification and recommended fix action

@@ -35,8 +35,6 @@ Each check is a positive assertion about what the dispatch contains. When any ch
 4. **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
 5. **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern — a concise deliverable reference.
 
-6. **Content-Role Match**: The dispatch content (particularly DOMAIN/SCOPE) matches the receiving agent's defined role. For Explorer dispatches, DOMAIN must describe a conceptual domain — not a file path, file-reading task, or verbatim content request.
-
 ## Anti-Patterns to Avoid
 
 - ⚠ Distracted Agent — Operate within your agent's defined responsibility

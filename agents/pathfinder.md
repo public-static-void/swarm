@@ -45,7 +45,8 @@ Read the specification, break it into the smallest independently verifiable step
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate
+1. Execute the Dispatch Acceptance Gate — 5 checks (field presence, field order, agent identity, KDS paths, RETURN pattern) plus:
+   6. **Content-Role Match**: The SCOPE field references a spec identifier to decompose. The dispatch describes a plan to create.
 2. Load the kd-system skill before creating any KD
 3. Read the SPEC KD fully — every requirement, criterion, and edge case
 4. Break into atomic tasks with explicit dependencies — each task must produce a verifiable output
