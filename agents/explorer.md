@@ -45,8 +45,7 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate — 5 checks (field presence, field order, agent identity, KDS paths, RETURN pattern) plus:
-   6. **Content-Role Match**: The DOMAIN field contains a noun phrase identifying a conceptual area to explore.
+1. Execute the Dispatch Acceptance Gate (6 checks).
 2. List root structure (exclude .git, node_modules, vendor, build, dist, venv)
 3. Detect tech stack from file extensions and config files
 4. Locate entry points, DB schemas, test directories, config files

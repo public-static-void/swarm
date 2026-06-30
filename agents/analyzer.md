@@ -84,8 +84,7 @@ Investigate bugs or suspicious patterns, assess feasibility. Read relevant docum
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate — 5 checks (field presence, field order, agent identity, KDS paths, RETURN pattern) plus:
-   6. **Content-Role Match**: The DOMAIN field identifies an area to investigate. The dispatch describes an analysis to produce.
+1. Execute the Dispatch Acceptance Gate (6 checks).
 2. Load relevant investigation references
 3. Read relevant skills, KDs and source code — INTENT KD, ANALYSIS KD, or code artifacts
 4. Investigate systematically: trace from observed behavior to root cause

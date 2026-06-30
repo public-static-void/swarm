@@ -25,7 +25,7 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 
 ## Delegation Integrity
 
-Every agent verifies integrity of incoming dispatches before executing. Each agent runs a Dispatch Acceptance Gate as step 1 of its protocol — 5 structural checks confirming field presence, field order, agent identity, KDS path references, and RETURN path pattern. Agents accept WHAT-level dispatches only — each dispatch describes the artifact to produce, the objective, and acceptance criteria, referencing KDs by path in the KDS field. Dispatches describe WHAT to produce and reference KDs by path. Each agent loads its own skills and determines its own approach.
+Every agent verifies integrity of incoming dispatches before executing. Each agent runs a Dispatch Acceptance Gate as step 1 of its protocol — 6 structural checks. Agents accept WHAT-level dispatches only — each dispatch describes the artifact to produce, the objective, and acceptance criteria, referencing KDs by path in the KDS field. Dispatches describe WHAT to produce and reference KDs by path. Each agent loads its own skills and determines its own approach.
 
 Each check is a positive assertion about what the dispatch contains. When any check fails, the agent reports the failure using the escalation protocol format and awaits a corrected dispatch — it does not process the failing dispatch.
 
@@ -34,6 +34,7 @@ Each check is a positive assertion about what the dispatch contains. When any ch
 3. **Agent Identity**: The DISPATCH TO field matches the receiving agent's name.
 4. **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
 5. **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern — a concise deliverable reference.
+6. **Content-Role Match** — The dispatch fields describe a WHAT-level objective for the receiving agent. DOMAIN contains a noun phrase identifying a conceptual area. SCOPE references a spec or plan identifier by name. MODE selects a lifecycle mode (PREFLIGHT, CHECKPOINT, or CLEANUP).
 
 ## Anti-Patterns to Avoid
 

@@ -79,8 +79,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate — 5 checks (field presence, field order, agent identity, KDS paths, RETURN pattern) plus:
-   6. **Content-Role Match**: The SCOPE field references a spec or plan identifier. The dispatch describes WHAT artifact to produce for implementation.
+1. Execute the Dispatch Acceptance Gate (6 checks).
 2. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
 3. Scan project for existing conventions — detect tech stack, file structure, coding patterns
 4. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments

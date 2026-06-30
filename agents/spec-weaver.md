@@ -44,8 +44,7 @@ Analyze the intent document, exercise Active Partner to resolve ambiguity, and p
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate — 5 checks (field presence, field order, agent identity, KDS paths, RETURN pattern) plus:
-   6. **Content-Role Match**: The DOMAIN field identifies a conceptual area to specify. The dispatch describes WHAT to specify.
+1. Execute the Dispatch Acceptance Gate (6 checks).
 2. Load the kd-system skill before creating any KD
 3. Read the INTENT KD and any ANALYSIS KD (from Analyzer) or exploration KD (from Explorer) thoroughly
 4. **Check Alignment**: Before writing, summarize your understanding of the request and proposed approach. Ask: "Here's what I understand we're building — does this match intent?" This surfaces misinterpretations before spec work begins.

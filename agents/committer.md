@@ -61,8 +61,7 @@ Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitig
 
 ## Dispatch Entry Point
 
-1. Execute the Dispatch Acceptance Gate — 5 checks (field presence, field order, agent identity, KDS paths, RETURN pattern) plus:
-   6. **Content-Role Match**: The MODE field selects a lifecycle mode (PREFLIGHT, CHECKPOINT, or CLEANUP). The dispatch describes git workflow to execute.
+1. Execute the Dispatch Acceptance Gate (6 checks).
 2. **Detect mode** — Determine operating mode:
    a. **Explicit MODE field**: If the dispatch includes a `MODE` field, use its value directly. Match against the Skills table to load the corresponding skill.
    b. **Heuristic fallback**: If MODE field is absent, infer from dispatch context:
