@@ -52,6 +52,12 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 5. Scan for TODO/FIXME comments
 6. Generate exploration KD with project map report
 
+7. **Role boundary check** — Verify the dispatch describes a domain-level exploration objective, not a file-reading task:
+   - **Proceed signal**: DOMAIN is a conceptual noun phrase describing an area to explore (e.g., `authentication`, `job queue`, `build pipeline`)
+   - **Rejection triggers**: DOMAIN contains file paths (`src/main.rs`), "contents of" language, "read file" patterns, or verbatim content requests
+   - **On rejection**: Load the `escalation-protocol` skill, report the misformed dispatch using escalation protocol format, and return to the dispatching agent
+   - **Escalation report includes**: what was received, which rejection trigger matched, what a valid DOMAIN would look like
+
 ## Constraints
 
 - Exclude noise directories from scans
