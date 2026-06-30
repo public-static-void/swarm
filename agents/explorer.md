@@ -45,12 +45,7 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate:
-   1. **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, {DOMAIN | SCOPE | MODE}, KDS, RETURN, ACCEPTANCE.
-   2. **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
-   3. **Agent Identity**: The DISPATCH TO field matches the receiving agent's name.
-   4. **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`.
-   5. **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern.
+1. Execute the Dispatch Acceptance Gate — 5 checks (field presence, field order, agent identity, KDS paths, RETURN pattern) plus:
    6. **Content-Role Match**: The DOMAIN field contains a noun phrase identifying a conceptual area to explore.
 2. List root structure (exclude .git, node_modules, vendor, build, dist, venv)
 3. Detect tech stack from file extensions and config files
