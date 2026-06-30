@@ -28,10 +28,6 @@ superseded_by: null
 
 {{How to verify this works — test commands, manual steps}}
 
-## Checkpoint Commit
-
-{{commit hash}}
-
 ## Process Friction
 
 _This section is optional — include only if friction was encountered during work._

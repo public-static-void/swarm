@@ -164,7 +164,7 @@ Phases execute serially — each phase completes and its artifact is verified be
 
 ### Phase Transition Rules
 
-**Phase 1 (INTENT)**: Create a fresh INTENT KD (`knowledge/intent-{name}-{date}.md`) from the user's current input, before dispatching any agent.
+- **Phase 1 (INTENT)**: Create a fresh INTENT KD (`knowledge/intent-{name}-{date}.md`) from the user's current input, before dispatching any agent.
 - **Phase 2 (PREFLIGHT)**: Dispatch the Committer with MODE: PREFLIGHT. Derive branch name from INTENT KD title (e.g., `improve/{feature-name}`). Wait for Committer to confirm workspace is ready before proceeding.
 - **Phase 3 (EXPLORE)**: Required when no current-session exploration KD covering the domain exists. The Overseer verifies file existence to determine whether exploration is needed. Use the Explorer delegation template to produce an exploration KD mapping the codebase.
 - **Phase 4 (INVESTIGATE)**: Required when no current-session analysis KD covering the issue exists. The Overseer verifies file existence to determine whether investigation is needed. Use the Analyzer delegation template to produce an ANALYSIS KD.
@@ -206,7 +206,7 @@ All fields are required unless explicitly noted as optional.
 DISPATCH TO: Explorer
 ACTION: Create
 ARTIFACT: exploration KD
-DOMAIN: {domain name}
+DOMAIN: {domain name — a noun phrase identifying a single conceptual area}
 KDS:
   - knowledge/intent-{name}-{date}.md
 RETURN: knowledge/exploration-{name}-{date}.md
@@ -324,11 +324,12 @@ ACCEPTANCE: {single verifiable property sentence}
 
 ### Pre-Dispatch Validation
 
-Before sending any dispatch, first validate format per the **Dispatch Acceptance Gate** in `AGENTS.md` (checks 1–5: Field Presence, Field Order, Agent Identity, KDS Are Paths, RETURN Is a Path Pattern). Then confirm these Overseer-specific checks:
+Before sending any dispatch, validate against the 6 Dispatch Acceptance Gate checks. Then confirm these Overseer-specific checks:
 
 1. **ACTION/Agent Match**: The ACTION verb matches the receiving agent's role (e.g., Explorer receives Create, Inspector receives Review).
 2. **ACCEPTANCE Verifiability**: The ACCEPTANCE criterion names the artifact type and one verifiable property confirmable by file inspection.
 3. **Phase Readiness**: The previous phase's artifact exists on disk with a confirmed PASS verdict before dispatching the next phase agent.
+4. **WHAT-level dispatch**: The dispatch content describes a WHAT-level objective with a role-appropriate DOMAIN, SCOPE, or MODE reference. The DOMAIN field contains a conceptual area name. The SCOPE field references a spec or plan identifier. The MODE field selects a lifecycle mode.
 
 ### Delegation Rules
 

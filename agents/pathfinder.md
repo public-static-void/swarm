@@ -45,7 +45,7 @@ Read the specification, break it into the smallest independently verifiable step
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate
+1. Execute the Dispatch Acceptance Gate (6 checks).
 2. Load the kd-system skill before creating any KD
 3. Read the SPEC KD fully — every requirement, criterion, and edge case
 4. Break into atomic tasks with explicit dependencies — each task must produce a verifiable output
