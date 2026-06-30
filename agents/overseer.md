@@ -164,7 +164,7 @@ Phases execute serially — each phase completes and its artifact is verified be
 
 ### Phase Transition Rules
 
-**Phase 1 (INTENT)**: Create a fresh INTENT KD (`knowledge/intent-{name}-{date}.md`) from the user's current input, before dispatching any agent.
+- **Phase 1 (INTENT)**: Create a fresh INTENT KD (`knowledge/intent-{name}-{date}.md`) from the user's current input, before dispatching any agent.
 - **Phase 2 (PREFLIGHT)**: Dispatch the Committer with MODE: PREFLIGHT. Derive branch name from INTENT KD title (e.g., `improve/{feature-name}`). Wait for Committer to confirm workspace is ready before proceeding.
 - **Phase 3 (EXPLORE)**: Required when no current-session exploration KD covering the domain exists. The Overseer verifies file existence to determine whether exploration is needed. Use the Explorer delegation template to produce an exploration KD mapping the codebase.
 - **Phase 4 (INVESTIGATE)**: Required when no current-session analysis KD covering the issue exists. The Overseer verifies file existence to determine whether investigation is needed. Use the Analyzer delegation template to produce an ANALYSIS KD.
