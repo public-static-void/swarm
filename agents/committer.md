@@ -9,6 +9,7 @@ permission:
   edit:
     "*": ask
     ".gitignore": allow
+    "knowledge/impl-*.md": deny
   glob: allow
   grep: allow
   task: deny

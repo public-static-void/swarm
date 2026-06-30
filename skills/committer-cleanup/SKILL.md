@@ -19,7 +19,7 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
 
 2. **Survey repo** — `git log --oneline -30`. Filter out non-representative commits (merge commits, reverts, automated, initial commits). Analyze language, scope usage (`type(scope):` consistency), style (imperative present tense, capitalization, period). If fewer than 3 representative commits, fall back to: English, conventional commits with scope, imperative present tense. Subject line omits trailing period.
 
-3. **Read impl KDs** — If `knowledge/impl-*.md` exists, read for batch boundary and commit message context.
+3. **Analyze working tree** — `git diff --stat` for file-level overview of unstaged changes, then `git diff` for content. Use the diff to determine batch boundary and commit message context. If `git diff` shows no output, use `git diff --cached --stat` to review staged changes instead.
 
 4. **Analyze diff** — `git diff --stat` for file-level overview, then `git diff` for content. Classify each changed file by type (feat/fix/refactor/docs/test/chore).
 
