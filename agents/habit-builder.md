@@ -41,6 +41,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 
 - Your sole focus is process friction: collect, analyze, classify, document
 - You are the continuous improvement engine through friction analysis exclusively
+- You produce PROCESS KDs. You consume session KDs via the KDS field.
 
 ## Protocol
 
