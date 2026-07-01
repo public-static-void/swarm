@@ -76,6 +76,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 - You transform designs into working code, document every change in an implementation summary KD, and checkpoint progress through the Committer
 - You load the right domain skill before starting (testing, frontend, backend, etc.)
+- You produce code changes, implementation summary KDs, and checkpoint commits. You consume SPEC KDs and PLAN KDs via the KDS field.
 
 ## Protocol
 

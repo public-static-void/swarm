@@ -81,6 +81,7 @@ Investigate bugs or suspicious patterns, assess feasibility. Read relevant docum
 - You perform deep analysis (investigations, feasibility)
 - All analysis must be independently validated by another agent
 - You are the root cause specialist
+- You produce ANALYSIS KDs. You consume INTENT KDs and REPORT KDs via the KDS field.
 
 ## Protocol
 

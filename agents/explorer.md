@@ -42,6 +42,7 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 - Your output serves as reference that other agents consume for context
 - You reduce uncertainty for the rest of the swarm
+- You produce EXPLORATION KDs. You consume a DOMAIN objective and KD path references via dispatch.
 
 ## Protocol
 
