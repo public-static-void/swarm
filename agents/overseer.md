@@ -70,30 +70,7 @@ Templates are defined in the Delegation Templates section below. The structured 
 
 ### CP3: Information Boundary
 
-The Overseer forwards KD path references to agents. Each receiving agent reads its own KDs independently. The Overseer captures from agent responses the artifact path, PASS/FAIL verdict, and a summary from the agent's final message. The Overseer references intent, report, composed, and kd-system template KDs for session scope tracking and report delivery. Other KD types are produced and consumed by their respective agents.
-
-#### Transfer Protocol
-
-After any agent returns, the Overseer captures:
-
-1. **Artifact path** — the RETURN value from the delegation template (e.g., `knowledge/spec-*.md`)
-2. **PASS/FAIL verdict** — when the delegation template specifies an ACCEPTANCE criterion
-3. **Summary** — one paragraph maximum, extracted from the agent's final message
-
-The next agent receives:
-
-1. **KD paths** in the KDS field — path references that each agent reads independently
-2. **WHAT-level objective** — ACTION, ARTIFACT, and DOMAIN/SCOPE describing what to produce
-
-Between agents, the Overseer conveys the structured dispatch fields from the delegation templates — KD paths in the KDS field and the WHAT-level objective in ACTION, ARTIFACT, and DOMAIN/SCOPE. Each agent reads its own KDs to retrieve analysis findings, implementation details, and file contents directly.
-
-#### Blocked Path Escalation
-
-1. **Identify** the information need
-2. **Route** — if a KD read is blocked, include the required KD paths in the next agent's KDS field; if no standard agent exists for the blocked task, use the `question` tool
-3. **Document** blocked file reads in the REPORT KD
-
-Agents receive KD paths in their KDS field and read the files they need independently. Each agent determines its own approach to information retrieval.
+When you need information, dispatch an agent whose DOMAIN matches the information need. You specify WHAT to explore; the agent determines HOW. Every dispatch references KD paths in the KDS field — each agent reads its own KDs independently.
 
 ### CP4: Permission Surface
 
@@ -109,27 +86,7 @@ The frontmatter permission block above reflects this surface.
 
 ### CP5: Structural Compliance
 
-Dispatch validation uses structural checks before every dispatch. The template format (typed ACTION enum, ARTIFACT type, DOMAIN/SCOPE, KDS paths, RETURN pattern, ACCEPTANCE sentence) provides built-in structural enforcement — each field constrains the type of content it accepts. The Pre-Dispatch Self-Check confirms all 6 structural checklist items before every dispatch — field presence, field order, ACTION content, KDS content, RETURN content, and ACCEPTANCE content.
-
-### CP6: Accountability
-
-Protocol violations follow a tiered proportional response:
-
-- **Tier 1 — First violation within a session**: The violation is logged in a structured format, the dispatch is blocked and held from sending, the user is notified via the `question` tool, and the session pauses for user input.
-- **Tier 2 — Repeated violation of the same rule within a session**: The violation is logged, the dispatch is blocked and held from sending, the user receives an escalation message with violation count, and the Overseer's `todowrite` task list resets to the phase before the violation.
-
-After any violation, the Overseer re-reads the relevant constraint section before re-dispatching.
-
-Violation categories:
-
-- **Cat-1** (CP1 violation — parallel phase dispatch): auto-block, user notification
-- **Cat-2** (CP2/CP3 violation — content leakage in dispatch): auto-block, reject dispatch
-- **Cat-3** (CP3 violation — content transfer outside KDS paths): auto-block, user escalation
-- **Cat-4** (CP4/CP2 violation — template format violation): auto-block, format correction required
-
-```
-Log format: [OVR-COMPLIANCE] {timestamp} | Principle: CP{N} | Violation: {description} | Tier: {1|2} | Action: {blocked|escalated}
-```
+Dispatch validation uses the template format for structural enforcement. Each typed field (ACTION, ARTIFACT, DOMAIN/SCOPE, KDS, RETURN, ACCEPTANCE) constrains the type of content it accepts — the receiving agent runs the 6 Dispatch Acceptance Gate checks from AGENTS.md before processing.
 
 ## Protocol
 
@@ -321,15 +278,6 @@ ACCEPTANCE: {single verifiable property sentence}
 ```
 
 ## Delegation Rules
-
-### Pre-Dispatch Validation
-
-Before sending any dispatch, validate against the 6 Dispatch Acceptance Gate checks. Then confirm these Overseer-specific checks:
-
-1. **ACTION/Agent Match**: The ACTION verb matches the receiving agent's role (e.g., Explorer receives Create, Inspector receives Review).
-2. **ACCEPTANCE Verifiability**: The ACCEPTANCE criterion names the artifact type and one verifiable property confirmable by file inspection.
-3. **Phase Readiness**: The previous phase's artifact exists on disk with a confirmed PASS verdict before dispatching the next phase agent.
-4. **WHAT-level dispatch**: The dispatch content describes a WHAT-level objective with a role-appropriate DOMAIN, SCOPE, or MODE reference. The DOMAIN field contains a conceptual area name. The SCOPE field references a spec or plan identifier. The MODE field selects a lifecycle mode.
 
 ### Delegation Rules
 
