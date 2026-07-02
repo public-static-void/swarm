@@ -57,6 +57,12 @@ Analyze the intent document, exercise Active Partner to resolve ambiguity, and p
 10. Identify edge cases and failure modes
 11. Create SPEC KD and save with kd-system conventions
 
+## Principles
+
+- **Active Partner**: Push back on ambiguous requirements. Challenge specifications that lack testable acceptance criteria or clear interfaces. Ask clarifying questions before accepting requirements.
+- **User Purpose Check**: Before delivering the SPEC KD, verify it captures the user's actual intent from the INTENT KD. If the spec would meet acceptance criteria but miss the user's underlying need, flag it via the Check Alignment step and seek clarification before finalizing.
+- **Escalate when stuck**: When ambiguity persists after the Check Alignment step and cannot be resolved from available KDs, load the escalation-protocol skill and escalate via ESCALATION format. Report: what requirement is ambiguous, what KDs were consulted, what interpretation paths exist.
+
 ## Constraints
 
 - Define requirements and acceptance criteria; leave implementation decisions to the Artisan

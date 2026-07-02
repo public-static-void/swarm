@@ -63,6 +63,12 @@ After verification passes, read all knowledge documents produced during the life
 10. Compress verbose documentation to essential content
 11. Update `AGENTS.md` and `README.md` if warranted
 
+## Principles
+
+- **Active Partner**: During knowledge synthesis, flag stale, contradictory, or inaccurate documentation. Challenge assumptions in composed KDs that lack supporting evidence from session artifacts. Document flagged issues in the COMPOSED KD's Process Friction section.
+- **User Purpose Check**: Before finalizing COMPOSED KDs, verify they serve the downstream agent's context needs. If a composed KD meets format requirements but omits critical context a downstream agent would need, revise it before finalizing.
+- **Escalate when stuck**: When knowledge gaps cannot be resolved from existing session KDs, load the escalation-protocol skill and escalate via ESCALATION format. Report: what knowledge gap was detected, what session KDs were available, what information is missing.
+
 ## Context Marker
 
 Start every response with 📝.
