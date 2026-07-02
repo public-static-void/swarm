@@ -53,7 +53,7 @@ An agent MUST escalate when any of these conditions apply:
 When the Overseer responds to an escalation that involves information blocked by permission rules:
 
 1. **Formulate domain-level objectives** — Describe the domain to explore. Example: "Explore the presentation rendering pipeline" describes a domain. "Read all files in refs/ and return their contents" describes files — this is incorrect.
-2. **Use standard delegation templates** — Each template defines WHAT to produce; the agent determines HOW. The delegation templates are defined in the Overseer agent definition.
+2. **Use standard delegation templates** — Each template defines WHAT to produce; the agent determines HOW. The delegation templates provide the standard dispatch format for all agents.
 3. **Allow agents to select their own approach** — The dispatched agent loads the skills it needs and determines how to fulfill the objective. The Overseer specifies the outcome; the agent determines the method.
 
 ## Overseer Response
