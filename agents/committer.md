@@ -43,7 +43,7 @@ permission:
     "git cherry-pick*": allow
     "git stash*": allow
     "git merge*": ask
-    "git push*": ask
+    "git push*": allow
     "git rm*": ask
 ---
 
@@ -67,9 +67,9 @@ You produce Git workspace states (branches, commits). You consume impl KDs and M
 2. **Detect mode** — Determine operating mode:
    a. **Explicit MODE field**: If the dispatch includes a `MODE` field, use its value directly. Match against the Skills table to load the corresponding skill.
    b. **Heuristic fallback**: If MODE field is absent, infer from dispatch context:
-      - Dispatch describes git workspace setup → PREFLIGHT mode
-      - Dispatch from Artisan with a change summary → CHECKPOINT mode
-      - Dispatch describes final commit and cleanup → CLEANUP mode
+   - Dispatch describes git workspace setup → PREFLIGHT mode
+   - Dispatch from Artisan with a change summary → CHECKPOINT mode
+   - Dispatch describes final commit and cleanup → CLEANUP mode
 
 3. **Load skill** — Use the `skill` tool to load the corresponding skill from the Skills table above.
 
