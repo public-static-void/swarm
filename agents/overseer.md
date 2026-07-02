@@ -284,16 +284,6 @@ ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classificatio
 ```
 
 ```
-CUSTOM DISPATCH — requires user approval before dispatch.
-Use for dispatches that fall outside the 9 standard templates above.
-DISPATCH TO: {agent name}
-ACTION: {Create | Review | Investigate | Implement | Analyze | Dispatch}
-ARTIFACT: {artifact type name}
-DOMAIN: {domain name}
-KDS:
-  - {path/to/kd.md}
-RETURN: {single artifact path pattern}
-ACCEPTANCE: {single verifiable property sentence}
 ```
 
 ## Delegation Rules
