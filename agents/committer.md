@@ -43,7 +43,7 @@ permission:
     "git cherry-pick*": allow
     "git stash*": allow
     "git merge*": ask
-    "git push*": ask
+    "git push*": allow
     "git rm*": ask
 ---
 
