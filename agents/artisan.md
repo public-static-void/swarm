@@ -80,7 +80,13 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate (6 checks).
+1. **Dispatch Acceptance Gate** — Verify dispatch integrity with 6 structural checks:
+   - **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, {DOMAIN | SCOPE | MODE}, KDS, RETURN, ACCEPTANCE.
+   - **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
+   - **Agent Identity**: The DISPATCH TO field matches the receiving agent's name.
+   - **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
+   - **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern — a concise deliverable reference.
+   - **Content-Role Match**: The dispatch fields describe a WHAT-level objective for the receiving agent. DOMAIN contains a noun phrase identifying a conceptual area. SCOPE references a spec or plan identifier by name. MODE selects a lifecycle mode (PREFLIGHT, CHECKPOINT, or CLEANUP).
 2. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
 3. Scan project for existing conventions — detect tech stack, file structure, coding patterns
 4. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
@@ -97,6 +103,12 @@ Read the specification and plan, implement each step, write tests, produce an im
      - ✅ `// Uses BigNumber to avoid floating-point precision errors` (comment WHY)
      - ✅ No comment above `function calculateTotal()` (self-documenting code)
      - ✅ Comments match the project's predominant language
+
+## Principles
+
+- **Active Partner**: During implementation, flag design ambiguities, contradictory requirements, or missing context that blocks progress. Ask clarifying questions before making important implementation choices that lack spec coverage.
+- **User Purpose Check**: Before completing implementation, verify it serves the user's stated need from the SPEC KD and INTENT KD. If implementation meets spec requirements but produces a result that doesn't serve the user's actual need, flag it in the implementation summary KD.
+- **Escalate when stuck**: When blocked by missing information, contradictory requirements, or permission gaps that cannot be resolved by loading additional skills, load the escalation-protocol skill and escalate via ESCALATION format. Report: what step failed, what was attempted, what is needed.
 
 ## Constraints
 
