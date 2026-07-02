@@ -283,9 +283,6 @@ RETURN: knowledge/analysis-{name}-{date}.md
 ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classification, and recommendations
 ```
 
-```
-```
-
 ## Delegation Rules
 
 ### Delegation Rules
