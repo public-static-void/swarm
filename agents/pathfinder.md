@@ -46,7 +46,13 @@ Read the specification, break it into the smallest independently verifiable step
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate (6 checks).
+1. **Dispatch Acceptance Gate** — Verify dispatch integrity with 6 structural checks:
+   - **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, {DOMAIN | SCOPE | MODE}, KDS, RETURN, ACCEPTANCE.
+   - **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
+   - **Agent Identity**: The DISPATCH TO field matches the receiving agent's name.
+   - **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
+   - **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern — a concise deliverable reference.
+   - **Content-Role Match**: The dispatch fields describe a WHAT-level objective for the receiving agent. DOMAIN contains a noun phrase identifying a conceptual area. SCOPE references a spec or plan identifier by name. MODE selects a lifecycle mode (PREFLIGHT, CHECKPOINT, or CLEANUP).
 2. Load the kd-system skill before creating any KD
 3. Read the SPEC KD fully — every requirement, criterion, and edge case
 4. Break into atomic tasks with explicit dependencies — each task must produce a verifiable output

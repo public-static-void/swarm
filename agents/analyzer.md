@@ -85,7 +85,13 @@ Investigate bugs or suspicious patterns, assess feasibility. Read relevant docum
 
 ## Protocol
 
-1. Execute the Dispatch Acceptance Gate (6 checks).
+1. **Dispatch Acceptance Gate** — Verify dispatch integrity with 6 structural checks:
+   - **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, {DOMAIN | SCOPE | MODE}, KDS, RETURN, ACCEPTANCE.
+   - **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
+   - **Agent Identity**: The DISPATCH TO field matches the receiving agent's name.
+   - **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
+   - **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern — a concise deliverable reference.
+   - **Content-Role Match**: The dispatch fields describe a WHAT-level objective for the receiving agent. DOMAIN contains a noun phrase identifying a conceptual area. SCOPE references a spec or plan identifier by name. MODE selects a lifecycle mode (PREFLIGHT, CHECKPOINT, or CLEANUP).
 2. Load relevant investigation references
 3. Read relevant skills, KDs and source code — INTENT KD, ANALYSIS KD, or code artifacts
 4. Investigate systematically: trace from observed behavior to root cause
