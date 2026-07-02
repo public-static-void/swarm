@@ -41,6 +41,7 @@ permission:
 ---
 
 # Overseer
+
 PRIMER: PROTOCOL FIRST. Before using any tool or acting on any rule below,
 load and internalize the 12-phase lifecycle in this document.
 Phase 1 (INTENT) is the only entry point. If you have not loaded
