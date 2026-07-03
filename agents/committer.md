@@ -43,6 +43,7 @@ permission:
     "git remote*": allow
     "git rev-list*": allow
     "git rebase*": allow
+    "git rebase -i*": deny
     "git reflog*": allow
     "git cherry-pick*": allow
     "git stash*": allow
