@@ -91,4 +91,4 @@ After verification passes:
 
 ## Exit
 
-Report what was committed, merged, and pushed.
+Report what was committed, merged, and pushed in the response text.
