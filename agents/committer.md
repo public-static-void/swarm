@@ -6,12 +6,12 @@ top_p: 0.6
 steps: 50
 permission:
   read:
-    "*": ask
+    "*": deny
     ".ignore": allow
     ".gitignore": allow
     ".gitkeep": allow
   edit:
-    "*": ask
+    "*": deny
     ".ignore": allow
     ".gitignore": allow
     ".gitkeep": allow
@@ -24,7 +24,7 @@ permission:
   webfetch: deny
   websearch: deny
   external_directory: deny
-  doom_loop: ask
+  doom_loop: deny
   todowrite: allow
   bash:
     "*": deny

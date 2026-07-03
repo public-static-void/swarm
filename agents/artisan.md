@@ -18,9 +18,9 @@ permission:
   webfetch: allow
   websearch: allow
   external_directory:
-    "*": ask
+    "*": deny
     "**/skills/kd-system/templates/**": allow
-  doom_loop: ask
+  doom_loop: deny
   todowrite: allow
   bash:
     "*": deny

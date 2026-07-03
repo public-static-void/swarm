@@ -7,7 +7,7 @@ steps: 50
 permission:
   read: allow
   edit:
-    "*": ask
+    "*": deny
     "knowledge/plan-*.md": allow
   glob: allow
   grep: allow
@@ -18,9 +18,9 @@ permission:
   webfetch: deny
   websearch: deny
   external_directory:
-    "*": ask
+    "*": deny
     "**/skills/kd-system/templates/**": allow
-  doom_loop: ask
+  doom_loop: deny
   todowrite: allow
   bash:
     "*": deny

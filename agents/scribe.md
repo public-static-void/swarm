@@ -12,7 +12,7 @@ permission:
     "AGENTS.md": allow
     "**/skills/kd-system/templates/*.md": allow
   edit:
-    "*": ask
+    "*": deny
     "knowledge/*.md": allow
     "README.md": allow
     "AGENTS.md": allow
@@ -25,9 +25,9 @@ permission:
   webfetch: allow
   websearch: allow
   external_directory:
-    "*": ask
+    "*": deny
     "**/skills/kd-system/templates/**": allow
-  doom_loop: ask
+  doom_loop: deny
   todowrite: allow
   bash:
     "*": deny
