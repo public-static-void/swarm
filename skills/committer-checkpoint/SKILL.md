@@ -57,10 +57,6 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 13. **Error handling** — On failure, `git reset --mixed` to recover.
 
-14. **Process RETURN field** — The dispatch contains a `RETURN` field. This is metadata consumed by the dispatching agent. Report commit results exclusively in the response text.
-
-15. **Complete and report** — All batches are committed. Summarize what was committed in the response text. Your job is done — exit cleanly.
-
 ## Semantic Commit Convention
 
 | Type     | Usage                  |
@@ -78,4 +74,4 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 ## Exit
 
-Report what was committed in the response text. Exit after all batches are committed.
+Report what was committed. Exit after all batches are committed.

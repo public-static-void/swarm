@@ -39,4 +39,4 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 
 ## Exit
 
-Report branch name, clean/dirty state, and any stashed changes in the response text. Exit after workspace is ready.
+Report branch name, clean/dirty state, and any stashed changes. Exit after workspace is ready.

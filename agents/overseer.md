@@ -139,8 +139,7 @@ DISPATCH TO: Committer
 ACTION: Dispatch
 ARTIFACT: Git workspace state
 MODE: {PREFLIGHT | CHECKPOINT | CLEANUP}
-KDS:
-  - knowledge/intent-{name}-{date}.md
+KDS: None
 RETURN: Git status summary (branch, clean/dirty state)
 ACCEPTANCE: Git workspace is clean and branch is ready (PREFLIGHT) or changes are committed and pushed (CLEANUP)
 ```
