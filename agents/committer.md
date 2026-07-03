@@ -5,7 +5,9 @@ temperature: 0.1
 top_p: 0.6
 steps: 50
 permission:
-  read: allow
+  read:
+    "*": ask
+    ".gitignore": allow
   edit:
     "*": ask
     ".gitignore": allow
@@ -17,9 +19,7 @@ permission:
   question: deny
   webfetch: deny
   websearch: deny
-  external_directory:
-    "*": ask
-    "**/skills/kd-system/templates/**": allow
+  external_directory: deny
   doom_loop: ask
   todowrite: allow
   bash:
@@ -42,9 +42,9 @@ permission:
     "git reflog*": allow
     "git cherry-pick*": allow
     "git stash*": allow
-    "git merge*": ask
+    "git merge*": allow
     "git push*": allow
-    "git rm*": ask
+    "git rm*": allow
 ---
 
 # Committer
