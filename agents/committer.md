@@ -7,10 +7,14 @@ steps: 50
 permission:
   read:
     "*": ask
+    ".ignore": allow
     ".gitignore": allow
+    ".gitkeep": allow
   edit:
     "*": ask
+    ".ignore": allow
     ".gitignore": allow
+    ".gitkeep": allow
   glob: allow
   grep: allow
   task: deny
@@ -89,8 +93,6 @@ You produce Git workspace states (branches, commits). You consume MODE field ins
 
 ## Constraints
 
-- Edit permission covers KDs and `.gitignore`
-- Use `git commit` with all hooks and verification enabled
 - Stage each file in its entirety per batch — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant concern per the skill's grouping step. Each batch must form a coherent, independently verifiable change set — reference the committer-checkpoint skill's concern-separation rule.
 
 ## Context Marker

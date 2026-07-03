@@ -33,7 +33,7 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
      - **Pull flow**: Apply the same default-branch pull flow as the clean-repo remote-configured path (steps 1-7 above), including the detached HEAD check.
      - **Restore**: After branch creation, run `git stash pop` to restore stashed changes. If pop fails, log a warning but continue.
 
-2. **Gitignore management** — Check if `.gitignore` exists. If not, create with project-appropriate patterns. If it exists, review and verify all standard gitignore patterns for the project's tech stack are included (e.g., `node_modules/`, `.env`, `*.log`, build output). Preserve all existing entries.
+2. **Gitignore management** — Check if `.gitignore` exists. If not, create with project-appropriate patterns. If it exists, review and verify all standard gitignore patterns for the project's tech stack are included (e.g., `node_modules/`, `.env`, `*.log`, build output). Preserve all existing entries. KDs (`knowledge/` directory) are workflow-specific process documentation and must be ignored. To keep agents being able to see KDs they must be explicitly whitelisted (add `!knowledge/` to ` .ignore`)
 
 3. **Feature branch** — If a branch name was provided, use it. Otherwise, `git branch --show-current`. If on main/default, `git checkout -b improve/{short-description}`. If already on a feature branch, use it. Skip for subsequent checkpoint commits.
 
