@@ -25,6 +25,7 @@ permission:
   bash:
     "*": deny
     "ls*": allow
+    "find*": allow
     "mkdir*": allow
     "git status*": allow
     "git log*": allow
