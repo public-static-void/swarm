@@ -30,7 +30,7 @@ permission:
   glob:
     "*": deny
     "knowledge/*.md": allow
-  task: allow
+  task: deny
   skill:
     "*": deny
     "kd-system": allow

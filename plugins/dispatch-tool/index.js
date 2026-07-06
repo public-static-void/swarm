@@ -3,6 +3,13 @@ import { readFileSync, readdirSync, writeFileSync, appendFileSync, existsSync, m
 import { join } from "path";
 import crypto from "crypto";
 
+// ─── Plugin-Level State ──────────────────────────────────────────────────────
+// The SDK client is captured from the plugin factory context at load time.
+// It provides HTTP access to the OpenCode server for creating child sessions.
+// This runs in the plugin's own execution context, separate from any agent's
+// permissions, so it can create sessions for any registered agent.
+let _sdkClient = null;
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const KNOWN_AGENTS = [
@@ -248,6 +255,74 @@ function writeAuditEntry(worktree, entry) {
   }
 }
 
+// ─── Agent Dispatch (F-001) ──────────────────────────────────────────────────
+// After validation passes, the dispatch tool creates a child session for the
+// target agent and sends the validated dispatch as the initial prompt.
+// This replaces the Overseer's direct `task` call — the dispatch tool is now
+// the exclusive delegation channel, operating in the plugin's own context.
+
+async function dispatchToAgent(client, args, context) {
+  if (!client || !client.session) {
+    return { sessionId: null, error: "SDK client not available — cannot route to agent" };
+  }
+  const { target_agent, artifact, referenced_kds, domain_or_scope_or_mode, acceptance_criteria } = args;
+
+  // Build structured dispatch message for the target agent
+  const lines = [
+    `DISPATCH TO: ${target_agent}`,
+    `ACTION: Create`,
+    `ARTIFACT: ${artifact}`,
+  ];
+  if (domain_or_scope_or_mode) {
+    lines.push(domain_or_scope_or_mode);
+  }
+  if (referenced_kds && referenced_kds.length > 0) {
+    lines.push("KDS:");
+    referenced_kds.forEach(kd => lines.push(`  - ${kd}`));
+  } else {
+    lines.push("KDS: None");
+  }
+  lines.push(`RETURN: (per acceptance criteria)`);
+  lines.push(`ACCEPTANCE: ${acceptance_criteria}`);
+
+  const dispatchMessage = lines.join("\n");
+
+  try {
+    // Use the SDK client to create a child session for the target agent
+    const createResult = await client.session.create({
+      body: {
+        parentID: context.sessionID,
+        agent: target_agent,
+        title: (artifact || "").substring(0, 100),
+      },
+      query: {
+        directory: context.directory,
+      },
+    });
+
+    const newSessionId = createResult?.data?.id;
+    if (!newSessionId) {
+      return { sessionId: null, error: "Child session created but no ID returned" };
+    }
+
+    // Prompt the new session with the dispatch content so the agent starts working
+    await client.session.prompt({
+      path: { id: newSessionId },
+      body: {
+        agent: target_agent,
+        parts: [{ type: "text", text: dispatchMessage }],
+      },
+      query: {
+        directory: context.directory,
+      },
+    });
+
+    return { sessionId: newSessionId, error: null };
+  } catch (err) {
+    return { sessionId: null, error: err.message || "Session creation failed" };
+  }
+}
+
 // ─── Main Validation ────────────────────────────────────────────────────────
 
 function validateDispatch(args, worktree) {
@@ -348,10 +423,25 @@ function validateDispatch(args, worktree) {
     }
 
     // Check INTENT KD exists on disk
-    const intentExists = prereqExists(worktree, `intent-`);
+    const intentExists = prereqExists(worktree, "intent-");
     if (!intentExists) {
       throw new ValidationError("MISSING_INTENT_KD", "referenced_kds", "INTENT KD not found",
         `No current-session INTENT KD found in knowledge/ directory. Phase ${phase} dispatch requires an INTENT KD.`);
+    }
+
+    // F-002: Check phase-specific prerequisite from PHASE_TABLE
+    // The PHASE_TABLE defines what KD artifact the previous phase produces.
+    // Each phase (except 1 and 2) has a `prereq` that must exist on disk.
+    const phaseEntry = PHASE_TABLE.find(p => p.phase === phase);
+    if (phaseEntry && phaseEntry.prereq) {
+      const prereqExistsFlag = prereqExists(worktree, phaseEntry.prereq);
+      if (!prereqExistsFlag) {
+        throw new ValidationError("PHASE_ORDER_VIOLATION", "artifact",
+          `Phase ${phase} prerequisite '${phaseEntry.prereq}' not found in knowledge/`,
+          `Phase ${phase} (${phaseEntry.artifactPattern}) requires the ` +
+          `Phase ${phase - 1} ${phaseEntry.prereq} artifact. ` +
+          `Complete Phase ${phase - 1} before advancing to Phase ${phase}.`);
+      }
     }
   }
 }
@@ -359,6 +449,13 @@ function validateDispatch(args, worktree) {
 // ─── Plugin Export ───────────────────────────────────────────────────────────
 
 const dispatchPlugin = async (_ctx) => {
+  // Capture the SDK client at plugin load time.
+  // The client operates at the plugin/framework level — separate from the
+  // calling agent's permissions — enabling it to create child sessions for
+  // any registered agent after validation passes.
+  const client = _ctx.client;
+  _sdkClient = client;
+
   return {
     tool: {
       dispatch: tool({
@@ -391,7 +488,14 @@ const dispatchPlugin = async (_ctx) => {
             const sessionDate = extractSessionDate(referenced_kds) || new Date().toISOString().substring(0, 10);
             const dispatchId = generateDispatchId(sessionDate);
 
-            // Log acceptance to audit
+            // Route to target agent via SDK client (F-001)
+            // The dispatch tool creates a child session for the validated agent
+            // and prompts it with the dispatch content. This runs in the plugin's
+            // own execution context, not the Overseer's, so it has framework-level
+            // access to create sessions for any registered agent.
+            const routeResult = await dispatchToAgent(client, args, context);
+
+            // Log acceptance to audit (includes routing outcome)
             const auditEntry = {
               timestamp: new Date().toISOString(),
               target_agent: target_agent,
@@ -399,22 +503,28 @@ const dispatchPlugin = async (_ctx) => {
               referenced_kds: referenced_kds || [],
               acceptance_hash: truncateHash(acceptance_criteria || ""),
               result: "accepted",
-              reason: null
+              reason: routeResult.error ? `routing_warning: ${routeResult.error}` : null
             };
             writeAuditEntry(context.worktree, auditEntry);
 
+            const output = {
+              status: "accepted",
+              dispatch_id: dispatchId,
+              target_agent: target_agent,
+              session_id: routeResult.sessionId,
+              result: routeResult.sessionId
+                ? "Dispatch routed to target agent"
+                : `Validation passed but routing unavailable: ${routeResult.error}`,
+              audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
+            };
+
             return {
-              title: "Dispatch Accepted",
-              output: JSON.stringify({
-                status: "accepted",
-                dispatch_id: dispatchId,
-                target_agent: target_agent,
-                result: "Dispatch routed to target agent",
-                audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
-              }, null, 2),
+              title: routeResult.sessionId ? "Dispatch Accepted" : "Dispatch Accepted (routing unavailable)",
+              output: JSON.stringify(output, null, 2),
               metadata: {
                 dispatch_id: dispatchId,
                 target_agent: target_agent,
+                session_id: routeResult.sessionId,
                 status: "accepted",
                 audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
               }
