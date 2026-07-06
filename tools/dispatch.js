@@ -245,10 +245,11 @@ function writeAuditEntry(worktree, entry) {
 
 /**
  * Build a structured dispatch message from validated args.
- * This is the formatted dispatch that the Overseer forwards via task.
+ * Used as the prompt sent to the target agent via HTTP dispatch.
  */
-function buildDispatchMessage(args) {
+function buildDispatchMessage(args, sessionDate) {
   const { target_agent, artifact, referenced_kds, domain_or_scope_or_mode, acceptance_criteria } = args;
+  const dateStr = sessionDate || "unknown";
   const lines = [
     `DISPATCH TO: ${target_agent}`,
     `ACTION: Create`,
@@ -263,7 +264,7 @@ function buildDispatchMessage(args) {
   } else {
     lines.push("KDS: None");
   }
-  lines.push(`RETURN: (per acceptance criteria)`);
+  lines.push(`RETURN: knowledge/${artifact}-${dateStr}.md`);
   lines.push(`ACCEPTANCE: ${acceptance_criteria}`);
   return lines.join("\n");
 }
@@ -411,12 +412,12 @@ export default tool({
   async execute(args, context) {
     try {
       validateDispatch(args, context.worktree);
-      const { target_agent, artifact, referenced_kds, acceptance_criteria } = args;
+      const { target_agent, artifact, referenced_kds, domain_or_scope_or_mode, acceptance_criteria } = args;
       const sessionDate = extractSessionDate(referenced_kds) || new Date().toISOString().substring(0, 10);
       const dispatchId = generateDispatchId(sessionDate);
 
-      // Build the validated dispatch message for the Overseer to forward via task
-      const validatedDispatch = buildDispatchMessage(args);
+      // Build the structured dispatch message for the target agent
+      const dispatchMessage = buildDispatchMessage(args, sessionDate);
 
       // Log acceptance to audit
       writeAuditEntry(context.worktree, {
@@ -429,22 +430,99 @@ export default tool({
         reason: null
       });
 
+      // ── HTTP Dispatch ────────────────────────────────────────────────────
+      // Send the validated dispatch to the target agent via the opencode server API.
+      // The server URL is hardcoded to the default localhost:4096.
+      // No auth needed — server listens on 127.0.0.1 only.
+      const SERVER_URL = "http://127.0.0.1:4096";
+      const sessionId = context.sessionID;
+
+      if (!sessionId) {
+        throw new Error("Session ID not available in tool context — cannot dispatch via HTTP");
+      }
+
+      let httpStatus = null;
+      let httpBody = null;
+      let httpError = null;
+
+      try {
+        const response = await fetch(`${SERVER_URL}/session/${sessionId}/message`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            agent: target_agent,
+            parts: [{
+              type: "subtask",
+              agent: target_agent,
+              prompt: dispatchMessage,
+              description: artifact
+            }],
+            noReply: true
+          })
+        });
+
+        httpStatus = response.status;
+        httpBody = await response.text().catch(() => "{}");
+
+        if (!response.ok) {
+          httpError = `HTTP ${response.status}: ${httpBody}`;
+        }
+      } catch (fetchErr) {
+        httpError = `Fetch failed: ${fetchErr.message}`;
+      }
+
+      if (httpError) {
+        // Log the HTTP failure to audit
+        writeAuditEntry(context.worktree, {
+          timestamp: new Date().toISOString(),
+          target_agent,
+          artifact,
+          referenced_kds: referenced_kds || [],
+          acceptance_hash: truncateHash(acceptance_criteria || ""),
+          result: "rejected",
+          reason: "HTTP_DISPATCH_FAILED"
+        });
+
+        const output = {
+          status: "dispatch_failed",
+          dispatch_id: dispatchId,
+          target_agent,
+          session_id: sessionId,
+          error: httpError,
+          audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
+        };
+
+        return {
+          title: "Dispatch Accepted but HTTP Routing Failed",
+          output: JSON.stringify(output, null, 2),
+          metadata: {
+            dispatch_id: dispatchId,
+            target_agent,
+            status: "dispatch_failed",
+            error: httpError,
+            audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
+          }
+        };
+      }
+
       const output = {
         status: "accepted",
         dispatch_id: dispatchId,
         target_agent,
-        validated_dispatch: validatedDispatch,
+        session_id: sessionId,
+        http_status: httpStatus,
         audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
       };
 
       return {
-        title: "Dispatch Accepted",
+        title: `Dispatch Accepted — Routed to ${target_agent}`,
         output: JSON.stringify(output, null, 2),
         metadata: {
           dispatch_id: dispatchId,
           target_agent,
           status: "accepted",
-          validated_dispatch: validatedDispatch,
+          session_id: sessionId,
+          http_status: httpStatus,
           audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
         }
       };
