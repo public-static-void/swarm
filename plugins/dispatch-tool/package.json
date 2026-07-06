@@ -1,0 +1,10 @@
+{
+  "name": "dispatch-tool",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "description": "Dispatch tool plugin — structural validation of agent delegation protocol",
+  "dependencies": {
+    "@opencode-ai/plugin": "1.17.7"
+  }
+}
