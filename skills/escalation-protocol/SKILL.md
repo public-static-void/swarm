@@ -48,13 +48,14 @@ An agent MUST escalate when any of these conditions apply:
 | 4   | Outside skillset         | The task falls outside the agent's defined role      | Scribe asked to write code, Overseer asked to edit files      |
 | 5   | Ambiguous requirements   | Requirements unresolvable from existing KDs          | Missing SPEC, contradictory PLAN, unclear acceptance criteria |
 
-## Correct Delegation Principles
+## Blocked Path Procedure
 
-When the Overseer responds to an escalation that involves information blocked by permission rules:
+When information is blocked by permission rules:
 
-1. **Formulate domain-level objectives** — Describe the domain to explore. Example: "Explore the presentation rendering pipeline" describes a domain. "Read all files in refs/ and return their contents" describes files — this is incorrect.
-2. **Use standard delegation templates** — Each template defines WHAT to produce; the agent determines HOW. The delegation templates provide the standard dispatch format for all agents.
-3. **Allow agents to select their own approach** — The dispatched agent loads the skills it needs and determines how to fulfill the objective. The Overseer specifies the outcome; the agent determines the method.
+1. **Accept the block** — Permission restrictions are intentional by design. The Overseer does not need this information to dispatch correctly.
+2. **Document** — Note the information gap in the REPORT KD.
+3. **Continue lifecycle** — Dispatch the next-phase agent with available KDs. The receiving agent reads what it needs independently.
+4. **Network Effect** — Sub-agents have broader permissions by design. They access information through their own tool set and report findings through KDs. The Overseer receives KD paths only.
 
 ## Overseer Response
 
@@ -63,9 +64,9 @@ On receiving an escalation, the Overseer must:
 1. **Assess legitimacy** — Determine whether the request is legitimate (task truly requires the escalated resource)
 2. **Resolve** — Take one of these actions:
    - Adjust permissions (if within the Overseer's power)
-   - Dispatch a different agent whose skillset matches the requirement
+   - Continue the lifecycle normally — the receiving agent reads what it needs independently
    - Escalate to the user via the `question` tool (Step 2)
-3. **Resolution** — Resolve restrictions by adjusting permissions, dispatching a different agent, or escalating to the user
+3. **Resolution** — Resolve restrictions by adjusting permissions, continuing the lifecycle, or escalating to the user
 
 ## Agent Conduct Rules
 
