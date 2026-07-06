@@ -30,7 +30,7 @@ permission:
   glob:
     "*": deny
     "knowledge/*.md": allow
-  task: deny
+  task: allow
   skill:
     "*": deny
     "kd-system": allow
@@ -191,10 +191,15 @@ ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classificatio
 
 ## Delegation Rules
 
-1. **Use the `dispatch` tool** — always use the `dispatch` tool for all agent delegations. Do not use the `task` tool directly.
-2. **Delegate WHAT** — describe artifact, objective, criteria. Agents choose approach.
-3. **Structured templates** — populate ACTION, ARTIFACT, DOMAIN/SCOPE, KDS, RETURN, ACCEPTANCE.
-4. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
+1. **Use the `task` tool** — always use the `task` tool for all agent delegations. The built-in `task` tool is wrapped by the `dispatch-gate` validation plugin which intercepts and validates every call before execution. Bad dispatches are automatically rejected with a `DISPATCH REJECTED` error. Do not use or reference any `dispatch` tool — it does not exist.
+
+2. **Delegate WHAT, not HOW** — describe the artifact, objective, and acceptance criteria only. Agents choose their approach. Never include file paths, code blocks, or implementation instructions in task prompts — the plugin will reject these.
+
+3. **Structured fields in every task prompt** — populate these fields in every delegation: `DISPATCH TO:`, `ACTION:`, `ARTIFACT:`, one of `DOMAIN:`/`SCOPE:`/`MODE:`, `KDS:` (path references only), `RETURN:`, `ACCEPTANCE:`.
+
+4. **Plugin validates automatically** — the `dispatch-gate` plugin enforces all validation rules. No manual dispatch tool or separate validation step is needed.
+
+5. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
 
 ## Context Marker
 
