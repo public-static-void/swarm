@@ -10,18 +10,6 @@ permission:
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
     "**/skills/kd-system/templates/*.md": allow
-    # ==== PROTOCOL READS (added for incentive chain break) ====
-    "agents/overseer.md": allow
-    "AGENTS.md": allow
-    "agents/*.md": allow
-    "skills/escalation-protocol/SKILL.md": allow
-    "knowledge/exploration-*.md": allow
-    "knowledge/analysis-*.md": allow
-    "knowledge/spec-*.md": allow
-    "knowledge/plan-*.md": allow
-    "knowledge/impl-*.md": allow
-    "knowledge/process-*.md": allow
-    # ==== END PROTOCOL READS ====
   grep: deny
   edit:
     "*": deny
