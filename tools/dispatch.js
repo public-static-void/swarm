@@ -3,13 +3,6 @@ import { readFileSync, readdirSync, writeFileSync, appendFileSync, existsSync, m
 import { join } from "path";
 import crypto from "crypto";
 
-// ─── Plugin-Level State ──────────────────────────────────────────────────────
-// The SDK client is captured from the plugin factory context at load time.
-// It provides HTTP access to the OpenCode server for creating child sessions.
-// This runs in the plugin's own execution context, separate from any agent's
-// permissions, so it can create sessions for any registered agent.
-let _sdkClient = null;
-
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const KNOWN_AGENTS = [
@@ -27,7 +20,6 @@ const FILE_EXTENSIONS = /\.(py|ts|rs|md|json|yaml|yml|toml|cfg|ini|sh|js|jsx|tsx
 
 const READ_VERBS = /\b(read|return contents|list files|get the file|cat |view file)\b/i;
 
-// Rejection codes map to human-readable messages
 const REJECTION_CODES = {
   UNKNOWN_AGENT: "target_agent is not a registered agent or is the Overseer (self-dispatch not allowed)",
   INVALID_KD_PATH: "a referenced_kds entry does not match the KD path pattern",
@@ -45,6 +37,8 @@ const REJECTION_CODES = {
 };
 
 // ─── Phase Readiness Table ──────────────────────────────────────────────────
+// Maps lifecycle phases to target agents, artifact patterns, and prerequisites.
+// Used by determinePhase() and validateDispatch() for phase ordering checks.
 
 const PHASE_TABLE = [
   { phase: 1, agents: ["overseer-self"], artifactPattern: "INTENT KD", prereq: null },
@@ -78,8 +72,7 @@ function determinePhase(targetAgent, artifact) {
 }
 
 /**
- * Session date is extracted from the first INTENT KD on disk,
- * or from the KDS paths if provided.
+ * Session date is extracted from the KDS paths if provided.
  */
 function extractSessionDate(kds) {
   if (!kds || kds.length === 0) return null;
@@ -122,9 +115,7 @@ class ValidationError extends Error {
 function scanForInlineCode(value) {
   if (!value) return null;
   const str = String(value);
-  // Triple backticks
   if (/```/.test(str)) return "triple-backtick code block detected";
-  // Inline backticks with code content
   if (/`[^`\n]+`/.test(str)) return "inline backtick code detected";
   return null;
 }
@@ -143,7 +134,6 @@ function scanForFilePaths(value) {
 function scanForImplementationInstructions(value) {
   if (!value) return null;
   const str = String(value);
-  // Look for HOW-level patterns
   const howPatterns = [
     /\b(use|using|implement|implemented with)\s+(FastAPI|Express|Django|Flask|Spring|React|Vue|Angular|Laravel|Rails|Next\.?js|Nuxt|Svelte)\b/i,
     /\b(use|using|implement)\s+(Pydantic|Zod|Joi|class-validator|TypeORM|Prisma|Mongoose|SQLAlchemy)\b/i,
@@ -230,10 +220,9 @@ function writeAuditEntry(worktree, entry) {
   try {
     ensureKnowledgeDir(worktree);
     if (!existsSync(auditPath)) {
-      const header = `---\ntitle: "AUDIT: Dispatch Log — ${sessionDate}"\nversion: 1.0.0\nstatus: draft\ntype: audit\ncreated: "${sessionDate}"\nauthor: dispatch-tool\n---\n\n# AUDIT: Dispatch Log\n\n## Entries\n\n`;
+      const header = `---\ntitle: "AUDIT: Dispatch Log - ${sessionDate}"\nversion: 1.0.0\nstatus: draft\ntype: audit\ncreated: "${sessionDate}"\nauthor: dispatch-tool\n---\n\n# AUDIT: Dispatch Log\n\n## Entries\n\n`;
       writeFileSync(auditPath, header, "utf8");
     }
-    // Determine entry number
     const content = readFileSync(auditPath, "utf8");
     const entryCount = (content.match(/### Entry \d+/g) || []).length;
     const entryNum = entryCount + 1;
@@ -250,24 +239,16 @@ function writeAuditEntry(worktree, entry) {
     ].join("\n");
     appendFileSync(auditPath, entryText, "utf8");
   } catch {
-    // Audit log failure should not block dispatch
-    // Log error silently — the audit entry is best-effort
+    // Audit log failure should not block dispatch — best-effort only
   }
 }
 
-// ─── Agent Dispatch (F-001) ──────────────────────────────────────────────────
-// After validation passes, the dispatch tool creates a child session for the
-// target agent and sends the validated dispatch as the initial prompt.
-// This replaces the Overseer's direct `task` call — the dispatch tool is now
-// the exclusive delegation channel, operating in the plugin's own context.
-
-async function dispatchToAgent(client, args, context) {
-  if (!client || !client.session) {
-    return { sessionId: null, error: "SDK client not available — cannot route to agent" };
-  }
+/**
+ * Build a structured dispatch message from validated args.
+ * This is the formatted dispatch that the Overseer forwards via task.
+ */
+function buildDispatchMessage(args) {
   const { target_agent, artifact, referenced_kds, domain_or_scope_or_mode, acceptance_criteria } = args;
-
-  // Build structured dispatch message for the target agent
   const lines = [
     `DISPATCH TO: ${target_agent}`,
     `ACTION: Create`,
@@ -284,43 +265,7 @@ async function dispatchToAgent(client, args, context) {
   }
   lines.push(`RETURN: (per acceptance criteria)`);
   lines.push(`ACCEPTANCE: ${acceptance_criteria}`);
-
-  const dispatchMessage = lines.join("\n");
-
-  try {
-    // Use the SDK client to create a child session for the target agent
-    const createResult = await client.session.create({
-      body: {
-        parentID: context.sessionID,
-        agent: target_agent,
-        title: (artifact || "").substring(0, 100),
-      },
-      query: {
-        directory: context.directory,
-      },
-    });
-
-    const newSessionId = createResult?.data?.id;
-    if (!newSessionId) {
-      return { sessionId: null, error: "Child session created but no ID returned" };
-    }
-
-    // Prompt the new session with the dispatch content so the agent starts working
-    await client.session.prompt({
-      path: { id: newSessionId },
-      body: {
-        agent: target_agent,
-        parts: [{ type: "text", text: dispatchMessage }],
-      },
-      query: {
-        directory: context.directory,
-      },
-    });
-
-    return { sessionId: newSessionId, error: null };
-  } catch (err) {
-    return { sessionId: null, error: err.message || "Session creation failed" };
-  }
+  return lines.join("\n");
 }
 
 // ─── Main Validation ────────────────────────────────────────────────────────
@@ -351,19 +296,16 @@ function validateDispatch(args, worktree) {
   const fieldsToScan = { target_agent, artifact, domain_or_scope_or_mode, acceptance_criteria };
 
   for (const [field, value] of Object.entries(fieldsToScan)) {
-    // Inline code detection
     const codeViolation = scanForInlineCode(value);
     if (codeViolation) {
       throw new ValidationError("INLINE_CODE_DETECTED", field, codeViolation, `Field '${field}' contains inline code`);
     }
 
-    // File path detection
     const pathViolation = scanForFilePaths(value);
     if (pathViolation) {
       throw new ValidationError("FILE_PATH_DETECTED", field, pathViolation, `Field '${field}' contains source file path`);
     }
 
-    // Implementation instruction detection
     const implViolation = scanForImplementationInstructions(value);
     if (implViolation) {
       throw new ValidationError("IMPLEMENTATION_INSTRUCTION", field, implViolation, `Field '${field}' contains implementation instructions`);
@@ -377,13 +319,11 @@ function validateDispatch(args, worktree) {
       throw new ValidationError("FILE_EXTENSION_IN_DOMAIN", "domain_or_scope_or_mode", extViolation, "domain_or_scope_or_mode contains file extension");
     }
 
-    // Read verb in domain
     const readViolation = scanForReadVerbs(domain_or_scope_or_mode);
     if (readViolation) {
       throw new ValidationError("READ_VERB_IN_DOMAIN", "domain_or_scope_or_mode", readViolation, "domain_or_scope_or_mode contains read verb or return contents language");
     }
 
-    // Check domain_or_scope_or_mode format
     if (!/^(DOMAIN|SCOPE|MODE):\s/.test(domain_or_scope_or_mode)) {
       throw new ValidationError("EXTRA_FIELD_REJECTED", "domain_or_scope_or_mode", domain_or_scope_or_mode,
         'domain_or_scope_or_mode must start with "DOMAIN:", "SCOPE:", or "MODE:"');
@@ -397,7 +337,6 @@ function validateDispatch(args, worktree) {
       throw new ValidationError("INVALID_KD_PATH", "referenced_kds", kdViolations.join("; "), "referenced_kds entries do not match KD path pattern");
     }
 
-    // Session mismatch check
     const sessionViolation = checkSessionMismatch(referenced_kds);
     if (sessionViolation) {
       throw new ValidationError("SESSION_MISMATCH", "referenced_kds", sessionViolation, "referenced KDs have different session dates");
@@ -406,7 +345,6 @@ function validateDispatch(args, worktree) {
 
   // ── Acceptance criteria check — must be WHAT-level ──
   if (acceptance_criteria) {
-    // Check it's not empty
     if (acceptance_criteria.trim().length === 0) {
       throw new ValidationError("EXTRA_FIELD_REJECTED", "acceptance_criteria", "empty", "acceptance_criteria must not be empty");
     }
@@ -415,27 +353,22 @@ function validateDispatch(args, worktree) {
   // ── R005: Phase Readiness Check ──
   const phase = determinePhase(target_agent, artifact);
   if (phase !== null && phase > 2) {
-    // Extract session date from KDS or determine from context
     const sessionDate = extractSessionDate(referenced_kds);
     if (!sessionDate || sessionDate === "unknown") {
       throw new ValidationError("MISSING_INTENT_KD", "referenced_kds", "no session date found",
         "Cannot determine session date from KDS. A current-session INTENT KD is required for Phase >2 dispatches.");
     }
 
-    // Check INTENT KD exists on disk
     const intentExists = prereqExists(worktree, "intent-");
     if (!intentExists) {
       throw new ValidationError("MISSING_INTENT_KD", "referenced_kds", "INTENT KD not found",
         `No current-session INTENT KD found in knowledge/ directory. Phase ${phase} dispatch requires an INTENT KD.`);
     }
 
-    // F-002: Check phase-specific prerequisite from PHASE_TABLE
-    // The PHASE_TABLE defines what KD artifact the previous phase produces.
-    // Each phase (except 1 and 2) has a `prereq` that must exist on disk.
     const phaseEntry = PHASE_TABLE.find(p => p.phase === phase);
     if (phaseEntry && phaseEntry.prereq) {
-      const prereqExistsFlag = prereqExists(worktree, phaseEntry.prereq);
-      if (!prereqExistsFlag) {
+      const found = prereqExists(worktree, phaseEntry.prereq);
+      if (!found) {
         throw new ValidationError("PHASE_ORDER_VIOLATION", "artifact",
           `Phase ${phase} prerequisite '${phaseEntry.prereq}' not found in knowledge/`,
           `Phase ${phase} (${phaseEntry.artifactPattern}) requires the ` +
@@ -446,158 +379,136 @@ function validateDispatch(args, worktree) {
   }
 }
 
-// ─── Plugin Export ───────────────────────────────────────────────────────────
+// ─── Custom Tool Export ──────────────────────────────────────────────────────
+// Auto-discovered by opencode from ~/.config/opencode/tools/dispatch.js
+// The filename 'dispatch.js' becomes the tool name 'dispatch'.
+// This is a standalone tool, NOT wrapped in a plugin() — the framework
+// discovers it automatically from the tools/ directory.
 
-const dispatchPlugin = async (_ctx) => {
-  // Capture the SDK client at plugin load time.
-  // The client operates at the plugin/framework level — separate from the
-  // calling agent's permissions — enabling it to create child sessions for
-  // any registered agent after validation passes.
-  const client = _ctx.client;
-  _sdkClient = client;
+export default tool({
+  description: "Validate and route a structured dispatch to a sub-agent. "
+    + "Rejects non-compliant dispatches before they reach the target agent. "
+    + "Performs structural field validation, KD path verification, content safety checks, "
+    + "agent validation, phase readiness checks, and audit logging.",
+  args: {
+    target_agent: tool.schema.string().describe(
+      "Registered sub-agent to receive the dispatch. "
+      + "Must be one of: explorer, spec-weaver, pathfinder, analyzer, artisan, committer, inspector, scribe, habit-builder."
+    ),
+    artifact: tool.schema.string().max(200).describe(
+      "Concise artifact description (e.g., 'SPEC KD', 'exploration KD', 'implementation')"
+    ),
+    referenced_kds: tool.schema.array(tool.schema.string()).max(20).optional().default([]).describe(
+      "KD path references only — must match knowledge/{type}-{name}-{date}.md pattern"
+    ),
+    domain_or_scope_or_mode: tool.schema.string().optional().describe(
+      "Context field: DOMAIN: {noun phrase} | SCOPE: {identifier} | MODE: {PREFLIGHT|CHECKPOINT|CLEANUP}"
+    ),
+    acceptance_criteria: tool.schema.string().max(1000).describe(
+      "WHAT-level acceptance criteria (no code, no file paths, no implementation instructions)"
+    )
+  },
+  async execute(args, context) {
+    try {
+      validateDispatch(args, context.worktree);
+      const { target_agent, artifact, referenced_kds, acceptance_criteria } = args;
+      const sessionDate = extractSessionDate(referenced_kds) || new Date().toISOString().substring(0, 10);
+      const dispatchId = generateDispatchId(sessionDate);
 
-  return {
-    tool: {
-      dispatch: tool({
-        description: "Validate and route a structured dispatch to a sub-agent. "
-          + "Rejects non-compliant dispatches before they reach the target agent. "
-          + "Performs structural field validation, KD path verification, content safety checks, "
-          + "agent validation, phase readiness checks, and audit logging.",
-        args: {
-          target_agent: tool.schema.string().describe(
-            "Registered sub-agent to receive the dispatch. "
-            + "Must be one of: explorer, spec-weaver, pathfinder, analyzer, artisan, committer, inspector, scribe, habit-builder."
-          ),
-          artifact: tool.schema.string().max(200).describe(
-            "Concise artifact description (e.g., 'SPEC KD', 'exploration KD', 'implementation')"
-          ),
-          referenced_kds: tool.schema.array(tool.schema.string()).max(20).optional().default([]).describe(
-            "KD path references only — must match knowledge/{type}-{name}-{date}.md pattern"
-          ),
-          domain_or_scope_or_mode: tool.schema.string().optional().describe(
-            "Context field: DOMAIN: {noun phrase} | SCOPE: {identifier} | MODE: {PREFLIGHT|CHECKPOINT|CLEANUP}"
-          ),
-          acceptance_criteria: tool.schema.string().max(1000).describe(
-            "WHAT-level acceptance criteria (no code, no file paths, no implementation instructions)"
-          )
-        },
-        async execute(args, context) {
-          try {
-            validateDispatch(args, context.worktree);
-            const { target_agent, artifact, referenced_kds, acceptance_criteria } = args;
-            const sessionDate = extractSessionDate(referenced_kds) || new Date().toISOString().substring(0, 10);
-            const dispatchId = generateDispatchId(sessionDate);
+      // Build the validated dispatch message for the Overseer to forward via task
+      const validatedDispatch = buildDispatchMessage(args);
 
-            // Route to target agent via SDK client (F-001)
-            // The dispatch tool creates a child session for the validated agent
-            // and prompts it with the dispatch content. This runs in the plugin's
-            // own execution context, not the Overseer's, so it has framework-level
-            // access to create sessions for any registered agent.
-            const routeResult = await dispatchToAgent(client, args, context);
+      // Log acceptance to audit
+      writeAuditEntry(context.worktree, {
+        timestamp: new Date().toISOString(),
+        target_agent,
+        artifact,
+        referenced_kds: referenced_kds || [],
+        acceptance_hash: truncateHash(acceptance_criteria || ""),
+        result: "accepted",
+        reason: null
+      });
 
-            // Log acceptance to audit (includes routing outcome)
-            const auditEntry = {
-              timestamp: new Date().toISOString(),
-              target_agent: target_agent,
-              artifact: artifact,
-              referenced_kds: referenced_kds || [],
-              acceptance_hash: truncateHash(acceptance_criteria || ""),
-              result: "accepted",
-              reason: routeResult.error ? `routing_warning: ${routeResult.error}` : null
-            };
-            writeAuditEntry(context.worktree, auditEntry);
+      const output = {
+        status: "accepted",
+        dispatch_id: dispatchId,
+        target_agent,
+        validated_dispatch: validatedDispatch,
+        audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
+      };
 
-            const output = {
-              status: "accepted",
-              dispatch_id: dispatchId,
-              target_agent: target_agent,
-              session_id: routeResult.sessionId,
-              result: routeResult.sessionId
-                ? "Dispatch routed to target agent"
-                : `Validation passed but routing unavailable: ${routeResult.error}`,
-              audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
-            };
-
-            return {
-              title: routeResult.sessionId ? "Dispatch Accepted" : "Dispatch Accepted (routing unavailable)",
-              output: JSON.stringify(output, null, 2),
-              metadata: {
-                dispatch_id: dispatchId,
-                target_agent: target_agent,
-                session_id: routeResult.sessionId,
-                status: "accepted",
-                audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
-              }
-            };
-          } catch (err) {
-            if (err instanceof ValidationError) {
-              const sessionDate = new Date().toISOString().substring(0, 10);
-              const { target_agent, artifact, referenced_kds, acceptance_criteria } = args;
-
-              // Log rejection to audit
-              const auditEntry = {
-                timestamp: new Date().toISOString(),
-                target_agent: target_agent || "unknown",
-                artifact: artifact || "unknown",
-                referenced_kds: referenced_kds || [],
-                acceptance_hash: truncateHash(acceptance_criteria || ""),
-                result: "rejected",
-                reason: err.code
-              };
-              writeAuditEntry(context.worktree, auditEntry);
-
-              return {
-                title: `Dispatch Rejected — ${err.code}`,
-                output: JSON.stringify({
-                  status: "rejected",
-                  error_code: err.code,
-                  field: err.field,
-                  violation: err.violation,
-                  detail: err.detail,
-                  audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
-                }, null, 2),
-                metadata: {
-                  status: "rejected",
-                  error_code: err.code,
-                  field: err.field
-                }
-              };
-            }
-
-            // Unknown error — INTERNAL_ERROR
-            const sessionDate = new Date().toISOString().substring(0, 10);
-            writeAuditEntry(context.worktree, {
-              timestamp: new Date().toISOString(),
-              target_agent: args?.target_agent || "unknown",
-              artifact: args?.artifact || "unknown",
-              referenced_kds: args?.referenced_kds || [],
-              acceptance_hash: truncateHash(args?.acceptance_criteria || ""),
-              result: "rejected",
-              reason: "INTERNAL_ERROR"
-            });
-
-            return {
-              title: "Dispatch Rejected — INTERNAL_ERROR",
-              output: JSON.stringify({
-                status: "rejected",
-                error_code: "INTERNAL_ERROR",
-                field: null,
-                violation: err.message,
-                detail: "Tool-level failure occurred during validation. Verify plugin configuration.",
-                audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
-              }, null, 2),
-              metadata: {
-                status: "rejected",
-                error_code: "INTERNAL_ERROR",
-                field: null
-              }
-            };
-          }
+      return {
+        title: "Dispatch Accepted",
+        output: JSON.stringify(output, null, 2),
+        metadata: {
+          dispatch_id: dispatchId,
+          target_agent,
+          status: "accepted",
+          validated_dispatch: validatedDispatch,
+          audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
         }
-      })
-    }
-  };
-};
+      };
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        const sessionDate = new Date().toISOString().substring(0, 10);
+        const { target_agent, artifact, referenced_kds, acceptance_criteria } = args;
 
-export default dispatchPlugin;
-export { dispatchPlugin as DispatchPlugin };
+        writeAuditEntry(context.worktree, {
+          timestamp: new Date().toISOString(),
+          target_agent: target_agent || "unknown",
+          artifact: artifact || "unknown",
+          referenced_kds: referenced_kds || [],
+          acceptance_hash: truncateHash(acceptance_criteria || ""),
+          result: "rejected",
+          reason: err.code
+        });
+
+        return {
+          title: `Dispatch Rejected — ${err.code}`,
+          output: JSON.stringify({
+            status: "rejected",
+            error_code: err.code,
+            field: err.field,
+            violation: err.violation,
+            detail: err.detail,
+            audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
+          }, null, 2),
+          metadata: {
+            status: "rejected",
+            error_code: err.code,
+            field: err.field
+          }
+        };
+      }
+
+      // Unknown error — INTERNAL_ERROR
+      const sessionDate = new Date().toISOString().substring(0, 10);
+      writeAuditEntry(context.worktree, {
+        timestamp: new Date().toISOString(),
+        target_agent: args?.target_agent || "unknown",
+        artifact: args?.artifact || "unknown",
+        referenced_kds: args?.referenced_kds || [],
+        acceptance_hash: truncateHash(args?.acceptance_criteria || ""),
+        result: "rejected",
+        reason: "INTERNAL_ERROR"
+      });
+
+      return {
+        title: "Dispatch Rejected — INTERNAL_ERROR",
+        output: JSON.stringify({
+          status: "rejected",
+          error_code: "INTERNAL_ERROR",
+          field: null,
+          violation: err.message,
+          detail: "Tool-level failure occurred during validation. Verify tool configuration.",
+          audit_entry: `knowledge/audit-dispatch-log-${sessionDate}.md`
+        }, null, 2),
+        metadata: {
+          status: "rejected",
+          error_code: "INTERNAL_ERROR",
+          field: null
+        }
+      };
+    }
+  }
+});
