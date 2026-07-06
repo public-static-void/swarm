@@ -10,6 +10,18 @@ permission:
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
     "**/skills/kd-system/templates/*.md": allow
+    # ==== PROTOCOL READS (added for incentive chain break) ====
+    "agents/overseer.md": allow
+    "AGENTS.md": allow
+    "agents/*.md": allow
+    "skills/escalation-protocol/SKILL.md": allow
+    "knowledge/exploration-*.md": allow
+    "knowledge/analysis-*.md": allow
+    "knowledge/spec-*.md": allow
+    "knowledge/plan-*.md": allow
+    "knowledge/impl-*.md": allow
+    "knowledge/process-*.md": allow
+    # ==== END PROTOCOL READS ====
   grep: deny
   edit:
     "*": deny
@@ -22,7 +34,6 @@ permission:
   skill:
     "*": deny
     "kd-system": allow
-    "escalation-protocol": allow
   lsp: deny
   question: allow
   webfetch: deny
@@ -180,9 +191,10 @@ ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classificatio
 
 ## Delegation Rules
 
-1. **Delegate WHAT** — describe artifact, objective, criteria. Agents choose approach.
-2. **Structured templates** — populate ACTION, ARTIFACT, DOMAIN/SCOPE, KDS, RETURN, ACCEPTANCE.
-3. **On escalation** — load `escalation-protocol` skill, follow Overseer Response.
+1. **Use the `dispatch` tool** — always use the `dispatch` tool for all agent delegations. Do not use the `task` tool directly.
+2. **Delegate WHAT** — describe artifact, objective, criteria. Agents choose approach.
+3. **Structured templates** — populate ACTION, ARTIFACT, DOMAIN/SCOPE, KDS, RETURN, ACCEPTANCE.
+4. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
 
 ## Context Marker
 
