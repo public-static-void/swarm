@@ -1,0 +1,151 @@
+{
+  "version": "1.0.0",
+  "description": "Dispatch prompt templates for the Overseer's 12-phase lifecycle engine. Each template defines how the 7 dispatch fields (DISPATCH TO, ACTION, ARTIFACT, DOMAIN|SCOPE|MODE, KDS, RETURN, ACCEPTANCE) are generated for a given mode. Slots marked {{variable}} are filled at generation time by the template engine from KD reader data and session context.",
+  "modes": {
+    "preflight": {
+      "mode": "preflight",
+      "target_agent": "committer",
+      "action": "Dispatch",
+      "artifact_pattern": "Git workspace state",
+      "domain_or_scope_or_mode": "MODE: PREFLIGHT",
+      "kds_pattern": [],
+      "return_pattern": "Git status summary (branch, clean/dirty state)",
+      "acceptance_pattern": "Git workspace is clean, working branch exists, and any dirty state is stashed or committed"
+    },
+    "explore": {
+      "mode": "explore",
+      "target_agent": "explorer",
+      "action": "Create",
+      "artifact_pattern": "exploration KD",
+      "domain_or_scope_or_mode": "DOMAIN: {{objective}}",
+      "kds_pattern": [
+        "{{intent_kd}}"
+      ],
+      "return_pattern": "knowledge/exploration-{{name}}-{{date}}.md",
+      "acceptance_pattern": "Exploration KD exists at knowledge/exploration-{{name}}-{{date}}.md covering {{objective}} with component map, architecture overview, and identified risks"
+    },
+    "investigate": {
+      "mode": "investigate",
+      "target_agent": "analyzer",
+      "action": "Investigate",
+      "artifact_pattern": "ANALYSIS KD",
+      "domain_or_scope_or_mode": "DOMAIN: {{objective}}",
+      "kds_pattern": [
+        "{{intent_kd}}",
+        "knowledge/exploration-{{name}}-{{date}}.md"
+      ],
+      "return_pattern": "knowledge/analysis-{{name}}-{{date}}.md",
+      "acceptance_pattern": "ANALYSIS KD exists at knowledge/analysis-{{name}}-{{date}}.md with findings, root cause analysis, severity classification, and actionable recommendations"
+    },
+    "align": {
+      "mode": "align",
+      "target_agent": "spec-weaver",
+      "action": "Create",
+      "artifact_pattern": "SPEC KD",
+      "domain_or_scope_or_mode": "DOMAIN: {{objective}}",
+      "kds_pattern": [
+        "{{intent_kd}}",
+        "knowledge/exploration-{{name}}-{{date}}.md",
+        "knowledge/analysis-{{name}}-{{date}}.md"
+      ],
+      "return_pattern": "knowledge/spec-{{name}}-{{date}}.md",
+      "acceptance_pattern": "SPEC KD exists at knowledge/spec-{{name}}-{{date}}.md with numbered requirements, interface contracts, and verifiable acceptance criteria traceable to {{intent_kd}}"
+    },
+    "decompose": {
+      "mode": "decompose",
+      "target_agent": "pathfinder",
+      "action": "Create",
+      "artifact_pattern": "PLAN KD",
+      "domain_or_scope_or_mode": "SCOPE: {{name}}",
+      "kds_pattern": [
+        "knowledge/spec-{{name}}-{{date}}.md"
+      ],
+      "return_pattern": "knowledge/plan-{{name}}-{{date}}.md",
+      "acceptance_pattern": "PLAN KD exists at knowledge/plan-{{name}}-{{date}}.md with dependency graph, milestones, and every acceptance criterion from knowledge/spec-{{name}}-{{date}}.md mapped to a task"
+    },
+    "swarm": {
+      "mode": "swarm",
+      "target_agent": "artisan",
+      "action": "Implement",
+      "artifact_pattern": "implementation",
+      "domain_or_scope_or_mode": "SCOPE: {{name}}",
+      "kds_pattern": [
+        "knowledge/spec-{{name}}-{{date}}.md",
+        "knowledge/plan-{{name}}-{{date}}.md"
+      ],
+      "return_pattern": "knowledge/impl-{{name}}-{{date}}.md",
+      "acceptance_pattern": "All plan tasks from knowledge/plan-{{name}}-{{date}}.md are implemented, verification gates pass, and implementation summary KD exists at knowledge/impl-{{name}}-{{date}}.md"
+    },
+    "verify": {
+      "mode": "verify",
+      "target_agent": "inspector",
+      "action": "Review",
+      "artifact_pattern": "REVIEW KD or AUDIT KD",
+      "domain_or_scope_or_mode": "SCOPE: {{name}}",
+      "kds_pattern": [
+        "knowledge/spec-{{name}}-{{date}}.md",
+        "knowledge/plan-{{name}}-{{date}}.md",
+        "knowledge/impl-{{name}}-{{date}}.md"
+      ],
+      "return_pattern": "knowledge/review-{{name}}-{{date}}.md",
+      "acceptance_pattern": "REVIEW KD or AUDIT KD exists at knowledge/review-{{name}}-{{date}}.md with PASS/FAIL verdict, traceability matrix, and evidence of verification against knowledge/spec-{{name}}-{{date}}.md"
+    },
+    "extract": {
+      "mode": "extract",
+      "target_agent": "scribe",
+      "action": "Create",
+      "artifact_pattern": "COMPOSED KD",
+      "domain_or_scope_or_mode": "SCOPE: {{name}}",
+      "kds_pattern": [
+        "knowledge/*-{{date}}-*.md"
+      ],
+      "return_pattern": "Paths to COMPOSED KDs created",
+      "acceptance_pattern": "COMPOSED KDs exist consolidating session knowledge, stale KDs are marked superseded, and cross-references are updated"
+    },
+    "evolve": {
+      "mode": "evolve",
+      "target_agent": "habit-builder",
+      "action": "Analyze",
+      "artifact_pattern": "PROCESS KD",
+      "domain_or_scope_or_mode": "SCOPE: {{name}}",
+      "kds_pattern": [
+        "knowledge/*-{{date}}-*.md"
+      ],
+      "return_pattern": "knowledge/process-{{name}}-{{date}}.md",
+      "acceptance_pattern": "PROCESS KD exists at knowledge/process-{{name}}-{{date}}.md with friction classification, severity rubric, and fix recommendations for improving the development process"
+    },
+    "commit": {
+      "mode": "commit",
+      "target_agent": "committer",
+      "action": "Dispatch",
+      "artifact_pattern": "Git workspace state",
+      "domain_or_scope_or_mode": "MODE: CLEANUP",
+      "kds_pattern": [],
+      "return_pattern": "Git status summary (branch, clean/dirty state)",
+      "acceptance_pattern": "Git workspace is clean, all changes are committed with semantic messages, and branch is pushed to remote"
+    },
+    "checkpoint": {
+      "mode": "checkpoint",
+      "target_agent": "committer",
+      "action": "Dispatch",
+      "artifact_pattern": "Git workspace state",
+      "domain_or_scope_or_mode": "MODE: CHECKPOINT",
+      "kds_pattern": [],
+      "return_pattern": "Git status summary (branch, clean/dirty state)",
+      "acceptance_pattern": "Git workspace is clean and branch is ready for the next lifecycle step"
+    },
+    "report": {
+      "mode": "report",
+      "target_agent": "overseer",
+      "action": "Create",
+      "artifact_pattern": "REPORT KD",
+      "domain_or_scope_or_mode": "DOMAIN: {{objective}}",
+      "kds_pattern": [
+        "knowledge/*-{{date}}-*.md"
+      ],
+      "return_pattern": "knowledge/report-{{name}}-{{date}}.md",
+      "acceptance_pattern": "REPORT KD exists at knowledge/report-{{name}}-{{date}}.md summarizing all session findings, outcomes, and process friction",
+      "self_execute": true
+    }
+  }
+}
