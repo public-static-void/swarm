@@ -1,11 +1,11 @@
-// plugins/dispatch-gate/index.test.js
+// tests/plugins/dispatch-gate/index.test.js
 // Tests for dispatch-gate plugin — structured dispatch detection,
 // legacy format rejection, non-Overseer pass-through.
 
 import { describe, it, expect } from "vitest";
 
-// Import the plugin
-import dispatchGatePlugin from "./index.js";
+// Import the plugin from its actual location
+import dispatchGatePlugin from "../../../plugins/dispatch-gate/index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers

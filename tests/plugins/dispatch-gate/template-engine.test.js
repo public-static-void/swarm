@@ -1,4 +1,4 @@
-// plugins/dispatch-gate/template-engine.test.js
+// tests/plugins/dispatch-gate/template-engine.test.js
 // Tests for the template engine — variable resolution, glob patterns, mode routing.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -6,7 +6,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 
-import { fillTemplate } from "./template-engine.js";
+import { fillTemplate } from "../../../plugins/dispatch-gate/template-engine.js";
 
 // ---------------------------------------------------------------------------
 // Test fixtures
