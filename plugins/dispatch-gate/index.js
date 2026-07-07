@@ -1,11 +1,17 @@
 // plugins/dispatch-gate/index.js
 // Intercepts `task` tool calls via tool.execute.before hook.
-// Validates Overseer dispatches against structural template rules.
-// Non-Overseer dispatches pass through unconditionally.
-// No pattern-based rejection — only structural format checks.
+// For structured dispatches (mode + intent_kd): generates prompt via template engine,
+// validates the generated prompt, routes to target agent via SDK, logs to audit.
+// For legacy Overseer dispatches ("DISPATCH TO:"): rejects with migration message.
+// For non-Overseer calls: passes through unconditionally.
 
 import fs from "fs";
 import path from "path";
+import { fillTemplate } from "./template-engine.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Discover agent names from the agents/ directory at the workspace root.
@@ -31,11 +37,32 @@ function discoverAgents(workspaceRoot) {
 
 const KD_PATH_PATTERN = /^knowledge\/[a-z]+-[a-z0-9-]+-\d{4}-\d{2}-\d{2}\.md$/;
 
-// --- Structural format validation ---
+// --- Structured dispatch detection ---
+
+/**
+ * Detect whether the task call is a structured dispatch.
+ * Structured dispatches pass an object with `mode` and `intent_kd` fields.
+ */
+function isStructuredDispatch(args) {
+  if (typeof args !== "object" || args === null) return false;
+  return !!(args.mode && args.intent_kd);
+}
+
+// --- Legacy format detection ---
+
+/**
+ * Detect whether the prompt is a legacy Overseer-format dispatch.
+ * Checks if the prompt begins with "DISPATCH TO:" as its first significant content.
+ */
+function isLegacyOverseerFormat(prompt) {
+  if (!prompt) return false;
+  return /^DISPATCH TO:/i.test(String(prompt).trimStart());
+}
+
+// --- Structural format validation (same as before) ---
 
 /**
  * Extract the DISPATCH TO agent from a dispatch prompt.
- * Requires at least one horizontal space between colon and value for a valid match.
  */
 function extractTargetAgent(prompt) {
   if (!prompt) return null;
@@ -45,7 +72,6 @@ function extractTargetAgent(prompt) {
 
 /**
  * Extract KD path references from a dispatch prompt (lines with `- knowledge/...`).
- * Validates each against the KD path pattern.
  */
 function validateKDReferences(prompt) {
   if (!prompt) return [];
@@ -62,44 +88,24 @@ function validateKDReferences(prompt) {
 }
 
 /**
- * Detect whether the prompt is an Overseer-format dispatch.
- * Checks if the prompt begins with "DISPATCH TO:" as its first significant content.
- */
-function isOverseerFormat(prompt) {
-  if (!prompt) return false;
-  return /^DISPATCH TO:/i.test(String(prompt).trimStart());
-}
-
-/**
  * Validate that an Overseer dispatch contains all required structural fields.
- * Throws on the first missing field with a descriptive rejection code.
- * Uses /m flag and horizontal whitespace to ensure values are on the same line,
- * preventing cross-line false matches (e.g., ACTION: with no value should not
- * consume the next field name).
  */
 function validateStructuralFields(prompt) {
-  // DISPATCH TO: must be present with a value on the same line
   if (!/^DISPATCH TO:[ \t]+\S+/m.test(prompt)) {
     throw new Error(
       "DISPATCH REJECTED: MISSING_DISPATCH_TO — The required field 'DISPATCH TO:' was not found or has no value"
     );
   }
-
-  // ACTION: must be present with a value on the same line
   if (!/^ACTION:[ \t]+\S+/m.test(prompt)) {
     throw new Error(
       "DISPATCH REJECTED: MISSING_ACTION — The required field 'ACTION:' was not found or has no value"
     );
   }
-
-  // ARTIFACT: must be present with a value on the same line
   if (!/^ARTIFACT:[ \t]+\S+/m.test(prompt)) {
     throw new Error(
       "DISPATCH REJECTED: MISSING_ARTIFACT — The required field 'ARTIFACT:' was not found or has no value"
     );
   }
-
-  // One of DOMAIN:, SCOPE:, or MODE: must be present with a value on the same line
   const hasDomainOrScopeOrMode = (
     /^DOMAIN:[ \t]+\S+/m.test(prompt) ||
     /^SCOPE:[ \t]+\S+/m.test(prompt) ||
@@ -112,84 +118,232 @@ function validateStructuralFields(prompt) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Audit logging
+// ---------------------------------------------------------------------------
+
+/**
+ * Append an audit entry to the knowledge/audit-dispatch-engine-*.md file.
+ * Creates the file if it does not exist.
+ */
+function logAuditEntry(workspaceRoot, entry) {
+  const auditDir = path.join(workspaceRoot, "knowledge");
+  const today = new Date().toISOString().slice(0, 10);
+  const auditPath = path.join(auditDir, `audit-dispatch-engine-${today}.md`);
+
+  try {
+    if (!fs.existsSync(auditDir)) {
+      fs.mkdirSync(auditDir, { recursive: true });
+    }
+
+    const timestamp = new Date().toISOString();
+    const line = `- **${timestamp}** — ${entry.mode} → ${entry.target_agent}: ${entry.status}${entry.error ? " — " + entry.error : ""}`;
+
+    let existing = "";
+    if (fs.existsSync(auditPath)) {
+      existing = fs.readFileSync(auditPath, "utf-8");
+    }
+
+    // If no header exists yet, add one
+    if (!existing.startsWith("# AUDIT:")) {
+      existing = `# AUDIT: Dispatch Engine — ${today}\n\n`;
+    }
+
+    fs.writeFileSync(auditPath, existing + line + "\n", "utf-8");
+  } catch (err) {
+    console.warn("[dispatch-gate] Failed to write audit log: " + err.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Structured dispatch handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle a structured dispatch call: generate prompt, validate, route via SDK.
+ *
+ * @param {object} args — The structured dispatch args ({ mode, intent_kd, session_date?, scope? })
+ * @param {object} ctx — The hook context ({ tool, sessionID, callID })
+ * @param {object} input — The PluginInput object
+ * @param {string} workspaceRoot — Workspace root directory
+ * @param {string[]} knownAgents — List of known agent names
+ * @returns {Promise<object>} — The routing result
+ */
+async function handleStructuredDispatch(args, ctx, input, workspaceRoot, knownAgents) {
+  const { mode, intent_kd, session_date, scope } = args;
+
+  // Step 1: Generate dispatch prompt from template engine
+  let result;
+  try {
+    result = fillTemplate(mode, intent_kd, {
+      session_date,
+      scope,
+      workspaceRoot,
+    });
+  } catch (err) {
+    logAuditEntry(workspaceRoot, {
+      mode,
+      target_agent: "unknown",
+      status: "rejected",
+      error: err.message,
+    });
+    throw err;
+  }
+
+  // Step 2: Validate the generated prompt as a safety check
+  try {
+    validateStructuralFields(result.prompt);
+    const kdViolations = validateKDReferences(result.prompt);
+    if (kdViolations.length > 0) {
+      throw new Error("DISPATCH REJECTED: INVALID_KD_PATH — " + kdViolations.join("; "));
+    }
+  } catch (err) {
+    logAuditEntry(workspaceRoot, {
+      mode,
+      target_agent: result.target_agent,
+      status: "validation_failed",
+      error: err.message,
+    });
+    throw err;
+  }
+
+  // Step 3: Validate target agent
+  if (!knownAgents.includes(result.target_agent)) {
+    const errMsg = `DISPATCH REJECTED: UNKNOWN_AGENT — "${result.target_agent}" is not a registered agent`;
+    logAuditEntry(workspaceRoot, {
+      mode,
+      target_agent: result.target_agent,
+      status: "rejected",
+      error: errMsg,
+    });
+    throw new Error(errMsg);
+  }
+
+  // Step 4: Self-execute mode (report) — return template data, no agent dispatch
+  if (result.self_execute) {
+    logAuditEntry(workspaceRoot, {
+      mode,
+      target_agent: result.target_agent,
+      status: "self_execute",
+      error: null,
+    });
+    return {
+      status: "self_execute",
+      mode,
+      prompt: result.prompt,
+      dispatch_fields: result.dispatch_fields,
+    };
+  }
+
+  // Step 5: Route to target agent via SDK
+  try {
+    // Create a child session with the target agent
+    const childSession = await input.client.session.create({
+      parentID: ctx.sessionID,
+      title: `${mode}: ${intent_kd}`,
+    });
+
+    // Send the generated dispatch prompt to the child session
+    const promptResult = await input.client.session.prompt({
+      id: childSession.id,
+      agent: result.target_agent,
+      noReply: true,
+      parts: [
+        {
+          type: "text",
+          text: result.prompt,
+        },
+      ],
+    });
+
+    logAuditEntry(workspaceRoot, {
+      mode,
+      target_agent: result.target_agent,
+      status: "dispatched",
+      error: null,
+    });
+
+    return {
+      status: "dispatched",
+      session_id: childSession.id,
+      target_agent: result.target_agent,
+      mode,
+    };
+  } catch (err) {
+    logAuditEntry(workspaceRoot, {
+      mode,
+      target_agent: result.target_agent,
+      status: "routing_failed",
+      error: err.message,
+    });
+
+    // Fallback: return the generated prompt for manual forwarding
+    console.warn("[dispatch-gate] SDK routing failed, returning generated prompt as fallback: " + err.message);
+    return {
+      status: "routing_failed",
+      fallback: true,
+      mode,
+      prompt: result.prompt,
+      target_agent: result.target_agent,
+      dispatch_fields: result.dispatch_fields,
+      error: err.message,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plugin entry point
+// ---------------------------------------------------------------------------
+
 /**
  * Plugin entry point — called by opencode on load.
- * Receives PluginInput with { client, project, directory, worktree, serverUrl, $ }.
- * Discovers agent names from the agents/ directory at the workspace root.
- * Returns Hooks object with tool.execute.before interceptor.
  */
 export default async function dispatchGatePlugin(input) {
   const workspaceRoot = input.directory || process.cwd();
   const KNOWN_AGENTS = discoverAgents(workspaceRoot);
 
-  /**
-   * Validate a task tool call against dispatch gate rules.
-   *
-   * For Overseer dispatches (prompt starts with "DISPATCH TO:"):
-   *   Validates all required structural fields are present.
-   *   Also validates KD path references and target agent.
-   *
-   * For non-Overseer dispatches:
-   *   Passes through unconditionally without validation.
-   */
-  function validateTaskCall(args) {
-    const prompt = typeof args === "string" ? args : (args.prompt || "");
-
-    // Detect if this is an Overseer-format dispatch
-    if (!isOverseerFormat(prompt)) {
-      // Non-Overseer dispatch — allow unconditionally
-      return;
-    }
-
-    // Overseer dispatch — validate structural fields
-    validateStructuralFields(prompt);
-
-    // KD path format validation
-    const kdViolations = validateKDReferences(prompt);
-    if (kdViolations.length > 0) {
-      throw new Error("DISPATCH REJECTED: INVALID_KD_PATH — " + kdViolations.join("; "));
-    }
-
-    // Target agent validation
-    const targetAgent = extractTargetAgent(prompt);
-    if (targetAgent && !KNOWN_AGENTS.includes(targetAgent)) {
-      throw new Error(
-        'DISPATCH REJECTED: UNKNOWN_AGENT — "' + targetAgent + '" is not a registered agent'
-      );
-    }
-
-    // subagent_type validation
-    if (typeof args === "object" && args && args.subagent_type) {
-      const agent = args.subagent_type.toLowerCase();
-      if (!KNOWN_AGENTS.includes(agent)) {
-        throw new Error(
-          'DISPATCH REJECTED: UNKNOWN_AGENT — "' + agent + '" is not a registered agent'
-        );
-      }
-    }
-  }
-
   return {
     /**
      * Intercepts all tool executions before they run.
-     * Only intercepts `task` tool calls for dispatch validation.
-     *
-     * ctx: { tool, sessionID, callID }
-     * output: { args } — the tool call parameters
-     *
-     * To ALLOW: return without modifying output
-     * To BLOCK: throw an Error (caught by opencode, surfaced to caller)
+     * Only intercepts `task` tool calls for dispatch validation/generation.
      */
     "tool.execute.before": async (ctx, output) => {
       if (ctx.tool !== "task") return;
 
-      try {
-        validateTaskCall(output.args);
-      } catch (err) {
-        // Re-throw to block the tool call.
-        // opencode surfaces this error to the tool caller (LLM).
-        throw err;
+      const args = output.args;
+      const prompt = typeof args === "string" ? args : (args.prompt || "");
+
+      // --- Detection order ---
+
+      // 1. Structured dispatch check (mode + intent_kd in args object)
+      if (isStructuredDispatch(args)) {
+        try {
+          const result = await handleStructuredDispatch(args, ctx, input, workspaceRoot, KNOWN_AGENTS);
+          // Modify the output args to signal completion
+          // The plugin can't easily abort the original task call, so we
+          // set the prompt to indicate routing was handled
+          output.args = {
+            prompt: "[Dispatched via template engine]",
+            subagent_type: args.subagent_type || args.mode,
+            _dispatch_result: result,
+          };
+          return;
+        } catch (err) {
+          throw err;
+        }
       }
+
+      // 2. Legacy Overseer format check (starts with "DISPATCH TO:")
+      if (isLegacyOverseerFormat(prompt)) {
+        throw new Error(
+          "DISPATCH REJECTED: LEGACY_FORMAT — Use structured dispatch format instead. " +
+          "Call task with { mode, intent_kd, session_date } parameters. " +
+          "See templates.json for available modes and their configurations."
+        );
+      }
+
+      // 3. Non-Overseer / non-dispatch — pass through unconditionally
+      return;
     }
   };
 }
