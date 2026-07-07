@@ -73,11 +73,11 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 ## Delegation Rules
 
-1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `dispatch-gate` plugin generates dispatch prompts from templates using your data fields.
+1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `dispatch-gate` plugin generates dispatch prompts from templates using your data fields and injects the required task tool fields.
 
-2. **Provide structured fields in every task call** — include these required fields: `mode` (one of: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight), `intent_kd` (path to the current INTENT KD), and `session_date` (YYYY-MM-DD). Optionally provide `scope` for domain context.
+2. **Provide ONLY structured fields** — include these fields in every task call: `mode` (one of: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight), `intent_kd` (path to the current INTENT KD), and `session_date` (YYYY-MM-DD). Optionally provide `scope` for domain context. Do NOT provide `prompt`, `description`, or `subagent_type` directly — the plugin generates these.
 
-3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch (DISPATCH TO:, ACTION:, ARTIFACT:, ACCEPTANCE:, etc.) with the correct target agent and structure. Provide your data fields; the template handles the format.
+3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 
 4. **Refer to KDs by path** — use path references following the pattern `knowledge/{type}-{name}-{date}.md` for any KD references.
 

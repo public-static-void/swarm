@@ -1,7 +1,14 @@
 // plugins/dispatch-gate/index.js
-// Intercepts `task` tool calls via tool.execute.before hook.
-// Generates dispatch prompts from templates using structured fields:
-//   mode, intent_kd, session_date, scope (optional)
+// Intercepts `task` tool calls to enforce structured dispatch format.
+//
+// Two hooks work together:
+//   1. tool.definition — extends the task tool's JSON Schema so that
+//      structured fields (mode, intent_kd, session_date, scope) are
+//      valid parameters and prompt/description/subagent_type are optional.
+//   2. tool.execute.before — detects structured dispatch calls, resolves
+//      the template for the given mode, injects prompt/description/
+//      subagent_type into args, and removes the structured fields.
+//
 // Same handler for ALL callers — no Overseer/Artisan distinction.
 // Rejects free-text prompts with positive guidance about the required fields.
 
@@ -19,18 +26,6 @@ import templates from "./templates.json" with { type: "json" };
 function isStructuredDispatch(args) {
   if (!args || typeof args !== "object") return false;
   return !!(args.mode && args.intent_kd && args.session_date);
-}
-
-/**
- * Extract structured fields from task args.
- */
-function extractFields(args) {
-  return {
-    mode: args.mode || "",
-    intent_kd: args.intent_kd || "",
-    session_date: args.session_date || "",
-    scope: args.scope || "",
-  };
 }
 
 /**
@@ -55,16 +50,6 @@ function findTemplate(mode) {
   return templates[mode] || null;
 }
 
-/**
- * Validate that all required fields for template generation are present.
- */
-function validateTemplateFields(fields) {
-  if (!fields.mode) return false;
-  if (!fields.intent_kd) return false;
-  if (!fields.session_date) return false;
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
@@ -74,11 +59,69 @@ function validateTemplateFields(fields) {
  */
 export default async function dispatchGatePlugin() {
   return {
+    // -----------------------------------------------------------------------
+    // Hook 1: Modify the task tool schema
+    // -----------------------------------------------------------------------
+    // Runs when the tool definition is built (before sending to the LLM).
+    // Adds structured dispatch fields as optional properties and removes
+    // prompt/description/subagent_type from the required array. This lets
+    // agents provide ONLY mode+intent_kd+session_date (no prompt) without
+    // triggering a schema validation error.
+
+    /**
+     * Extends the `task` tool JSON Schema to accept structured dispatch fields.
+     * This allows the Overseer to provide mode+intent_kd+session_date without
+     * prompt/description/subagent_type — the plugin generates those later.
+     */
+    "tool.definition": async (input, output) => {
+      if (input.toolID !== "task") return;
+      if (!output.parameters || !output.parameters.properties) return;
+
+      // Add structured dispatch fields as optional properties
+      output.parameters.properties.mode = {
+        type: "string",
+        description:
+          "Dispatch mode: explore, investigate, align, decompose, " +
+          "swarm, verify, extract, evolve, commit, report, " +
+          "checkpoint, preflight",
+      };
+      output.parameters.properties.intent_kd = {
+        type: "string",
+        description:
+          "Path to the INTENT KD for this session " +
+          "(e.g., knowledge/intent-auth-flow-2026-07-07.md)",
+      };
+      output.parameters.properties.session_date = {
+        type: "string",
+        description: "Session date in YYYY-MM-DD format",
+      };
+      output.parameters.properties.scope = {
+        type: "string",
+        description: "Optional scope / domain context for the dispatch",
+      };
+
+      // Make prompt, description, subagent_type optional since the plugin
+      // injects them when structured dispatch fields are provided
+      if (Array.isArray(output.parameters.required)) {
+        output.parameters.required = output.parameters.required.filter(
+          (f) => f !== "prompt" && f !== "description" && f !== "subagent_type",
+        );
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // Hook 2: Transform structured dispatches before execution
+    // -----------------------------------------------------------------------
+    // Fires after schema validation. By this point the task tool schema
+    // already accepts structured fields (thanks to hook 1), so the call
+    // passes schema validation. This hook transforms structured fields into
+    // the standard task tool fields (prompt, description, subagent_type).
+
     /**
      * Intercepts all tool executions before they run.
      * For `task` tool: checks for structured dispatch fields.
-     * If structured → resolves template → routes prompt to target agent.
-     * If free-text → rejects with positive guidance.
+     * If structured → resolves template → injects into args.
+     * If free-text (prompt without structured fields) → rejects.
      */
     "tool.execute.before": async (ctx, output) => {
       if (ctx.tool !== "task") return;
@@ -88,40 +131,35 @@ export default async function dispatchGatePlugin() {
         throw new Error(buildRejectionMessage());
       }
 
-      // Check for structured dispatch fields
-      if (!isStructuredDispatch(args)) {
-        throw new Error(buildRejectionMessage());
-      }
+      // Structured dispatch has mode + intent_kd + session_date
+      const isStructured = isStructuredDispatch(args);
 
-      const fields = extractFields(args);
-      if (!validateTemplateFields(fields)) {
-        throw new Error(buildRejectionMessage());
-      }
+      if (isStructured) {
+        const templateEntry = findTemplate(args.mode);
+        if (!templateEntry) {
+          throw new Error(
+            `DISPATCH REJECTED: Unknown mode "${args.mode}". ` +
+              "Provide one of: explore, investigate, align, decompose, " +
+              "swarm, verify, extract, evolve, commit, report, " +
+              "checkpoint, preflight.",
+          );
+        }
 
-      // Find the template for this mode
-      const templateEntry = findTemplate(fields.mode);
-      if (!templateEntry) {
-        throw new Error(
-          `DISPATCH REJECTED: Unknown mode "${fields.mode}". ` +
-          "Provide one of: explore, investigate, align, decompose, " +
-          "swarm, verify, extract, evolve, commit, report, checkpoint, preflight."
-        );
-      }
+        // Resolve template placeholders using the structured fields
+        const prompt = await resolveTemplate(templateEntry.template, args);
 
-      // Skip template generation for report mode (used internally by Overseer)
-      if (fields.mode === "report") {
+        // Replace args with standard task tool fields
+        output.args = {
+          subagent_type: templateEntry.target_agent,
+          prompt,
+          description: templateEntry.description,
+        };
         return;
       }
 
-      // Resolve template placeholders
-      const prompt = await resolveTemplate(templateEntry.template, fields);
-
-      // Route to the target agent
-      output.args = {
-        subagent_type: templateEntry.target_agent,
-        prompt,
-        description: templateEntry.description,
-      };
+      // Not a structured dispatch. If it has a prompt it's a free-text
+      // dispatch — reject with positive guidance telling what to provide.
+      throw new Error(buildRejectionMessage());
     },
   };
 }

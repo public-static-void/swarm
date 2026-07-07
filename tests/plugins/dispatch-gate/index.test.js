@@ -1,8 +1,16 @@
 // tests/plugins/dispatch-gate/index.test.js
-// Tests for dispatch-gate plugin — uniform template generation.
+// Tests for dispatch-gate plugin — hook timing fix + structured dispatch.
+//
+// Two hooks under test:
+//   1. tool.definition — extends the task tool schema so structured
+//      fields (mode, intent_kd, session_date, scope) are valid params
+//      and prompt/description/subagent_type are optional.
+//   2. tool.execute.before — transforms structured dispatch fields into
+//      standard task tool fields (prompt, description, subagent_type).
+//
 // ALL callers (Overseer, Artisan, any agent) use the same structured
 // dispatch format: { mode, intent_kd, session_date, scope? }
-// Plugin resolves templates and routes to the correct target agent.
+// The plugin resolves templates and routes to the correct target agent.
 
 import { describe, it, expect } from "vitest";
 import dispatchGatePlugin from "../../../plugins/dispatch-gate/index.js";
@@ -28,10 +36,31 @@ function makeValidArgs(overrides = {}) {
   };
 }
 
-function callHook(plugin, args, tool = "task") {
+/** Invoke the tool.execute.before hook. */
+function callExecuteBefore(plugin, args, tool = "task") {
   const ctx = { tool, sessionID: "test", callID: "test-001" };
   const output = { args };
   return plugin["tool.execute.before"](ctx, output);
+}
+
+/** Invoke the tool.definition hook and return the modified output. */
+function callToolDefinition(plugin, toolID = "task", existingSchema = null) {
+  const input = { toolID };
+  const defaultSchema = {
+    type: "object",
+    properties: {
+      prompt: { type: "string" },
+      description: { type: "string" },
+      subagent_type: { type: "string" },
+    },
+    required: ["prompt", "description", "subagent_type"],
+  };
+  const output = {
+    description: "Task tool",
+    parameters: existingSchema || { ...defaultSchema },
+  };
+  plugin["tool.definition"](input, output);
+  return output;
 }
 
 async function assertRoutesTo(plugin, args, expectedAgent) {
@@ -40,7 +69,6 @@ async function assertRoutesTo(plugin, args, expectedAgent) {
   await plugin["tool.execute.before"](ctx, output);
   expect(output.args.subagent_type).toBe(expectedAgent);
   expect(typeof output.args.prompt).toBe("string");
-  expect(output.args.prompt.length).toBeGreaterThan(0);
   expect(output.args.description).toBeDefined();
 }
 
@@ -57,20 +85,82 @@ async function assertRejected(plugin, args, expectedText) {
 }
 
 // ---------------------------------------------------------------------------
+// Tool Definition Hook Tests
+// ---------------------------------------------------------------------------
+
+describe("tool.definition hook", () => {
+  it("adds mode, intent_kd, session_date, scope to task schema", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.parameters.properties.mode).toBeDefined();
+    expect(output.parameters.properties.mode.type).toBe("string");
+    expect(output.parameters.properties.intent_kd).toBeDefined();
+    expect(output.parameters.properties.intent_kd.type).toBe("string");
+    expect(output.parameters.properties.session_date).toBeDefined();
+    expect(output.parameters.properties.session_date.type).toBe("string");
+    expect(output.parameters.properties.scope).toBeDefined();
+    expect(output.parameters.properties.scope.type).toBe("string");
+  });
+
+  it("removes prompt, description, subagent_type from required array", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.parameters.required).not.toContain("prompt");
+    expect(output.parameters.required).not.toContain("description");
+    expect(output.parameters.required).not.toContain("subagent_type");
+  });
+
+  it("does not modify non-task tools", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "read");
+    // Should be identical to the default schema
+    expect(output.parameters.properties.prompt).toBeDefined();
+    expect(output.parameters.required).toContain("prompt");
+    expect(output.parameters.required).toContain("description");
+    expect(output.parameters.required).toContain("subagent_type");
+    // Should NOT have added structured fields
+    expect(output.parameters.properties.mode).toBeUndefined();
+  });
+
+  it("handles schema with no properties gracefully", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const input = { toolID: "task" };
+    const output = { description: "bare", parameters: null };
+    // Should not throw when parameters is null
+    await expect(
+      plugin["tool.definition"](input, output),
+    ).resolves.toBeUndefined();
+  });
+
+  it("handles schema with no required array gracefully", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const schema = {
+      type: "object",
+      properties: { prompt: { type: "string" } },
+      // no "required" key
+    };
+    const output = callToolDefinition(plugin, "task", schema);
+    // Should have added structured fields
+    expect(output.parameters.properties.mode).toBeDefined();
+    // Should not have thrown about missing required array
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Template Engine Tests
 // ---------------------------------------------------------------------------
 
 describe("template-engine parseIntentPath", () => {
   it("extracts name and date from valid intent KD path", () => {
     const result = parseIntentPath(
-      "knowledge/intent-auth-flow-2026-07-07.md"
+      "knowledge/intent-auth-flow-2026-07-07.md",
     );
     expect(result).toEqual({ name: "auth-flow", date: "2026-07-07" });
   });
 
   it("handles multi-hyphen names", () => {
     const result = parseIntentPath(
-      "knowledge/intent-user-auth-flow-test-2026-12-01.md"
+      "knowledge/intent-user-auth-flow-test-2026-12-01.md",
     );
     expect(result).toEqual({
       name: "user-auth-flow-test",
@@ -103,7 +193,7 @@ describe("template-engine resolveVariables", () => {
       "name={{name}} date={{date}} kd={{intent_kd}} sess={{session_date}} scope={{scope}}";
     const result = resolveVariables(template, context);
     expect(result).toBe(
-      "name=auth-flow date=2026-07-07 kd=knowledge/intent-auth-flow-2026-07-07.md sess=2026-07-07 scope=auth"
+      "name=auth-flow date=2026-07-07 kd=knowledge/intent-auth-flow-2026-07-07.md sess=2026-07-07 scope=auth",
     );
   });
 
@@ -205,6 +295,7 @@ describe("Structured dispatch accepted", () => {
       { mode: "commit", expected: "committer" },
       { mode: "checkpoint", expected: "committer" },
       { mode: "preflight", expected: "committer" },
+      { mode: "report", expected: "overseer" },
     ];
     for (const { mode, expected } of routeTests) {
       const args = makeValidArgs({ mode });
@@ -215,14 +306,17 @@ describe("Structured dispatch accepted", () => {
     }
   });
 
-  it("skips template generation for report mode", async () => {
+  it("handles report mode by routing to overseer with empty prompt", async () => {
     const plugin = await dispatchGatePlugin({});
     const args = makeValidArgs({ mode: "report" });
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    // Should not modify output for report mode
-    expect(output.args).toBe(args);
+    expect(output.args.subagent_type).toBe("overseer");
+    expect(output.args.description).toBe(
+      "Return to Overseer for report generation (no dispatch)",
+    );
+    expect(output.args.prompt).toBe("");
   });
 });
 
@@ -261,9 +355,13 @@ describe("Missing fields rejected", () => {
     await assertRejected(plugin, null, "DISPATCH REJECTED");
   });
 
-  it("rejects empty prompt string", async () => {
+  it("rejects free-text prompt (no structured fields)", async () => {
     const plugin = await dispatchGatePlugin({});
-    await assertRejected(plugin, { prompt: "" }, "DISPATCH REJECTED");
+    await assertRejected(
+      plugin,
+      { prompt: "do something", description: "task", subagent_type: "agent" },
+      "DISPATCH REJECTED",
+    );
   });
 });
 
@@ -275,7 +373,7 @@ describe("Error message uses positive framing", () => {
   it("tells what fields to provide, not what to avoid", async () => {
     const plugin = await dispatchGatePlugin({});
     try {
-      await callHook(plugin, { mode: "explore" });
+      await callExecuteBefore(plugin, { mode: "explore" });
       expect(true).toBe(false);
     } catch (err) {
       const msg = err.message;
@@ -291,7 +389,7 @@ describe("Error message uses positive framing", () => {
   it("does not contain prohibitive language", async () => {
     const plugin = await dispatchGatePlugin({});
     try {
-      await callHook(plugin, { mode: "explore" });
+      await callExecuteBefore(plugin, { mode: "explore" });
       expect(true).toBe(false);
     } catch (err) {
       expect(err.message).not.toMatch(/don't|do not|never|avoid|not include/i);
@@ -362,7 +460,7 @@ describe("Non-task tool passes through", () => {
     const ctx = { tool: "read", sessionID: "test", callID: "test-001" };
     const output = { args: { prompt: "anything" } };
     await expect(
-      plugin["tool.execute.before"](ctx, output)
+      plugin["tool.execute.before"](ctx, output),
     ).resolves.toBeUndefined();
     // output should be unchanged
     expect(output.args.prompt).toBe("anything");
@@ -389,7 +487,53 @@ describe("Generated prompt structure", () => {
     await assertRejected(
       plugin,
       makeValidArgs({ mode: "bogus" }),
-      "Unknown mode"
+      "Unknown mode",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin: Structured dispatch with prompt override
+// ---------------------------------------------------------------------------
+
+describe("Structured dispatch with prompt override", () => {
+  it("generated prompt replaces provided prompt when both are given", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = makeValidArgs({
+      mode: "explore",
+      prompt: "This is a free-text prompt that should be overridden",
+      description: "some description",
+      subagent_type: "some-agent",
+    });
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    // The output should have the template-generated prompt, not the free-text one
+    expect(output.args.prompt).toContain("DISPATCH TO: explorer");
+    expect(output.args.prompt).not.toContain("free-text prompt");
+    expect(output.args.subagent_type).toBe("explorer");
+    expect(output.args.description).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin: Structured dispatch does not leak structured fields
+// ---------------------------------------------------------------------------
+
+describe("Structured fields removed from output", () => {
+  it("mode, intent_kd, session_date, scope are not in output.args", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = makeValidArgs({ mode: "swarm" });
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.mode).toBeUndefined();
+    expect(output.args.intent_kd).toBeUndefined();
+    expect(output.args.session_date).toBeUndefined();
+    expect(output.args.scope).toBeUndefined();
+    // Only standard task tool fields remain
+    expect(output.args.subagent_type).toBe("artisan");
+    expect(output.args.prompt).toBeDefined();
+    expect(output.args.description).toBeDefined();
   });
 });
