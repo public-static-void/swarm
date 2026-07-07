@@ -1,56 +1,68 @@
 // plugins/dispatch-gate/index.js
 // Intercepts `task` tool calls via tool.execute.before hook.
-// Validates that every dispatch prompt has the required structured fields.
-// Same validation for ALL callers — no Overseer/Artisan distinction.
-// If valid: passes through to the original task implementation unchanged.
-// If invalid: rejects with a positive-framed message listing required fields.
+// Generates dispatch prompts from templates using structured fields:
+//   mode, intent_kd, session_date, scope (optional)
+// Same handler for ALL callers — no Overseer/Artisan distinction.
+// Rejects free-text prompts with positive guidance about the required fields.
+
+import { resolveTemplate } from "./template-engine.js";
+import templates from "./templates.json" with { type: "json" };
 
 // ---------------------------------------------------------------------------
-// Validation
+// Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Validate that a dispatch prompt contains all required structured fields.
- * Returns an array of missing field names (empty if all present).
+ * Check if args contain structured dispatch fields.
+ * Structured calls have: mode, intent_kd, session_date
  */
-function validateRequiredFields(prompt) {
-  if (!prompt || typeof prompt !== "string") {
-    return [
-      "DISPATCH TO:",
-      "ACTION:",
-      "ARTIFACT:",
-      "one of DOMAIN:, SCOPE:, or MODE:",
-      "KDS:",
-      "RETURN:",
-      "ACCEPTANCE:",
-    ];
-  }
+function isStructuredDispatch(args) {
+  if (!args || typeof args !== "object") return false;
+  return !!(args.mode && args.intent_kd && args.session_date);
+}
 
-  const missing = [];
+/**
+ * Extract structured fields from task args.
+ */
+function extractFields(args) {
+  return {
+    mode: args.mode || "",
+    intent_kd: args.intent_kd || "",
+    session_date: args.session_date || "",
+    scope: args.scope || "",
+  };
+}
 
-  if (!/^DISPATCH TO:[ \t]+\S+/m.test(prompt)) {
-    missing.push("DISPATCH TO:");
-  }
-  if (!/^ACTION:[ \t]+\S+/m.test(prompt)) {
-    missing.push("ACTION:");
-  }
-  if (!/^ARTIFACT:[ \t]+\S+/m.test(prompt)) {
-    missing.push("ARTIFACT:");
-  }
-  if (!/^(DOMAIN|SCOPE|MODE):[ \t]+\S+/m.test(prompt)) {
-    missing.push("one of DOMAIN:, SCOPE:, or MODE:");
-  }
-  if (!/^KDS:/m.test(prompt)) {
-    missing.push("KDS:");
-  }
-  if (!/^RETURN:[ \t]+\S+/m.test(prompt)) {
-    missing.push("RETURN:");
-  }
-  if (!/^ACCEPTANCE:[ \t]+\S+/m.test(prompt)) {
-    missing.push("ACCEPTANCE:");
-  }
+/**
+ * Build the rejection message telling the caller what fields to provide.
+ * Uses positive framing — tells what TO do, not what to avoid.
+ */
+function buildRejectionMessage() {
+  return (
+    "DISPATCH REJECTED: Use structured dispatch format. " +
+    "Provide the required fields: mode (explore, investigate, align, " +
+    "decompose, swarm, verify, extract, evolve, commit, report, " +
+    "checkpoint, preflight), intent_kd (path to INTENT KD), " +
+    "and session_date (YYYY-MM-DD). Optionally include scope for context."
+  );
+}
 
-  return missing;
+/**
+ * Find the template entry for a given mode.
+ * Returns the template entry or null if not found.
+ */
+function findTemplate(mode) {
+  return templates[mode] || null;
+}
+
+/**
+ * Validate that all required fields for template generation are present.
+ */
+function validateTemplateFields(fields) {
+  if (!fields.mode) return false;
+  if (!fields.intent_kd) return false;
+  if (!fields.session_date) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,31 +72,56 @@ function validateRequiredFields(prompt) {
 /**
  * Plugin entry point — called by opencode on load.
  */
-export default async function dispatchGatePlugin(input) {
+export default async function dispatchGatePlugin() {
   return {
     /**
      * Intercepts all tool executions before they run.
-     * Only validates `task` tool calls for structured dispatch fields.
+     * For `task` tool: checks for structured dispatch fields.
+     * If structured → resolves template → routes prompt to target agent.
+     * If free-text → rejects with positive guidance.
      */
     "tool.execute.before": async (ctx, output) => {
       if (ctx.tool !== "task") return;
 
       const args = output.args;
-      const prompt = typeof args === "string" ? args : (args.prompt || "");
+      if (!args || typeof args !== "object") {
+        throw new Error(buildRejectionMessage());
+      }
 
-      const missingFields = validateRequiredFields(prompt);
+      // Check for structured dispatch fields
+      if (!isStructuredDispatch(args)) {
+        throw new Error(buildRejectionMessage());
+      }
 
-      if (missingFields.length > 0) {
+      const fields = extractFields(args);
+      if (!validateTemplateFields(fields)) {
+        throw new Error(buildRejectionMessage());
+      }
+
+      // Find the template for this mode
+      const templateEntry = findTemplate(fields.mode);
+      if (!templateEntry) {
         throw new Error(
-          "DISPATCH REJECTED: MISSING_FIELDS — Provide the required structured fields: " +
-          missingFields.join(", ") + ". " +
-          "Every dispatch must include: DISPATCH TO:, ACTION:, ARTIFACT:, " +
-          "one of DOMAIN:, SCOPE:, or MODE:, KDS:, RETURN:, and ACCEPTANCE:."
+          `DISPATCH REJECTED: Unknown mode "${fields.mode}". ` +
+          "Provide one of: explore, investigate, align, decompose, " +
+          "swarm, verify, extract, evolve, commit, report, checkpoint, preflight."
         );
       }
 
-      // All required fields present — pass through to the original task implementation
-      return;
+      // Skip template generation for report mode (used internally by Overseer)
+      if (fields.mode === "report") {
+        return;
+      }
+
+      // Resolve template placeholders
+      const prompt = await resolveTemplate(templateEntry.template, fields);
+
+      // Route to the target agent
+      output.args = {
+        subagent_type: templateEntry.target_agent,
+        prompt,
+        description: templateEntry.description,
+      };
     },
   };
 }

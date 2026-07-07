@@ -73,15 +73,15 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 ## Delegation Rules
 
-1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `dispatch-gate` plugin validates every call has the required structural fields before proceeding.
+1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `dispatch-gate` plugin generates dispatch prompts from templates using your data fields.
 
-2. **Include structured fields in every task prompt** — provide these required fields in every delegation: `DISPATCH TO:`, `ACTION:`, `ARTIFACT:`, one of `DOMAIN:`/`SCOPE:`/`MODE:`, `KDS:` (KD path references only), `RETURN:`, and `ACCEPTANCE:`.
+2. **Provide structured fields in every task call** — include these required fields: `mode` (one of: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight), `intent_kd` (path to the current INTENT KD), and `session_date` (YYYY-MM-DD). Optionally provide `scope` for domain context.
 
-3. **Use KD path references for KDS entries** — each entry in the `KDS:` field must be a KD path following the pattern `knowledge/{type}-{name}-{date}.md`.
+3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch (DISPATCH TO:, ACTION:, ARTIFACT:, ACCEPTANCE:, etc.) with the correct target agent and structure. Provide your data fields; the template handles the format.
 
-4. **Delegate WHAT, not HOW** — describe the artifact, objective, and acceptance criteria. Agents determine their own approach.
+4. **Refer to KDs by path** — use path references following the pattern `knowledge/{type}-{name}-{date}.md` for any KD references.
 
-5. **Plugin validates fields automatically** — the `dispatch-gate` plugin validates your dispatch has all required fields before passing it through. Dispatches with missing fields receive a `DISPATCH REJECTED` error listing which fields to provide.
+5. **Delegate WHAT, not HOW** — describe the artifact, objective, and acceptance criteria. Agents determine their own approach.
 
 6. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
 
