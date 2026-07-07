@@ -1,7 +1,8 @@
 // plugins/dispatch-gate/index.js
 // Intercepts `task` tool calls via tool.execute.before hook.
-// Validates dispatches against structural rules before they reach the target agent.
-// Blocks: file paths, inline code, file extensions, read verbs, non-KD paths, unknown agents.
+// Validates Overseer dispatches against structural template rules.
+// Non-Overseer dispatches pass through unconditionally.
+// No pattern-based rejection — only structural format checks.
 
 const KNOWN_AGENTS = [
   "explorer", "spec-weaver", "pathfinder", "analyzer",
@@ -10,58 +11,16 @@ const KNOWN_AGENTS = [
 
 const KD_PATH_PATTERN = /^knowledge\/[a-z]+-[a-z0-9-]+-\d{4}-\d{2}-\d{2}\.md$/;
 
-// Patterns for detecting source file paths in dispatch content
-const FILE_PATH_PATTERNS = [
-  /\/home\//, /\.\//, /\bsrc\//, /^refs\//, /^\/[a-zA-Z]/
-];
-
-const FILE_EXTENSIONS = /\.(py|ts|rs|md|json|yaml|yml|toml|cfg|ini|sh|js|jsx|tsx|css|scss|html|sql|go|rb|java|kt|swift|c|cpp|h|hpp)$/;
-
-const READ_VERBS = /\b(read|return contents|list files|get the file|cat |view file)\b/i;
+// --- Structural format validation ---
 
 /**
- * Scan value for markdown code fences or inline backtick code.
+ * Extract the DISPATCH TO agent from a dispatch prompt.
+ * Requires at least one horizontal space between colon and value for a valid match.
  */
-function scanForInlineCode(value) {
-  if (!value) return null;
-  const str = String(value);
-  if (/```/.test(str)) return "triple-backtick code block detected";
-  if (/`[^`\n]+`/.test(str)) return "inline backtick code detected";
-  return null;
-}
-
-/**
- * Scan value for source file path patterns (/home/, ./, src/, etc.).
- */
-function scanForFilePaths(value) {
-  if (!value) return null;
-  const str = String(value);
-  for (const pattern of FILE_PATH_PATTERNS) {
-    if (pattern.test(str)) {
-      return `source file path pattern '${pattern.source}' detected`;
-    }
-  }
-  return null;
-}
-
-/**
- * Scan value for file extensions (.py, .ts, .rs, etc.).
- */
-function scanForFileExtension(value) {
-  if (!value) return null;
-  const match = FILE_EXTENSIONS.exec(String(value));
-  if (match) return `file extension '${match[0]}' detected`;
-  return null;
-}
-
-/**
- * Scan value for read/return-contents verbs.
- */
-function scanForReadVerbs(value) {
-  if (!value) return null;
-  const match = READ_VERBS.exec(String(value));
-  if (match) return `read verb '${match[0]}' detected`;
-  return null;
+function extractTargetAgent(prompt) {
+  if (!prompt) return null;
+  const match = prompt.match(/DISPATCH TO:[ \t]+(\S+)/i);
+  return match ? match[1].toLowerCase() : null;
 }
 
 /**
@@ -83,65 +42,99 @@ function validateKDReferences(prompt) {
 }
 
 /**
- * Extract the DISPATCH TO agent from a dispatch prompt.
+ * Detect whether the prompt is an Overseer-format dispatch.
+ * Checks if the prompt begins with "DISPATCH TO:" as its first significant content.
  */
-function extractTargetAgent(prompt) {
-  if (!prompt) return null;
-  const match = prompt.match(/DISPATCH TO:\s*(\S+)/i);
-  return match ? match[1].toLowerCase() : null;
+function isOverseerFormat(prompt) {
+  if (!prompt) return false;
+  return /^DISPATCH TO:/i.test(String(prompt).trimStart());
 }
 
 /**
- * Validate a task tool call against all dispatch gate rules.
- * Throws on first violation with a descriptive error message.
+ * Validate that an Overseer dispatch contains all required structural fields.
+ * Throws on the first missing field with a descriptive rejection code.
+ * Uses /m flag and horizontal whitespace to ensure values are on the same line,
+ * preventing cross-line false matches (e.g., ACTION: with no value should not
+ * consume the next field name).
+ */
+function validateStructuralFields(prompt) {
+  // DISPATCH TO: must be present with a value on the same line
+  if (!/^DISPATCH TO:[ \t]+\S+/m.test(prompt)) {
+    throw new Error(
+      "DISPATCH REJECTED: MISSING_DISPATCH_TO — The required field 'DISPATCH TO:' was not found or has no value"
+    );
+  }
+
+  // ACTION: must be present with a value on the same line
+  if (!/^ACTION:[ \t]+\S+/m.test(prompt)) {
+    throw new Error(
+      "DISPATCH REJECTED: MISSING_ACTION — The required field 'ACTION:' was not found or has no value"
+    );
+  }
+
+  // ARTIFACT: must be present with a value on the same line
+  if (!/^ARTIFACT:[ \t]+\S+/m.test(prompt)) {
+    throw new Error(
+      "DISPATCH REJECTED: MISSING_ARTIFACT — The required field 'ARTIFACT:' was not found or has no value"
+    );
+  }
+
+  // One of DOMAIN:, SCOPE:, or MODE: must be present with a value on the same line
+  const hasDomainOrScopeOrMode = (
+    /^DOMAIN:[ \t]+\S+/m.test(prompt) ||
+    /^SCOPE:[ \t]+\S+/m.test(prompt) ||
+    /^MODE:[ \t]+\S+/m.test(prompt)
+  );
+  if (!hasDomainOrScopeOrMode) {
+    throw new Error(
+      "DISPATCH REJECTED: MISSING_DOMAIN_OR_SCOPE_OR_MODE — One of 'DOMAIN:', 'SCOPE:', or 'MODE:' must be present with a value"
+    );
+  }
+}
+
+/**
+ * Validate a task tool call against dispatch gate rules.
+ *
+ * For Overseer dispatches (prompt starts with "DISPATCH TO:"):
+ *   Validates all required structural fields are present.
+ *   Also validates KD path references and target agent.
+ *
+ * For non-Overseer dispatches:
+ *   Passes through unconditionally without validation.
  */
 function validateTaskCall(args) {
-  // Extract text content to scan — args can be an object with prompt/description or a raw string
   const prompt = typeof args === "string" ? args : (args.prompt || "");
-  const description = typeof args === "string" ? "" : (args.description || "");
-  const combinedText = prompt + " " + description;
 
-  // 1. Inline code check
-  const codeViolation = scanForInlineCode(combinedText);
-  if (codeViolation) {
-    throw new Error("DISPATCH REJECTED: INLINE_CODE_DETECTED — " + codeViolation);
+  // Detect if this is an Overseer-format dispatch
+  if (!isOverseerFormat(prompt)) {
+    // Non-Overseer dispatch — allow unconditionally
+    return;
   }
 
-  // 2. File path check
-  const pathViolation = scanForFilePaths(combinedText);
-  if (pathViolation) {
-    throw new Error("DISPATCH REJECTED: FILE_PATH_DETECTED — " + pathViolation);
-  }
+  // Overseer dispatch — validate structural fields
+  validateStructuralFields(prompt);
 
-  // 3. File extension check in prompt
-  const extViolation = scanForFileExtension(combinedText);
-  if (extViolation) {
-    throw new Error("DISPATCH REJECTED: FILE_EXTENSION_DETECTED — " + extViolation);
-  }
-
-  // 4. Read verb check
-  const readViolation = scanForReadVerbs(combinedText);
-  if (readViolation) {
-    throw new Error("DISPATCH REJECTED: READ_VERB_DETECTED — " + readViolation);
-  }
-
-  // 5. KD path validation — only check if the prompt contains KDS section
+  // KD path format validation
   const kdViolations = validateKDReferences(prompt);
   if (kdViolations.length > 0) {
     throw new Error("DISPATCH REJECTED: INVALID_KD_PATH — " + kdViolations.join("; "));
   }
 
-  // 6. Target agent validation (from DISPATCH TO: line in prompt)
+  // Target agent validation
   const targetAgent = extractTargetAgent(prompt);
   if (targetAgent && !KNOWN_AGENTS.includes(targetAgent)) {
-    throw new Error("DISPATCH REJECTED: UNKNOWN_AGENT — \"" + targetAgent + "\" is not a registered agent");
+    throw new Error(
+      'DISPATCH REJECTED: UNKNOWN_AGENT — "' + targetAgent + '" is not a registered agent'
+    );
   }
 
-  // 7. subagent_type validation (task tool param)
+  // subagent_type validation
   if (typeof args === "object" && args && args.subagent_type) {
     const agent = args.subagent_type.toLowerCase();
     if (!KNOWN_AGENTS.includes(agent)) {
-      throw new Error("DISPATCH REJECTED: UNKNOWN_AGENT — \"" + agent + "\" is not a registered agent");
+      throw new Error(
+        'DISPATCH REJECTED: UNKNOWN_AGENT — "' + agent + '" is not a registered agent'
+      );
     }
   }
 }
