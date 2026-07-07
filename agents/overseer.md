@@ -75,13 +75,13 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `dispatch-gate` plugin generates dispatch prompts from templates using your data fields and injects the required task tool fields.
 
-2. **Provide ONLY structured fields** — include these fields in every task call: `mode` (one of: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight), `intent_kd` (path to the current INTENT KD), and `session_date` (YYYY-MM-DD). Optionally provide `scope` for domain context. Do NOT provide `prompt`, `description`, or `subagent_type` directly — the plugin generates these.
+2. **Provide ONLY structured fields** — include these fields in every task call: `mode` (one of: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight), `intent_kd` (path to the current INTENT KD), and `session_date` (YYYY-MM-DD). Optionally provide `scope` for domain context. Provide only: `mode`, `intent_kd`, `session_date`, `scope`. The plugin generates `prompt`, `description`, and `subagent_type` from the template.
 
 3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 
 4. **Refer to KDs by path** — use path references following the pattern `knowledge/{type}-{name}-{date}.md` for any KD references.
 
-5. **Delegate WHAT, not HOW** — describe the artifact, objective, and acceptance criteria. Agents determine their own approach.
+5. **Describe the artifact, objective, and acceptance criteria. Agents determine their own approach.**
 
 6. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
 
