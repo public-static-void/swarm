@@ -1,23 +1,39 @@
 // tests/plugins/dispatch-gate/index.test.js
-// Tests for dispatch-gate plugin — structured dispatch detection,
-// legacy format rejection, non-Overseer pass-through.
+// Tests for dispatch-gate plugin — uniform structural validation.
+// Same validation for ALL callers: no Overseer/Artisan distinction.
+// Valid dispatches pass through. Invalid dispatches reject with positive framing.
 
 import { describe, it, expect } from "vitest";
-
-// Import the plugin from its actual location
 import dispatchGatePlugin from "../../../plugins/dispatch-gate/index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeArgs(overrides = {}) {
-  const base = {
-    mode: "explore",
-    intent_kd: "knowledge/intent-test-2026-07-07.md",
-    session_date: "2026-07-07",
-  };
-  return { ...base, ...overrides };
+/**
+ * Build a valid dispatch prompt with all required structured fields.
+ */
+function makeValidDispatch(overrides = {}) {
+  const lines = [
+    "DISPATCH TO: explorer",
+    "ACTION: Explore",
+    "ARTIFACT: exploration KD",
+    "DOMAIN: auth",
+    "KDS:",
+    "  - knowledge/intent-test-2026-07-07.md",
+    "RETURN: knowledge/exploration-auth-2026-07-07.md",
+    "ACCEPTANCE: Exploration KD exists at knowledge/exploration-auth-2026-07-07.md",
+  ];
+  // Apply overrides: replace the matching line if key exists
+  const result = lines.map((line) => {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (line.startsWith(key)) {
+        return value;
+      }
+    }
+    return line;
+  });
+  return result.join("\n");
 }
 
 function callHook(plugin, args, tool = "task") {
@@ -27,94 +43,211 @@ function callHook(plugin, args, tool = "task") {
 }
 
 // ---------------------------------------------------------------------------
-// Tests: Structured dispatch detection (internal behavior via hook)
+// Tests: Valid dispatches pass through
 // ---------------------------------------------------------------------------
 
-describe("Structured dispatch detection", () => {
-  it("detects valid structured dispatch with mode + intent_kd + session_date", () => {
-    const args = makeArgs();
-    expect(args.mode).toBeTruthy();
-    expect(args.intent_kd).toBeTruthy();
-    expect(args.session_date).toBeTruthy();
-  });
-
-  it("detects structured dispatch without session_date (optional)", () => {
-    const args = makeArgs({ session_date: undefined });
-    expect(args.mode).toBeTruthy();
-    expect(args.intent_kd).toBeTruthy();
-  });
-
-  it("does not treat a plain string as structured dispatch", () => {
-    const args = "Read the file at /home/user/project/src/main.py";
-    // This should not trigger structured dispatch detection
-    expect(typeof args).toBe("string");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Legacy Overseer format rejection
-// ---------------------------------------------------------------------------
-
-describe("Legacy Overseer format rejection", () => {
-  it("rejects a dispatch starting with DISPATCH TO:", async () => {
-    const prompt = "DISPATCH TO: explorer\nACTION: Explore\nARTIFACT: exploration KD\nDOMAIN: auth\n";
+describe("Valid dispatches pass through", () => {
+  it("accepts a dispatch with all required fields", async () => {
+    const prompt = makeValidDispatch();
     const plugin = await dispatchGatePlugin({});
     await expect(
       callHook(plugin, { prompt })
-    ).rejects.toThrow("LEGACY_FORMAT");
+    ).resolves.toBeUndefined();
   });
 
-  it("rejects a legacy dispatch with all fields present", async () => {
-    const prompt = [
-      "DISPATCH TO: artisan",
-      "ACTION: Implement",
-      "ARTIFACT: implementation",
-      "SCOPE: dispatch-gate",
-      "  - knowledge/spec-test-2026-07-06.md",
-      "RETURN: knowledge/impl-test-2026-07-06.md",
-      "ACCEPTANCE: implementation done",
-    ].join("\n");
+  it("accepts a dispatch with DOMAIN field", async () => {
+    const prompt = makeValidDispatch({ "DOMAIN": "DOMAIN: auth" });
     const plugin = await dispatchGatePlugin({});
     await expect(
       callHook(plugin, { prompt })
-    ).rejects.toThrow("LEGACY_FORMAT");
+    ).resolves.toBeUndefined();
   });
 
-  it("rejects legacy dispatch with leading whitespace", async () => {
-    const prompt = "  \n  \nDISPATCH TO: explorer\nACTION: Explore\nARTIFACT: exploration KD\nDOMAIN: auth\n";
+  it("accepts a dispatch with SCOPE field", async () => {
+    const prompt = makeValidDispatch({ "DOMAIN": "SCOPE: dispatch-gate" });
     const plugin = await dispatchGatePlugin({});
     await expect(
       callHook(plugin, { prompt })
-    ).rejects.toThrow("LEGACY_FORMAT");
+    ).resolves.toBeUndefined();
   });
 
-  it("uses LEGACY_FORMAT error code (not MISSING_DISPATCH_TO)", async () => {
-    const prompt = "DISPATCH TO:\nACTION: Explore\nARTIFACT: exploration KD\nDOMAIN: auth\n";
+  it("accepts a dispatch with MODE field", async () => {
+    const prompt = makeValidDispatch({ "DOMAIN": "MODE: CHECKPOINT" });
     const plugin = await dispatchGatePlugin({});
     await expect(
       callHook(plugin, { prompt })
-    ).rejects.toThrow("LEGACY_FORMAT");
+    ).resolves.toBeUndefined();
   });
-});
 
-// ---------------------------------------------------------------------------
-// Tests: Non-Overseer calls pass through unconditionally
-// ---------------------------------------------------------------------------
-
-describe("Non-Overseer pass-through", () => {
-  it("passes through a plain text prompt", async () => {
-    const prompt = "Read the file at /home/user/project/src/main.py and return its contents";
+  it("accepts a dispatch passed as raw string args", async () => {
+    const prompt = makeValidDispatch();
     const plugin = await dispatchGatePlugin({});
     await expect(
       callHook(plugin, prompt)
     ).resolves.toBeUndefined();
   });
 
-  it("passes through Artisan->Committer-style task call", async () => {
+  it("accepts a dispatch with multiline KDS entries", async () => {
+    const prompt = makeValidDispatch({
+      "KDS:": "KDS:\n  - knowledge/spec-test-2026-07-07.md\n  - knowledge/plan-test-2026-07-07.md",
+    });
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt })
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Invalid dispatches rejected with MISSING_FIELDS
+// ---------------------------------------------------------------------------
+
+describe("Invalid dispatches rejected", () => {
+  it("rejects empty prompt", async () => {
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt: "" })
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("rejects missing DISPATCH TO:", async () => {
+    const prompt = makeValidDispatch({ "DISPATCH TO:": "DISPATCH TO:" });
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt })
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("rejects missing ACTION:", async () => {
+    const prompt = makeValidDispatch({ "ACTION:": "ACTION:" });
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt })
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("rejects missing ARTIFACT:", async () => {
+    const prompt = makeValidDispatch({ "ARTIFACT:": "ARTIFACT:" });
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt })
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("rejects missing DOMAIN, SCOPE, and MODE", async () => {
+    const prompt = makeValidDispatch({ "DOMAIN": "SCOPE:" });
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt })
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("rejects missing KDS:", async () => {
+    const prompt = makeValidDispatch({ "KDS:": "" });
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt })
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("rejects missing RETURN:", async () => {
+    const prompt = makeValidDispatch({ "RETURN:": "RETURN:" });
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt })
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("rejects missing ACCEPTANCE:", async () => {
+    const prompt = makeValidDispatch({ "ACCEPTANCE:": "ACCEPTANCE:" });
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt })
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("rejects a plain text prompt with no fields", async () => {
+    const prompt = "Read the file at /home/user/project/src/main.py";
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, { prompt })
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("rejects a prompt with code blocks but no fields", async () => {
+    const prompt = "```\nconst x = 1;\n```";
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, prompt)
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Error message positive framing
+// ---------------------------------------------------------------------------
+
+describe("Error message uses positive framing", () => {
+  it("mentions what fields to provide, not what to avoid", async () => {
+    const prompt = "DISPATCH TO: artisan";
+    const plugin = await dispatchGatePlugin({});
+    try {
+      await callHook(plugin, { prompt });
+      // Should not reach here
+      expect(true).toBe(false);
+    } catch (err) {
+      const msg = err.message;
+      // Message should tell what TO provide, not what NOT to do
+      expect(msg).toContain("Provide the required structured fields");
+      expect(msg).toContain("DISPATCH TO:");
+      expect(msg).toContain("ACTION:");
+      expect(msg).toContain("ARTIFACT:");
+      expect(msg).toContain("RETURN:");
+      expect(msg).toContain("ACCEPTANCE:");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Hook mechanism — same validation for all callers
+// ---------------------------------------------------------------------------
+
+describe("Hook mechanism — uniform validation", () => {
+  it("ignores non-task tools", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "read", sessionID: "test", callID: "test-001" };
+    const output = { args: { prompt: makeValidDispatch() } };
+    await expect(
+      plugin["tool.execute.before"](ctx, output)
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects Artisan-to-Committer style calls without fields", async () => {
     const args = {
       description: "checkpoint commit",
       subagent_type: "committer",
-      prompt: "Stage changes and commit with message: feat: implement x"
+      prompt: "Stage changes and commit",
+    };
+    const plugin = await dispatchGatePlugin({});
+    await expect(
+      callHook(plugin, args)
+    ).rejects.toThrow("MISSING_FIELDS");
+  });
+
+  it("accepts Artisan-to-Committer style calls WITH structured fields", async () => {
+    const prompt = [
+      "DISPATCH TO: committer",
+      "ACTION: Dispatch",
+      "ARTIFACT: Git workspace state",
+      "MODE: CHECKPOINT",
+      "KDS:",
+      "RETURN: Git status summary",
+      "ACCEPTANCE: Git workspace is clean and branch is ready",
+    ].join("\n");
+    const args = {
+      description: "checkpoint commit",
+      subagent_type: "committer",
+      prompt,
     };
     const plugin = await dispatchGatePlugin({});
     await expect(
@@ -122,63 +255,12 @@ describe("Non-Overseer pass-through", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("passes through a raw string argument", async () => {
-    const rawPrompt = "explore the authentication module code in src/auth/";
+  it("applies same validation to raw string args as to object args", async () => {
+    // Both raw string and object with prompt should get same validation
+    const validPrompt = makeValidDispatch();
     const plugin = await dispatchGatePlugin({});
     await expect(
-      callHook(plugin, rawPrompt)
+      callHook(plugin, validPrompt)
     ).resolves.toBeUndefined();
-  });
-
-  it("passes through calls with code blocks", async () => {
-    const prompt = "```\nconst x = 1;\n```";
-    const plugin = await dispatchGatePlugin({});
-    await expect(
-      callHook(plugin, prompt)
-    ).resolves.toBeUndefined();
-  });
-
-  it("passes through calls with file paths", async () => {
-    const prompt = "Check the config at /home/user/.config/app.json";
-    const plugin = await dispatchGatePlugin({});
-    await expect(
-      callHook(plugin, prompt)
-    ).resolves.toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: Hook mechanism
-// ---------------------------------------------------------------------------
-
-describe("Hook mechanism", () => {
-  it("ignores non-task tools", async () => {
-    const plugin = await dispatchGatePlugin({});
-    const ctx = { tool: "read", sessionID: "test", callID: "test-001" };
-    const output = { args: { prompt: "anything" } };
-    await expect(
-      plugin["tool.execute.before"](ctx, output)
-    ).resolves.toBeUndefined();
-  });
-
-  it("intercepts task tool calls for structured dispatch", async () => {
-    const plugin = await dispatchGatePlugin({});
-    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-    // Valid structured dispatch args — should not throw
-    const output = {
-      args: {
-        mode: "explore",
-        intent_kd: "knowledge/intent-test-2026-07-07.md",
-        session_date: "2026-07-07",
-      }
-    };
-    // The template engine resolves successfully.
-    // SDK routing may fail (no client in test env), which triggers fallback,
-    // but the hook should not throw — it handles the error gracefully.
-    // Must resolve without rejecting — the SDK routing fallback is handled gracefully
-    await plugin["tool.execute.before"](ctx, output);
-    // After processing, output.args should be modified to indicate dispatch was handled
-    expect(output.args._dispatch_result).toBeDefined();
-    expect(output.args._dispatch_result.status).toBeDefined();
   });
 });

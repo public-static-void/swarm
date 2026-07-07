@@ -73,15 +73,17 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 ## Delegation Rules
 
-1. **Use the `task` tool** — always use the `task` tool for all agent delegations. The built-in `task` tool is wrapped by the `dispatch-gate` validation plugin which intercepts and validates every call before execution. Bad dispatches are automatically rejected with a `DISPATCH REJECTED` error. Do not use or reference any `dispatch` tool — it does not exist.
+1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `dispatch-gate` plugin validates every call has the required structural fields before proceeding.
 
-2. **Delegate WHAT, not HOW** — describe the artifact, objective, and acceptance criteria only. Agents choose their approach. Never include file paths, code blocks, or implementation instructions in task prompts — the plugin will reject these.
+2. **Include structured fields in every task prompt** — provide these required fields in every delegation: `DISPATCH TO:`, `ACTION:`, `ARTIFACT:`, one of `DOMAIN:`/`SCOPE:`/`MODE:`, `KDS:` (KD path references only), `RETURN:`, and `ACCEPTANCE:`.
 
-3. **Structured fields in every task prompt** — populate these fields in every delegation: `DISPATCH TO:`, `ACTION:`, `ARTIFACT:`, one of `DOMAIN:`/`SCOPE:`/`MODE:`, `KDS:` (path references only), `RETURN:`, `ACCEPTANCE:`.
+3. **Use KD path references for KDS entries** — each entry in the `KDS:` field must be a KD path following the pattern `knowledge/{type}-{name}-{date}.md`.
 
-4. **Plugin validates automatically** — the `dispatch-gate` plugin enforces all validation rules. No manual dispatch tool or separate validation step is needed.
+4. **Delegate WHAT, not HOW** — describe the artifact, objective, and acceptance criteria. Agents determine their own approach.
 
-5. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
+5. **Plugin validates fields automatically** — the `dispatch-gate` plugin validates your dispatch has all required fields before passing it through. Dispatches with missing fields receive a `DISPATCH REJECTED` error listing which fields to provide.
+
+6. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
 
 ## Context Marker
 
