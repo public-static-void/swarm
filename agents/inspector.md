@@ -62,13 +62,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 
 ## Protocol
 
-1. **Dispatch Acceptance Gate** — Verify dispatch integrity with 6 structural checks:
-   - **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, {DOMAIN | SCOPE | MODE}, KDS, RETURN, ACCEPTANCE.
-   - **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
-   - **Agent Identity**: The DISPATCH TO field matches the receiving agent's name.
-   - **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
-   - **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern — a concise deliverable reference.
-   - **Content-Role Match**: The dispatch fields describe a WHAT-level objective for the receiving agent. DOMAIN contains a noun phrase identifying a conceptual area. SCOPE references a spec or plan identifier by name. MODE selects a lifecycle mode (PREFLIGHT, CHECKPOINT, or CLEANUP).
+1. **Dispatch Acceptance Gate** — Load the `dispatch-validation` skill and verify dispatch integrity using its 7-check protocol before proceeding.
 2. Load the appropriate validation skill (code-review-skill, spec-validation-skill, or plan-validation-skill). Load security-audit-skill for security audits. Also load verification-gates skill as the gate framework.
 3. **Determine mode**: For standard reviews, follow Standard Protocol below. For security audits, follow Audit Protocol.
 4. **Create a TODO checklist** using `todowrite` for each gate item — prevents skipping checks mid-review.

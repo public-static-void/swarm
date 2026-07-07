@@ -47,25 +47,13 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 ## Protocol
 
-1. **Dispatch Acceptance Gate** — Verify dispatch integrity with 6 structural checks:
-   - **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, {DOMAIN | SCOPE | MODE}, KDS, RETURN, ACCEPTANCE.
-   - **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
-   - **Agent Identity**: The DISPATCH TO field matches the receiving agent's name.
-   - **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
-   - **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern — a concise deliverable reference.
-   - **Content-Role Match**: DOMAIN must be a noun phrase describing a conceptual codebase area (e.g., "authentication", "job queue", "data pipeline"). DOMAIN must NOT contain:
-     - File paths (e.g., /home/, src/, ./)
-     - File extensions (e.g., .py, .ts, .rs, .md)
-     - "read" verbs or "return contents" language
-     - Specific file names or directory names
-
-     If DOMAIN violates this rule, report outcome using ESCALATION format and do NOT proceed with other protocol steps.
-   - **Check 7 — File-Reading Pattern Detection**: Scan the dispatch DOMAIN for file-reading patterns. If the dispatch objective can be satisfied by reading specific files (rather than mapping codebase structure), flag this as a role violation and escalate.
-2. List root structure (exclude .git, node_modules, vendor, build, dist, venv)
-3. Detect tech stack from file extensions and config files
-4. Locate entry points, DB schemas, test directories, config files
-5. Scan for TODO/FIXME comments
-6. Generate exploration KD with project map report
+1. **Dispatch Acceptance Gate** — Load the `dispatch-validation` skill and verify dispatch integrity using its 7-check protocol before proceeding.
+2. **Role-Specific Check — File-Reading Pattern Detection** — Scan the dispatch DOMAIN for file-reading patterns. If the dispatch objective can be satisfied by reading specific files (rather than mapping codebase structure), flag this as a role violation and escalate.
+3. List root structure — exclude .git, node_modules, vendor, build, dist, venv
+4. Detect tech stack from file extensions and config files
+5. Locate entry points, DB schemas, test directories, config files
+6. Scan for TODO/FIXME comments
+7. Generate exploration KD with project map report
 
 ## Principles
 
