@@ -7,13 +7,11 @@
 //      This guides the LLM to generate structured calls. NOTE: jsonSchema
 //      is LLM guidance, not structural enforcement — the LLM may still
 //      generate free-text calls despite the schema hints.
-//   2. tool.execute.before — resolves templates for structured dispatches.
-//      Rejects free-text/incomplete dispatches by replacing the prompt
-//      with an error message. The framework MERGES output.args with the
-//      original args — null values are skipped during merge, so nulling
-//      allows the original free-text to survive. Overriding with a
-//      non-null value (error message or template content) replaces the
-//      original because the merge uses the replacement.
+//   2. tool.execute.before — resolves templates for structured dispatches,
+//      throws for free-text rejection, throws for unknown mode. Uses
+//      property mutation (not object replacement) so framework retains
+//      the same args reference. Uses `delete` to remove structured fields
+//      after transformation.
 //
 // Same handler for ALL callers — no Overseer/Artisan distinction.
 
@@ -111,18 +109,15 @@ export default async function dispatchGatePlugin() {
     // Fires when the tool executes. Three paths:
     //
     //   1. STRUCTURED DISPATCH (mode + intent_kd + session_date present):
-    //      Resolves the template and injects prompt/description/subagent_type.
-    //      Preserves task_id and command passthrough fields.
+    //      Resolves the template, property-mutates prompt/description/
+    //      subagent_type, deletes structured fields. Preserves task_id
+    //      and command passthrough fields.
     //
-    //   2. FREE-TEXT DISPATCH (prompt/description/subagent_type but no mode):
-    //      Rejects by replacing prompt with an error message. The framework
-    //      MERGES output.args with the original args — nulls are skipped
-    //      during merge (allowing free-text to survive), but non-null
-    //      replacements override the original. The error message replaces
-    //      the free-text prompt in the merged result.
+    //   2. FREE-TEXT DISPATCH (prompt/description/subagent_type but no
+    //      structured fields): Throws Error with positive-framed guidance
+    //      telling the caller what fields TO provide.
     //
-    //   3. NO DISPATCH FIELDS (no prompt, no mode, no dispatch fields):
-    //      Pass through — not a dispatch call.
+    //   3. NO DISPATCH FIELDS: Pass through — not a dispatch call.
 
     "tool.execute.before": async (ctx, output) => {
       if (ctx.tool !== "task") return;
@@ -134,13 +129,10 @@ export default async function dispatchGatePlugin() {
       if (args.mode && args.intent_kd && args.session_date) {
         const templateEntry = findTemplate(args.mode);
         if (!templateEntry) {
-          // Unknown mode with structured fields — reject by replacing prompt
-          // with error message. Framework merge skips null values but uses
-          // non-null replacements, so the error message replaces free-text.
-          output.args.prompt = "ERROR: Structured dispatch required. This dispatch was automatically rejected. Use mode, intent_kd, and session_date fields instead of writing a free-text prompt.";
-          if (output.args.description) output.args.description = "[REJECTED] unknown mode";
-          if (output.args.subagent_type) output.args.subagent_type = "none";
-          return output;
+          // Uses throw to abort execution — framework catches the rejection
+          throw new Error(
+            "Provide one of the following modes: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight",
+          );
         }
 
         const prompt = await resolveTemplate(
@@ -148,34 +140,35 @@ export default async function dispatchGatePlugin() {
           args,
         );
 
-        output.args = {
-          prompt,
-          description: templateEntry.description,
-          subagent_type: templateEntry.target_agent,
-        };
+        // Property mutation (not object replacement) so the framework's
+        // reference to output.args remains valid
+        output.args.prompt = prompt;
+        output.args.description = templateEntry.description;
+        output.args.subagent_type = templateEntry.target_agent;
 
-        // Preserve passthrough fields if present
-        if (args.task_id) output.args.task_id = args.task_id;
-        if (args.command) output.args.command = args.command;
+        // Clean up structured fields — they were consumed by template resolution
+        delete output.args.mode;
+        delete output.args.intent_kd;
+        delete output.args.session_date;
+        delete output.args.scope;
 
-        return output;
+        // Passthrough fields (task_id, command) auto-preserve since they
+        // are not in the structured fields set and we use mutation + delete
+
+        return;
       }
 
       // --- PATH 2: Free-text or incomplete dispatch ---
       // Has prompt/description/subagent_type but missing structured fields.
-      // Replaces free-text with an error message. The framework MERGES
-      // output.args with the original args — nulls are skipped during merge
-      // (free-text survives), but non-null values override the original.
-      // The error message replaces the free-text prompt in the merged result.
+      // Uses throw to abort execution — framework catches the rejection.
       if (args.prompt || args.description || args.subagent_type) {
-        output.args.prompt = "ERROR: Structured dispatch required. This dispatch was automatically rejected. Use mode, intent_kd, and session_date fields instead of writing a free-text prompt.";
-        if (output.args.description) output.args.description = "[REJECTED] free-text dispatch";
-        if (output.args.subagent_type) output.args.subagent_type = "none";
-        return output;
+        throw new Error(
+          "Provide mode, intent_kd, and session_date fields for structured dispatch",
+        );
       }
 
       // --- PATH 3: No dispatch fields — pass through ---
-      return output;
+      return;
     },
   };
 }
