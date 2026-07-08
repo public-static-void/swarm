@@ -608,12 +608,14 @@ describe("Uniform handling across callers", () => {
 
 describe("Debug logging", () => {
   beforeEach(() => {
+    process.env.DISPATCH_GATE_DEBUG = "true";
     vi.spyOn(fs, "existsSync").mockReturnValue(true);
     vi.spyOn(fs, "appendFileSync").mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    delete process.env.DISPATCH_GATE_DEBUG;
   });
 
   it("structured dispatch produces RECEIVED and TRANSFORMED logs", async () => {
@@ -721,5 +723,25 @@ describe("Debug logging", () => {
     const output = { args: makeValidArgs() };
     await plugin["tool.execute.before"](ctx, output);
     expect(spy.mock.calls.length).toBe(0);
+  });
+
+  it("does NOT write log file when DISPATCH_GATE_DEBUG is not set", async () => {
+    delete process.env.DISPATCH_GATE_DEBUG;
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: makeValidArgs() };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(fs.appendFileSync.mock.calls.length).toBe(0);
+    // Clean up — restore so subsequent tests aren't affected
+    process.env.DISPATCH_GATE_DEBUG = "true";
+  });
+
+  it("writes log file when DISPATCH_GATE_DEBUG=true", async () => {
+    process.env.DISPATCH_GATE_DEBUG = "true";
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: makeValidArgs() };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(fs.appendFileSync.mock.calls.length).toBeGreaterThan(0);
   });
 });

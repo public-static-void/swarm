@@ -31,6 +31,7 @@ const LOG_DIR =
 const LOG_FILE = path.join(LOG_DIR, "dispatch-gate.log");
 
 function logToFile(event, details) {
+  if (!process.env.DISPATCH_GATE_DEBUG) return;
   try {
     if (!fs.existsSync(LOG_DIR)) {
       fs.mkdirSync(LOG_DIR, { recursive: true });
