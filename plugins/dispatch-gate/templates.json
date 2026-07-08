@@ -62,8 +62,8 @@
   "checkpoint": {
     "mode": "checkpoint",
     "target_agent": "committer",
-    "description": "Dispatch Committer for intermediate checkpoint commit",
-    "template": "DISPATCH TO: committer\nACTION: Dispatch\nARTIFACT: {{scope}}\nMODE: CHECKPOINT\nKDS:\nRETURN: Git commit confirmation\nACCEPTANCE: Changes committed with semantic message matching the change summary"
+    "description": "Checkpoint commit during development",
+    "template": "DISPATCH TO: committer\nACTION: Dispatch\nARTIFACT: Checkpoint commit\nMODE: CHECKPOINT\nSCOPE: {{scope}}\nKDS:\n  - {{intent_kd}}\nRETURN: Git commit confirmation\nACCEPTANCE: Changes committed with semantic message matching the change summary"
   },
   "preflight": {
     "mode": "preflight",

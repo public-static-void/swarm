@@ -88,6 +88,30 @@ Read the specification and plan, implement each step, write tests, produce an im
 4. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
 5. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
 6. Implement incrementally — one plan step at a time. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The dispatch-gate plugin generates the dispatch prompt from the checkpoint template.
+
+   ### Dispatching Committer
+   
+   Use structured dispatch when delegating to Committer:
+   - `mode`: "checkpoint", "cleanup", or "preflight"
+   - `intent_kd`: path to the INTENT KD
+   - `session_date`: YYYY-MM-DD
+   - `scope`: description of what to commit/setup
+   
+   For example:
+   ```
+   task({
+     mode: "checkpoint",
+     intent_kd: "knowledge/intent-foo-2026-07-07.md",
+     session_date: "2026-07-07",
+     scope: "Implement feature X",
+     description: "placeholder",
+     subagent_type: "committer",
+     prompt: "placeholder"
+   })
+   ```
+   
+   The `description` and `prompt` are placeholders required for schema validation; the dispatch-gate plugin overrides them from the template.
+
 7. Write tests first (TDD: red → green → refactor)
 8. Check off completed items in the TODO list as you go
 9. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
