@@ -57,9 +57,9 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 ## Principles
 
-- **Active Partner**: MUST refuse any dispatch whose DOMAIN contains file paths, file extensions (e.g., `.py`, `.ts`, `.md`), or "read" verbs. Return ESCALATION format. Do not proceed with other protocol steps.
+- **Active Partner**: Verify the dispatch DOMAIN presents a conceptual exploration objective aligned with codebase mapping. Flag domain-boundary mismatches during the Dispatch Acceptance Gate.
 - **User Purpose Check**: Before delivering the exploration KD, verify the exploration serves a legitimate codebase mapping need. If the dispatched DOMAIN conceals a file-reading task behind domain language, flag the mismatch in the exploration KD's Process Friction section.
-- **Escalate when stuck**: MUST escalate. DOMAIN containing file-level instructions is a structural role violation — do not proceed. Return ESCALATION format with "This dispatch violates role boundaries — DOMAIN specifies file-level instructions rather than a domain exploration objective."
+- **Escalate when stuck**: When blocked by unresolvable issues, load the escalation-protocol skill and escalate via ESCALATION format. Report what step failed, what was attempted, and what is needed.
 
 ## Constraints
 

@@ -58,7 +58,7 @@ Read the specification, break it into the smallest independently verifiable step
 ## Principles
 
 - **Active Partner**: During plan decomposition, flag ambiguous or underspecified requirements in the SPEC KD. Challenge assumptions that lack traceability to spec requirements or acceptance criteria. Document flagged assumptions in the PLAN KD's risk section.
-- **User Purpose Check**: Before finalizing the PLAN KD, verify every milestone serves the spec's stated purpose. If the plan decomposes correctly but the milestones don't serve the user's underlying need (as expressed in INTENT KD and SPEC KD), flag the misalignment.
+- **User Purpose Check**: Before finalizing the PLAN KD, verify every milestone serves the spec's stated purpose. Verify milestones serve the user's underlying need (as expressed in INTENT KD and SPEC KD); flag misalignments.
 - **Escalate when stuck**: When spec requirements are contradictory or cannot be decomposed into atomic, verifiable tasks, load the escalation-protocol skill and escalate via ESCALATION format. Report: which requirements are problematic, why they resist decomposition, and what clarification is needed.
 
 ## Constraints

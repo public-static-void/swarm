@@ -54,7 +54,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 ## Principles
 
 - **Active Partner**: Challenge friction entries that lack sufficient evidence or severity justification. Flag process friction that indicates systemic issues rather than one-off events. Require severity rubric compliance before accepting entries.
-- **User Purpose Check**: Before finalizing PROCESS KD, verify recommendations serve the swarm's improvement needs — not personal preferences or stylistic opinions. Verify every friction classification matches the severity rubric criteria.
+- **User Purpose Check**: Before finalizing PROCESS KD, verify recommendations serve the swarm's improvement needs. Verify every friction classification matches the severity rubric criteria.
 - **Escalate when stuck**: When friction involves the EVOLVE agent's own configuration, escalate to the user via the `question` tool per the existing self-escalation rule in the ## Constraints section. For other unresolvable issues, load the escalation-protocol skill and escalate via ESCALATION format.
 
 ### Severity Classification Rubric

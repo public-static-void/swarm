@@ -1,19 +1,33 @@
-// plugins/dispatch-gate/index.js
-// Intercepts `task` tool calls to enforce structured dispatch format.
-//
-// Two hooks work together:
-//   1. tool.definition — modifies jsonSchema (mutable JSON Schema 7 plain
-//      object) to add structured dispatch fields as REQUIRED properties.
-//      This guides the LLM to generate structured calls. NOTE: jsonSchema
-//      is LLM guidance, not structural enforcement — the LLM may still
-//      generate free-text calls despite the schema hints.
-//   2. tool.execute.before — resolves templates for structured dispatches,
-//      throws for free-text rejection, throws for unknown mode. Uses
-//      property mutation (not object replacement) so framework retains
-//      the same args reference. Uses `delete` to remove structured fields
-//      after transformation.
-//
-// Same handler for ALL callers — no Overseer/Artisan distinction.
+/**
+ * Dispatch Gate Plugin
+ *
+ * Intercepts task() calls to enforce structured dispatch format.
+ *
+ * Environment variables:
+ *   DISPATCH_GATE_DEBUG=true — enables file logging to
+ *     ~/.config/opencode/logs/dispatch-gate.log
+ *   (Default: logging disabled. Set to "true" to enable debug logs.)
+ *   _DISPATCH_GATE_LOG_DIR — override log directory (default: ~/.config/opencode/logs)
+ *
+ * Behavior:
+ *   - Structured dispatch (mode+intent_kd+session_date): generates prompt from template
+ *   - Free-text dispatch (no structured fields): throws rejection error
+ *   - Non-task tools: passes through unchanged
+ *
+ * Two hooks work together:
+ *   1. tool.definition — modifies jsonSchema (mutable JSON Schema 7 plain
+ *      object) to add structured dispatch fields as REQUIRED properties.
+ *      This guides the LLM to generate structured calls. NOTE: jsonSchema
+ *      is LLM guidance, not structural enforcement — the LLM may still
+ *      generate free-text calls despite the schema hints.
+ *   2. tool.execute.before — resolves templates for structured dispatches,
+ *      throws for free-text rejection, throws for unknown mode. Uses
+ *      property mutation (not object replacement) so framework retains
+ *      the same args reference. Uses `delete` to remove structured fields
+ *      after transformation.
+ *
+ * Same handler for ALL callers — no Overseer/Artisan distinction.
+ */
 
 import fs from "fs";
 import path from "path";

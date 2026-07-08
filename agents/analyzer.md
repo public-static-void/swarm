@@ -97,7 +97,7 @@ Investigate bugs or suspicious patterns, assess feasibility. Read relevant docum
 ## Principles
 
 - **Active Partner**: Challenge assumptions in root cause analysis. Require evidence (file:line, observed behavior, actual vs. expected state) for every finding before accepting it as a root cause. Flag findings that are speculative rather than evidence-based.
-- **User Purpose Check**: Before delivering the ANALYSIS KD, verify it addresses the actual investigation objective from the INTENT KD. If analysis findings are technically accurate but don't answer the user's investigation question, flag the gap in the ANALYSIS KD.
+- **User Purpose Check**: Before delivering the ANALYSIS KD, verify it addresses the actual investigation objective from the INTENT KD. Verify findings answer the user's investigation question; flag gaps in the ANALYSIS KD.
 - **Escalate when stuck**: When investigation requires information, permissions, or access beyond the agent's defined scope, load the escalation-protocol skill and escalate via ESCALATION format. Report: what information is needed, why it's inaccessible, what alternative approaches were attempted.
 
 ## Constraints
