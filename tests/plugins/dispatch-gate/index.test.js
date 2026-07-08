@@ -1,15 +1,13 @@
 // tests/plugins/dispatch-gate/index.test.js
-// Tests for dispatch-gate plugin — schema-level enforcement.
+// Tests for dispatch-gate plugin — structured dispatch enforcement.
 //
 // Two hooks under test:
-//   1. tool.definition — extends the task tool schema so structured
-//      fields (mode, intent_kd, session_date) are REQUIRED and
-//      prompt/description/subagent_type are optional. Schema validation
-//      rejects calls missing mode/intent_kd/session_date BEFORE the
-//      execute hook runs.
-//   2. tool.execute.before — resolves the template for the given mode
-//      and injects standard task tool fields. Never throws — schema
-//      handles all rejection.
+//   1. tool.definition — modifies jsonSchema (mutable JSON Schema 7) to
+//      add structured dispatch fields as REQUIRED properties. Guides the
+//      LLM to use structured format.
+//   2. tool.execute.before — resolves templates for structured dispatches.
+//      Rejects free-text dispatches by nulling prompt (causes Effect
+//      Schema decode failure in the task tool).
 //
 // ALL callers (Overseer, Artisan, any agent) use the same structured
 // dispatch format: { mode, intent_kd, session_date, scope? }
@@ -46,7 +44,12 @@ function callExecuteBefore(plugin, args, tool = "task") {
   return plugin["tool.execute.before"](ctx, output);
 }
 
-/** Invoke the tool.definition hook and return the modified output. */
+/**
+ * Invoke the tool.definition hook and return the modified output.
+ * Uses jsonSchema (the mutable JSON Schema 7 object used at runtime)
+ * rather than parameters (which is an Effect Schema.Struct with no
+ * .properties at runtime).
+ */
 function callToolDefinition(plugin, toolID = "task", existingSchema = null) {
   const input = { toolID };
   const defaultSchema = {
@@ -60,7 +63,9 @@ function callToolDefinition(plugin, toolID = "task", existingSchema = null) {
   };
   const output = {
     description: "Task tool",
-    parameters: existingSchema || { ...defaultSchema },
+    // parameters simulates Effect Schema.Struct — no .properties
+    parameters: {},
+    jsonSchema: existingSchema || { ...defaultSchema },
   };
   plugin["tool.definition"](input, output);
   return output;
@@ -71,54 +76,61 @@ function callToolDefinition(plugin, toolID = "task", existingSchema = null) {
 // ---------------------------------------------------------------------------
 
 describe("tool.definition hook", () => {
-  it("adds mode, intent_kd, session_date, scope to task schema", async () => {
+  it("adds mode, intent_kd, session_date, scope to task jsonSchema", async () => {
     const plugin = await dispatchGatePlugin({});
     const output = callToolDefinition(plugin, "task");
-    expect(output.parameters.properties.mode).toBeDefined();
-    expect(output.parameters.properties.mode.type).toBe("string");
-    expect(output.parameters.properties.intent_kd).toBeDefined();
-    expect(output.parameters.properties.intent_kd.type).toBe("string");
-    expect(output.parameters.properties.session_date).toBeDefined();
-    expect(output.parameters.properties.session_date.type).toBe("string");
-    expect(output.parameters.properties.scope).toBeDefined();
-    expect(output.parameters.properties.scope.type).toBe("string");
+    expect(output.jsonSchema.properties.mode).toBeDefined();
+    expect(output.jsonSchema.properties.mode.type).toBe("string");
+    expect(output.jsonSchema.properties.intent_kd).toBeDefined();
+    expect(output.jsonSchema.properties.intent_kd.type).toBe("string");
+    expect(output.jsonSchema.properties.session_date).toBeDefined();
+    expect(output.jsonSchema.properties.session_date.type).toBe("string");
+    expect(output.jsonSchema.properties.scope).toBeDefined();
+    expect(output.jsonSchema.properties.scope.type).toBe("string");
   });
 
   it("makes mode, intent_kd, session_date required", async () => {
     const plugin = await dispatchGatePlugin({});
     const output = callToolDefinition(plugin, "task");
-    expect(output.parameters.required).toContain("mode");
-    expect(output.parameters.required).toContain("intent_kd");
-    expect(output.parameters.required).toContain("session_date");
+    expect(output.jsonSchema.required).toContain("mode");
+    expect(output.jsonSchema.required).toContain("intent_kd");
+    expect(output.jsonSchema.required).toContain("session_date");
   });
 
   it("removes prompt, description, subagent_type from required", async () => {
     const plugin = await dispatchGatePlugin({});
     const output = callToolDefinition(plugin, "task");
-    expect(output.parameters.required).not.toContain("prompt");
-    expect(output.parameters.required).not.toContain("description");
-    expect(output.parameters.required).not.toContain("subagent_type");
+    expect(output.jsonSchema.required).not.toContain("prompt");
+    expect(output.jsonSchema.required).not.toContain("description");
+    expect(output.jsonSchema.required).not.toContain("subagent_type");
   });
 
   it("does not modify non-task tools", async () => {
     const plugin = await dispatchGatePlugin({});
     const output = callToolDefinition(plugin, "read");
     // Should be identical to the default schema
-    expect(output.parameters.properties.prompt).toBeDefined();
-    expect(output.parameters.required).toContain("prompt");
-    expect(output.parameters.required).toContain("description");
-    expect(output.parameters.required).toContain("subagent_type");
+    expect(output.jsonSchema.properties.prompt).toBeDefined();
+    expect(output.jsonSchema.required).toContain("prompt");
+    expect(output.jsonSchema.required).toContain("description");
+    expect(output.jsonSchema.required).toContain("subagent_type");
     // Should NOT have added structured fields
-    expect(output.parameters.properties.mode).toBeUndefined();
+    expect(output.jsonSchema.properties.mode).toBeUndefined();
     // Should NOT have pushed structured fields to required
-    expect(output.parameters.required).not.toContain("mode");
+    expect(output.jsonSchema.required).not.toContain("mode");
   });
 
-  it("handles schema with no properties gracefully", async () => {
+  it("does NOT modify output.parameters (Effect Schema has no .properties)", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    // output.parameters is a mock Effect Schema — no .properties
+    expect(output.parameters.properties).toBeUndefined();
+  });
+
+  it("handles schema with no jsonSchema gracefully", async () => {
     const plugin = await dispatchGatePlugin({});
     const input = { toolID: "task" };
+    // No jsonSchema, no parameters.properties — should not throw
     const output = { description: "bare", parameters: null };
-    // Should not throw when parameters is null
     await expect(
       plugin["tool.definition"](input, output),
     ).resolves.toBeUndefined();
@@ -132,9 +144,31 @@ describe("tool.definition hook", () => {
       // no "required" key
     };
     const output = callToolDefinition(plugin, "task", schema);
-    // Should have added structured fields
-    expect(output.parameters.properties.mode).toBeDefined();
+    // Should have added structured fields to jsonSchema
+    expect(output.jsonSchema.properties.mode).toBeDefined();
     // Should not have thrown about missing required array
+  });
+
+  it("mode property includes enum values for all dispatch modes", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    const expectedModes = [
+      "explore", "investigate", "align", "decompose", "swarm",
+      "verify", "extract", "evolve", "commit", "report",
+      "checkpoint", "preflight",
+    ];
+    for (const mode of expectedModes) {
+      expect(output.jsonSchema.properties.mode.enum).toContain(mode);
+    }
+  });
+
+  it("session_date property includes pattern validation", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.jsonSchema.properties.session_date.pattern).toBeDefined();
+    expect(output.jsonSchema.properties.session_date.pattern).toMatch(
+      /^\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$$/,
+    );
   });
 });
 
@@ -313,45 +347,56 @@ describe("Structured dispatch routing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Plugin: Unknown mode does not throw
+// Plugin: Free-text dispatch rejection
 // ---------------------------------------------------------------------------
 
-describe("Unknown mode handling", () => {
-  it("returns without modification for unknown mode", async () => {
+describe("Free-text dispatch rejection", () => {
+  it("rejects free-text dispatch with only prompt", async () => {
     const plugin = await dispatchGatePlugin({});
-    const args = makeValidArgs({ mode: "bogus" });
+    const args = { prompt: "do something" };
+    await callExecuteBefore(plugin, args);
+    expect(args.prompt).toBe("do something"); // original unchanged
+    // But output.args should have prompt: null
+    const output = { args };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.prompt).toBeNull();
+  });
+
+  it("rejects free-text dispatch with only description", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { description: "do something" };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
-    // Should NOT throw — schema guarantees mode exists, but mode values
-    // are unvalidated. The hook just returns without modification.
-    await expect(
-      plugin["tool.execute.before"](ctx, output),
-    ).resolves.toBeUndefined();
-    // output.args should remain unchanged (no template was found)
-    expect(output.args).toEqual(args);
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.prompt).toBeNull();
   });
 
-  it("does not throw for missing args", async () => {
+  it("rejects free-text dispatch with only subagent_type", async () => {
     const plugin = await dispatchGatePlugin({});
+    const args = { subagent_type: "artisan" };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-    // Null args — hook should return without modification
-    await expect(
-      plugin["tool.execute.before"](ctx, { args: null }),
-    ).resolves.toBeUndefined();
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.prompt).toBeNull();
   });
 
-  it("does not throw for non-object args", async () => {
+  it("rejects free-text dispatch with prompt + description + subagent_type", async () => {
     const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: "do something",
+      description: "a task",
+      subagent_type: "artisan",
+    };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-    // String args — hook should return without modification
-    await expect(
-      plugin["tool.execute.before"](ctx, { args: "just a string" }),
-    ).resolves.toBeUndefined();
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.prompt).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Plugin: Generated prompt overrides caller-provided prompt
+// Plugin: Structured dispatch with prompt override
 // ---------------------------------------------------------------------------
 
 describe("Structured dispatch with prompt override", () => {
@@ -397,6 +442,40 @@ describe("Structured fields removed from output", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Plugin: Unknown mode handling
+// ---------------------------------------------------------------------------
+
+describe("Unknown mode handling", () => {
+  it("rejects when structured fields have unknown mode", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = makeValidArgs({ mode: "bogus" });
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    // Unknown mode with structured fields → rejection
+    expect(output.args.prompt).toBeNull();
+  });
+
+  it("does not throw for missing args", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    // Null args — hook should return without modification
+    await expect(
+      plugin["tool.execute.before"](ctx, { args: null }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("does not throw for non-object args", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    // String args — hook should return without modification
+    await expect(
+      plugin["tool.execute.before"](ctx, { args: "just a string" }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Plugin: Non-task tool passes through
 // ---------------------------------------------------------------------------
 
@@ -410,6 +489,62 @@ describe("Non-task tool passes through", () => {
     ).resolves.toBeUndefined();
     // output should be unchanged
     expect(output.args.prompt).toBe("anything");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin: Empty args pass through
+// ---------------------------------------------------------------------------
+
+describe("Empty args pass through", () => {
+  it("passes through when args has no dispatch fields", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { unrelated: true };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    // output.args should be unchanged (no mode, no prompt/desc/subagent)
+    expect(output.args).toEqual({ unrelated: true });
+  });
+
+  it("passes through when args is empty object", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {};
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    // output.args should be the same empty object
+    expect(output.args).toEqual({});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin: task_id and command passthrough
+// ---------------------------------------------------------------------------
+
+describe("Structured dispatch preserves passthrough fields", () => {
+  it("preserves task_id in structured dispatch", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = makeValidArgs({
+      mode: "checkpoint",
+      task_id: "prev-task-123",
+    });
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.task_id).toBe("prev-task-123");
+  });
+
+  it("preserves command in structured dispatch", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = makeValidArgs({
+      mode: "preflight",
+      command: "git status",
+    });
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.command).toBe("git status");
   });
 });
 

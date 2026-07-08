@@ -2,16 +2,15 @@
 // Intercepts `task` tool calls to enforce structured dispatch format.
 //
 // Two hooks work together:
-//   1. tool.definition — extends the task tool's JSON Schema so that
-//      structured fields (mode, intent_kd, session_date) are REQUIRED
-//      and prompt/description/subagent_type are optional. Schema
-//      validation rejects calls missing structured fields BEFORE the
-//      execute hook runs — this is the only structurally sound way to
-//      block free-text dispatches given that tool.execute.before cannot
-//      abort execution.
-//   2. tool.execute.before — resolves the template for the given mode,
-//      injects prompt/description/subagent_type into args, and removes
-//      the structured fields. Never throws — schema handles rejection.
+//   1. tool.definition — modifies jsonSchema (mutable JSON Schema 7 plain
+//      object) to add structured dispatch fields as REQUIRED properties.
+//      This guides the LLM to generate structured calls. NOTE: jsonSchema
+//      is LLM guidance, not structural enforcement — the LLM may still
+//      generate free-text calls despite the schema hints.
+//   2. tool.execute.before — resolves templates for structured dispatches.
+//      Rejects free-text/incomplete dispatches by nulling the prompt field,
+//      which causes the Effect Schema decode inside the task tool to fail
+//      with InvalidArgumentsError.
 //
 // Same handler for ALL callers — no Overseer/Artisan distinction.
 
@@ -40,74 +39,130 @@ function findTemplate(mode) {
 export default async function dispatchGatePlugin() {
   return {
     // -----------------------------------------------------------------------
-    // Hook 1: Modify the task tool schema
+    // Hook 1: Modify the task tool JSON Schema
     // -----------------------------------------------------------------------
     // Runs when the tool definition is built (before sending to the LLM).
-    // Adds structured dispatch fields as REQUIRED properties. Schema
-    // validation rejects any task() call that omits mode, intent_kd, or
-    // session_date — this is the ONLY mechanism that structurally prevents
-    // free-text dispatches.
+    // Modifies output.jsonSchema (a mutable JSON Schema 7 object) to add
+    // structured dispatch fields. The LLM sees mode, intent_kd, session_date
+    // as REQUIRED. prompt/description/subagent_type are removed from
+    // required — the plugin injects them from templates.
+    //
+    // NOTE: output.parameters is an Effect Schema.Struct (function/class)
+    // with NO .properties — modifying it is a no-op. The mutable schema
+    // is output.jsonSchema.
 
     "tool.definition": async (input, output) => {
       if (input.toolID !== "task") return;
-      if (!output.parameters || !output.parameters.properties) return;
+
+      // output.parameters is Effect Schema.Struct — no .properties
+      // output.jsonSchema is a mutable JSONSchema7 object — use it
+      const schema = output.jsonSchema || output.parameters;
+      if (!schema || !schema.properties) return;
 
       // Add structured dispatch fields
-      output.parameters.properties.mode = {
+      schema.properties.mode = {
         type: "string",
+        enum: [
+          "explore", "investigate", "align", "decompose", "swarm",
+          "verify", "extract", "evolve", "commit", "report",
+          "checkpoint", "preflight",
+        ],
         description:
-          "Dispatch mode: explore, investigate, align, decompose, " +
-          "swarm, verify, extract, evolve, commit, report, " +
-          "checkpoint, preflight",
+          "Dispatch mode — required for structured dispatch",
       };
-      output.parameters.properties.intent_kd = {
+      schema.properties.intent_kd = {
         type: "string",
         description:
           "Path to the INTENT KD for this session " +
           "(e.g., knowledge/intent-auth-flow-2026-07-07.md)",
       };
-      output.parameters.properties.session_date = {
+      schema.properties.session_date = {
         type: "string",
+        pattern: "^\\d{4}-\\d{2}-\\d{2}$",
         description: "Session date in YYYY-MM-DD format",
       };
-      output.parameters.properties.scope = {
+      schema.properties.scope = {
         type: "string",
         description: "Optional scope / domain context for the dispatch",
       };
 
-      // Make mode, intent_kd, session_date REQUIRED so schema validation
-      // rejects calls without them. prompt, description, subagent_type
-      // are removed from required — the plugin injects them.
-      if (Array.isArray(output.parameters.required)) {
-        output.parameters.required = output.parameters.required.filter(
+      // Make mode, intent_kd, session_date REQUIRED so LLM sees
+      // them as mandatory. prompt, description, subagent_type are
+      // optional — the plugin injects them.
+      if (Array.isArray(schema.required)) {
+        schema.required = schema.required.filter(
           (f) => f !== "prompt" && f !== "description" && f !== "subagent_type",
         );
-        output.parameters.required.push("mode", "intent_kd", "session_date");
+        if (!schema.required.includes("mode"))
+          schema.required.push("mode");
+        if (!schema.required.includes("intent_kd"))
+          schema.required.push("intent_kd");
+        if (!schema.required.includes("session_date"))
+          schema.required.push("session_date");
       }
     },
 
     // -----------------------------------------------------------------------
-    // Hook 2: Transform structured dispatches before execution
+    // Hook 2: Transform/reject dispatches before execution
     // -----------------------------------------------------------------------
-    // Fires after schema validation passes. By this point the schema has
-    // already confirmed mode+intent_kd+session_date are present. This hook
-    // resolves the template and injects standard task tool fields.
-    // Never throws — schema handles all rejection.
+    // Fires when the tool executes. Three paths:
+    //
+    //   1. STRUCTURED DISPATCH (mode + intent_kd + session_date present):
+    //      Resolves the template and injects prompt/description/subagent_type.
+    //      Preserves task_id and command passthrough fields.
+    //
+    //   2. FREE-TEXT DISPATCH (prompt/description/subagent_type but no mode):
+    //      Rejects by setting prompt to null. The Effect Schema decode
+    //      inside the task tool requires prompt: Schema.String, so null
+    //      causes InvalidArgumentsError — the only structural rejection
+    //      point in the framework.
+    //
+    //   3. NO DISPATCH FIELDS (no prompt, no mode, no dispatch fields):
+    //      Pass through — not a dispatch call.
 
     "tool.execute.before": async (ctx, output) => {
       if (ctx.tool !== "task") return;
       if (!output.args || typeof output.args !== "object") return;
 
-      const templateEntry = findTemplate(output.args.mode);
-      if (!templateEntry) return;
+      const args = output.args;
 
-      const prompt = await resolveTemplate(templateEntry.template, output.args);
+      // --- PATH 1: Structured dispatch (mode + intent_kd + session_date) ---
+      if (args.mode && args.intent_kd && args.session_date) {
+        const templateEntry = findTemplate(args.mode);
+        if (!templateEntry) {
+          // Unknown mode with structured fields — reject
+          output.args = { prompt: null };
+          return output;
+        }
 
-      output.args = {
-        subagent_type: templateEntry.target_agent,
-        prompt,
-        description: templateEntry.description,
-      };
+        const prompt = await resolveTemplate(
+          templateEntry.template,
+          args,
+        );
+
+        output.args = {
+          prompt,
+          description: templateEntry.description,
+          subagent_type: templateEntry.target_agent,
+        };
+
+        // Preserve passthrough fields if present
+        if (args.task_id) output.args.task_id = args.task_id;
+        if (args.command) output.args.command = args.command;
+
+        return output;
+      }
+
+      // --- PATH 2: Free-text or incomplete dispatch ---
+      // Has prompt/description/subagent_type but missing structured fields
+      // Setting prompt to null causes Effect Schema decode failure
+      if (args.prompt || args.description || args.subagent_type) {
+        output.args = { prompt: null };
+        return output;
+      }
+
+      // --- PATH 3: No dispatch fields — pass through ---
+      return output;
     },
   };
 }
