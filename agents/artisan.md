@@ -82,18 +82,36 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 ## Protocol
 
-1. **Dispatch Acceptance Gate** — Verify dispatch integrity with 6 structural checks:
-   - **Field Presence**: The dispatch contains all required fields — DISPATCH TO, ACTION, ARTIFACT, {DOMAIN | SCOPE | MODE}, KDS, RETURN, ACCEPTANCE.
-   - **Field Order**: Fields appear in canonical sequence: DISPATCH TO → ACTION → ARTIFACT → {DOMAIN | SCOPE | MODE} → KDS → RETURN → ACCEPTANCE.
-   - **Agent Identity**: The DISPATCH TO field matches the receiving agent's name.
-   - **KDS Are Paths**: Every KDS entry is a KD path reference following the pattern `knowledge/{type}-{name}-{date}.md`. No entry contains inline content or narrative text.
-   - **RETURN Is a Path Pattern**: The RETURN field contains a single artifact path pattern — a concise deliverable reference.
-   - **Content-Role Match**: The dispatch fields describe a WHAT-level objective for the receiving agent. DOMAIN contains a noun phrase identifying a conceptual area. SCOPE references a spec or plan identifier by name. MODE selects a lifecycle mode (PREFLIGHT, CHECKPOINT, or CLEANUP).
+1. **Dispatch Acceptance Gate** — Load the `dispatch-validation` skill and verify dispatch integrity using its 7-check protocol before proceeding.
 2. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
 3. Scan project for existing conventions — detect tech stack, file structure, coding patterns
 4. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
 5. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
-6. Implement incrementally — one plan step at a time. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with `MODE: CHECKPOINT` and a change summary (files modified, nature of changes — feat/fix/refactor). Include `MODE: CHECKPOINT` between ARTIFACT and KDS in the dispatch, per the canonical field sequence.
+6. Implement incrementally — one plan step at a time. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The dispatch-gate plugin generates the dispatch prompt from the checkpoint template.
+
+   ### Dispatching Committer
+   
+   Use structured dispatch when delegating to Committer:
+   - `mode`: "checkpoint", "cleanup", or "preflight"
+   - `intent_kd`: path to the INTENT KD
+   - `session_date`: YYYY-MM-DD
+   - `scope`: description of what to commit/setup
+   
+   For example:
+   ```
+   task({
+     mode: "checkpoint",
+     intent_kd: "knowledge/intent-foo-2026-07-07.md",
+     session_date: "2026-07-07",
+     scope: "Implement feature X",
+     description: "placeholder",
+     subagent_type: "committer",
+     prompt: "placeholder"
+   })
+   ```
+   
+   The `description` and `prompt` are placeholders required for schema validation; the dispatch-gate plugin overrides them from the template.
+
 7. Write tests first (TDD: red → green → refactor)
 8. Check off completed items in the TODO list as you go
 9. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:

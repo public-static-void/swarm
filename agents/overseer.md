@@ -22,7 +22,6 @@ permission:
   skill:
     "*": deny
     "kd-system": allow
-    "escalation-protocol": allow
   lsp: deny
   question: allow
   webfetch: deny
@@ -72,117 +71,19 @@ Your first mandatory action at the very start of every new user interaction is i
 
 If an agent fails during any phase, re-dispatch with refined scope. If failure persists, document the gap in a PROCESS KD, then escalate to the user via the `question` tool. Wait for user input before proceeding.
 
-## Delegation Templates (typed fields, all required; KDS = path refs)
-
-```
-DISPATCH TO: Explorer
-ACTION: Create
-ARTIFACT: exploration KD
-DOMAIN: {domain name — a noun phrase identifying a single conceptual area}
-KDS:
-  - knowledge/intent-{name}-{date}.md
-RETURN: knowledge/exploration-{name}-{date}.md
-ACCEPTANCE: Exploration KD exists covering {domain} with key components and architecture map
-```
-
-```
-DISPATCH TO: Spec Weaver
-ACTION: Create
-ARTIFACT: SPEC KD
-DOMAIN: {domain name}
-KDS:
-  - knowledge/intent-{name}-{date}.md
-  - knowledge/analysis-{name}-{date}.md
-  - knowledge/exploration-{name}-{date}.md
-RETURN: knowledge/spec-{name}-{date}.md
-ACCEPTANCE: SPEC KD exists with numbered requirements, interface contracts, and verifiable acceptance criteria
-```
-
-```
-DISPATCH TO: Pathfinder
-ACTION: Create
-ARTIFACT: PLAN KD
-SCOPE: {reference identifier}
-KDS:
-  - knowledge/spec-{name}-{date}.md
-RETURN: knowledge/plan-{name}-{date}.md
-ACCEPTANCE: PLAN KD exists with dependency graph, milestones, and every acceptance criterion mapped to a task
-```
-
-```
-DISPATCH TO: Artisan
-ACTION: Implement
-ARTIFACT: implementation
-SCOPE: {reference identifier}
-KDS:
-  - knowledge/spec-{name}-{date}.md
-  - knowledge/plan-{name}-{date}.md
-RETURN: Path to implementation summary KD created
-ACCEPTANCE: All plan tasks implemented, verification gates pass, implementation summary KD exists
-```
-
-```
-DISPATCH TO: Inspector
-ACTION: Review
-ARTIFACT: REVIEW KD or AUDIT KD
-SCOPE: {reference identifier}
-KDS:
-  - knowledge/spec-{name}-{date}.md
-  - knowledge/plan-{name}-{date}.md
-  - knowledge/impl-{name}-{date}.md
-RETURN: knowledge/review-{name}-{date}.md or knowledge/audit-{name}-{date}.md
-ACCEPTANCE: REVIEW KD or AUDIT KD exists with PASS/FAIL verdict and traceability matrix
-```
-
-```
-DISPATCH TO: Committer
-ACTION: Dispatch
-ARTIFACT: Git workspace state
-MODE: {PREFLIGHT | CHECKPOINT | CLEANUP}
-KDS: None
-RETURN: Git status summary (branch, clean/dirty state)
-ACCEPTANCE: Git workspace is clean and branch is ready (PREFLIGHT) or changes are committed and pushed (CLEANUP)
-```
-
-```
-DISPATCH TO: Scribe
-ACTION: Create
-ARTIFACT: COMPOSED KD
-SCOPE: {reference identifier}
-KDS:
-  - knowledge/*-{session-date}-*.md
-RETURN: Paths to COMPOSED KDs created
-ACCEPTANCE: COMPOSED KDs exist, stale KDs marked superseded, cross-references updated
-```
-
-```
-DISPATCH TO: Habit Builder
-ACTION: Analyze
-ARTIFACT: PROCESS KD
-SCOPE: {reference identifier}
-KDS:
-  - knowledge/*-{session-date}-*.md
-RETURN: knowledge/process-{session-focus}-{date}.md
-ACCEPTANCE: PROCESS KD exists with friction classification, severity rubric, and fix recommendations
-```
-
-```
-DISPATCH TO: Analyzer
-ACTION: Investigate
-ARTIFACT: ANALYSIS KD
-DOMAIN: {domain name}
-KDS:
-  - knowledge/intent-{name}-{date}.md
-  - knowledge/report-{name}-{date}.md
-RETURN: knowledge/analysis-{name}-{date}.md
-ACCEPTANCE: ANALYSIS KD exists with findings, root cause, severity classification, and recommendations
-```
-
 ## Delegation Rules
 
-1. **Delegate WHAT** — describe artifact, objective, criteria. Agents choose approach.
-2. **Structured templates** — populate ACTION, ARTIFACT, DOMAIN/SCOPE, KDS, RETURN, ACCEPTANCE.
-3. **On escalation** — load `escalation-protocol` skill, follow Overseer Response.
+1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `dispatch-gate` plugin generates dispatch prompts from templates using your data fields and injects the required task tool fields.
+
+2. **Provide ONLY structured fields** — include these fields in every task call: `mode` (one of: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight), `intent_kd` (path to the current INTENT KD), and `session_date` (YYYY-MM-DD). Optionally provide `scope` for domain context. Provide only: `mode`, `intent_kd`, `session_date`, `scope`. The plugin generates `prompt`, `description`, and `subagent_type` from the template.
+
+3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
+
+4. **Refer to KDs by path** — use path references following the pattern `knowledge/{type}-{name}-{date}.md` for any KD references.
+
+5. **Describe the artifact, objective, and acceptance criteria. Agents determine their own approach.**
+
+6. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
 
 ## Context Marker
 
