@@ -15,8 +15,33 @@
 //
 // Same handler for ALL callers — no Overseer/Artisan distinction.
 
+import fs from "fs";
+import path from "path";
+import os from "os";
 import { resolveTemplate } from "./template-engine.js";
 import templates from "./templates.json" with { type: "json" };
+
+// ---------------------------------------------------------------------------
+// File logging — replaces console.log to avoid TUI spill
+// ---------------------------------------------------------------------------
+
+const LOG_DIR =
+  process.env._DISPATCH_GATE_LOG_DIR ||
+  path.join(os.homedir(), ".config", "opencode", "logs");
+const LOG_FILE = path.join(LOG_DIR, "dispatch-gate.log");
+
+function logToFile(event, details) {
+  try {
+    if (!fs.existsSync(LOG_DIR)) {
+      fs.mkdirSync(LOG_DIR, { recursive: true });
+    }
+    const timestamp = new Date().toISOString();
+    const line = `[DISPATCH-GATE] ${timestamp} | ${event} | ${details}\n`;
+    fs.appendFileSync(LOG_FILE, line);
+  } catch (e) {
+    // Silently fail — logging should never break the plugin
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,13 +53,6 @@ import templates from "./templates.json" with { type: "json" };
  */
 function findTemplate(mode) {
   return templates[mode] || null;
-}
-
-/**
- * Structured log prefix with ISO timestamp for machine-parsable output.
- */
-function logTag() {
-  return `[DISPATCH-GATE] ${new Date().toISOString()}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,11 +150,11 @@ export default async function dispatchGatePlugin() {
       if (!output.args || typeof output.args !== "object") return;
 
       const args = output.args;
-      const ts = logTag();
 
       // M2-T1: Log every dispatch arrival with identifying fields
-      console.log(
-        `${ts} | RECEIVED | mode=${args.mode || "(none)"} intent_kd=${args.intent_kd ? args.intent_kd.replace("knowledge/", "") : "(none)"} session_date=${args.session_date || "(none)"}`,
+      logToFile(
+        "RECEIVED",
+        `mode=${args.mode || "(none)"} intent_kd=${args.intent_kd ? args.intent_kd.replace("knowledge/", "") : "(none)"} session_date=${args.session_date || "(none)"}`,
       );
 
       // --- PATH 1: Structured dispatch (mode + intent_kd + session_date) ---
@@ -144,8 +162,9 @@ export default async function dispatchGatePlugin() {
         const templateEntry = findTemplate(args.mode);
         if (!templateEntry) {
           // M2-T2: Log rejection before throw
-          console.log(
-            `${ts} | REJECTED | unknown mode "${args.mode}"`,
+          logToFile(
+            "REJECTED",
+            `unknown mode "${args.mode}"`,
           );
           // Uses throw to abort execution — framework catches the rejection
           throw new Error(
@@ -161,8 +180,9 @@ export default async function dispatchGatePlugin() {
           );
         } catch (err) {
           // M2-T5: Log template resolution errors then re-throw
-          console.log(
-            `${ts} | ERROR | template resolution failed: ${err.message}`,
+          logToFile(
+            "ERROR",
+            `template resolution failed: ${err.message}`,
           );
           throw err;
         }
@@ -183,8 +203,9 @@ export default async function dispatchGatePlugin() {
         delete output.args.scope;
 
         // M2-T3: Log successful transformation
-        console.log(
-          `${ts} | TRANSFORMED | mode=${resolvedMode} target=${templateEntry.target_agent}`,
+        logToFile(
+          "TRANSFORMED",
+          `mode=${resolvedMode} target=${templateEntry.target_agent}`,
         );
 
         // Passthrough fields (task_id, command) auto-preserve since they
@@ -198,8 +219,9 @@ export default async function dispatchGatePlugin() {
       // Uses throw to abort execution — framework catches the rejection.
       if (args.prompt || args.description || args.subagent_type) {
         // M2-T2: Log rejection before throw
-        console.log(
-          `${ts} | REJECTED | free-text dispatch blocked`,
+        logToFile(
+          "REJECTED",
+          "free-text dispatch blocked",
         );
         throw new Error(
           "Provide mode, intent_kd, and session_date fields for structured dispatch",
@@ -207,8 +229,9 @@ export default async function dispatchGatePlugin() {
       }
 
       // M2-T4: Log pass-through for non-dispatch task calls
-      console.log(
-        `${ts} | PASSED | no dispatch fields`,
+      logToFile(
+        "PASSED",
+        "no dispatch fields",
       );
 
       // --- PATH 3: No dispatch fields — pass through ---

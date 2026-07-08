@@ -13,6 +13,7 @@
 // dispatch format: { mode, intent_kd, session_date, scope? }
 // The plugin resolves templates and routes to the correct target agent.
 
+import fs from "fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import dispatchGatePlugin from "../../../plugins/dispatch-gate/index.js";
 import {
@@ -607,7 +608,8 @@ describe("Uniform handling across callers", () => {
 
 describe("Debug logging", () => {
   beforeEach(() => {
-    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    vi.spyOn(fs, "appendFileSync").mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -619,7 +621,7 @@ describe("Debug logging", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args: makeValidArgs() };
     await plugin["tool.execute.before"](ctx, output);
-    const logs = console.log.mock.calls.map((c) => c[0]);
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
     expect(logs.some((l) => l.includes("RECEIVED"))).toBe(true);
     expect(logs.some((l) => l.includes("TRANSFORMED"))).toBe(true);
     expect(logs.some((l) => l.includes("REJECTED"))).toBe(false);
@@ -636,7 +638,7 @@ describe("Debug logging", () => {
     await expect(
       plugin["tool.execute.before"](ctx, output),
     ).rejects.toThrow();
-    const logs = console.log.mock.calls.map((c) => c[0]);
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
     expect(logs.some((l) => l.includes("RECEIVED"))).toBe(true);
     expect(logs.some((l) => l.includes("REJECTED"))).toBe(true);
     expect(logs.some((l) => l.includes("TRANSFORMED"))).toBe(false);
@@ -649,8 +651,8 @@ describe("Debug logging", () => {
     const ctx = { tool: "read", sessionID: "test", callID: "test-001" };
     const output = { args: { prompt: "anything" } };
     await plugin["tool.execute.before"](ctx, output);
-    // No console.log should be called for non-task tools
-    expect(console.log.mock.calls.length).toBe(0);
+    // No log writes for non-task tools
+    expect(fs.appendFileSync.mock.calls.length).toBe(0);
   });
 
   it("unknown mode produces REJECTED log with mode name", async () => {
@@ -660,7 +662,7 @@ describe("Debug logging", () => {
     await expect(
       plugin["tool.execute.before"](ctx, output),
     ).rejects.toThrow();
-    const logs = console.log.mock.calls.map((c) => c[0]);
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
     expect(logs.some((l) => l.includes("REJECTED | unknown mode"))).toBe(true);
     expect(logs.some((l) => l.includes('"bogus"'))).toBe(true);
   });
@@ -670,7 +672,7 @@ describe("Debug logging", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args: { unrelated: true } };
     await plugin["tool.execute.before"](ctx, output);
-    const logs = console.log.mock.calls.map((c) => c[0]);
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
     expect(logs.some((l) => l.includes("PASSED | no dispatch fields"))).toBe(true);
   });
 
@@ -679,7 +681,7 @@ describe("Debug logging", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args: makeValidArgs() };
     await plugin["tool.execute.before"](ctx, output);
-    const logs = console.log.mock.calls.map((c) => c[0]);
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
     for (const log of logs) {
       expect(log).toMatch(
         /^\[DISPATCH-GATE\] \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \| (RECEIVED|TRANSFORMED|REJECTED|PASSED|ERROR) \| /,
@@ -693,9 +695,31 @@ describe("Debug logging", () => {
     for (const tool of ["read", "bash", "glob", "grep", "write"]) {
       const ctx = { tool, sessionID: "test", callID: "test-001" };
       const output = { args: { prompt: "anything" } };
-      console.log.mockClear();
+      fs.appendFileSync.mockClear();
       await plugin["tool.execute.before"](ctx, output);
-      expect(console.log.mock.calls.length).toBe(0);
+      expect(fs.appendFileSync.mock.calls.length).toBe(0);
     }
+  });
+
+  it("writes to dispatch-gate.log file path", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: makeValidArgs() };
+    await plugin["tool.execute.before"](ctx, output);
+    const calls = fs.appendFileSync.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    // All writes go to the same log file
+    for (const call of calls) {
+      expect(call[0]).toMatch(/dispatch-gate\.log$/);
+    }
+  });
+
+  it("zero console.log calls remain in the plugin", async () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: makeValidArgs() };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(spy.mock.calls.length).toBe(0);
   });
 });
