@@ -1,12 +1,15 @@
 // tests/plugins/dispatch-gate/index.test.js
-// Tests for dispatch-gate plugin — hook timing fix + structured dispatch.
+// Tests for dispatch-gate plugin — schema-level enforcement.
 //
 // Two hooks under test:
 //   1. tool.definition — extends the task tool schema so structured
-//      fields (mode, intent_kd, session_date, scope) are valid params
-//      and prompt/description/subagent_type are optional.
-//   2. tool.execute.before — transforms structured dispatch fields into
-//      standard task tool fields (prompt, description, subagent_type).
+//      fields (mode, intent_kd, session_date) are REQUIRED and
+//      prompt/description/subagent_type are optional. Schema validation
+//      rejects calls missing mode/intent_kd/session_date BEFORE the
+//      execute hook runs.
+//   2. tool.execute.before — resolves the template for the given mode
+//      and injects standard task tool fields. Never throws — schema
+//      handles all rejection.
 //
 // ALL callers (Overseer, Artisan, any agent) use the same structured
 // dispatch format: { mode, intent_kd, session_date, scope? }
@@ -63,27 +66,6 @@ function callToolDefinition(plugin, toolID = "task", existingSchema = null) {
   return output;
 }
 
-async function assertRoutesTo(plugin, args, expectedAgent) {
-  const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-  const output = { args };
-  await plugin["tool.execute.before"](ctx, output);
-  expect(output.args.subagent_type).toBe(expectedAgent);
-  expect(typeof output.args.prompt).toBe("string");
-  expect(output.args.description).toBeDefined();
-}
-
-async function assertRejected(plugin, args, expectedText) {
-  const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-  const output = { args };
-  try {
-    await plugin["tool.execute.before"](ctx, output);
-    // Should not reach here
-    expect(true).toBe(false);
-  } catch (err) {
-    expect(err.message).toContain(expectedText);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Tool Definition Hook Tests
 // ---------------------------------------------------------------------------
@@ -102,7 +84,15 @@ describe("tool.definition hook", () => {
     expect(output.parameters.properties.scope.type).toBe("string");
   });
 
-  it("removes prompt, description, subagent_type from required array", async () => {
+  it("makes mode, intent_kd, session_date required", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.parameters.required).toContain("mode");
+    expect(output.parameters.required).toContain("intent_kd");
+    expect(output.parameters.required).toContain("session_date");
+  });
+
+  it("removes prompt, description, subagent_type from required", async () => {
     const plugin = await dispatchGatePlugin({});
     const output = callToolDefinition(plugin, "task");
     expect(output.parameters.required).not.toContain("prompt");
@@ -120,6 +110,8 @@ describe("tool.definition hook", () => {
     expect(output.parameters.required).toContain("subagent_type");
     // Should NOT have added structured fields
     expect(output.parameters.properties.mode).toBeUndefined();
+    // Should NOT have pushed structured fields to required
+    expect(output.parameters.required).not.toContain("mode");
   });
 
   it("handles schema with no properties gracefully", async () => {
@@ -257,10 +249,10 @@ describe("template-engine resolveTemplate", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Plugin: Structured dispatch accepted
+// Plugin: Structured dispatch routes correctly
 // ---------------------------------------------------------------------------
 
-describe("Structured dispatch accepted", () => {
+describe("Structured dispatch routing", () => {
   it("accepts mode + intent_kd + session_date and routes to agent", async () => {
     const plugin = await dispatchGatePlugin({});
     const args = makeValidArgs();
@@ -321,132 +313,86 @@ describe("Structured dispatch accepted", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Plugin: Missing fields rejected
+// Plugin: Unknown mode does not throw
 // ---------------------------------------------------------------------------
 
-describe("Missing fields rejected", () => {
-  it("rejects missing mode", async () => {
+describe("Unknown mode handling", () => {
+  it("returns without modification for unknown mode", async () => {
     const plugin = await dispatchGatePlugin({});
-    await assertRejected(plugin, { intent_kd: "x", session_date: "y" }, "DISPATCH REJECTED");
+    const args = makeValidArgs({ mode: "bogus" });
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    // Should NOT throw — schema guarantees mode exists, but mode values
+    // are unvalidated. The hook just returns without modification.
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).resolves.toBeUndefined();
+    // output.args should remain unchanged (no template was found)
+    expect(output.args).toEqual(args);
   });
 
-  it("rejects missing intent_kd", async () => {
+  it("does not throw for missing args", async () => {
     const plugin = await dispatchGatePlugin({});
-    await assertRejected(plugin, { mode: "explore", session_date: "y" }, "DISPATCH REJECTED");
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    // Null args — hook should return without modification
+    await expect(
+      plugin["tool.execute.before"](ctx, { args: null }),
+    ).resolves.toBeUndefined();
   });
 
-  it("rejects missing session_date", async () => {
+  it("does not throw for non-object args", async () => {
     const plugin = await dispatchGatePlugin({});
-    await assertRejected(plugin, { mode: "explore", intent_kd: "x" }, "DISPATCH REJECTED");
-  });
-
-  it("rejects empty args object", async () => {
-    const plugin = await dispatchGatePlugin({});
-    await assertRejected(plugin, {}, "DISPATCH REJECTED");
-  });
-
-  it("rejects non-object args", async () => {
-    const plugin = await dispatchGatePlugin({});
-    await assertRejected(plugin, "just a string", "DISPATCH REJECTED");
-  });
-
-  it("rejects null args", async () => {
-    const plugin = await dispatchGatePlugin({});
-    await assertRejected(plugin, null, "DISPATCH REJECTED");
-  });
-
-  it("rejects free-text prompt (no structured fields)", async () => {
-    const plugin = await dispatchGatePlugin({});
-    await assertRejected(
-      plugin,
-      { prompt: "do something", description: "task", subagent_type: "agent" },
-      "DISPATCH REJECTED",
-    );
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    // String args — hook should return without modification
+    await expect(
+      plugin["tool.execute.before"](ctx, { args: "just a string" }),
+    ).resolves.toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// Plugin: Error message uses positive framing
+// Plugin: Generated prompt overrides caller-provided prompt
 // ---------------------------------------------------------------------------
 
-describe("Error message uses positive framing", () => {
-  it("tells what fields to provide, not what to avoid", async () => {
+describe("Structured dispatch with prompt override", () => {
+  it("generated prompt replaces provided prompt when both are given", async () => {
     const plugin = await dispatchGatePlugin({});
-    try {
-      await callExecuteBefore(plugin, { mode: "explore" });
-      expect(true).toBe(false);
-    } catch (err) {
-      const msg = err.message;
-      expect(msg).toContain("Provide the required fields");
-      expect(msg).toContain("mode");
-      expect(msg).toContain("intent_kd");
-      expect(msg).toContain("session_date");
-      // No negative framing
-      expect(msg).not.toMatch(/don't|do not|never|avoid|not include/i);
-    }
-  });
-
-  it("does not contain prohibitive language", async () => {
-    const plugin = await dispatchGatePlugin({});
-    try {
-      await callExecuteBefore(plugin, { mode: "explore" });
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err.message).not.toMatch(/don't|do not|never|avoid|not include/i);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Plugin: Uniform validation across callers
-// ---------------------------------------------------------------------------
-
-describe("Uniform validation across callers", () => {
-  it("processes Artisan-style call same as Overseer-style call", async () => {
-    const plugin = await dispatchGatePlugin({});
-    // Artisan delegates to Committer with checkpoint mode
-    const args = {
-      mode: "checkpoint",
-      intent_kd: "knowledge/intent-auth-flow-2026-07-07.md",
-      session_date: "2026-07-07",
-      scope: "feat: add login validation",
-    };
+    const args = makeValidArgs({
+      mode: "explore",
+      prompt: "This free-text should be overridden",
+      description: "some description",
+      subagent_type: "some-agent",
+    });
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    expect(output.args.subagent_type).toBe("committer");
-    expect(output.args.prompt).toContain("MODE: CHECKPOINT");
-    expect(output.args.prompt).toContain("feat: add login validation");
+    // The output should have the template-generated prompt, not the free-text one
+    expect(output.args.prompt).toContain("DISPATCH TO: explorer");
+    expect(output.args.prompt).not.toContain("free-text");
+    expect(output.args.subagent_type).toBe("explorer");
+    expect(output.args.description).toBeDefined();
   });
+});
 
-  it("rejects both caller styles equally when fields missing", async () => {
+// ---------------------------------------------------------------------------
+// Plugin: Structured fields cleaned from output
+// ---------------------------------------------------------------------------
+
+describe("Structured fields removed from output", () => {
+  it("mode, intent_kd, session_date, scope are not in output.args", async () => {
     const plugin = await dispatchGatePlugin({});
-    // Same rejection for any caller missing fields
-    const badArgs = { description: "checkpoint", subagent_type: "committer", prompt: "Stage changes" };
+    const args = makeValidArgs({ mode: "swarm" });
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-    const output = { args: badArgs };
-    try {
-      await plugin["tool.execute.before"](ctx, output);
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err.message).toContain("DISPATCH REJECTED");
-    }
-  });
-
-  it("applies same routing logic to all callers", async () => {
-    const plugin = await dispatchGatePlugin({});
-    // Two callers, same mode — same result
-    const overseerCall = makeValidArgs({ mode: "swarm", scope: "auth" });
-    const artisanCall = makeValidArgs({ mode: "swarm", scope: "auth" });
-    const overseerCtx = { tool: "task", sessionID: "test", callID: "overseer-001" };
-    const artisanCtx = { tool: "task", sessionID: "test", callID: "artisan-001" };
-    const overseerOutput = { args: overseerCall };
-    const artisanOutput = { args: artisanCall };
-    await plugin["tool.execute.before"](overseerCtx, overseerOutput);
-    await plugin["tool.execute.before"](artisanCtx, artisanOutput);
-    expect(overseerOutput.args.subagent_type).toBe("artisan");
-    expect(artisanOutput.args.subagent_type).toBe("artisan");
-    expect(overseerOutput.args.prompt).toBe(artisanOutput.args.prompt);
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.mode).toBeUndefined();
+    expect(output.args.intent_kd).toBeUndefined();
+    expect(output.args.session_date).toBeUndefined();
+    expect(output.args.scope).toBeUndefined();
+    // Only standard task tool fields remain
+    expect(output.args.subagent_type).toBe("artisan");
+    expect(output.args.prompt).toBeDefined();
+    expect(output.args.description).toBeDefined();
   });
 });
 
@@ -468,72 +414,40 @@ describe("Non-task tool passes through", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Plugin: Generated prompt structure
+// Plugin: Uniform handling across callers
 // ---------------------------------------------------------------------------
 
-describe("Generated prompt structure", () => {
-  it("explore mode produces dispatch with DISPATCH TO: explorer", async () => {
+describe("Uniform handling across callers", () => {
+  it("processes Artisan-style call same as Overseer-style call", async () => {
     const plugin = await dispatchGatePlugin({});
-    await assertRoutesTo(plugin, makeValidArgs({ mode: "explore" }), "explorer");
-  });
-
-  it("verify mode produces dispatch with DISPATCH TO: inspector", async () => {
-    const plugin = await dispatchGatePlugin({});
-    await assertRoutesTo(plugin, makeValidArgs({ mode: "verify" }), "inspector");
-  });
-
-  it("unknown mode is rejected with guidance", async () => {
-    const plugin = await dispatchGatePlugin({});
-    await assertRejected(
-      plugin,
-      makeValidArgs({ mode: "bogus" }),
-      "Unknown mode",
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Plugin: Structured dispatch with prompt override
-// ---------------------------------------------------------------------------
-
-describe("Structured dispatch with prompt override", () => {
-  it("generated prompt replaces provided prompt when both are given", async () => {
-    const plugin = await dispatchGatePlugin({});
-    const args = makeValidArgs({
-      mode: "explore",
-      prompt: "This is a free-text prompt that should be overridden",
-      description: "some description",
-      subagent_type: "some-agent",
-    });
+    // Artisan delegates to Committer with checkpoint mode
+    const args = {
+      mode: "checkpoint",
+      intent_kd: "knowledge/intent-auth-flow-2026-07-07.md",
+      session_date: "2026-07-07",
+      scope: "feat: add login validation",
+    };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    // The output should have the template-generated prompt, not the free-text one
-    expect(output.args.prompt).toContain("DISPATCH TO: explorer");
-    expect(output.args.prompt).not.toContain("free-text prompt");
-    expect(output.args.subagent_type).toBe("explorer");
-    expect(output.args.description).toBeDefined();
+    expect(output.args.subagent_type).toBe("committer");
+    expect(output.args.prompt).toContain("MODE: CHECKPOINT");
+    expect(output.args.prompt).toContain("feat: add login validation");
   });
-});
 
-// ---------------------------------------------------------------------------
-// Plugin: Structured dispatch does not leak structured fields
-// ---------------------------------------------------------------------------
-
-describe("Structured fields removed from output", () => {
-  it("mode, intent_kd, session_date, scope are not in output.args", async () => {
+  it("applies same routing logic to all callers", async () => {
     const plugin = await dispatchGatePlugin({});
-    const args = makeValidArgs({ mode: "swarm" });
-    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-    const output = { args };
-    await plugin["tool.execute.before"](ctx, output);
-    expect(output.args.mode).toBeUndefined();
-    expect(output.args.intent_kd).toBeUndefined();
-    expect(output.args.session_date).toBeUndefined();
-    expect(output.args.scope).toBeUndefined();
-    // Only standard task tool fields remain
-    expect(output.args.subagent_type).toBe("artisan");
-    expect(output.args.prompt).toBeDefined();
-    expect(output.args.description).toBeDefined();
+    // Two callers, same mode — same result
+    const overseerCall = makeValidArgs({ mode: "swarm", scope: "auth" });
+    const artisanCall = makeValidArgs({ mode: "swarm", scope: "auth" });
+    const overseerCtx = { tool: "task", sessionID: "test", callID: "overseer-001" };
+    const artisanCtx = { tool: "task", sessionID: "test", callID: "artisan-001" };
+    const overseerOutput = { args: overseerCall };
+    const artisanOutput = { args: artisanCall };
+    await plugin["tool.execute.before"](overseerCtx, overseerOutput);
+    await plugin["tool.execute.before"](artisanCtx, artisanOutput);
+    expect(overseerOutput.args.subagent_type).toBe("artisan");
+    expect(artisanOutput.args.subagent_type).toBe("artisan");
+    expect(overseerOutput.args.prompt).toBe(artisanOutput.args.prompt);
   });
 });
