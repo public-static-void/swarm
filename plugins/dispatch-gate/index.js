@@ -30,6 +30,13 @@ function findTemplate(mode) {
   return templates[mode] || null;
 }
 
+/**
+ * Structured log prefix with ISO timestamp for machine-parsable output.
+ */
+function logTag() {
+  return `[DISPATCH-GATE] ${new Date().toISOString()}`;
+}
+
 // ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
@@ -120,25 +127,45 @@ export default async function dispatchGatePlugin() {
     //   3. NO DISPATCH FIELDS: Pass through — not a dispatch call.
 
     "tool.execute.before": async (ctx, output) => {
+      // M2-T6: Non-task tools produce zero dispatch-gate logging
       if (ctx.tool !== "task") return;
       if (!output.args || typeof output.args !== "object") return;
 
       const args = output.args;
+      const ts = logTag();
+
+      // M2-T1: Log every dispatch arrival with identifying fields
+      console.log(
+        `${ts} | RECEIVED | mode=${args.mode || "(none)"} intent_kd=${args.intent_kd ? args.intent_kd.replace("knowledge/", "") : "(none)"} session_date=${args.session_date || "(none)"}`,
+      );
 
       // --- PATH 1: Structured dispatch (mode + intent_kd + session_date) ---
       if (args.mode && args.intent_kd && args.session_date) {
         const templateEntry = findTemplate(args.mode);
         if (!templateEntry) {
+          // M2-T2: Log rejection before throw
+          console.log(
+            `${ts} | REJECTED | unknown mode "${args.mode}"`,
+          );
           // Uses throw to abort execution — framework catches the rejection
           throw new Error(
             "Provide one of the following modes: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight",
           );
         }
 
-        const prompt = await resolveTemplate(
-          templateEntry.template,
-          args,
-        );
+        let prompt;
+        try {
+          prompt = await resolveTemplate(
+            templateEntry.template,
+            args,
+          );
+        } catch (err) {
+          // M2-T5: Log template resolution errors then re-throw
+          console.log(
+            `${ts} | ERROR | template resolution failed: ${err.message}`,
+          );
+          throw err;
+        }
 
         // Property mutation (not object replacement) so the framework's
         // reference to output.args remains valid
@@ -146,11 +173,19 @@ export default async function dispatchGatePlugin() {
         output.args.description = templateEntry.description;
         output.args.subagent_type = templateEntry.target_agent;
 
+        // Capture mode before deleting for logging
+        const resolvedMode = args.mode;
+
         // Clean up structured fields — they were consumed by template resolution
         delete output.args.mode;
         delete output.args.intent_kd;
         delete output.args.session_date;
         delete output.args.scope;
+
+        // M2-T3: Log successful transformation
+        console.log(
+          `${ts} | TRANSFORMED | mode=${resolvedMode} target=${templateEntry.target_agent}`,
+        );
 
         // Passthrough fields (task_id, command) auto-preserve since they
         // are not in the structured fields set and we use mutation + delete
@@ -162,10 +197,19 @@ export default async function dispatchGatePlugin() {
       // Has prompt/description/subagent_type but missing structured fields.
       // Uses throw to abort execution — framework catches the rejection.
       if (args.prompt || args.description || args.subagent_type) {
+        // M2-T2: Log rejection before throw
+        console.log(
+          `${ts} | REJECTED | free-text dispatch blocked`,
+        );
         throw new Error(
           "Provide mode, intent_kd, and session_date fields for structured dispatch",
         );
       }
+
+      // M2-T4: Log pass-through for non-dispatch task calls
+      console.log(
+        `${ts} | PASSED | no dispatch fields`,
+      );
 
       // --- PATH 3: No dispatch fields — pass through ---
       return;
