@@ -354,13 +354,14 @@ describe("Free-text dispatch rejection", () => {
   it("rejects free-text dispatch with only prompt", async () => {
     const plugin = await dispatchGatePlugin({});
     const args = { prompt: "do something" };
-    await callExecuteBefore(plugin, args);
-    expect(args.prompt).toBe("do something"); // original unchanged
-    // But output.args should have prompt: null
-    const output = { args };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
     await plugin["tool.execute.before"](ctx, output);
+    // In-place mutation: original args object is modified
     expect(output.args.prompt).toBeNull();
+    expect(args.prompt).toBeNull();
+    // Same reference — framework ref sees the mutation
+    expect(output.args).toBe(args);
   });
 
   it("rejects free-text dispatch with only description", async () => {
@@ -369,7 +370,11 @@ describe("Free-text dispatch rejection", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
+    // prompt is nulled even when it wasn't in original args
     expect(output.args.prompt).toBeNull();
+    // description is nulled in-place
+    expect(output.args.description).toBeNull();
+    expect(output.args).toBe(args);
   });
 
   it("rejects free-text dispatch with only subagent_type", async () => {
@@ -378,7 +383,11 @@ describe("Free-text dispatch rejection", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
+    // prompt is nulled even when it wasn't in original args
     expect(output.args.prompt).toBeNull();
+    // subagent_type is nulled in-place
+    expect(output.args.subagent_type).toBeNull();
+    expect(output.args).toBe(args);
   });
 
   it("rejects free-text dispatch with prompt + description + subagent_type", async () => {
@@ -391,7 +400,11 @@ describe("Free-text dispatch rejection", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
+    // All three dispatch fields nulled in-place
     expect(output.args.prompt).toBeNull();
+    expect(output.args.description).toBeNull();
+    expect(output.args.subagent_type).toBeNull();
+    expect(output.args).toBe(args);
   });
 });
 

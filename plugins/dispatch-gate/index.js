@@ -130,8 +130,10 @@ export default async function dispatchGatePlugin() {
       if (args.mode && args.intent_kd && args.session_date) {
         const templateEntry = findTemplate(args.mode);
         if (!templateEntry) {
-          // Unknown mode with structured fields — reject
-          output.args = { prompt: null };
+          // Unknown mode with structured fields — reject via in-place mutation
+          output.args.prompt = null;
+          if (output.args.description) output.args.description = null;
+          if (output.args.subagent_type) output.args.subagent_type = null;
           return output;
         }
 
@@ -155,9 +157,14 @@ export default async function dispatchGatePlugin() {
 
       // --- PATH 2: Free-text or incomplete dispatch ---
       // Has prompt/description/subagent_type but missing structured fields
-      // Setting prompt to null causes Effect Schema decode failure
+      // Nulls fields via in-place property mutation so any reference the
+      // framework holds to the original args object sees the null values.
+      // The Effect Schema decode inside the task tool requires prompt as
+      // Schema.String, so null causes InvalidArgumentsError.
       if (args.prompt || args.description || args.subagent_type) {
-        output.args = { prompt: null };
+        output.args.prompt = null;
+        if (output.args.description) output.args.description = null;
+        if (output.args.subagent_type) output.args.subagent_type = null;
         return output;
       }
 
