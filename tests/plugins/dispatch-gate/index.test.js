@@ -5,17 +5,15 @@
 //   1. tool.definition — modifies jsonSchema (mutable JSON Schema 7) to
 //      add structured dispatch fields as REQUIRED properties. Guides the
 //      LLM to use structured format.
-//   2. tool.execute.before — resolves templates for structured dispatches.
-//      Rejects free-text dispatches by replacing prompt with an error
-//      message. The framework merges output.args with original args —
-//      null values are skipped during merge, so the error message
-//      (non-null) replaces the free-text prompt in the merged result.
+//   2. tool.execute.before — resolves templates for structured dispatches
+//      via property mutation. Throws for free-text and unknown mode.
+//      Logs every event via [DISPATCH-GATE] structured format.
 //
 // ALL callers (Overseer, Artisan, any agent) use the same structured
 // dispatch format: { mode, intent_kd, session_date, scope? }
 // The plugin resolves templates and routes to the correct target agent.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import dispatchGatePlugin from "../../../plugins/dispatch-gate/index.js";
 import {
   resolveTemplate,
@@ -295,6 +293,8 @@ describe("Structured dispatch routing", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
+    // Uses property mutation — same reference as input args
+    expect(output.args).toBe(args);
     expect(output.args.subagent_type).toBe("explorer");
     expect(output.args.prompt).toContain("DISPATCH TO: explorer");
     expect(output.args.prompt).toContain("SCOPE: auth");
@@ -331,6 +331,8 @@ describe("Structured dispatch routing", () => {
       const output = { args };
       await plugin["tool.execute.before"](ctx, output);
       expect(output.args.subagent_type).toBe(expected);
+      // Verify reference identity — property mutation, not object replacement
+      expect(output.args).toBe(args);
     }
   });
 
@@ -349,53 +351,38 @@ describe("Structured dispatch routing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Plugin: Free-text dispatch rejection
+// Plugin: Free-text dispatch rejection via throw
 // ---------------------------------------------------------------------------
 
 describe("Free-text dispatch rejection", () => {
-  it("rejects free-text dispatch with only prompt", async () => {
+  it("throws when free-text dispatch with only prompt", async () => {
     const plugin = await dispatchGatePlugin({});
-    const args = { prompt: "do something" };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-    const output = { args };
-    await plugin["tool.execute.before"](ctx, output);
-    // Prompt replaced with error message (not nulled) — framework merge
-    // skips nulls but uses non-null replacements. Error message survives.
-    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
-    expect(args.prompt).toContain("ERROR: Structured dispatch required");
-    // Same reference — framework ref sees the mutation
-    expect(output.args).toBe(args);
+    const output = { args: { prompt: "do something" } };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Provide mode, intent_kd, and session_date fields");
   });
 
-  it("rejects free-text dispatch with only description", async () => {
+  it("throws when free-text dispatch with only description", async () => {
     const plugin = await dispatchGatePlugin({});
-    const args = { description: "do something" };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-    const output = { args };
-    await plugin["tool.execute.before"](ctx, output);
-    // prompt is added with error message (it wasn't in original args)
-    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
-    // description is replaced with rejection marker
-    expect(output.args.description).toBe("[REJECTED] free-text dispatch");
-    // subagent_type wasn't in original args, so guard skips it
-    expect(output.args.subagent_type).toBeUndefined();
-    expect(output.args).toBe(args);
+    const output = { args: { description: "do something" } };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Provide mode, intent_kd, and session_date fields");
   });
 
-  it("rejects free-text dispatch with only subagent_type", async () => {
+  it("throws when free-text dispatch with only subagent_type", async () => {
     const plugin = await dispatchGatePlugin({});
-    const args = { subagent_type: "artisan" };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
-    const output = { args };
-    await plugin["tool.execute.before"](ctx, output);
-    // prompt is added with error message (it wasn't in original args)
-    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
-    // subagent_type is replaced with "none"
-    expect(output.args.subagent_type).toBe("none");
-    expect(output.args).toBe(args);
+    const output = { args: { subagent_type: "artisan" } };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Provide mode, intent_kd, and session_date fields");
   });
 
-  it("rejects free-text dispatch with prompt + description + subagent_type", async () => {
+  it("throws when free-text dispatch with prompt + description + subagent_type", async () => {
     const plugin = await dispatchGatePlugin({});
     const args = {
       prompt: "do something",
@@ -404,12 +391,9 @@ describe("Free-text dispatch rejection", () => {
     };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
-    await plugin["tool.execute.before"](ctx, output);
-    // All three dispatch fields replaced with rejection markers
-    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
-    expect(output.args.description).toBe("[REJECTED] free-text dispatch");
-    expect(output.args.subagent_type).toBe("none");
-    expect(output.args).toBe(args);
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Provide mode, intent_kd, and session_date fields");
   });
 });
 
@@ -434,6 +418,8 @@ describe("Structured dispatch with prompt override", () => {
     expect(output.args.prompt).not.toContain("free-text");
     expect(output.args.subagent_type).toBe("explorer");
     expect(output.args.description).toBeDefined();
+    // Property mutation preserves reference identity
+    expect(output.args).toBe(args);
   });
 });
 
@@ -448,6 +434,7 @@ describe("Structured fields removed from output", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
+    // Structured fields must be deleted after transformation
     expect(output.args.mode).toBeUndefined();
     expect(output.args.intent_kd).toBeUndefined();
     expect(output.args.session_date).toBeUndefined();
@@ -460,21 +447,20 @@ describe("Structured fields removed from output", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Plugin: Unknown mode handling
+// Plugin: Unknown mode throws with mode listing
 // ---------------------------------------------------------------------------
 
 describe("Unknown mode handling", () => {
-  it("rejects when structured fields have unknown mode", async () => {
+  it("throws when structured fields have unknown mode", async () => {
     const plugin = await dispatchGatePlugin({});
     const args = makeValidArgs({ mode: "bogus" });
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
-    await plugin["tool.execute.before"](ctx, output);
-    // Unknown mode with structured fields → rejection via error message
-    // prompt always set; description/subagent_type guards skip when absent
-    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
-    expect(output.args.description).toBeUndefined();
-    expect(output.args.subagent_type).toBeUndefined();
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow(
+      "Provide one of the following modes: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight",
+    );
   });
 
   it("does not throw for missing args", async () => {
@@ -526,6 +512,8 @@ describe("Empty args pass through", () => {
     await plugin["tool.execute.before"](ctx, output);
     // output.args should be unchanged (no mode, no prompt/desc/subagent)
     expect(output.args).toEqual({ unrelated: true });
+    // Pass-through logs PASSED, output unchanged
+    expect(output.args.unrelated).toBe(true);
   });
 
   it("passes through when args is empty object", async () => {
@@ -553,7 +541,10 @@ describe("Structured dispatch preserves passthrough fields", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
+    // task_id is not in the structured fields set, so delete doesn't touch it
     expect(output.args.task_id).toBe("prev-task-123");
+    // Property mutation — same reference
+    expect(output.args).toBe(args);
   });
 
   it("preserves command in structured dispatch", async () => {
@@ -565,7 +556,9 @@ describe("Structured dispatch preserves passthrough fields", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
+    // command is not in the structured fields set, so delete doesn't touch it
     expect(output.args.command).toBe("git status");
+    expect(output.args).toBe(args);
   });
 });
 
@@ -605,5 +598,104 @@ describe("Uniform handling across callers", () => {
     expect(overseerOutput.args.subagent_type).toBe("artisan");
     expect(artisanOutput.args.subagent_type).toBe("artisan");
     expect(overseerOutput.args.prompt).toBe(artisanOutput.args.prompt);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Debug logging tests
+// ---------------------------------------------------------------------------
+
+describe("Debug logging", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("structured dispatch produces RECEIVED and TRANSFORMED logs", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: makeValidArgs() };
+    await plugin["tool.execute.before"](ctx, output);
+    const logs = console.log.mock.calls.map((c) => c[0]);
+    expect(logs.some((l) => l.includes("RECEIVED"))).toBe(true);
+    expect(logs.some((l) => l.includes("TRANSFORMED"))).toBe(true);
+    expect(logs.some((l) => l.includes("REJECTED"))).toBe(false);
+    // Format check: [DISPATCH-GATE] ISO_TIMESTAMP | EVENT | details
+    expect(logs[0]).toMatch(/^\[DISPATCH-GATE\] \d{4}-\d{2}-\d{2}T/);
+    expect(logs[0]).toContain(" | RECEIVED | mode=explore");
+    expect(logs[1]).toContain(" | TRANSFORMED | mode=explore target=explorer");
+  });
+
+  it("free-text dispatch produces RECEIVED and REJECTED logs", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: { prompt: "do something" } };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow();
+    const logs = console.log.mock.calls.map((c) => c[0]);
+    expect(logs.some((l) => l.includes("RECEIVED"))).toBe(true);
+    expect(logs.some((l) => l.includes("REJECTED"))).toBe(true);
+    expect(logs.some((l) => l.includes("TRANSFORMED"))).toBe(false);
+    // REJECTED log comes before the throw
+    expect(logs[logs.length - 1]).toContain(" | REJECTED | free-text dispatch blocked");
+  });
+
+  it("non-task tool call produces zero [DISPATCH-GATE] log lines", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "read", sessionID: "test", callID: "test-001" };
+    const output = { args: { prompt: "anything" } };
+    await plugin["tool.execute.before"](ctx, output);
+    // No console.log should be called for non-task tools
+    expect(console.log.mock.calls.length).toBe(0);
+  });
+
+  it("unknown mode produces REJECTED log with mode name", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: makeValidArgs({ mode: "bogus" }) };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow();
+    const logs = console.log.mock.calls.map((c) => c[0]);
+    expect(logs.some((l) => l.includes("REJECTED | unknown mode"))).toBe(true);
+    expect(logs.some((l) => l.includes('"bogus"'))).toBe(true);
+  });
+
+  it("empty args pass-through produces PASSED log", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: { unrelated: true } };
+    await plugin["tool.execute.before"](ctx, output);
+    const logs = console.log.mock.calls.map((c) => c[0]);
+    expect(logs.some((l) => l.includes("PASSED | no dispatch fields"))).toBe(true);
+  });
+
+  it("log format matches [DISPATCH-GATE] ISO_TIMESTAMP | EVENT | details pattern", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: makeValidArgs() };
+    await plugin["tool.execute.before"](ctx, output);
+    const logs = console.log.mock.calls.map((c) => c[0]);
+    for (const log of logs) {
+      expect(log).toMatch(
+        /^\[DISPATCH-GATE\] \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \| (RECEIVED|TRANSFORMED|REJECTED|PASSED|ERROR) \| /,
+      );
+    }
+  });
+
+  it("non-task tool pass-through produces zero DISPATCH-GATE logs for any non-task tool", async () => {
+    const plugin = await dispatchGatePlugin({});
+    // Test multiple non-task tools
+    for (const tool of ["read", "bash", "glob", "grep", "write"]) {
+      const ctx = { tool, sessionID: "test", callID: "test-001" };
+      const output = { args: { prompt: "anything" } };
+      console.log.mockClear();
+      await plugin["tool.execute.before"](ctx, output);
+      expect(console.log.mock.calls.length).toBe(0);
+    }
   });
 });
