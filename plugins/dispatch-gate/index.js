@@ -8,9 +8,12 @@
 //      is LLM guidance, not structural enforcement — the LLM may still
 //      generate free-text calls despite the schema hints.
 //   2. tool.execute.before — resolves templates for structured dispatches.
-//      Rejects free-text/incomplete dispatches by nulling the prompt field,
-//      which causes the Effect Schema decode inside the task tool to fail
-//      with InvalidArgumentsError.
+//      Rejects free-text/incomplete dispatches by replacing the prompt
+//      with an error message. The framework MERGES output.args with the
+//      original args — null values are skipped during merge, so nulling
+//      allows the original free-text to survive. Overriding with a
+//      non-null value (error message or template content) replaces the
+//      original because the merge uses the replacement.
 //
 // Same handler for ALL callers — no Overseer/Artisan distinction.
 
@@ -112,10 +115,11 @@ export default async function dispatchGatePlugin() {
     //      Preserves task_id and command passthrough fields.
     //
     //   2. FREE-TEXT DISPATCH (prompt/description/subagent_type but no mode):
-    //      Rejects by setting prompt to null. The Effect Schema decode
-    //      inside the task tool requires prompt: Schema.String, so null
-    //      causes InvalidArgumentsError — the only structural rejection
-    //      point in the framework.
+    //      Rejects by replacing prompt with an error message. The framework
+    //      MERGES output.args with the original args — nulls are skipped
+    //      during merge (allowing free-text to survive), but non-null
+    //      replacements override the original. The error message replaces
+    //      the free-text prompt in the merged result.
     //
     //   3. NO DISPATCH FIELDS (no prompt, no mode, no dispatch fields):
     //      Pass through — not a dispatch call.
@@ -130,10 +134,12 @@ export default async function dispatchGatePlugin() {
       if (args.mode && args.intent_kd && args.session_date) {
         const templateEntry = findTemplate(args.mode);
         if (!templateEntry) {
-          // Unknown mode with structured fields — reject via in-place mutation
-          output.args.prompt = null;
-          if (output.args.description) output.args.description = null;
-          if (output.args.subagent_type) output.args.subagent_type = null;
+          // Unknown mode with structured fields — reject by replacing prompt
+          // with error message. Framework merge skips null values but uses
+          // non-null replacements, so the error message replaces free-text.
+          output.args.prompt = "ERROR: Structured dispatch required. This dispatch was automatically rejected. Use mode, intent_kd, and session_date fields instead of writing a free-text prompt.";
+          if (output.args.description) output.args.description = "[REJECTED] unknown mode";
+          if (output.args.subagent_type) output.args.subagent_type = "none";
           return output;
         }
 
@@ -156,15 +162,15 @@ export default async function dispatchGatePlugin() {
       }
 
       // --- PATH 2: Free-text or incomplete dispatch ---
-      // Has prompt/description/subagent_type but missing structured fields
-      // Nulls fields via in-place property mutation so any reference the
-      // framework holds to the original args object sees the null values.
-      // The Effect Schema decode inside the task tool requires prompt as
-      // Schema.String, so null causes InvalidArgumentsError.
+      // Has prompt/description/subagent_type but missing structured fields.
+      // Replaces free-text with an error message. The framework MERGES
+      // output.args with the original args — nulls are skipped during merge
+      // (free-text survives), but non-null values override the original.
+      // The error message replaces the free-text prompt in the merged result.
       if (args.prompt || args.description || args.subagent_type) {
-        output.args.prompt = null;
-        if (output.args.description) output.args.description = null;
-        if (output.args.subagent_type) output.args.subagent_type = null;
+        output.args.prompt = "ERROR: Structured dispatch required. This dispatch was automatically rejected. Use mode, intent_kd, and session_date fields instead of writing a free-text prompt.";
+        if (output.args.description) output.args.description = "[REJECTED] free-text dispatch";
+        if (output.args.subagent_type) output.args.subagent_type = "none";
         return output;
       }
 

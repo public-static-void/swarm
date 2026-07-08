@@ -6,8 +6,10 @@
 //      add structured dispatch fields as REQUIRED properties. Guides the
 //      LLM to use structured format.
 //   2. tool.execute.before — resolves templates for structured dispatches.
-//      Rejects free-text dispatches by nulling prompt (causes Effect
-//      Schema decode failure in the task tool).
+//      Rejects free-text dispatches by replacing prompt with an error
+//      message. The framework merges output.args with original args —
+//      null values are skipped during merge, so the error message
+//      (non-null) replaces the free-text prompt in the merged result.
 //
 // ALL callers (Overseer, Artisan, any agent) use the same structured
 // dispatch format: { mode, intent_kd, session_date, scope? }
@@ -357,9 +359,10 @@ describe("Free-text dispatch rejection", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    // In-place mutation: original args object is modified
-    expect(output.args.prompt).toBeNull();
-    expect(args.prompt).toBeNull();
+    // Prompt replaced with error message (not nulled) — framework merge
+    // skips nulls but uses non-null replacements. Error message survives.
+    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
+    expect(args.prompt).toContain("ERROR: Structured dispatch required");
     // Same reference — framework ref sees the mutation
     expect(output.args).toBe(args);
   });
@@ -370,10 +373,12 @@ describe("Free-text dispatch rejection", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    // prompt is nulled even when it wasn't in original args
-    expect(output.args.prompt).toBeNull();
-    // description is nulled in-place
-    expect(output.args.description).toBeNull();
+    // prompt is added with error message (it wasn't in original args)
+    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
+    // description is replaced with rejection marker
+    expect(output.args.description).toBe("[REJECTED] free-text dispatch");
+    // subagent_type wasn't in original args, so guard skips it
+    expect(output.args.subagent_type).toBeUndefined();
     expect(output.args).toBe(args);
   });
 
@@ -383,10 +388,10 @@ describe("Free-text dispatch rejection", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    // prompt is nulled even when it wasn't in original args
-    expect(output.args.prompt).toBeNull();
-    // subagent_type is nulled in-place
-    expect(output.args.subagent_type).toBeNull();
+    // prompt is added with error message (it wasn't in original args)
+    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
+    // subagent_type is replaced with "none"
+    expect(output.args.subagent_type).toBe("none");
     expect(output.args).toBe(args);
   });
 
@@ -400,10 +405,10 @@ describe("Free-text dispatch rejection", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    // All three dispatch fields nulled in-place
-    expect(output.args.prompt).toBeNull();
-    expect(output.args.description).toBeNull();
-    expect(output.args.subagent_type).toBeNull();
+    // All three dispatch fields replaced with rejection markers
+    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
+    expect(output.args.description).toBe("[REJECTED] free-text dispatch");
+    expect(output.args.subagent_type).toBe("none");
     expect(output.args).toBe(args);
   });
 });
@@ -465,8 +470,11 @@ describe("Unknown mode handling", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    // Unknown mode with structured fields → rejection
-    expect(output.args.prompt).toBeNull();
+    // Unknown mode with structured fields → rejection via error message
+    // prompt always set; description/subagent_type guards skip when absent
+    expect(output.args.prompt).toContain("ERROR: Structured dispatch required");
+    expect(output.args.description).toBeUndefined();
+    expect(output.args.subagent_type).toBeUndefined();
   });
 
   it("does not throw for missing args", async () => {
