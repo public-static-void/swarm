@@ -70,6 +70,83 @@ function findTemplate(mode) {
   return templates[mode] || null;
 }
 
+/**
+ * Valid dispatch mode values — used for schema enum and error guidance.
+ */
+const VALID_MODES = [
+  "explore", "investigate", "align", "decompose", "swarm",
+  "verify", "extract", "evolve", "commit", "report",
+  "checkpoint", "preflight",
+];
+
+/**
+ * Static error configurations for each structured dispatch failure mode.
+ * All message strings are static constants (NFR003) — no dynamic
+ * generation from model output.
+ */
+const ERROR_CONFIGS = Object.freeze({
+  MISSING_MODE: Object.freeze({
+    code: "MISSING_MODE",
+    message: "Structured dispatch missing required field: mode.",
+    guidance:
+      "Add 'mode' as a tool call parameter (not in prompt text). " +
+      "The fields intent_kd, session_date, and scope must also be provided as parameters.",
+    example:
+      '{ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" }',
+  }),
+  MISSING_ALL_FIELDS: Object.freeze({
+    code: "MISSING_ALL_FIELDS",
+    message: "Free-form delegation is not supported. Use structured dispatch fields.",
+    guidance:
+      "Add mode, intent_kd, and session_date as tool call parameter fields " +
+      "(not in prompt or description text).",
+    example:
+      '{ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" }',
+  }),
+  FIELDS_IN_PROMPT: Object.freeze({
+    code: "FIELDS_IN_PROMPT",
+    message: "Structured dispatch fields must be tool call parameters, not text content.",
+    guidance:
+      "Move mode, intent_kd, and session_date out of prompt/description text " +
+      "and into the structured parameter fields of the tool call.",
+    example:
+      '{ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" }',
+  }),
+  INVALID_MODE_VALUE: Object.freeze({
+    code: "INVALID_MODE_VALUE",
+    message: "Invalid dispatch mode value.",
+    guidance:
+      "Provide one of the valid mode values as a tool call parameter: " +
+      `${VALID_MODES.join(", ")}.`,
+    example:
+      '{ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" }',
+  }),
+});
+
+/**
+ * Structured error for dispatch gate rejections.
+ * Carries code, fieldsReceived, guidance, and example for self-correction.
+ */
+class DispatchGateError extends Error {
+  constructor({ code, message, fieldsReceived, guidance, example }) {
+    super(message);
+    this.name = "DispatchGateError";
+    this.code = code;
+    this.fieldsReceived = fieldsReceived;
+    this.guidance = guidance;
+    this.example = example;
+  }
+}
+
+/**
+ * Build a DispatchGateError from a config key and the fields received.
+ */
+function buildDispatchGateError(configKey, fieldsReceived = {}) {
+  const config = ERROR_CONFIGS[configKey];
+  if (!config) throw new Error(`Unknown error config: ${configKey}`);
+  return new DispatchGateError({ ...config, fieldsReceived });
+}
+
 // ---------------------------------------------------------------------------
 // Plugin entry point
 // ---------------------------------------------------------------------------
@@ -103,11 +180,7 @@ export default async function dispatchGatePlugin() {
       // Add structured dispatch fields
       schema.properties.mode = {
         type: "string",
-        enum: [
-          "explore", "investigate", "align", "decompose", "swarm",
-          "verify", "extract", "evolve", "commit", "report",
-          "checkpoint", "preflight",
-        ],
+        enum: [...VALID_MODES],
         description:
           "Dispatch mode — required for structured dispatch",
       };
@@ -146,18 +219,22 @@ export default async function dispatchGatePlugin() {
     // -----------------------------------------------------------------------
     // Hook 2: Transform/reject dispatches before execution
     // -----------------------------------------------------------------------
-    // Fires when the tool executes. Three paths:
+    // Fires when the tool executes. Four paths:
     //
-    //   1. STRUCTURED DISPATCH (mode + intent_kd + session_date present):
-    //      Resolves the template, property-mutates prompt/description/
-    //      subagent_type, deletes structured fields. Preserves task_id
-    //      and command passthrough fields.
+    //   PATH 1 — STRUCTURED DISPATCH (mode + intent_kd + session_date):
+    //     Resolves the template, property-mutates prompt/description/
+    //     subagent_type, injects _dispatch_confirmation, deletes structured
+    //     fields. Preserves task_id and command passthrough fields.
+    //     Throws INVALID_MODE_VALUE if mode is not in VALID_MODES.
     //
-    //   2. FREE-TEXT DISPATCH (prompt/description/subagent_type but no
-    //      structured fields): Throws Error with positive-framed guidance
-    //      telling the caller what fields TO provide.
+    //   NEW PATH — PARTIAL STRUCTURED FIELDS (intent_kd || session_date,
+    //     but no mode): Throws MISSING_MODE error with fields received.
     //
-    //   3. NO DISPATCH FIELDS: Pass through — not a dispatch call.
+    //   PATH 2 — FREE-TEXT DISPATCH (prompt/description/subagent_type,
+    //     no structured fields): Throws FIELDS_IN_PROMPT if text contains
+    //     field keywords, otherwise MISSING_ALL_FIELDS.
+    //
+    //   PATH 3 — NO DISPATCH FIELDS: Pass through unchanged.
 
     "tool.execute.before": async (ctx, output) => {
       // M2-T6: Non-task tools produce zero dispatch-gate logging
@@ -176,15 +253,14 @@ export default async function dispatchGatePlugin() {
       if (args.mode && args.intent_kd && args.session_date) {
         const templateEntry = findTemplate(args.mode);
         if (!templateEntry) {
-          // M2-T2: Log rejection before throw
-          logToFile(
-            "REJECTED",
-            `unknown mode "${args.mode}"`,
-          );
-          // Uses throw to abort execution — framework catches the rejection
-          throw new Error(
-            "Provide one of the following modes: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight",
-          );
+          // R003(d): Invalid mode value — not in VALID_MODES
+          const err = buildDispatchGateError("INVALID_MODE_VALUE", {
+            mode: args.mode,
+            intent_kd: args.intent_kd,
+            session_date: args.session_date,
+          });
+          logToFile("REJECTED", `${err.code}: ${err.message} | mode="${args.mode}"`);
+          throw err;
         }
 
         let prompt;
@@ -202,14 +278,27 @@ export default async function dispatchGatePlugin() {
           throw err;
         }
 
+        // Extract RETURN path from resolved prompt for confirmation
+        const returnMatch = prompt.match(/RETURN:\s*(.+)/);
+        const resolvedReturnPath = returnMatch ? returnMatch[1].trim() : "";
+
         // Property mutation (not object replacement) so the framework's
         // reference to output.args remains valid
         output.args.prompt = prompt;
         output.args.description = templateEntry.description;
         output.args.subagent_type = templateEntry.target_agent;
 
-        // Capture mode before deleting for logging
+        // Capture mode before deleting for confirmation and logging
         const resolvedMode = args.mode;
+
+        // R004: Success confirmation signal — structured metadata for caller
+        output.args._dispatch_confirmation = {
+          status: "dispatched",
+          mode: resolvedMode,
+          targetAgent: templateEntry.target_agent,
+          kds: [args.intent_kd],
+          returnPath: resolvedReturnPath,
+        };
 
         // Clean up structured fields — they were consumed by template resolution
         delete output.args.mode;
@@ -217,10 +306,10 @@ export default async function dispatchGatePlugin() {
         delete output.args.session_date;
         delete output.args.scope;
 
-        // M2-T3: Log successful transformation
+        // M2-T3: Log successful transformation with confirmation details
         logToFile(
           "TRANSFORMED",
-          `mode=${resolvedMode} target=${templateEntry.target_agent}`,
+          `mode=${resolvedMode} target=${templateEntry.target_agent} confirmed`,
         );
 
         // Passthrough fields (task_id, command) auto-preserve since they
@@ -229,18 +318,39 @@ export default async function dispatchGatePlugin() {
         return;
       }
 
+      // --- NEW PATH (R001): Partial structured fields — has intent_kd/session_date but no mode ---
+      if ((args.intent_kd || args.session_date) && !args.mode) {
+        const fieldsReceived = {};
+        if (args.intent_kd) fieldsReceived.intent_kd = args.intent_kd;
+        if (args.session_date) fieldsReceived.session_date = args.session_date;
+        if (args.scope) fieldsReceived.scope = args.scope;
+        const err = buildDispatchGateError("MISSING_MODE", fieldsReceived);
+        logToFile("REJECTED", `${err.code}: ${err.message} | received: ${JSON.stringify(fieldsReceived)}`);
+        throw err;
+      }
+
       // --- PATH 2: Free-text or incomplete dispatch ---
-      // Has prompt/description/subagent_type but missing structured fields.
-      // Uses throw to abort execution — framework catches the rejection.
+      // Has prompt/description/subagent_type but no structured fields.
+      // Distinguishes between:
+      //   (b) No structured fields at all → MISSING_ALL_FIELDS
+      //   (c) Field keywords found in prompt text → FIELDS_IN_PROMPT
       if (args.prompt || args.description || args.subagent_type) {
-        // M2-T2: Log rejection before throw
-        logToFile(
-          "REJECTED",
-          "free-text dispatch blocked",
-        );
-        throw new Error(
-          "Provide mode, intent_kd, and session_date fields for structured dispatch",
-        );
+        // Check if text content contains structured field keywords (R003(c))
+        const textContent = [args.prompt, args.description, args.subagent_type]
+          .filter(Boolean).join(" ");
+        const hasFieldKeywords = /\b(mode|intent_kd|session_date)\b/.test(textContent);
+
+        if (hasFieldKeywords) {
+          // R003(c): Fields appear in text content rather than as parameters
+          const err = buildDispatchGateError("FIELDS_IN_PROMPT");
+          logToFile("REJECTED", `${err.code}: ${err.message}`);
+          throw err;
+        }
+
+        // R003(b): No structured fields at all
+        const err = buildDispatchGateError("MISSING_ALL_FIELDS");
+        logToFile("REJECTED", `${err.code}: ${err.message}`);
+        throw err;
       }
 
       // M2-T4: Log pass-through for non-dispatch task calls
