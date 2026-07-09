@@ -23,6 +23,7 @@ import {
   resolveGlobs,
   buildContext,
 } from "../../../plugins/dispatch-gate/template-engine.js";
+import templates from "../../../plugins/dispatch-gate/templates.json" with { type: "json" };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -170,6 +171,40 @@ describe("tool.definition hook", () => {
     expect(output.jsonSchema.properties.session_date.pattern).toMatch(
       /^\^\\d\{4\}-\\d\{2\}-\\d\{2\}\$$/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Swarm Template KDS Tests (R002 — review-* glob)
+// ---------------------------------------------------------------------------
+
+describe("Swarm template KDS completeness (R002)", () => {
+  it("AC003: swarm template includes review-* glob in KDS section", () => {
+    // Verify the template source (not resolved prompt) has the review-* glob entry
+    const swarmTemplate = templates.swarm.template;
+    const kdsSectionStart = swarmTemplate.indexOf("KDS:");
+    const returnSectionStart = swarmTemplate.indexOf("RETURN:");
+    const kdsSection = swarmTemplate.slice(kdsSectionStart, returnSectionStart);
+    expect(kdsSection).toContain("knowledge/review-*{{date}}.md");
+  });
+
+  it("AC004: empty review glob resolves silently (unmatched glob returns empty string)", async () => {
+    // This test verifies that resolveGlobs handles unmatched glob patterns without error.
+    // Using a glob pattern guaranteed to have no matches for the test session date.
+    const result = await resolveGlobs("{{glob:knowledge/review-*2026-99-99.md}}");
+    // Unmatched glob returns empty string, not an error
+    expect(result).toBe("");
+  });
+
+  it("AC003b: swarm template maintains chronological order of KDS entries", () => {
+    // spec-* comes before plan-* comes before review-*
+    const swarmTemplate = templates.swarm.template;
+    const specIdx = swarmTemplate.indexOf("{{glob:knowledge/spec-*{{date}}.md}}");
+    const planIdx = swarmTemplate.indexOf("{{glob:knowledge/plan-*{{date}}.md}}");
+    const reviewIdx = swarmTemplate.indexOf("{{glob:knowledge/review-*{{date}}.md}}");
+    expect(specIdx).toBeGreaterThan(-1);
+    expect(planIdx).toBeGreaterThan(specIdx);
+    expect(reviewIdx).toBeGreaterThan(planIdx);
   });
 });
 

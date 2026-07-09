@@ -27,7 +27,7 @@
     "mode": "swarm",
     "target_agent": "artisan",
     "description": "Dispatch Artisan for implementation",
-    "template": "DISPATCH TO: artisan\nACTION: Implement\nARTIFACT: Implementation\nSCOPE: {{scope}}\nKDS:\n  - {{intent_kd}}\n  - {{glob:knowledge/spec-*{{date}}.md}}\n  - {{glob:knowledge/plan-*{{date}}.md}}\nRETURN: knowledge/impl-{{name}}-{{date}}.md\nACCEPTANCE: Implementation meets spec acceptance criteria and passes tests"
+    "template": "DISPATCH TO: artisan\nACTION: Implement\nARTIFACT: Implementation\nSCOPE: {{scope}}\nKDS:\n  - {{intent_kd}}\n  - {{glob:knowledge/spec-*{{date}}.md}}\n  - {{glob:knowledge/plan-*{{date}}.md}}\n  - {{glob:knowledge/review-*{{date}}.md}}\nRETURN: knowledge/impl-{{name}}-{{date}}.md\nACCEPTANCE: Implementation meets spec acceptance criteria and passes tests"
   },
   "verify": {
     "mode": "verify",
