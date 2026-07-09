@@ -397,7 +397,7 @@ describe("Free-text dispatch rejection", () => {
     const output = { args: { prompt: "do something" } };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Provide mode, intent_kd, and session_date fields");
+    ).rejects.toThrow("Free-form delegation is not supported");
   });
 
   it("throws when free-text dispatch with only description", async () => {
@@ -406,7 +406,7 @@ describe("Free-text dispatch rejection", () => {
     const output = { args: { description: "do something" } };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Provide mode, intent_kd, and session_date fields");
+    ).rejects.toThrow("Free-form delegation is not supported");
   });
 
   it("throws when free-text dispatch with only subagent_type", async () => {
@@ -415,7 +415,7 @@ describe("Free-text dispatch rejection", () => {
     const output = { args: { subagent_type: "artisan" } };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Provide mode, intent_kd, and session_date fields");
+    ).rejects.toThrow("Free-form delegation is not supported");
   });
 
   it("throws when free-text dispatch with prompt + description + subagent_type", async () => {
@@ -429,7 +429,198 @@ describe("Free-text dispatch rejection", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Provide mode, intent_kd, and session_date fields");
+    ).rejects.toThrow("Free-form delegation is not supported");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin: Partial structured field rejection (R001)
+// ---------------------------------------------------------------------------
+
+describe("Partial structured field rejection (R001)", () => {
+  it("AC001: rejects intent_kd + session_date without mode with MISSING_MODE", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      intent_kd: "knowledge/intent-auth-flow-2026-07-07.md",
+      session_date: "2026-07-07",
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Structured dispatch missing required field: mode");
+  });
+
+  it("AC002: rejects only intent_kd (no session_date, no mode) with MISSING_MODE", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      intent_kd: "knowledge/intent-auth-flow-2026-07-07.md",
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Structured dispatch missing required field: mode");
+  });
+
+  it("AC002: passes through when no structured fields and no free-text fields", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { unrelated: true };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args).toEqual({ unrelated: true });
+  });
+
+  it("rejects only session_date (no intent_kd, no mode) with MISSING_MODE", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { session_date: "2026-07-07" };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Structured dispatch missing required field: mode");
+  });
+
+  it("MISSING_MODE error includes fieldsReceived with provided fields", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      intent_kd: "knowledge/intent-auth-flow-2026-07-07.md",
+      session_date: "2026-07-07",
+      scope: "auth",
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    try {
+      await plugin["tool.execute.before"](ctx, output);
+    } catch (err) {
+      expect(err.code).toBe("MISSING_MODE");
+      expect(err.fieldsReceived.intent_kd).toBe(args.intent_kd);
+      expect(err.fieldsReceived.session_date).toBe(args.session_date);
+      expect(err.fieldsReceived.scope).toBe(args.scope);
+      expect(err.guidance).toBeTruthy();
+      expect(err.example).toBeTruthy();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin: Differentiated error messages (R003)
+// ---------------------------------------------------------------------------
+
+describe("Differentiated error messages (R003)", () => {
+  it("AC005a: MISSING_MODE error when mode is absent but intent_kd+session_date present", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      intent_kd: "knowledge/intent-auth-flow-2026-07-07.md",
+      session_date: "2026-07-07",
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Structured dispatch missing required field: mode");
+  });
+
+  it("AC005b: MISSING_ALL_FIELDS error when no structured fields at all", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { prompt: "do something" };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Free-form delegation is not supported");
+  });
+
+  it("AC005c: FIELDS_IN_PROMPT error when field keywords appear in text", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { prompt: "Set mode to explore and intent_kd to auth" };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Structured dispatch fields must be tool call parameters");
+  });
+
+  it("AC005d: INVALID_MODE_VALUE error when mode is not valid enum", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = makeValidArgs({ mode: "bogus" });
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Invalid dispatch mode value");
+  });
+
+  it("AC006: each error has distinguishing error code and messages are distinct", async () => {
+    const codes = new Set();
+    const messages = new Set();
+    const plugin = await dispatchGatePlugin({});
+    const testCases = [
+      { args: { intent_kd: "knowledge/intent-test.md", session_date: "2026-07-07" }, expected: "MISSING_MODE" },
+      { args: { prompt: "do work" }, expected: "MISSING_ALL_FIELDS" },
+      { args: { prompt: "set mode to explore" }, expected: "FIELDS_IN_PROMPT" },
+      { args: makeValidArgs({ mode: "bogus" }), expected: "INVALID_MODE_VALUE" },
+    ];
+    for (const { args, expected } of testCases) {
+      try {
+        await plugin["tool.execute.before"](
+          { tool: "task", sessionID: "test", callID: "test-001" },
+          { args },
+        );
+      } catch (err) {
+        codes.add(err.code);
+        messages.add(err.message);
+        expect(err.code).toBe(expected);
+      }
+    }
+    // All 4 codes and messages must be distinct
+    expect(codes.size).toBe(4);
+    expect(messages.size).toBe(4);
+  });
+
+  it("AC008: each error includes guidance with WHERE/WHICH, fieldsReceived, and one-line example", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const testCases = [
+      {
+        args: { intent_kd: "knowledge/intent-test.md", session_date: "2026-07-07" },
+        expectedCode: "MISSING_MODE",
+        hasFields: true,
+      },
+      {
+        args: { prompt: "do something" },
+        expectedCode: "MISSING_ALL_FIELDS",
+        hasFields: false,
+      },
+      {
+        args: { prompt: "use mode explore" },
+        expectedCode: "FIELDS_IN_PROMPT",
+        hasFields: false,
+      },
+      {
+        args: makeValidArgs({ mode: "bogus" }),
+        expectedCode: "INVALID_MODE_VALUE",
+        hasFields: true,
+      },
+    ];
+    for (const { args, expectedCode, hasFields } of testCases) {
+      try {
+        await plugin["tool.execute.before"](
+          { tool: "task", sessionID: "test", callID: "test-001" },
+          { args },
+        );
+        expect(true).toBe(false); // Should have thrown
+      } catch (err) {
+        expect(err.code).toBe(expectedCode);
+        expect(err.guidance).toBeTruthy();
+        expect(err.message).toBeTruthy();
+        expect(err.example).toContain("mode:");
+        expect(err.fieldsReceived).toBeDefined();
+        if (hasFields) {
+          expect(Object.keys(err.fieldsReceived).length).toBeGreaterThan(0);
+        }
+      }
+    }
   });
 });
 
@@ -483,6 +674,71 @@ describe("Structured fields removed from output", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Plugin: Success confirmation signal (R004)
+// ---------------------------------------------------------------------------
+
+describe("Success confirmation signal (R004)", () => {
+  it("AC007: confirmation object exists with all required fields after PATH 1", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = makeValidArgs({ mode: "swarm" });
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    const confirm = output.args._dispatch_confirmation;
+    expect(confirm).toBeDefined();
+    expect(confirm.status).toBe("dispatched");
+    expect(confirm.mode).toBe("swarm");
+    expect(confirm.targetAgent).toBe("artisan");
+    expect(confirm.kds).toEqual(["knowledge/intent-auth-flow-2026-07-07.md"]);
+    expect(confirm.returnPath).toContain("knowledge/impl-");
+  });
+
+  it("confirmation returnPath matches the resolved prompt RETURN line", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = makeValidArgs({ mode: "explore" });
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    const returnMatch = output.args.prompt.match(/RETURN:\s*(.+)/);
+    const expectedReturnPath = returnMatch ? returnMatch[1].trim() : "";
+    expect(output.args._dispatch_confirmation.returnPath).toBe(expectedReturnPath);
+  });
+
+  it("confirmation reports correct target agent per mode", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const modes = [
+      { mode: "explore", expectedAgent: "explorer" },
+      { mode: "verify", expectedAgent: "inspector" },
+      { mode: "checkpoint", expectedAgent: "committer" },
+    ];
+    for (const { mode, expectedAgent } of modes) {
+      const args = makeValidArgs({ mode });
+      const output = { args };
+      await plugin["tool.execute.before"](
+        { tool: "task", sessionID: "test", callID: "test-001" },
+        output,
+      );
+      expect(output.args._dispatch_confirmation.targetAgent).toBe(expectedAgent);
+    }
+  });
+
+  it("confirmation survives cleanup — not deleted with structured fields", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = makeValidArgs({ mode: "explore" });
+    const output = { args };
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "test", callID: "test-001" },
+      output,
+    );
+    // mode, intent_kd, session_date, scope are deleted
+    expect(output.args.mode).toBeUndefined();
+    expect(output.args.intent_kd).toBeUndefined();
+    // _dispatch_confirmation is preserved — it is the caller's learning signal
+    expect(output.args._dispatch_confirmation).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Plugin: Unknown mode throws with mode listing
 // ---------------------------------------------------------------------------
 
@@ -494,9 +750,7 @@ describe("Unknown mode handling", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow(
-      "Provide one of the following modes: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight",
-    );
+    ).rejects.toThrow("Invalid dispatch mode value");
   });
 
   it("does not throw for missing args", async () => {
@@ -638,6 +892,76 @@ describe("Uniform handling across callers", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Error infrastructure tests (P002, NFR003)
+// ---------------------------------------------------------------------------
+
+describe("Error infrastructure (P002, NFR003)", () => {
+  it("all ERROR_CONFIGS have required fields: code, message, guidance, example", async () => {
+    // Import the plugin source to access ERROR_CONFIGS via the module
+    // Since ERROR_CONFIGS is not exported, we test via the thrown errors
+    const codes = ["MISSING_MODE", "MISSING_ALL_FIELDS", "FIELDS_IN_PROMPT", "INVALID_MODE_VALUE"];
+    const testCases = [
+      { args: { intent_kd: "x", session_date: "2026-07-07" } },
+      { args: { prompt: "work" } },
+      { args: { prompt: "set mode" } },
+      { args: makeValidArgs({ mode: "bogus" }) },
+    ];
+
+    for (let i = 0; i < testCases.length; i++) {
+      const plugin = await dispatchGatePlugin({});
+      try {
+        await plugin["tool.execute.before"](
+          { tool: "task", sessionID: "test", callID: "test-001" },
+          { args: testCases[i].args },
+        );
+        expect(true).toBe(false); // Should throw
+      } catch (err) {
+        expect(err.code).toBeDefined();
+        expect(typeof err.code).toBe("string");
+        expect(err.message).toBeDefined();
+        expect(typeof err.message).toBe("string");
+        expect(err.guidance).toBeDefined();
+        expect(typeof err.guidance).toBe("string");
+        expect(err.example).toBeDefined();
+        expect(typeof err.example).toBe("string");
+      }
+    }
+  });
+
+  it("AC011: all error messages are static strings (not dynamically generated)", async () => {
+    // Verify no template interpolation of user-provided values into error text.
+    // User-provided values appear in fieldsReceived, not in the message string.
+    const plugin = await dispatchGatePlugin({});
+    const args = { intent_kd: "knowledge/INJECTED-value-2026-07-07.md", session_date: "2026-07-07" };
+    try {
+      await plugin["tool.execute.before"](
+        { tool: "task", sessionID: "test", callID: "test-001" },
+        { args },
+      );
+    } catch (err) {
+      // The user-provided intent_kd value must NOT appear in the message text
+      expect(err.message).not.toContain("INJECTED-value");
+      // The message should be static
+      expect(err.message).toBe("Structured dispatch missing required field: mode.");
+    }
+  });
+
+  it("DispatchGateError extends Error with structured properties", async () => {
+    const plugin = await dispatchGatePlugin({});
+    try {
+      await plugin["tool.execute.before"](
+        { tool: "task", sessionID: "test", callID: "test-001" },
+        { args: { prompt: "work" } },
+      );
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect(err.name).toBe("DispatchGateError");
+      expect(err.code).toBe("MISSING_ALL_FIELDS");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Debug logging tests
 // ---------------------------------------------------------------------------
 
@@ -665,7 +989,7 @@ describe("Debug logging", () => {
     // Format check: [DISPATCH-GATE] ISO_TIMESTAMP | EVENT | details
     expect(logs[0]).toMatch(/^\[DISPATCH-GATE\] \d{4}-\d{2}-\d{2}T/);
     expect(logs[0]).toContain(" | RECEIVED | mode=explore");
-    expect(logs[1]).toContain(" | TRANSFORMED | mode=explore target=explorer");
+    expect(logs[1]).toContain(" | TRANSFORMED | mode=explore target=explorer confirmed");
   });
 
   it("free-text dispatch produces RECEIVED and REJECTED logs", async () => {
@@ -679,8 +1003,8 @@ describe("Debug logging", () => {
     expect(logs.some((l) => l.includes("RECEIVED"))).toBe(true);
     expect(logs.some((l) => l.includes("REJECTED"))).toBe(true);
     expect(logs.some((l) => l.includes("TRANSFORMED"))).toBe(false);
-    // REJECTED log comes before the throw
-    expect(logs[logs.length - 1]).toContain(" | REJECTED | free-text dispatch blocked");
+    // REJECTED log comes before the throw — uses MISSING_ALL_FIELDS code
+    expect(logs[logs.length - 1]).toContain(" | REJECTED | MISSING_ALL_FIELDS:");
   });
 
   it("non-task tool call produces zero [DISPATCH-GATE] log lines", async () => {
@@ -700,7 +1024,7 @@ describe("Debug logging", () => {
       plugin["tool.execute.before"](ctx, output),
     ).rejects.toThrow();
     const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
-    expect(logs.some((l) => l.includes("REJECTED | unknown mode"))).toBe(true);
+    expect(logs.some((l) => l.includes("REJECTED | INVALID_MODE_VALUE:"))).toBe(true);
     expect(logs.some((l) => l.includes('"bogus"'))).toBe(true);
   });
 
@@ -778,5 +1102,75 @@ describe("Debug logging", () => {
     const output = { args: makeValidArgs() };
     await plugin["tool.execute.before"](ctx, output);
     expect(fs.appendFileSync.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  // -----------------------------------------------------------------------
+  // AC012: Log format compatibility for all new paths
+  // -----------------------------------------------------------------------
+
+  it("AC012: MISSING_MODE (partial fields) rejection produces REJECTED log with fields", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: { intent_kd: "knowledge/intent-test.md", session_date: "2026-07-07" } };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow();
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
+    expect(logs.some((l) => l.includes("REJECTED | MISSING_MODE:"))).toBe(true);
+    expect(logs.some((l) => l.includes("intent_kd"))).toBe(true);
+  });
+
+  it("AC012: FIELDS_IN_PROMPT rejection produces REJECTED log", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: { prompt: "use mode explore" } };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow();
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
+    expect(logs.some((l) => l.includes("REJECTED | FIELDS_IN_PROMPT:"))).toBe(true);
+  });
+
+  it("AC012: TRANSFORMED log includes 'confirmed' suffix for dispatched calls", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: makeValidArgs() };
+    await plugin["tool.execute.before"](ctx, output);
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
+    expect(logs.some((l) => l.includes("TRANSFORMED"))).toBe(true);
+    expect(logs.some((l) => l.includes("confirmed"))).toBe(true);
+  });
+
+  it("AC012: log format matches [DISPATCH-GATE] ISO_TIMESTAMP | EVENT | details for all log types", async () => {
+    // Generate multiple log types and verify format consistency
+    const plugin = await dispatchGatePlugin({});
+
+    // RECEIVED + TRANSFORMED (PATH 1)
+    const output1 = { args: makeValidArgs() };
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "test", callID: "test-001" },
+      output1,
+    );
+
+    // RECEIVED + REJECTED (NEW PATH — MISSING_MODE)
+    try {
+      await plugin["tool.execute.before"](
+        { tool: "task", sessionID: "test", callID: "test-002" },
+        { args: { intent_kd: "knowledge/test.md", session_date: "2026-07-07" } },
+      );
+    } catch (_) { /* expected */ }
+
+    // RECEIVED + PASSED (PATH 3)
+    await plugin["tool.execute.before"](
+      { tool: "task", sessionID: "test", callID: "test-003" },
+      { args: { unrelated: true } },
+    );
+
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
+    for (const log of logs) {
+      expect(log).toMatch(
+        /^\[DISPATCH-GATE\] \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z \| (RECEIVED|TRANSFORMED|REJECTED|PASSED|ERROR) \| /,
+      );
+    }
   });
 });
