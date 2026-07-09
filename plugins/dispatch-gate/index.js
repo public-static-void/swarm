@@ -237,13 +237,13 @@ export default async function dispatchGatePlugin() {
     //   PATH 3 — NO DISPATCH FIELDS: Pass through unchanged.
 
     "tool.execute.before": async (ctx, output) => {
-      // M2-T6: Non-task tools produce zero dispatch-gate logging
+      // Non-task tools pass through unaffected — plugin scope is task dispatch only
       if (ctx.tool !== "task") return;
       if (!output.args || typeof output.args !== "object") return;
 
       const args = output.args;
 
-      // M2-T1: Log every dispatch arrival with identifying fields
+      // Log every dispatch arrival with key identifiers for traceability
       logToFile(
         "RECEIVED",
         `mode=${args.mode || "(none)"} intent_kd=${args.intent_kd ? args.intent_kd.replace("knowledge/", "") : "(none)"} session_date=${args.session_date || "(none)"}`,
@@ -270,7 +270,7 @@ export default async function dispatchGatePlugin() {
             args,
           );
         } catch (err) {
-          // M2-T5: Log template resolution errors then re-throw
+          // Log template errors before re-throw so failure context is preserved
           logToFile(
             "ERROR",
             `template resolution failed: ${err.message}`,
@@ -306,7 +306,7 @@ export default async function dispatchGatePlugin() {
         delete output.args.session_date;
         delete output.args.scope;
 
-        // M2-T3: Log successful transformation with confirmation details
+        // Log successful transformation with dispatch metadata for monitoring
         logToFile(
           "TRANSFORMED",
           `mode=${resolvedMode} target=${templateEntry.target_agent} confirmed`,
@@ -353,7 +353,7 @@ export default async function dispatchGatePlugin() {
         throw err;
       }
 
-      // M2-T4: Log pass-through for non-dispatch task calls
+      // Pass-through calls are logged so the operator can see which calls escape dispatch
       logToFile(
         "PASSED",
         "no dispatch fields",
