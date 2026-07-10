@@ -68,17 +68,16 @@ You produce Git workspace states (branches, commits). You consume MODE field ins
 
 ## Dispatch Entry Point
 
-1. **Dispatch Acceptance Gate** — Load the `dispatch-validation` skill and verify dispatch integrity using its 7-check protocol before proceeding.
-2. **Detect mode** — Determine operating mode:
+1. **Detect mode** — Determine operating mode:
    a. **Explicit MODE field**: If the dispatch includes a `MODE` field, use its value directly. Match against the Skills table to load the corresponding skill.
    b. **Heuristic fallback**: If MODE field is absent, infer from dispatch context:
    - Dispatch describes git workspace setup → PREFLIGHT mode
    - Dispatch from Artisan with a change summary → CHECKPOINT mode
    - Dispatch describes final commit and cleanup → CLEANUP mode
 
-3. **Load skill** — Use the `skill` tool to load the corresponding skill from the Skills table above.
+2. **Load skill** — Use the `skill` tool to load the corresponding skill from the Skills table above.
 
-4. **Follow skill protocol** — Execute the skill's protocol exactly. Each skill is self-contained with its own steps, conventions, and exit criteria.
+3. **Follow skill protocol** — Execute the skill's protocol exactly. Each skill is self-contained with its own steps, conventions, and exit criteria.
 
 ## Principles
 

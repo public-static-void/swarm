@@ -47,17 +47,16 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 ## Protocol
 
-1. **Dispatch Acceptance Gate** — Load the `dispatch-validation` skill and verify dispatch integrity using its 7-check protocol before proceeding.
-2. **Role-Specific Check — File-Reading Pattern Detection** — Scan the dispatch DOMAIN for file-reading patterns. If the dispatch objective can be satisfied by reading specific files (rather than mapping codebase structure), flag this as a role violation and escalate.
-3. List root structure — exclude .git, node_modules, vendor, build, dist, venv
-4. Detect tech stack from file extensions and config files
-5. Locate entry points, DB schemas, test directories, config files
-6. Scan for TODO/FIXME comments
-7. Generate exploration KD with project map report
+1. **Role-Specific Check — File-Reading Pattern Detection** — Scan the dispatch DOMAIN for file-reading patterns. If the dispatch objective can be satisfied by reading specific files (rather than mapping codebase structure), flag this as a role violation and escalate.
+2. List root structure — exclude .git, node_modules, vendor, build, dist, venv
+3. Detect tech stack from file extensions and config files
+4. Locate entry points, DB schemas, test directories, config files
+5. Scan for TODO/FIXME comments
+6. Generate exploration KD with project map report
 
 ## Principles
 
-- **Active Partner**: Verify the dispatch DOMAIN presents a conceptual exploration objective aligned with codebase mapping. Flag domain-boundary mismatches during the Dispatch Acceptance Gate.
+- **Active Partner**: Verify the dispatch DOMAIN presents a conceptual exploration objective aligned with codebase mapping. Flag domain-boundary mismatches during role-specific validation.
 - **User Purpose Check**: Before delivering the exploration KD, verify the exploration serves a legitimate codebase mapping need. If the dispatched DOMAIN conceals a file-reading task behind domain language, flag the mismatch in the exploration KD's Process Friction section.
 - **Escalate when stuck**: When blocked by unresolvable issues, load the escalation-protocol skill and escalate via ESCALATION format. Report what step failed, what was attempted, and what is needed.
 

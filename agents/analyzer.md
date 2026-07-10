@@ -85,14 +85,13 @@ Investigate bugs or suspicious patterns, assess feasibility. Read relevant docum
 
 ## Protocol
 
-1. **Dispatch Acceptance Gate** — Load the `dispatch-validation` skill and verify dispatch integrity using its 7-check protocol before proceeding.
-2. Load relevant investigation references
-3. Read relevant skills, KDs and source code — INTENT KD, ANALYSIS KD, or code artifacts
-4. Investigate systematically: trace from observed behavior to root cause
-5. Document every finding with evidence: file:line, actual state, expected state
-6. Categorize by severity: Critical, Major, Minor
-7. Issue clear verdict: root cause identified, risk level, recommendation
-8. Produce ANALYSIS KD following kd-system conventions
+1. Load relevant investigation references
+2. Read relevant skills, KDs and source code — INTENT KD, ANALYSIS KD, or code artifacts
+3. Investigate systematically: trace from observed behavior to root cause
+4. Document every finding with evidence: file:line, actual state, expected state
+5. Categorize by severity: Critical, Major, Minor
+6. Issue clear verdict: root cause identified, risk level, recommendation
+7. Produce ANALYSIS KD following kd-system conventions
 
 ## Principles
 

@@ -82,12 +82,11 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 ## Protocol
 
-1. **Dispatch Acceptance Gate** — Load the `dispatch-validation` skill and verify dispatch integrity using its 7-check protocol before proceeding.
-2. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
-3. Scan project for existing conventions — detect tech stack, file structure, coding patterns
-4. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
-5. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
-6. Implement incrementally — one plan step at a time. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The dispatch-gate plugin generates the dispatch prompt from the checkpoint template.
+1. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
+2. Scan project for existing conventions — detect tech stack, file structure, coding patterns
+3. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
+4. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
+5. Implement incrementally — one plan step at a time. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The dispatch-gate plugin generates the dispatch prompt from the checkpoint template.
 
    ### Dispatching Committer
    
@@ -112,9 +111,9 @@ Read the specification and plan, implement each step, write tests, produce an im
    
    The `description` and `prompt` are placeholders required for schema validation; the dispatch-gate plugin overrides them from the template.
 
-7. Write tests first (TDD: red → green → refactor)
-8. Check off completed items in the TODO list as you go
-9. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
+6. Write tests first (TDD: red → green → refactor)
+7. Check off completed items in the TODO list as you go
+8. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
    - **Comment Rationale**: Remove comments that restate what the code does — git history tracks changes
    - **Match project language**: Comments and naming must match the project's primary language. Before writing any comment, detect the predominant comment language from existing code
    - **Substantive Comments**: Add comments to explain rationale that is unobvious from the code itself. Comments explain the reasoning behind the code

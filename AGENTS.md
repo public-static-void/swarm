@@ -22,10 +22,7 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 
 ## Delegation Integrity
 
-All agents receiving dispatches verify dispatch integrity before executing. Agents accept WHAT-level dispatches only — each dispatch describes the artifact to produce, the objective, and acceptance criteria, referencing KDs by path in the KDS field. Each agent loads its own skills and determines its own approach.
-
-Agents validate dispatches per their individual Dispatch Acceptance Gate defined in their agent definition. As a shared requirement across all agents:
-7. **Phase Readiness** — If a current-session INTENT KD does not exist and the dispatch is not for Phase 1 or Phase 2, reject the dispatch.
+Agents accept WHAT-level dispatches only — each dispatch describes the artifact to produce, the objective, and acceptance criteria, referencing KDs by path in the KDS field. Each agent loads its own skills and determines its own approach.
 
 ## Anti-Patterns to Avoid
 
