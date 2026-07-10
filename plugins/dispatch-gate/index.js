@@ -75,9 +75,42 @@ function findTemplate(mode) {
  */
 const VALID_MODES = [
   "explore", "investigate", "align", "decompose", "swarm",
-  "verify", "extract", "evolve", "commit", "report",
-  "checkpoint", "preflight",
+  "verify", "extract", "evolve", "report",
+  "checkpoint", "cleanup", "preflight",
 ];
+
+// FR-05: Circuit breaker state — tracks consecutive rejections to break
+// deadlock spirals where the LLM gets stuck in a rejection loop.
+// Module-level so state persists across task() calls within a session.
+let rejectionState = { consecutiveFailures: 0 };
+const CIRCUIT_BREAKER_LIMIT = 3;
+const CIRCUIT_BREAKER_DISABLE_LIMIT = 5;
+
+/**
+ * Apply circuit breaker prefix to error message based on consecutive failure count.
+ * After 3: tells LLM to STOP and restart with structured dispatch.
+ * After 5: additionally suggests the user disable the plugin.
+ */
+function applyCircuitBreaker(err) {
+  rejectionState.consecutiveFailures++;
+  if (rejectionState.consecutiveFailures >= CIRCUIT_BREAKER_DISABLE_LIMIT) {
+    err.message =
+      `[DISPATCH CIRCUIT BREAKER] ${err.message}` +
+      " — After 5 consecutive rejections, consider disabling the dispatch-gate plugin for this session.";
+  } else if (rejectionState.consecutiveFailures >= CIRCUIT_BREAKER_LIMIT) {
+    err.message =
+      `[DISPATCH CIRCUIT BREAKER] ${err.message}` +
+      " — Please STOP and restart with a structured dispatch using only: mode, intent_kd, session_date." +
+      ' Example: task({ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" })';
+  }
+}
+
+/**
+ * Reset circuit breaker state — exported for test isolation (FR-05-07).
+ */
+export function resetRejectionState() {
+  rejectionState.consecutiveFailures = 0;
+}
 
 /**
  * Static error configurations for each structured dispatch failure mode.
@@ -214,6 +247,13 @@ export default async function dispatchGatePlugin() {
         if (!schema.required.includes("session_date"))
           schema.required.push("session_date");
       }
+
+      // FR-06: Remove native task fields from schema so LLM only sees
+      // structured dispatch fields. Field injection in tool.execute.before
+      // still works — the framework doesn't validate against the schema.
+      delete schema.properties.prompt;
+      delete schema.properties.description;
+      delete schema.properties.subagent_type;
     },
 
     // -----------------------------------------------------------------------
@@ -249,6 +289,17 @@ export default async function dispatchGatePlugin() {
         `mode=${args.mode || "(none)"} intent_kd=${args.intent_kd ? args.intent_kd.replace("knowledge/", "") : "(none)"} session_date=${args.session_date || "(none)"}`,
       );
 
+      // FR-03: Extract fields from _dispatch_confirmation as fallback when
+      // primary fields are empty. The Overseer sends back the confirmation
+      // object thinking it passes structured fields — extract and clean up.
+      if ((!args.mode || !args.intent_kd || !args.session_date) && args._dispatch_confirmation) {
+        const conf = args._dispatch_confirmation;
+        if (!args.mode && conf.mode) args.mode = conf.mode;
+        if (!args.intent_kd && conf.intent_kd) args.intent_kd = conf.intent_kd;
+        if (!args.session_date && conf.session_date) args.session_date = conf.session_date;
+        delete args._dispatch_confirmation;
+      }
+
       // --- PATH 1: Structured dispatch (mode + intent_kd + session_date) ---
       if (args.mode && args.intent_kd && args.session_date) {
         const templateEntry = findTemplate(args.mode);
@@ -260,6 +311,7 @@ export default async function dispatchGatePlugin() {
             session_date: args.session_date,
           });
           logToFile("REJECTED", `${err.code}: ${err.message} | mode="${args.mode}"`);
+          applyCircuitBreaker(err);
           throw err;
         }
 
@@ -312,6 +364,9 @@ export default async function dispatchGatePlugin() {
           `mode=${resolvedMode} target=${templateEntry.target_agent} confirmed`,
         );
 
+        // FR-05: Reset circuit breaker on successful dispatch
+        rejectionState.consecutiveFailures = 0;
+
         // Passthrough fields (task_id, command) auto-preserve since they
         // are not in the structured fields set and we use mutation + delete
 
@@ -326,6 +381,7 @@ export default async function dispatchGatePlugin() {
         if (args.scope) fieldsReceived.scope = args.scope;
         const err = buildDispatchGateError("MISSING_MODE", fieldsReceived);
         logToFile("REJECTED", `${err.code}: ${err.message} | received: ${JSON.stringify(fieldsReceived)}`);
+        applyCircuitBreaker(err);
         throw err;
       }
 
@@ -338,18 +394,22 @@ export default async function dispatchGatePlugin() {
         // Check if text content contains structured field keywords (R003(c))
         const textContent = [args.prompt, args.description, args.subagent_type]
           .filter(Boolean).join(" ");
-        const hasFieldKeywords = /\b(mode|intent_kd|session_date)\b/.test(textContent);
+        // FR-02: Only match field keywords when followed by optional quotes + : or =
+        // to avoid false positives on filenames like "cleanup-mode-2026.md"
+        const hasFieldKeywords = /(?:\b(mode|intent_kd|session_date)\b\s*"?\s*[:=])/gi.test(textContent);
 
         if (hasFieldKeywords) {
           // R003(c): Fields appear in text content rather than as parameters
           const err = buildDispatchGateError("FIELDS_IN_PROMPT");
           logToFile("REJECTED", `${err.code}: ${err.message}`);
+          applyCircuitBreaker(err);
           throw err;
         }
 
         // R003(b): No structured fields at all
         const err = buildDispatchGateError("MISSING_ALL_FIELDS");
         logToFile("REJECTED", `${err.code}: ${err.message}`);
+        applyCircuitBreaker(err);
         throw err;
       }
 
