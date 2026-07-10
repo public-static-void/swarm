@@ -1611,3 +1611,202 @@ describe("Debug logging", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// PATH 2 extraction: structured fields in prompt text → extract and route
+// ---------------------------------------------------------------------------
+
+describe("PATH 2 extraction: fields in prompt text", () => {
+  beforeEach(() => {
+    process.env.DISPATCH_GATE_DEBUG = "true";
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    vi.spyOn(fs, "appendFileSync").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.DISPATCH_GATE_DEBUG;
+  });
+
+  it("extracts all 3 fields from prompt text and routes to PATH 1", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: 'DISPATCH TO: committer\nACTION: Commit\nARTIFACT: Final commit\nmode: cleanup\nintent_kd: knowledge/intent-auth-flow-2026-07-09.md\nsession_date: 2026-07-10',
+      subagent_type: "committer",
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    // Should route to committer (cleanup mode)
+    expect(output.args.subagent_type).toBe("committer");
+    expect(output.args.prompt).toContain("DISPATCH TO: committer");
+    // Structured fields cleaned from output
+    expect(output.args.mode).toBeUndefined();
+    expect(output.args.intent_kd).toBeUndefined();
+    expect(output.args.session_date).toBeUndefined();
+  });
+
+  it("extracts mode with = separator and routes to PATH 1", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: 'mode=explore\nintent_kd=knowledge/intent-test-2026-07-10.md\nsession_date=2026-07-10',
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.subagent_type).toBe("explorer");
+    expect(output.args.prompt).toContain("DISPATCH TO: explorer");
+  });
+
+  it("extracts mode with quotes around value", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: 'mode: "checkpoint"\nintent_kd: "knowledge/intent-test-2026-07-10.md"\nsession_date: "2026-07-10"',
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.subagent_type).toBe("committer");
+    expect(output.args.prompt).toContain("MODE: CHECKPOINT");
+  });
+
+  it("extracts case-insensitive mode values (MODE, Mode, mode)", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: 'MODE: cleanup\nintent_kd: knowledge/intent-test-2026-07-10.md\nsession_date: 2026-07-10',
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.subagent_type).toBe("committer");
+  });
+
+  it("console.log warning when fields are extracted from prompt", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: 'mode: explore\nintent_kd: knowledge/intent-test-2026-07-10.md\nsession_date: 2026-07-10',
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    // console.log is called with EXTRACTED warning
+    expect(console.log).toHaveBeenCalledOnce();
+    expect(console.log.mock.calls[0][0]).toContain("[DISPATCH-GATE] EXTRACTED");
+    expect(console.log.mock.calls[0][0]).toContain("mode=explore");
+    expect(console.log.mock.calls[0][0]).toContain("(from prompt text)");
+  });
+
+  it("EXTRACTED dispatch produces RECEIVED + EXTRACTED + TRANSFORMED logs", async () => {
+    process.env.DISPATCH_GATE_DEBUG = "true";
+    vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    vi.spyOn(fs, "appendFileSync").mockImplementation(() => {});
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: 'mode: explore\nintent_kd: knowledge/intent-test-2026-07-10.md\nsession_date: 2026-07-10',
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
+    expect(logs.some((l) => l.includes("RECEIVED"))).toBe(true);
+    expect(logs.some((l) => l.includes("EXTRACTED"))).toBe(true);
+    expect(logs.some((l) => l.includes("TRANSFORMED"))).toBe(true);
+    expect(logs.some((l) => l.includes("REJECTED"))).toBe(false);
+  });
+
+  it("extracted dispatch does NOT trigger circuit breaker", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    // Build up 2 rejections (below threshold)
+    try { await plugin["tool.execute.before"](ctx, { args: { prompt: "a" } }); } catch (_) {}
+    try { await plugin["tool.execute.before"](ctx, { args: { prompt: "b" } }); } catch (_) {}
+    // Successful extraction resets counter
+    await plugin["tool.execute.before"](ctx, {
+      args: {
+        prompt: 'mode: explore\nintent_kd: knowledge/intent-test-2026-07-10.md\nsession_date: 2026-07-10',
+      },
+    });
+    // Next rejection should be treated as 1st (no circuit breaker)
+    try {
+      await plugin["tool.execute.before"](ctx, { args: { prompt: "c" } });
+    } catch (err) {
+      expect(err.message).not.toContain("DISPATCH CIRCUIT BREAKER");
+    }
+  });
+
+  it("partial extraction (only mode) → FIELDS_IN_PROMPT rejection", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: 'mode: explore\nsome other text',
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Structured dispatch fields must be tool call parameters");
+  });
+
+  it("partial extraction (mode + intent_kd but no session_date) → FIELDS_IN_PROMPT", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: 'mode: explore\nintent_kd: knowledge/intent-test-2026-07-10.md',
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Structured dispatch fields must be tool call parameters");
+  });
+
+  it("no field keywords in prompt → MISSING_ALL_FIELDS (not FIELDS_IN_PROMPT)", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      prompt: "do something useful",
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Free-form delegation is not supported");
+  });
+
+  it("field keywords without separators (no : or =) → MISSING_ALL_FIELDS", async () => {
+    const plugin = await dispatchGatePlugin({});
+    // "mode" appears but not followed by : or = — not a field keyword
+    const args = {
+      prompt: "The mode of operation is important for session_date tracking",
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Free-form delegation is not supported");
+  });
+
+  it("preserves original prompt text alongside template prompt", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const originalPrompt = "CLEANUP MODE: commit all changes and push to remote";
+    const args = {
+      prompt: `${originalPrompt}\nmode: cleanup\nintent_kd: knowledge/intent-test-2026-07-10.md\nsession_date: 2026-07-10`,
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    // Original prompt text is preserved in the output
+    expect(output.args.prompt).toContain("CLEANUP MODE: commit all changes and push to remote");
+    // Template prompt is also present
+    expect(output.args.prompt).toContain("DISPATCH TO: committer");
+  });
+
+  it("extraction with subagent_type as source text (no prompt field)", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = {
+      subagent_type: 'mode: cleanup\nintent_kd: knowledge/intent-test-2026-07-10.md\nsession_date: 2026-07-10',
+    };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await plugin["tool.execute.before"](ctx, output);
+    expect(output.args.subagent_type).toBe("committer");
+  });
+});

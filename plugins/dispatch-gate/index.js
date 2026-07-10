@@ -11,7 +11,8 @@
  *
  * Behavior:
  *   - Structured dispatch (mode+intent_kd+session_date): generates prompt from template
- *   - Free-text dispatch (no structured fields): throws rejection error
+ *   - Free-text dispatch with embedded fields: extracts fields and routes through template
+ *   - Free-text dispatch without fields: throws rejection error
  *   - Non-task tools: passes through unchanged
  *
  * Two hooks work together:
@@ -114,6 +115,109 @@ function applyCircuitBreaker(err) {
  */
 function resetRejectionState() {
   rejectionState.consecutiveFailures = 0;
+}
+
+/**
+ * Extract structured dispatch fields from free-form prompt text.
+ * Handles the LLM convention of embedding mode/intent_kd/session_date
+ * in prompt text instead of as tool parameters.
+ *
+ * Returns { mode, intent_kd, session_date } — fields that could not be
+ * extracted are absent (not null/undefined).
+ */
+function extractFieldsFromPrompt(text) {
+  if (!text || typeof text !== "string") return {};
+
+  const result = {};
+
+  // mode: value — try all matches, pick the first one with a valid mode value.
+  // "CLEANUP MODE: commit" matches before "mode: cleanup" — prefer valid values.
+  const modeRegex = /\bmode\b\s*"?\s*[:=]\s*"?(\S+?)"?\s*(?:\n|,|;|\)|\]|}|$|\s)/gi;
+  const modeMatches = [...text.matchAll(modeRegex)];
+  for (const match of modeMatches) {
+    const raw = match[1].replace(/["']+$/g, "").toLowerCase();
+    if (VALID_MODES.includes(raw)) {
+      result.mode = raw;
+      break;
+    }
+  }
+
+  // intent_kd: value — look for knowledge/*.md paths
+  const ikdMatch = text.match(/\bintent_kd\b\s*"?\s*[:=]\s*"?([^\s"]+\.md)"?/i);
+  if (ikdMatch) {
+    result.intent_kd = ikdMatch[1];
+  }
+
+  // session_date: YYYY-MM-DD
+  const sdMatch = text.match(/\bsession_date\b\s*"?\s*[:=]\s*"?(\d{4}-\d{2}-\d{2})"?/i);
+  if (sdMatch) {
+    result.session_date = sdMatch[1];
+  }
+
+  return result;
+}
+
+/**
+ * Resolve a structured dispatch through PATH 1: template resolution,
+ * prompt/description/subagent_type injection, confirmation signal,
+ * structured field cleanup, and circuit breaker reset.
+ *
+ * Mutates output.args in place (property mutation, not replacement).
+ * Returns the resolved mode string for logging.
+ * Throws INVALID_MODE_VALUE if mode is not in VALID_MODES.
+ */
+async function resolveStructuredDispatch(args, output) {
+  const templateEntry = findTemplate(args.mode);
+  if (!templateEntry) {
+    const err = buildDispatchGateError("INVALID_MODE_VALUE", {
+      mode: args.mode,
+      intent_kd: args.intent_kd,
+      session_date: args.session_date,
+    });
+    logToFile("REJECTED", `${err.code}: ${err.message} | mode="${args.mode}"`);
+    applyCircuitBreaker(err);
+    throw err;
+  }
+
+  let prompt;
+  try {
+    prompt = await resolveTemplate(templateEntry.template, args);
+  } catch (err) {
+    logToFile("ERROR", `template resolution failed: ${err.message}`);
+    throw err;
+  }
+
+  const returnMatch = prompt.match(/RETURN:\s*(.+)/);
+  const resolvedReturnPath = returnMatch ? returnMatch[1].trim() : "";
+
+  output.args.prompt = prompt;
+  output.args.description = templateEntry.description;
+  output.args.subagent_type = templateEntry.target_agent;
+
+  const resolvedMode = args.mode;
+
+  output.args._dispatch_confirmation = {
+    status: "dispatched",
+    mode: resolvedMode,
+    targetAgent: templateEntry.target_agent,
+    kds: [args.intent_kd],
+    returnPath: resolvedReturnPath,
+  };
+
+  delete output.args.mode;
+  delete output.args.intent_kd;
+  delete output.args.session_date;
+  delete output.args.scope;
+
+  logToFile(
+    "TRANSFORMED",
+    `mode=${resolvedMode} target=${templateEntry.target_agent} confirmed`,
+  );
+
+  // FR-05: Reset circuit breaker on successful dispatch
+  rejectionState.consecutiveFailures = 0;
+
+  return resolvedMode;
 }
 
 /**
@@ -285,8 +389,9 @@ export default async function dispatchGatePlugin() {
     //     but no mode): Throws MISSING_MODE error with fields received.
     //
     //   PATH 2 — FREE-TEXT DISPATCH (prompt/description/subagent_type,
-    //     no structured fields): Throws FIELDS_IN_PROMPT if text contains
-    //     field keywords, otherwise MISSING_ALL_FIELDS.
+    //     no structured fields): If field keywords found in text, attempts
+    //     extraction and routes through PATH 1. Partial extraction → FIELDS_IN_PROMPT.
+    //     No keywords → MISSING_ALL_FIELDS.
     //
     //   PATH 3 — NO DISPATCH FIELDS: Pass through unchanged.
 
@@ -316,74 +421,9 @@ export default async function dispatchGatePlugin() {
 
       // --- PATH 1: Structured dispatch (mode + intent_kd + session_date) ---
       if (args.mode && args.intent_kd && args.session_date) {
-        const templateEntry = findTemplate(args.mode);
-        if (!templateEntry) {
-          // R003(d): Invalid mode value — not in VALID_MODES
-          const err = buildDispatchGateError("INVALID_MODE_VALUE", {
-            mode: args.mode,
-            intent_kd: args.intent_kd,
-            session_date: args.session_date,
-          });
-          logToFile("REJECTED", `${err.code}: ${err.message} | mode="${args.mode}"`);
-          applyCircuitBreaker(err);
-          throw err;
-        }
-
-        let prompt;
-        try {
-          prompt = await resolveTemplate(
-            templateEntry.template,
-            args,
-          );
-        } catch (err) {
-          // Log template errors before re-throw so failure context is preserved
-          logToFile(
-            "ERROR",
-            `template resolution failed: ${err.message}`,
-          );
-          throw err;
-        }
-
-        // Extract RETURN path from resolved prompt for confirmation
-        const returnMatch = prompt.match(/RETURN:\s*(.+)/);
-        const resolvedReturnPath = returnMatch ? returnMatch[1].trim() : "";
-
-        // Property mutation (not object replacement) so the framework's
-        // reference to output.args remains valid
-        output.args.prompt = prompt;
-        output.args.description = templateEntry.description;
-        output.args.subagent_type = templateEntry.target_agent;
-
-        // Capture mode before deleting for confirmation and logging
-        const resolvedMode = args.mode;
-
-        // R004: Success confirmation signal — structured metadata for caller
-        output.args._dispatch_confirmation = {
-          status: "dispatched",
-          mode: resolvedMode,
-          targetAgent: templateEntry.target_agent,
-          kds: [args.intent_kd],
-          returnPath: resolvedReturnPath,
-        };
-
-        // Clean up structured fields — they were consumed by template resolution
-        delete output.args.mode;
-        delete output.args.intent_kd;
-        delete output.args.session_date;
-        delete output.args.scope;
-
-        // Log successful transformation with dispatch metadata for monitoring
-        logToFile(
-          "TRANSFORMED",
-          `mode=${resolvedMode} target=${templateEntry.target_agent} confirmed`,
-        );
-
-        // FR-05: Reset circuit breaker on successful dispatch
-        rejectionState.consecutiveFailures = 0;
-
+        await resolveStructuredDispatch(args, output);
         // Passthrough fields (task_id, command) auto-preserve since they
         // are not in the structured fields set and we use mutation + delete
-
         return;
       }
 
@@ -413,11 +453,9 @@ export default async function dispatchGatePlugin() {
 
       // --- PATH 2: Free-text or incomplete dispatch ---
       // Has prompt/description/subagent_type but no structured fields.
-      // Distinguishes between:
-      //   (b) No structured fields at all → MISSING_ALL_FIELDS
-      //   (c) Field keywords found in prompt text → FIELDS_IN_PROMPT
+      // When field keywords are found in text, attempts to extract them
+      // and route through PATH 1. Falls back to rejection on partial extraction.
       if (args.prompt || args.description || args.subagent_type) {
-        // Check if text content contains structured field keywords (R003(c))
         const textContent = [args.prompt, args.description, args.subagent_type]
           .filter(Boolean).join(" ");
         // FR-02: Only match field keywords when followed by optional quotes + : or =
@@ -425,7 +463,40 @@ export default async function dispatchGatePlugin() {
         const hasFieldKeywords = /(?:\b(mode|intent_kd|session_date)\b\s*"?\s*[:=])/gi.test(textContent);
 
         if (hasFieldKeywords) {
-          // R003(c): Fields appear in text content rather than as parameters
+          // PATH 2 (new): Attempt to extract structured fields from prompt text
+          // instead of rejecting. The LLM oscillates between structured and
+          // native calling conventions — extracting fields bridges the gap.
+          const extracted = extractFieldsFromPrompt(textContent);
+
+          if (extracted.mode && extracted.intent_kd && extracted.session_date) {
+            // Full extraction — set args and route through PATH 1
+            console.log(
+              `[DISPATCH-GATE] EXTRACTED | mode=${extracted.mode} intent_kd=${extracted.intent_kd} session_date=${extracted.session_date} (from prompt text)`,
+            );
+            logToFile(
+              "EXTRACTED",
+              `mode=${extracted.mode} intent_kd=${extracted.intent_kd} session_date=${extracted.session_date}`,
+            );
+
+            // Preserve original prompt text as backup before overwriting
+            const originalPrompt = args.prompt;
+            args.mode = extracted.mode;
+            args.intent_kd = extracted.intent_kd;
+            args.session_date = extracted.session_date;
+
+            await resolveStructuredDispatch(args, output);
+
+            // Restore original prompt text — the LLM's native prompt may contain
+            // additional context beyond the structured fields. The template
+            // overwrote it, but the original text is the agent's intended instruction.
+            if (originalPrompt && !output.args.prompt.includes(originalPrompt)) {
+              output.args.prompt = originalPrompt + "\n\n" + output.args.prompt;
+            }
+
+            return;
+          }
+
+          // Partial extraction — cannot route, reject with FIELDS_IN_PROMPT
           const err = buildDispatchGateError("FIELDS_IN_PROMPT");
           logToFile("REJECTED", `${err.code}: ${err.message}`);
           applyCircuitBreaker(err);
