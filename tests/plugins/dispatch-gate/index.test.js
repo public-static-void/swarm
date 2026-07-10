@@ -599,6 +599,8 @@ describe("FR-03: _dispatch_confirmation input fallback (AC-14 through AC-18)", (
       _dispatch_confirmation: {
         status: "dispatched",
         mode: "explore",
+        intent_kd: "knowledge/intent-auth-flow-2026-07-07.md",
+        session_date: "2026-07-07",
         targetAgent: "explorer",
         kds: [],
         returnPath: "",
@@ -607,7 +609,13 @@ describe("FR-03: _dispatch_confirmation input fallback (AC-14 through AC-18)", (
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    expect(output.args._dispatch_confirmation).toBeUndefined();
+    // Old _dispatch_confirmation is deleted (line 300), then PATH 1 creates a
+    // new one with template-resolved values — verify the old input is consumed
+    expect(output.args._dispatch_confirmation).toBeDefined();
+    expect(output.args._dispatch_confirmation.status).toBe("dispatched");
+    expect(output.args._dispatch_confirmation.mode).toBe("explore");
+    // Old returnPath was empty string; new one is template-resolved
+    expect(output.args._dispatch_confirmation.returnPath).not.toBe("");
   });
 
   it("AC-17: confirmation not accumulated — old one is deleted even on pass-through", async () => {
@@ -643,6 +651,93 @@ describe("FR-03: _dispatch_confirmation input fallback (AC-14 through AC-18)", (
       plugin["tool.execute.before"](ctx, output),
     ).rejects.toThrow("Free-form delegation is not supported");
     expect(output.args._dispatch_confirmation).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FR-04: Partial field rejection — mode without intent_kd/session_date
+// ---------------------------------------------------------------------------
+
+describe("FR-04: Partial field rejection (AC-19 through AC-21, AC-25)", () => {
+  it("AC-19: { mode: 'explore' } without intent_kd or session_date → MISSING_REQUIRED_FIELDS", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { mode: "explore" };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow("Structured dispatch requires all three fields");
+    try {
+      await plugin["tool.execute.before"](ctx, { args: { mode: "explore" } });
+    } catch (err) {
+      expect(err.code).toBe("MISSING_REQUIRED_FIELDS");
+      expect(err.fieldsReceived.mode).toBe("explore");
+    }
+  });
+
+  it("AC-20: { mode: 'explore', intent_kd: 'x' } without session_date → MISSING_REQUIRED_FIELDS", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { mode: "explore", intent_kd: "knowledge/intent-test.md" };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    await expect(
+      plugin["tool.execute.before"](ctx, { args }),
+    ).rejects.toThrow("Structured dispatch requires all three fields");
+    try {
+      await plugin["tool.execute.before"](ctx, { args: { mode: "explore", intent_kd: "knowledge/intent-test.md" } });
+    } catch (err) {
+      expect(err.code).toBe("MISSING_REQUIRED_FIELDS");
+      expect(err.fieldsReceived.mode).toBe("explore");
+      expect(err.fieldsReceived.intent_kd).toBe("knowledge/intent-test.md");
+      expect(err.fieldsReceived.session_date).toBeUndefined();
+    }
+  });
+
+  it("AC-21: { mode: 'explore', session_date: 'x' } without intent_kd → MISSING_REQUIRED_FIELDS", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { mode: "explore", session_date: "2026-07-07" };
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    await expect(
+      plugin["tool.execute.before"](ctx, { args }),
+    ).rejects.toThrow("Structured dispatch requires all three fields");
+    try {
+      await plugin["tool.execute.before"](ctx, { args: { mode: "explore", session_date: "2026-07-07" } });
+    } catch (err) {
+      expect(err.code).toBe("MISSING_REQUIRED_FIELDS");
+      expect(err.fieldsReceived.mode).toBe("explore");
+      expect(err.fieldsReceived.intent_kd).toBeUndefined();
+      expect(err.fieldsReceived.session_date).toBe("2026-07-07");
+    }
+  });
+
+  it("AC-25: MISSING_REQUIRED_FIELDS error has code, message, guidance, example", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { mode: "explore" };
+    try {
+      await plugin["tool.execute.before"](
+        { tool: "task", sessionID: "test", callID: "test-001" },
+        { args },
+      );
+    } catch (err) {
+      expect(err.code).toBe("MISSING_REQUIRED_FIELDS");
+      expect(typeof err.message).toBe("string");
+      expect(typeof err.guidance).toBe("string");
+      expect(typeof err.example).toBe("string");
+      expect(err.fieldsReceived).toEqual({ mode: "explore" });
+    }
+  });
+
+  it("FR-04: { mode: 'explore', scope: 'auth' } without intent_kd/session_date → MISSING_REQUIRED_FIELDS with scope", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const args = { mode: "explore", scope: "auth" };
+    try {
+      await plugin["tool.execute.before"](
+        { tool: "task", sessionID: "test", callID: "test-001" },
+        { args },
+      );
+    } catch (err) {
+      expect(err.code).toBe("MISSING_REQUIRED_FIELDS");
+      expect(err.fieldsReceived.scope).toBe("auth");
+    }
   });
 });
 
@@ -1229,12 +1324,13 @@ describe("Error infrastructure (P002, NFR003)", () => {
   it("all ERROR_CONFIGS have required fields: code, message, guidance, example", async () => {
     // Import the plugin source to access ERROR_CONFIGS via the module
     // Since ERROR_CONFIGS is not exported, we test via the thrown errors
-    const codes = ["MISSING_MODE", "MISSING_ALL_FIELDS", "FIELDS_IN_PROMPT", "INVALID_MODE_VALUE"];
+    const codes = ["MISSING_MODE", "MISSING_ALL_FIELDS", "FIELDS_IN_PROMPT", "INVALID_MODE_VALUE", "MISSING_REQUIRED_FIELDS"];
     const testCases = [
       { args: { intent_kd: "x", session_date: "2026-07-07" } },
       { args: { prompt: "work" } },
       { args: { prompt: "set mode" } },
       { args: makeValidArgs({ mode: "bogus" }) },
+      { args: { mode: "explore" } },
     ];
 
     for (let i = 0; i < testCases.length; i++) {
@@ -1448,6 +1544,17 @@ describe("Debug logging", () => {
     const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
     expect(logs.some((l) => l.includes("REJECTED | MISSING_MODE:"))).toBe(true);
     expect(logs.some((l) => l.includes("intent_kd"))).toBe(true);
+  });
+
+  it("AC012: MISSING_REQUIRED_FIELDS (mode without intent_kd/session_date) produces REJECTED log", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
+    const output = { args: { mode: "explore" } };
+    await expect(
+      plugin["tool.execute.before"](ctx, output),
+    ).rejects.toThrow();
+    const logs = fs.appendFileSync.mock.calls.map((c) => c[1]);
+    expect(logs.some((l) => l.includes("REJECTED | MISSING_REQUIRED_FIELDS:"))).toBe(true);
   });
 
   it("AC012: FIELDS_IN_PROMPT rejection produces REJECTED log", async () => {

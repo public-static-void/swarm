@@ -154,6 +154,16 @@ const ERROR_CONFIGS = Object.freeze({
     example:
       '{ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" }',
   }),
+  MISSING_REQUIRED_FIELDS: Object.freeze({
+    code: "MISSING_REQUIRED_FIELDS",
+    message:
+      "Structured dispatch requires all three fields: mode, intent_kd, and session_date.",
+    guidance:
+      "Provide all required fields as tool call parameters. " +
+      "intent_kd and session_date are mandatory when mode is present.",
+    example:
+      '{ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" }',
+  }),
 });
 
 /**
@@ -371,6 +381,18 @@ export default async function dispatchGatePlugin() {
         // are not in the structured fields set and we use mutation + delete
 
         return;
+      }
+
+      // --- FR-04: mode present but missing required intent_kd or session_date ---
+      if (args.mode && (!args.intent_kd || !args.session_date)) {
+        const fieldsReceived = { mode: args.mode };
+        if (args.intent_kd) fieldsReceived.intent_kd = args.intent_kd;
+        if (args.session_date) fieldsReceived.session_date = args.session_date;
+        if (args.scope) fieldsReceived.scope = args.scope;
+        const err = buildDispatchGateError("MISSING_REQUIRED_FIELDS", fieldsReceived);
+        logToFile("REJECTED", `${err.code}: ${err.message} | received: ${JSON.stringify(fieldsReceived)}`);
+        applyCircuitBreaker(err);
+        throw err;
       }
 
       // --- NEW PATH (R001): Partial structured fields — has intent_kd/session_date but no mode ---
