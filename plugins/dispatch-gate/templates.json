@@ -27,7 +27,7 @@
     "mode": "swarm",
     "target_agent": "artisan",
     "description": "Dispatch Artisan for implementation",
-    "template": "DISPATCH TO: artisan\nACTION: Implement\nARTIFACT: Implementation\nSCOPE: {{scope}}\nKDS:\n  - {{intent_kd}}\n  - {{glob:knowledge/spec-*{{date}}.md}}\n  - {{glob:knowledge/plan-*{{date}}.md}}\nRETURN: knowledge/impl-{{name}}-{{date}}.md\nACCEPTANCE: Implementation meets spec acceptance criteria and passes tests"
+    "template": "DISPATCH TO: artisan\nACTION: Implement\nARTIFACT: Implementation\nSCOPE: {{scope}}\nKDS:\n  - {{intent_kd}}\n  - {{glob:knowledge/spec-*{{date}}.md}}\n  - {{glob:knowledge/plan-*{{date}}.md}}\n  - {{glob:knowledge/review-*{{date}}.md}}\nRETURN: knowledge/impl-{{name}}-{{date}}.md\nACCEPTANCE: Implementation meets spec acceptance criteria and passes tests"
   },
   "verify": {
     "mode": "verify",
@@ -47,11 +47,11 @@
     "description": "Dispatch Habit Builder for process improvement",
     "template": "DISPATCH TO: habit-builder\nACTION: Evolve\nARTIFACT: PROCESS KD\nSCOPE: {{scope}}\nKDS:\n  - {{intent_kd}}\n  - {{glob:knowledge/*-{{date}}.md}}\nRETURN: knowledge/process-{{name}}-{{date}}.md\nACCEPTANCE: PROCESS KD produced with process improvements and habit recommendations"
   },
-  "commit": {
-    "mode": "commit",
+  "cleanup": {
+    "mode": "cleanup",
     "target_agent": "committer",
-    "description": "Dispatch Committer for final commit and push",
-    "template": "DISPATCH TO: committer\nACTION: Commit\nARTIFACT: Commit and push changes\nMODE: CLEANUP\nSCOPE: {{scope}}\nKDS:\n  - {{intent_kd}}\nRETURN: Git push confirmation\nACCEPTANCE: All changes committed and pushed to remote successfully"
+    "description": "Dispatch Committer for final repo cleanup and push",
+    "template": "DISPATCH TO: committer\nACTION: Commit\nARTIFACT: Final commit and push\nMODE: CLEANUP\nSCOPE: {{scope}}\nKDS:\n  - {{intent_kd}}\nRETURN: Git push confirmation\nACCEPTANCE: All changes committed and pushed to remote successfully"
   },
   "report": {
     "mode": "report",
