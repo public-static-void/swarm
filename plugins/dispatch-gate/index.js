@@ -106,9 +106,13 @@ function applyCircuitBreaker(err) {
 }
 
 /**
- * Reset circuit breaker state — exported for test isolation (FR-05-07).
+ * Reset circuit breaker state — NOT exported because opencode's legacy
+ * plugin loader treats every named export as a plugin initializer.
+ * Calling this with plugin args returns undefined, which poisons the
+ * hooks array and crashes on first hook trigger. Attached to the
+ * default export instead for test access.
  */
-export function resetRejectionState() {
+function resetRejectionState() {
   rejectionState.consecutiveFailures = 0;
 }
 
@@ -446,3 +450,7 @@ export default async function dispatchGatePlugin() {
     },
   };
 }
+
+// Attach resetRejectionState for test access without polluting module exports.
+// opencode's legacy loader iterates ALL named exports as plugin initializers.
+dispatchGatePlugin.resetRejectionState = resetRejectionState;

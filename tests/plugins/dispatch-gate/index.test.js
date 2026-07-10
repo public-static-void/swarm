@@ -15,7 +15,7 @@
 
 import fs from "fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import dispatchGatePlugin, { resetRejectionState } from "../../../plugins/dispatch-gate/index.js";
+import dispatchGatePlugin from "../../../plugins/dispatch-gate/index.js";
 import {
   resolveTemplate,
   parseIntentPath,
@@ -28,7 +28,7 @@ import templates from "../../../plugins/dispatch-gate/templates.json" with { typ
 // Reset circuit breaker state before every test to prevent accumulation
 // across tests — module-level state persists within the test file.
 beforeEach(() => {
-  resetRejectionState();
+  dispatchGatePlugin.resetRejectionState();
 });
 
 // ---------------------------------------------------------------------------
@@ -849,7 +849,7 @@ describe("FR-05: Circuit breaker for rejection spirals (AC-26 through AC-32)", (
       expect(err.message).toContain("DISPATCH CIRCUIT BREAKER");
     }
     // Reset — next rejection should be standard
-    resetRejectionState();
+    dispatchGatePlugin.resetRejectionState();
     try {
       await plugin["tool.execute.before"](ctx, { args: { prompt: "after-reset" } });
     } catch (err) {
