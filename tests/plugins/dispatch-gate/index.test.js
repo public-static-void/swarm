@@ -181,6 +181,109 @@ describe("tool.definition hook", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tool Description Positive Framing (P014)
+// ---------------------------------------------------------------------------
+
+describe("Tool description positive framing (P014)", () => {
+  it("AC019: output.description is set when input.toolID === 'task'", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.description).toBeDefined();
+    expect(typeof output.description).toBe("string");
+  });
+
+  it("AC020: output.description contains 'Structured agent dispatch'", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.description).toContain("Structured agent dispatch");
+  });
+
+  it("AC021: output.description contains a correct example with task() format", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.description).toContain('task({ mode: "explore"');
+    expect(output.description).toContain("intent_kd");
+    expect(output.description).toContain("session_date");
+  });
+
+  it("AC022: output.description does NOT contain prohibited field names or negations", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.description).not.toContain("prompt");
+    expect(output.description).not.toContain("subagent_type");
+    expect(output.description).not.toContain("not");
+    expect(output.description).not.toContain("do not");
+  });
+
+  it("does not modify description for non-task tools", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "read");
+    // Non-task tools keep their original description
+    expect(output.description).toBe("Task tool");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Positive Examples Injection (P015)
+// ---------------------------------------------------------------------------
+
+describe("Positive examples injection (P015)", () => {
+  it("AC023: output.jsonSchema._examples is an array with at least 2 entries", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(Array.isArray(output.jsonSchema._examples)).toBe(true);
+    expect(output.jsonSchema._examples.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("AC024: _examples[0] contains mode, intent_kd, session_date (minimal example)", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    const ex = output.jsonSchema._examples[0];
+    expect(ex.mode).toBeDefined();
+    expect(ex.intent_kd).toBeDefined();
+    expect(ex.session_date).toBeDefined();
+    expect(typeof ex.mode).toBe("string");
+    expect(typeof ex.intent_kd).toBe("string");
+    expect(typeof ex.session_date).toBe("string");
+  });
+
+  it("AC025: _examples[1] contains scope with a concrete value", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    const ex = output.jsonSchema._examples[1];
+    expect(ex.scope).toBeDefined();
+    expect(typeof ex.scope).toBe("string");
+    expect(ex.scope.length).toBeGreaterThan(0);
+  });
+
+  it("AC026: every entry in _examples is a valid dispatch (would pass PATH 1)", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    for (const ex of output.jsonSchema._examples) {
+      expect(ex.mode).toBeDefined();
+      expect(ex.intent_kd).toBeDefined();
+      expect(ex.session_date).toBeDefined();
+      expect(ex.mode).toMatch(/^[a-z]+$/);
+      expect(ex.intent_kd).toMatch(/\.md$/);
+      expect(ex.session_date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+
+  it("AC027: scope field description contains 'strongly recommended'", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.jsonSchema.properties.scope.description).toContain("strongly recommended");
+  });
+
+  it("AC028: scope field description contains a concrete example value", async () => {
+    const plugin = await dispatchGatePlugin({});
+    const output = callToolDefinition(plugin, "task");
+    expect(output.jsonSchema.properties.scope.description).toContain("auth-flow");
+    expect(output.jsonSchema.properties.scope.description).toContain("payment-integration");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // FR-06: Remove native task fields from JSON schema (AC-33 through AC-36)
 // ---------------------------------------------------------------------------
 
@@ -443,7 +546,7 @@ describe("Free-text dispatch rejection", () => {
     const output = { args: { prompt: "do something" } };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 
   it("throws when free-text dispatch with only description", async () => {
@@ -452,7 +555,7 @@ describe("Free-text dispatch rejection", () => {
     const output = { args: { description: "do something" } };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 
   it("throws when free-text dispatch with only subagent_type", async () => {
@@ -461,7 +564,7 @@ describe("Free-text dispatch rejection", () => {
     const output = { args: { subagent_type: "artisan" } };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 
   it("throws when free-text dispatch with prompt + description + subagent_type", async () => {
@@ -475,7 +578,7 @@ describe("Free-text dispatch rejection", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 });
 
@@ -491,7 +594,7 @@ describe("FR-02: Tightened field-keyword regex (AC-08 through AC-13)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 
   it("AC-09: prompt with 'knowledge/intent-auth-flow.md' does NOT trigger FIELDS_IN_PROMPT", async () => {
@@ -501,7 +604,7 @@ describe("FR-02: Tightened field-keyword regex (AC-08 through AC-13)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 
   it("AC-10: prompt with 'session_date field in config' does NOT trigger FIELDS_IN_PROMPT", async () => {
@@ -511,7 +614,7 @@ describe("FR-02: Tightened field-keyword regex (AC-08 through AC-13)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 
   it("AC-11: prompt with 'mode: explore' DOES trigger FIELDS_IN_PROMPT", async () => {
@@ -521,7 +624,7 @@ describe("FR-02: Tightened field-keyword regex (AC-08 through AC-13)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch fields must be tool call parameters");
+    ).rejects.toThrow("Use mode, intent_kd, session_date as tool call parameters");
   });
 
   it("AC-12: prompt with 'intent_kd = ...' DOES trigger FIELDS_IN_PROMPT", async () => {
@@ -531,7 +634,7 @@ describe("FR-02: Tightened field-keyword regex (AC-08 through AC-13)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch fields must be tool call parameters");
+    ).rejects.toThrow("Use mode, intent_kd, session_date as tool call parameters");
   });
 
   it("AC-13: prompt with '\"mode\":\"explore\"' DOES trigger FIELDS_IN_PROMPT", async () => {
@@ -541,7 +644,7 @@ describe("FR-02: Tightened field-keyword regex (AC-08 through AC-13)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch fields must be tool call parameters");
+    ).rejects.toThrow("Use mode, intent_kd, session_date as tool call parameters");
   });
 });
 
@@ -649,7 +752,7 @@ describe("FR-03: _dispatch_confirmation input fallback (AC-14 through AC-18)", (
     // Confirmation deleted, then normal routing applies (free-text rejection)
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
     expect(output.args._dispatch_confirmation).toBeUndefined();
   });
 });
@@ -666,7 +769,7 @@ describe("FR-04: Partial field rejection (AC-19 through AC-21, AC-25)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch requires all three fields");
+    ).rejects.toThrow("Provide all three fields");
     try {
       await plugin["tool.execute.before"](ctx, { args: { mode: "explore" } });
     } catch (err) {
@@ -681,7 +784,7 @@ describe("FR-04: Partial field rejection (AC-19 through AC-21, AC-25)", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     await expect(
       plugin["tool.execute.before"](ctx, { args }),
-    ).rejects.toThrow("Structured dispatch requires all three fields");
+    ).rejects.toThrow("Provide all three fields");
     try {
       await plugin["tool.execute.before"](ctx, { args: { mode: "explore", intent_kd: "knowledge/intent-test.md" } });
     } catch (err) {
@@ -698,7 +801,7 @@ describe("FR-04: Partial field rejection (AC-19 through AC-21, AC-25)", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     await expect(
       plugin["tool.execute.before"](ctx, { args }),
-    ).rejects.toThrow("Structured dispatch requires all three fields");
+    ).rejects.toThrow("Provide all three fields");
     try {
       await plugin["tool.execute.before"](ctx, { args: { mode: "explore", session_date: "2026-07-07" } });
     } catch (err) {
@@ -746,19 +849,19 @@ describe("FR-04: Partial field rejection (AC-19 through AC-21, AC-25)", () => {
 // ---------------------------------------------------------------------------
 
 describe("FR-05: Circuit breaker for rejection spirals (AC-26 through AC-32)", () => {
-  it("AC-26: 1st rejection → standard message (no circuit breaker prefix)", async () => {
+  it("AC-26: 1st rejection → standard message (no progressive guidance prefix)", async () => {
     const plugin = await dispatchGatePlugin({});
     const args = { prompt: "do something" };
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     try {
       await plugin["tool.execute.before"](ctx, { args });
     } catch (err) {
-      expect(err.message).not.toContain("DISPATCH CIRCUIT BREAKER");
-      expect(err.message).toBe("Free-form delegation is not supported. Use structured dispatch fields.");
+      expect(err.message).not.toContain("Example — use this format");
+      expect(err.message).toBe("Use structured dispatch fields: mode, intent_kd, session_date.");
     }
   });
 
-  it("AC-27: 2nd consecutive rejection → standard message (no circuit breaker prefix)", async () => {
+  it("AC-27: 2nd consecutive rejection → standard message (no progressive guidance)", async () => {
     const plugin = await dispatchGatePlugin({});
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     // 1st rejection
@@ -767,38 +870,42 @@ describe("FR-05: Circuit breaker for rejection spirals (AC-26 through AC-32)", (
     try {
       await plugin["tool.execute.before"](ctx, { args: { prompt: "b" } });
     } catch (err) {
-      expect(err.message).not.toContain("DISPATCH CIRCUIT BREAKER");
+      expect(err.message).not.toContain("Example — use this format");
     }
   });
 
-  it("AC-28: 3rd consecutive rejection → message contains DISPATCH CIRCUIT BREAKER", async () => {
+  it("AC-28: 3rd consecutive rejection → message contains mode-specific example", async () => {
     const plugin = await dispatchGatePlugin({});
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     // 1st + 2nd rejections
     try { await plugin["tool.execute.before"](ctx, { args: { prompt: "a" } }); } catch (_) {}
     try { await plugin["tool.execute.before"](ctx, { args: { prompt: "b" } }); } catch (_) {}
-    // 3rd rejection — should trigger circuit breaker
+    // 3rd rejection — should trigger progressive guidance Tier 1
     try {
       await plugin["tool.execute.before"](ctx, { args: { prompt: "c" } });
     } catch (err) {
-      expect(err.message).toContain("DISPATCH CIRCUIT BREAKER");
-      expect(err.message).toContain("Please STOP");
+      expect(err.message).toContain("Example — use this format");
+      expect(err.message).toContain('task({ mode: "explore"');
+      expect(err.message).not.toContain("DISPATCH CIRCUIT BREAKER");
+      expect(err.message).not.toContain("Please STOP");
     }
   });
 
-  it("AC-29: 5th consecutive rejection → message suggests plugin disable", async () => {
+  it("AC-29: 5th consecutive rejection → message shows field guidance and verbatim example", async () => {
     const plugin = await dispatchGatePlugin({});
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     // 4 rejections to reach count 4
     for (let i = 0; i < 4; i++) {
       try { await plugin["tool.execute.before"](ctx, { args: { prompt: `attempt-${i}` } }); } catch (_) {}
     }
-    // 5th rejection — should suggest disabling plugin
+    // 5th rejection — should show field guidance
     try {
       await plugin["tool.execute.before"](ctx, { args: { prompt: "attempt-4" } });
     } catch (err) {
-      expect(err.message).toContain("DISPATCH CIRCUIT BREAKER");
-      expect(err.message).toContain("consider disabling");
+      expect(err.message).toContain("Use these fields as tool parameters: mode, intent_kd, session_date.");
+      expect(err.message).toContain('task({ mode: "explore"');
+      expect(err.message).not.toContain("consider disabling");
+      expect(err.message).not.toContain("DISPATCH CIRCUIT BREAKER");
     }
   });
 
@@ -810,11 +917,11 @@ describe("FR-05: Circuit breaker for rejection spirals (AC-26 through AC-32)", (
     try { await plugin["tool.execute.before"](ctx, { args: { prompt: "b" } }); } catch (_) {}
     // Successful PATH 1 — resets counter
     await plugin["tool.execute.before"](ctx, { args: makeValidArgs() });
-    // Next rejection should be treated as 1st (no circuit breaker)
+    // Next rejection should be treated as 1st (no progressive guidance)
     try {
       await plugin["tool.execute.before"](ctx, { args: { prompt: "c" } });
     } catch (err) {
-      expect(err.message).not.toContain("DISPATCH CIRCUIT BREAKER");
+      expect(err.message).not.toContain("Example — use this format");
     }
   });
 
@@ -830,8 +937,8 @@ describe("FR-05: Circuit breaker for rejection spirals (AC-26 through AC-32)", (
     try {
       await plugin["tool.execute.before"](taskCtx, { args: { prompt: "b" } });
     } catch (err) {
-      // count is 2, below circuit breaker threshold of 3
-      expect(err.message).not.toContain("DISPATCH CIRCUIT BREAKER");
+      // count is 2, below progressive guidance threshold of 3
+      expect(err.message).not.toContain("Example — use this format");
     }
   });
 
@@ -842,18 +949,18 @@ describe("FR-05: Circuit breaker for rejection spirals (AC-26 through AC-32)", (
     for (let i = 0; i < 3; i++) {
       try { await plugin["tool.execute.before"](ctx, { args: { prompt: `x${i}` } }); } catch (_) {}
     }
-    // Verify circuit breaker is active
+    // Verify progressive guidance is active
     try {
       await plugin["tool.execute.before"](ctx, { args: { prompt: "trigger" } });
     } catch (err) {
-      expect(err.message).toContain("DISPATCH CIRCUIT BREAKER");
+      expect(err.message).toContain("Example — use this format");
     }
     // Reset — next rejection should be standard
     dispatchGatePlugin.resetRejectionState();
     try {
       await plugin["tool.execute.before"](ctx, { args: { prompt: "after-reset" } });
     } catch (err) {
-      expect(err.message).not.toContain("DISPATCH CIRCUIT BREAKER");
+      expect(err.message).not.toContain("Example — use this format");
     }
   });
 });
@@ -873,7 +980,7 @@ describe("Partial structured field rejection (R001)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch missing required field: mode");
+    ).rejects.toThrow("Provide a dispatch mode");
   });
 
   it("AC002: rejects only intent_kd (no session_date, no mode) with MISSING_MODE", async () => {
@@ -885,7 +992,7 @@ describe("Partial structured field rejection (R001)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch missing required field: mode");
+    ).rejects.toThrow("Provide a dispatch mode");
   });
 
   it("AC002: passes through when no structured fields and no free-text fields", async () => {
@@ -904,7 +1011,7 @@ describe("Partial structured field rejection (R001)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch missing required field: mode");
+    ).rejects.toThrow("Provide a dispatch mode");
   });
 
   it("MISSING_MODE error includes fieldsReceived with provided fields", async () => {
@@ -944,7 +1051,7 @@ describe("Differentiated error messages (R003)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch missing required field: mode");
+    ).rejects.toThrow("Provide a dispatch mode");
   });
 
   it("AC005b: MISSING_ALL_FIELDS error when no structured fields at all", async () => {
@@ -954,7 +1061,7 @@ describe("Differentiated error messages (R003)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 
   it("AC005c: FIELDS_IN_PROMPT error when field keywords appear as assignments", async () => {
@@ -964,7 +1071,7 @@ describe("Differentiated error messages (R003)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch fields must be tool call parameters");
+    ).rejects.toThrow("Use mode, intent_kd, session_date as tool call parameters");
   });
 
   it("AC005d: INVALID_MODE_VALUE error when mode is not valid enum", async () => {
@@ -974,7 +1081,7 @@ describe("Differentiated error messages (R003)", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Invalid dispatch mode value");
+    ).rejects.toThrow("Use a valid dispatch mode");
   });
 
   it("AC006: each error has distinguishing error code and messages are distinct", async () => {
@@ -988,6 +1095,7 @@ describe("Differentiated error messages (R003)", () => {
       { args: makeValidArgs({ mode: "bogus" }), expected: "INVALID_MODE_VALUE" },
     ];
     for (const { args, expected } of testCases) {
+      dispatchGatePlugin.resetRejectionState();
       try {
         await plugin["tool.execute.before"](
           { tool: "task", sessionID: "test", callID: "test-001" },
@@ -1175,7 +1283,7 @@ describe("Unknown mode handling", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Invalid dispatch mode value");
+    ).rejects.toThrow("Use a valid dispatch mode");
   });
 
   it("does not throw for missing args", async () => {
@@ -1368,7 +1476,7 @@ describe("Error infrastructure (P002, NFR003)", () => {
       // The user-provided intent_kd value must NOT appear in the message text
       expect(err.message).not.toContain("INJECTED-value");
       // The message should be static
-      expect(err.message).toBe("Structured dispatch missing required field: mode.");
+      expect(err.message).toBe("Provide a dispatch mode: mode, intent_kd, session_date.");
     }
   });
 
@@ -1682,7 +1790,7 @@ describe("PATH 2 extraction: fields in prompt text", () => {
     expect(output.args.subagent_type).toBe("committer");
   });
 
-  it("console.log warning when fields are extracted from prompt", async () => {
+  it("no console.log when fields are extracted from prompt (uses logToFile only)", async () => {
     const plugin = await dispatchGatePlugin({});
     const args = {
       prompt: 'mode: explore\nintent_kd: knowledge/intent-test-2026-07-10.md\nsession_date: 2026-07-10',
@@ -1690,11 +1798,8 @@ describe("PATH 2 extraction: fields in prompt text", () => {
     const ctx = { tool: "task", sessionID: "test", callID: "test-001" };
     const output = { args };
     await plugin["tool.execute.before"](ctx, output);
-    // console.log is called with EXTRACTED warning
-    expect(console.log).toHaveBeenCalledOnce();
-    expect(console.log.mock.calls[0][0]).toContain("[DISPATCH-GATE] EXTRACTED");
-    expect(console.log.mock.calls[0][0]).toContain("mode=explore");
-    expect(console.log.mock.calls[0][0]).toContain("(from prompt text)");
+    // console.log is NOT called — extraction uses logToFile only
+    expect(console.log).not.toHaveBeenCalled();
   });
 
   it("EXTRACTED dispatch produces RECEIVED + EXTRACTED + TRANSFORMED logs", async () => {
@@ -1744,7 +1849,7 @@ describe("PATH 2 extraction: fields in prompt text", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch fields must be tool call parameters");
+    ).rejects.toThrow("Use mode, intent_kd, session_date as tool call parameters");
   });
 
   it("partial extraction (mode + intent_kd but no session_date) → FIELDS_IN_PROMPT", async () => {
@@ -1756,7 +1861,7 @@ describe("PATH 2 extraction: fields in prompt text", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Structured dispatch fields must be tool call parameters");
+    ).rejects.toThrow("Use mode, intent_kd, session_date as tool call parameters");
   });
 
   it("no field keywords in prompt → MISSING_ALL_FIELDS (not FIELDS_IN_PROMPT)", async () => {
@@ -1768,7 +1873,7 @@ describe("PATH 2 extraction: fields in prompt text", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 
   it("field keywords without separators (no : or =) → MISSING_ALL_FIELDS", async () => {
@@ -1781,7 +1886,7 @@ describe("PATH 2 extraction: fields in prompt text", () => {
     const output = { args };
     await expect(
       plugin["tool.execute.before"](ctx, output),
-    ).rejects.toThrow("Free-form delegation is not supported");
+    ).rejects.toThrow("Use structured dispatch fields");
   });
 
   it("preserves original prompt text alongside template prompt", async () => {

@@ -1,7 +1,7 @@
 /**
  * Dispatch Gate Plugin
  *
- * Intercepts task() calls to enforce structured dispatch format.
+ * Intercepts task() calls to route structured dispatches through templates.
  *
  * Environment variables:
  *   DISPATCH_GATE_DEBUG=true — enables file logging to
@@ -12,7 +12,7 @@
  * Behavior:
  *   - Structured dispatch (mode+intent_kd+session_date): generates prompt from template
  *   - Free-text dispatch with embedded fields: extracts fields and routes through template
- *   - Free-text dispatch without fields: throws rejection error
+ *   - Free-text dispatch without fields: provides guidance to use structured format
  *   - Non-task tools: passes through unchanged
  *
  * Two hooks work together:
@@ -22,10 +22,9 @@
  *      is LLM guidance, not structural enforcement — the LLM may still
  *      generate free-text calls despite the schema hints.
  *   2. tool.execute.before — resolves templates for structured dispatches,
- *      throws for free-text rejection, throws for unknown mode. Uses
- *      property mutation (not object replacement) so framework retains
- *      the same args reference. Uses `delete` to remove structured fields
- *      after transformation.
+ *      provides positive guidance for free-text calls. Uses property mutation
+ *      (not object replacement) so framework retains the same args reference.
+ *      Uses `delete` to remove structured fields after transformation.
  *
  * Same handler for ALL callers — no Overseer/Artisan distinction.
  */
@@ -80,34 +79,34 @@ const VALID_MODES = [
   "checkpoint", "cleanup", "preflight",
 ];
 
-// FR-05: Circuit breaker state — tracks consecutive rejections to break
-// deadlock spirals where the LLM gets stuck in a rejection loop.
-// Module-level so state persists across task() calls within a session.
+// FR-05: Progressive guidance state — tracks consecutive rejections to
+// provide increasingly specific positive examples. Module-level so state
+// persists across task() calls within a session.
 let rejectionState = { consecutiveFailures: 0 };
 const CIRCUIT_BREAKER_LIMIT = 3;
 const CIRCUIT_BREAKER_DISABLE_LIMIT = 5;
 
 /**
- * Apply circuit breaker prefix to error message based on consecutive failure count.
- * After 3: tells LLM to STOP and restart with structured dispatch.
- * After 5: additionally suggests the user disable the plugin.
+ * Apply progressive positive guidance to error message based on consecutive
+ * failure count. After 3: shows a mode-specific correct example. After 5:
+ * shows a minimal verbatim-copyable example with field guidance.
  */
-function applyCircuitBreaker(err) {
+function applyCircuitBreaker(err, attemptedMode = null) {
   rejectionState.consecutiveFailures++;
+  const mode = attemptedMode && VALID_MODES.includes(attemptedMode) ? attemptedMode : "explore";
   if (rejectionState.consecutiveFailures >= CIRCUIT_BREAKER_DISABLE_LIMIT) {
     err.message =
-      `[DISPATCH CIRCUIT BREAKER] ${err.message}` +
-      " — After 5 consecutive rejections, consider disabling the dispatch-gate plugin for this session.";
+      "Use these fields as tool parameters: mode, intent_kd, session_date.\n" +
+      `task({ mode: "${mode}", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "2026-07-12" })`;
   } else if (rejectionState.consecutiveFailures >= CIRCUIT_BREAKER_LIMIT) {
     err.message =
-      `[DISPATCH CIRCUIT BREAKER] ${err.message}` +
-      " — Please STOP and restart with a structured dispatch using only: mode, intent_kd, session_date." +
-      ' Example: task({ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" })';
+      "Example — use this format:\n" +
+      `task({ mode: "${mode}", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" })`;
   }
 }
 
 /**
- * Reset circuit breaker state — NOT exported because opencode's legacy
+ * Reset progressive guidance state — NOT exported because opencode's legacy
  * plugin loader treats every named export as a plugin initializer.
  * Calling this with plugin args returns undefined, which poisons the
  * hooks array and crashes on first hook trigger. Attached to the
@@ -160,7 +159,7 @@ function extractFieldsFromPrompt(text) {
 /**
  * Resolve a structured dispatch through PATH 1: template resolution,
  * prompt/description/subagent_type injection, confirmation signal,
- * structured field cleanup, and circuit breaker reset.
+ * structured field cleanup, and progressive guidance reset.
  *
  * Mutates output.args in place (property mutation, not replacement).
  * Returns the resolved mode string for logging.
@@ -175,7 +174,7 @@ async function resolveStructuredDispatch(args, output) {
       session_date: args.session_date,
     });
     logToFile("REJECTED", `${err.code}: ${err.message} | mode="${args.mode}"`);
-    applyCircuitBreaker(err);
+    applyCircuitBreaker(err, args.mode);
     throw err;
   }
 
@@ -214,48 +213,47 @@ async function resolveStructuredDispatch(args, output) {
     `mode=${resolvedMode} target=${templateEntry.target_agent} confirmed`,
   );
 
-  // FR-05: Reset circuit breaker on successful dispatch
+  // FR-05: Reset progressive guidance state on successful dispatch
   rejectionState.consecutiveFailures = 0;
 
   return resolvedMode;
 }
 
 /**
- * Static error configurations for each structured dispatch failure mode.
- * All message strings are static constants (NFR003) — no dynamic
- * generation from model output.
+ * Static guidance configurations for each structured dispatch scenario.
+ * All message strings use positive framing — telling agents what TO do.
+ * Static constants (NFR003) — no dynamic generation from model output.
  */
 const ERROR_CONFIGS = Object.freeze({
   MISSING_MODE: Object.freeze({
     code: "MISSING_MODE",
-    message: "Structured dispatch missing required field: mode.",
+    message: "Provide a dispatch mode: mode, intent_kd, session_date.",
     guidance:
-      "Add 'mode' as a tool call parameter (not in prompt text). " +
-      "The fields intent_kd, session_date, and scope must also be provided as parameters.",
+      "Include 'mode' as a tool call parameter. " +
+      "Also provide intent_kd, session_date, and optionally scope.",
     example:
       '{ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" }',
   }),
   MISSING_ALL_FIELDS: Object.freeze({
     code: "MISSING_ALL_FIELDS",
-    message: "Free-form delegation is not supported. Use structured dispatch fields.",
+    message: "Use structured dispatch fields: mode, intent_kd, session_date.",
     guidance:
-      "Add mode, intent_kd, and session_date as tool call parameter fields " +
-      "(not in prompt or description text).",
+      "Provide mode, intent_kd, and session_date as tool call parameters.",
     example:
       '{ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" }',
   }),
   FIELDS_IN_PROMPT: Object.freeze({
     code: "FIELDS_IN_PROMPT",
-    message: "Structured dispatch fields must be tool call parameters, not text content.",
+    message: "Use mode, intent_kd, session_date as tool call parameters.",
     guidance:
-      "Move mode, intent_kd, and session_date out of prompt/description text " +
-      "and into the structured parameter fields of the tool call.",
+      "Set mode, intent_kd, and session_date as tool call parameters. " +
+      "The plugin generates the dispatch prompt from these fields.",
     example:
       '{ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" }',
   }),
   INVALID_MODE_VALUE: Object.freeze({
     code: "INVALID_MODE_VALUE",
-    message: "Invalid dispatch mode value.",
+    message: "Use a valid dispatch mode.",
     guidance:
       "Provide one of the valid mode values as a tool call parameter: " +
       `${VALID_MODES.join(", ")}.`,
@@ -265,7 +263,7 @@ const ERROR_CONFIGS = Object.freeze({
   MISSING_REQUIRED_FIELDS: Object.freeze({
     code: "MISSING_REQUIRED_FIELDS",
     message:
-      "Structured dispatch requires all three fields: mode, intent_kd, and session_date.",
+      "Provide all three fields: mode, intent_kd, session_date.",
     guidance:
       "Provide all required fields as tool call parameters. " +
       "intent_kd and session_date are mandatory when mode is present.",
@@ -348,7 +346,10 @@ export default async function dispatchGatePlugin() {
       };
       schema.properties.scope = {
         type: "string",
-        description: "Optional scope / domain context for the dispatch",
+        description:
+          "Domain context for the dispatch — strongly recommended. " +
+          "Provides scope boundaries and domain-specific guidance to the target agent. " +
+          "Example: 'auth-flow' or 'payment-integration'",
       };
 
       // Make mode, intent_kd, session_date REQUIRED so LLM sees
@@ -372,10 +373,33 @@ export default async function dispatchGatePlugin() {
       delete schema.properties.prompt;
       delete schema.properties.description;
       delete schema.properties.subagent_type;
+
+      // Set tool description with positive framing — the most visible
+      // guidance the LLM sees when deciding how to call the task tool.
+      output.description =
+        "Structured agent dispatch. Provide: mode, intent_kd, session_date. " +
+        "The plugin generates dispatch instructions from these fields using templates.\n" +
+        'task({ mode: "explore", intent_kd: "knowledge/intent-<name>-<date>.md", session_date: "YYYY-MM-DD" })';
+
+      // Inject positive examples into schema — gives the LLM correct
+      // patterns to follow without mentioning prohibited fields.
+      schema._examples = [
+        {
+          mode: "explore",
+          intent_kd: "knowledge/intent-auth-flow-2026-07-12.md",
+          session_date: "2026-07-12",
+        },
+        {
+          mode: "align",
+          intent_kd: "knowledge/intent-feature-x-2026-07-12.md",
+          session_date: "2026-07-12",
+          scope: "authentication-module",
+        },
+      ];
     },
 
     // -----------------------------------------------------------------------
-    // Hook 2: Transform/reject dispatches before execution
+    // Hook 2: Transform/guide dispatches before execution
     // -----------------------------------------------------------------------
     // Fires when the tool executes. Four paths:
     //
@@ -383,10 +407,10 @@ export default async function dispatchGatePlugin() {
     //     Resolves the template, property-mutates prompt/description/
     //     subagent_type, injects _dispatch_confirmation, deletes structured
     //     fields. Preserves task_id and command passthrough fields.
-    //     Throws INVALID_MODE_VALUE if mode is not in VALID_MODES.
+    //     Provides valid mode guidance if mode is not in VALID_MODES.
     //
     //   NEW PATH — PARTIAL STRUCTURED FIELDS (intent_kd || session_date,
-    //     but no mode): Throws MISSING_MODE error with fields received.
+    //     but no mode): Provides MISSING_MODE guidance with fields received.
     //
     //   PATH 2 — FREE-TEXT DISPATCH (prompt/description/subagent_type,
     //     no structured fields): If field keywords found in text, attempts
@@ -408,9 +432,9 @@ export default async function dispatchGatePlugin() {
         `mode=${args.mode || "(none)"} intent_kd=${args.intent_kd ? args.intent_kd.replace("knowledge/", "") : "(none)"} session_date=${args.session_date || "(none)"}`,
       );
 
-      // FR-03: Extract fields from _dispatch_confirmation as fallback when
-      // primary fields are empty. The Overseer sends back the confirmation
-      // object thinking it passes structured fields — extract and clean up.
+      // FR-03: Extract fields from _dispatch_confirmation when primary
+      // fields are empty. The Overseer sends back the confirmation object
+      // — extract fields and clean up for structured dispatch routing.
       if ((!args.mode || !args.intent_kd || !args.session_date) && args._dispatch_confirmation) {
         const conf = args._dispatch_confirmation;
         if (!args.mode && conf.mode) args.mode = conf.mode;
@@ -435,7 +459,7 @@ export default async function dispatchGatePlugin() {
         if (args.scope) fieldsReceived.scope = args.scope;
         const err = buildDispatchGateError("MISSING_REQUIRED_FIELDS", fieldsReceived);
         logToFile("REJECTED", `${err.code}: ${err.message} | received: ${JSON.stringify(fieldsReceived)}`);
-        applyCircuitBreaker(err);
+        applyCircuitBreaker(err, args.mode);
         throw err;
       }
 
@@ -447,7 +471,7 @@ export default async function dispatchGatePlugin() {
         if (args.scope) fieldsReceived.scope = args.scope;
         const err = buildDispatchGateError("MISSING_MODE", fieldsReceived);
         logToFile("REJECTED", `${err.code}: ${err.message} | received: ${JSON.stringify(fieldsReceived)}`);
-        applyCircuitBreaker(err);
+        applyCircuitBreaker(err, null);
         throw err;
       }
 
@@ -470,9 +494,6 @@ export default async function dispatchGatePlugin() {
 
           if (extracted.mode && extracted.intent_kd && extracted.session_date) {
             // Full extraction — set args and route through PATH 1
-            console.log(
-              `[DISPATCH-GATE] EXTRACTED | mode=${extracted.mode} intent_kd=${extracted.intent_kd} session_date=${extracted.session_date} (from prompt text)`,
-            );
             logToFile(
               "EXTRACTED",
               `mode=${extracted.mode} intent_kd=${extracted.intent_kd} session_date=${extracted.session_date}`,
@@ -499,14 +520,14 @@ export default async function dispatchGatePlugin() {
           // Partial extraction — cannot route, reject with FIELDS_IN_PROMPT
           const err = buildDispatchGateError("FIELDS_IN_PROMPT");
           logToFile("REJECTED", `${err.code}: ${err.message}`);
-          applyCircuitBreaker(err);
+          applyCircuitBreaker(err, extracted.mode || null);
           throw err;
         }
 
         // R003(b): No structured fields at all
         const err = buildDispatchGateError("MISSING_ALL_FIELDS");
         logToFile("REJECTED", `${err.code}: ${err.message}`);
-        applyCircuitBreaker(err);
+        applyCircuitBreaker(err, null);
         throw err;
       }
 
