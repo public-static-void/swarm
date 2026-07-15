@@ -63,6 +63,11 @@ const ERRORS = Object.freeze({
     message: "Prompt contains instructions outside the dispatch template.",
     guidance: "Remove free-form instructions. The dispatch template provides all instructions to the subagent.",
   }),
+  MISSING_KD_REFERENCE: Object.freeze({
+    code: "MISSING_KD_REFERENCE",
+    message: "Prompt contains no KD path reference (knowledge/*.md). Every delegation must reference at least one KD.",
+    guidance: "Add a knowledge/*.md path to the KDS field so the subagent has context.",
+  }),
 });
 
 // --- Constants ---
@@ -140,6 +145,11 @@ function hasInjectedInstructions(text) {
   return false;
 }
 
+// Positive enforcement: every delegation must carry at least one KD reference.
+function hasKDPathReference(text) {
+  return KD_PATH_PATTERN.test(text);
+}
+
 // --- Plugin ---
 
 export default async function delegationGatePlugin() {
@@ -176,6 +186,13 @@ export default async function delegationGatePlugin() {
       const hasKeywords = TEMPLATE_KEYWORDS.some(kw => prompt.includes(kw));
       if ((hasKeywords || hasKDRefs) && hasInjectedInstructions(prompt)) {
         const err = new DelegationGateError(ERRORS.INJECTED_INSTRUCTION);
+        log("REJECTED", err.code);
+        throw err;
+      }
+
+      // Positive enforcement: every delegation must carry at least one KD reference.
+      if (!hasKDPathReference(prompt)) {
+        const err = new DelegationGateError(ERRORS.MISSING_KD_REFERENCE);
         log("REJECTED", err.code);
         throw err;
       }

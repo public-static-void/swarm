@@ -2,7 +2,7 @@
 // Tests for delegation-gate plugin — prompt content validator.
 //
 // Validates task prompts contain only KD path references and template keywords.
-// Rejects: code blocks, foreign paths, bare KD paths, injected instructions.
+// Rejects: code blocks, foreign paths, bare KD paths, injected instructions, missing KD references.
 // Accepts: template keywords with KD refs, empty/missing prompts, non-task tools.
 
 import { describe, it, expect } from "vitest";
@@ -435,6 +435,74 @@ describe("AC014: Artisan→Committer delegation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// AC015: Missing KD reference rejection (positive enforcement)
+// ---------------------------------------------------------------------------
+
+describe("AC015: Missing KD reference rejection", () => {
+  it("rejects prompt with mode keyword but no KD path", async () => {
+    const plugin = await delegationGatePlugin();
+    await expect(callTask(plugin, "MODE: PREFLIGHT\n1:30 PM")).rejects.toThrow(
+      "no KD path reference",
+    );
+  });
+
+  it("rejects prompt with only template keywords and no KD path", async () => {
+    const plugin = await delegationGatePlugin();
+    const prompt = [
+      "DISPATCH TO: committer",
+      "ACTION: Dispatch",
+      "MODE: CHECKPOINT",
+      "SCOPE: workspace setup",
+    ].join("\n");
+    await expect(callTask(plugin, prompt)).rejects.toThrow(
+      "no KD path reference",
+    );
+  });
+
+  it("rejects short free-form prompt with no KD path", async () => {
+    const plugin = await delegationGatePlugin();
+    await expect(callTask(plugin, "PREFLIGHT\n1:30 PM")).rejects.toThrow(
+      "no KD path reference",
+    );
+  });
+
+  it("throws MISSING_KD_REFERENCE error code", async () => {
+    const plugin = await delegationGatePlugin();
+    try {
+      await callTask(plugin, "MODE: PREFLIGHT");
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err.code).toBe("MISSING_KD_REFERENCE");
+      expect(err).toBeInstanceOf(DelegationGateError);
+      expect(typeof err.guidance).toBe("string");
+    }
+  });
+
+  it("passes prompt with KD path and template keywords", async () => {
+    const plugin = await delegationGatePlugin();
+    const prompt = [
+      "MODE: CHECKPOINT",
+      "SCOPE: implement feature",
+      "KDS:",
+      "  - knowledge/intent-auth-2026-07-15.md",
+    ].join("\n");
+    await expect(callTask(plugin, prompt)).resolves.toBeUndefined();
+  });
+
+  it("passes prompt with KD path in RETURN field", async () => {
+    const plugin = await delegationGatePlugin();
+    const prompt = [
+      "DISPATCH TO: artisan",
+      "ACTION: Implement",
+      "KDS:",
+      "  - knowledge/spec-auth-2026-07-15.md",
+      "RETURN: knowledge/impl-auth-2026-07-15.md",
+    ].join("\n");
+    await expect(callTask(plugin, prompt)).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Error class verification
 // ---------------------------------------------------------------------------
 
@@ -447,7 +515,7 @@ describe("Error class", () => {
     expect(typeof err.guidance).toBe("string");
   });
 
-  it("all 4 error codes have code, message, guidance", () => {
+  it("all 5 error codes have code, message, guidance", () => {
     for (const config of Object.values(ERRORS)) {
       expect(typeof config.code).toBe("string");
       expect(typeof config.message).toBe("string");
