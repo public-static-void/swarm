@@ -281,11 +281,13 @@ const ERRORS = Object.freeze({
   }),
 });
 
-function reject(ctx, output, errorKey, extraGuidance) {
+function reject(ctx, output, errorKey, extraGuidance, extraMessage) {
   const errDef = ERRORS[errorKey];
-  const err = extraGuidance
-    ? { ...errDef, guidance: extraGuidance }
-    : errDef;
+  const err = {
+    ...errDef,
+    ...(extraMessage ? { message: extraMessage } : {}),
+    ...(extraGuidance ? { guidance: extraGuidance } : {}),
+  };
   log("BLOCKED", `session=${ctx.sessionID} tool=${ctx.tool} code=${err.code}`);
   if (ctx.tool === "task") {
     throw new ProtocolGateError(err);
@@ -471,8 +473,9 @@ export default async function protocolGatePlugin() {
             const detail = targetAgent
               ? `Expected ${expectedAgent}, got ${targetAgent}`
               : `Expected ${expectedAgent}, no agent name found in prompt`;
+            const message = `Wrong agent for current phase. Dispatch ${expectedAgent}.`;
             const guidance = `Phase ${currentState.name} requires dispatching to ${expectedAgent}. ${detail}.`;
-            reject(ctx, output, "WRONG_AGENT", guidance);
+            reject(ctx, output, "WRONG_AGENT", guidance, message);
             return;
           }
         }
