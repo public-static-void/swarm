@@ -1,0 +1,18 @@
+{
+  "phases": [
+    "INTENT",
+    "PREFLIGHT",
+    "EXPLORE",
+    "INVESTIGATE",
+    "ALIGN",
+    "DECOMPOSE",
+    "SWARM",
+    "VERIFY",
+    "EXTRACT",
+    "EVOLVE",
+    "COMMIT",
+    "REPORT"
+  ],
+  "maxCyclesPerTransition": 3,
+  "maxRetriesPerPhase": 5
+}
