@@ -119,6 +119,32 @@ function containsLifecycleKeywords(items) {
 }
 
 // ---------------------------------------------------------------------------
+// Extract todo items from todowrite args (any field shape)
+// ---------------------------------------------------------------------------
+
+/**
+ * Scan args for any field containing an array of todo items.
+ * Priority: items → todos → tasks → entries → first array-typed value.
+ * Handles arrays of strings, objects with .content, or objects without .content.
+ */
+function extractTodoItems(args) {
+  if (!args || typeof args !== "object") return null;
+
+  const PRIORITY_KEYS = ["items", "todos", "tasks", "entries"];
+
+  for (const key of PRIORITY_KEYS) {
+    if (Array.isArray(args[key])) return args[key];
+  }
+
+  // Fallback: first array-typed value
+  for (const key of Object.keys(args)) {
+    if (Array.isArray(args[key])) return args[key];
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Protocol error class
 // ---------------------------------------------------------------------------
 
@@ -225,11 +251,11 @@ export default async function protocolGatePlugin() {
         }
 
         // todowrite: verify lifecycle keywords in items
-        const items = output.args?.items;
+        const items = extractTodoItems(output.args);
         if (!containsLifecycleKeywords(items)) {
           logToFile(
             "BLOCKED_NO_LIFECYCLE",
-            `session=${sessionID} items_missing_keywords`,
+            `session=${sessionID} args_keys=${Object.keys(output.args || {}).join(",")}`,
           );
           output.error = {
             code: PROTOCOL_ERRORS.BLOCKED_NO_LIFECYCLE.code,
@@ -303,6 +329,7 @@ export {
   PHASE_2_POST_INTENT,
   LIFECYCLE_KEYWORDS,
   containsLifecycleKeywords,
+  extractTodoItems,
   isIntentKD,
   sessionAgentMap,
   sessionPhaseMap,
