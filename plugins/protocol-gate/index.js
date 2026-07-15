@@ -564,8 +564,9 @@ function checkDiskAdvancement(sessionID, currentPhase) {
   if (advanced) {
     const newState = STATES[sessionPhaseMap.get(sessionID)];
     log("PHASE_ADVANCE", `session=${sessionID} → ${newState.name}`);
-    // Reset retry count on forward advancement (R039)
+    // Reset retry and cycle counts on forward advancement (R039, R030)
     retryMap.set(sessionID, 0);
+    cycleMap.delete(sessionID);
   }
 }
 
