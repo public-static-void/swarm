@@ -678,6 +678,24 @@ describe("AC029-AC032: Agent routing per phase", () => {
       expect(err.guidance).toContain("explorer");
     }
   });
+
+  it("AC030b: rejects task when no agent name found in prompt (null extraction)", async () => {
+    const p = await freshPlugin();
+    await init(p, "ar-null", "overseer");
+    setPhase("ar-null", PREFLIGHT);
+    // Prompt with no recognizable agent name
+    const output = taskOut("KDS:\n  - knowledge/intent-x.md\nRETURN: done");
+    await expect(
+      exec(p, mkCtx("task", "ar-null"), output),
+    ).rejects.toThrow(ProtocolGateError);
+    try {
+      await exec(p, mkCtx("task", "ar-null"), output);
+    } catch (err) {
+      expect(err.code).toBe("WRONG_AGENT");
+      expect(err.guidance).toContain("committer");
+      expect(err.guidance).toContain("no agent name found in prompt");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -806,6 +824,15 @@ describe("AC040-AC043: External configuration", () => {
     // Verify by checking config object identity
     expect(typeof config).toBe("object");
     expect(config.phases).toBeDefined();
+  });
+
+  it("AC043b: config agents override PHASE_AGENT_MAP", () => {
+    // lifecycle.json has agents map — verify it was loaded
+    expect(config.agents).toBeDefined();
+    expect(typeof config.agents).toBe("object");
+    // PHASE_AGENT_MAP should have entries from config
+    expect(PHASE_AGENT_MAP[PREFLIGHT]).toBe("committer");
+    expect(PHASE_AGENT_MAP[SWARM]).toBe("artisan");
   });
 });
 

@@ -85,6 +85,24 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 6. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
 
+### Agent Dispatch Table
+
+Every phase dispatches one specific agent. The protocol-gate plugin enforces this structurally. Use this table to select the correct `subagent_type` for each `task` call:
+
+| Phase | Agent | subagent_type | Mode |
+|-------|-------|--------------|------|
+| PREFLIGHT | Committer | committer | preflight |
+| EXPLORE | Explorer | explorer | explore |
+| INVESTIGATE | Analyzer | analyzer | investigate |
+| ALIGN | Spec Weaver | spec-weaver | align |
+| DECOMPOSE | Pathfinder | pathfinder | decompose |
+| SWARM | Artisan | artisan | swarm |
+| VERIFY | Inspector | inspector | verify |
+| EXTRACT | Scribe | scribe | extract |
+| EVOLVE | Habit Builder | habit-builder | evolve |
+| COMMIT | Committer | committer | commit |
+| REPORT | self (Overseer) | — | — |
+
 ## Context Marker
 
 Start every response with 🧠.

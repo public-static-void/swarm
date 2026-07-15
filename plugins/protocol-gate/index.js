@@ -64,14 +64,15 @@ const BACKWARD_TRANSITIONS = {
   7:  { from: "SWARM",     to: 6,  toName: "DECOMPOSE", description: "Artisan needs better decomposition" },
 };
 
-// ─── Phase → Agent Mapping ───────────────────────────────────────────────────
+// ─── Phase → Agent Mapping (built from config) ─────────────────────────────
 
 const PHASE_AGENT_MAP = {};
 for (const s of STATES) {
   if (s.agent) PHASE_AGENT_MAP[s.id] = s.agent;
 }
 
-const AGENT_NAMES = [
+// Agents loaded from lifecycle.json config; fallback to STATES table defaults
+let AGENT_NAMES = [
   "committer", "explorer", "analyzer", "spec-weaver", "pathfinder",
   "artisan", "inspector", "scribe", "habit-builder",
 ];
@@ -83,6 +84,7 @@ const DEFAULT_CONFIG = {
     "INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE",
     "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT",
   ],
+  agents: {},
   maxCyclesPerTransition: 3,
   maxRetriesPerPhase: 5,
 };
@@ -102,6 +104,7 @@ function loadConfig() {
     }
     return {
       phases: parsed.phases,
+      agents: parsed.agents || {},
       maxCyclesPerTransition: parsed.maxCyclesPerTransition ?? DEFAULT_CONFIG.maxCyclesPerTransition,
       maxRetriesPerPhase: parsed.maxRetriesPerPhase ?? DEFAULT_CONFIG.maxRetriesPerPhase,
     };
@@ -135,6 +138,17 @@ const retryMap = new Map();       // sessionID → count (consecutive retries pe
 // ─── Config (loaded once at startup, R036) ───────────────────────────────────
 
 let config = loadConfig();
+
+// Override PHASE_AGENT_MAP and AGENT_NAMES from lifecycle.json config.
+// Config agents take precedence over STATES table defaults.
+if (config.agents && Object.keys(config.agents).length > 0) {
+  for (const [phaseName, agentName] of Object.entries(config.agents)) {
+    const state = STATES.find((s) => s.name === phaseName);
+    if (state) PHASE_AGENT_MAP[state.id] = agentName;
+  }
+  // Rebuild AGENT_NAMES from the merged map (unique values only)
+  AGENT_NAMES = [...new Set(Object.values(PHASE_AGENT_MAP))];
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -453,8 +467,11 @@ export default async function protocolGatePlugin() {
         if (currentPhase >= PREFLIGHT && currentPhase <= COMMIT) {
           const expectedAgent = PHASE_AGENT_MAP[currentPhase];
           const targetAgent = extractAgentFromPrompt(output.args?.prompt);
-          if (targetAgent && targetAgent !== expectedAgent) {
-            const guidance = `Phase ${currentState.name} requires dispatching to ${expectedAgent}. Got: ${targetAgent}.`;
+          if (expectedAgent && targetAgent !== expectedAgent) {
+            const detail = targetAgent
+              ? `Expected ${expectedAgent}, got ${targetAgent}`
+              : `Expected ${expectedAgent}, no agent name found in prompt`;
+            const guidance = `Phase ${currentState.name} requires dispatching to ${expectedAgent}. ${detail}.`;
             reject(ctx, output, "WRONG_AGENT", guidance);
             return;
           }
