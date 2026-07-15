@@ -90,14 +90,28 @@ function hasCodeBlocks(text) {
   return text.includes("```") || text.includes("~~~");
 }
 
+// Strips a template keyword prefix (e.g. "ACTION: Read file") → "Read file".
+// Returns the text after the keyword prefix, or the original text if no keyword matches.
+function stripTemplatePrefix(text) {
+  for (const kw of TEMPLATE_KEYWORDS) {
+    if (text.startsWith(kw)) {
+      return text.slice(kw.length).trim();
+    }
+  }
+  return text;
+}
+
 function hasForeignPaths(text) {
   const lines = text.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (TEMPLATE_KEYWORDS.some(kw => trimmed.startsWith(kw))) continue;
-    if (KD_PATH_PATTERN.test(trimmed)) continue;
-    if (FOREIGN_PATH_PATTERN.test(trimmed)) return true;
+    // Validate remainder after stripping keyword prefix — prevents
+    // free-form content hidden on keyword lines from bypassing checks.
+    const remainder = stripTemplatePrefix(trimmed);
+    if (!remainder) continue;
+    if (KD_PATH_PATTERN.test(remainder)) continue;
+    if (FOREIGN_PATH_PATTERN.test(remainder)) return true;
   }
   return false;
 }
@@ -115,9 +129,12 @@ function hasInjectedInstructions(text) {
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    if (TEMPLATE_KEYWORDS.some(kw => trimmed.startsWith(kw))) continue;
-    if (KD_PATH_PATTERN.test(trimmed)) continue;
-    const words = trimmed.toLowerCase().split(/\s+/);
+    // Validate remainder after stripping keyword prefix — prevents
+    // imperative verbs hidden on keyword lines from bypassing checks.
+    const remainder = stripTemplatePrefix(trimmed);
+    if (!remainder) continue;
+    if (KD_PATH_PATTERN.test(remainder)) continue;
+    const words = remainder.toLowerCase().split(/\s+/);
     if (words.some(w => IMPERATIVE_VERBS.includes(w))) return true;
   }
   return false;

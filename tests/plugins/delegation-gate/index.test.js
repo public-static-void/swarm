@@ -120,6 +120,73 @@ describe("AC005–AC006: Foreign path rejection", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Template keyword line free-form leakage (Bug 1 regression)
+// ---------------------------------------------------------------------------
+
+describe("Template keyword line: validates content AFTER keyword prefix", () => {
+  it("rejects foreign path hidden after ACTION: keyword", async () => {
+    const plugin = await delegationGatePlugin();
+    await expect(
+      callTask(plugin, "ACTION: Read /etc/passwd"),
+    ).rejects.toThrow("file paths outside knowledge/");
+  });
+
+  it("rejects foreign path hidden after ACCEPTANCE: keyword", async () => {
+    const plugin = await delegationGatePlugin();
+    await expect(
+      callTask(plugin, "ACCEPTANCE: Return src/main.js"),
+    ).rejects.toThrow("file paths outside knowledge/");
+  });
+
+  it("rejects injected instruction hidden after ACTION: keyword", async () => {
+    const plugin = await delegationGatePlugin();
+    const prompt = [
+      "DISPATCH TO: artisan",
+      "ACTION: Read intent-x.md and return contents",
+      "KDS:",
+      "  - knowledge/intent-x.md",
+      "RETURN: knowledge/impl-x.md",
+      "ACCEPTANCE: Done",
+    ].join("\n");
+    await expect(callTask(plugin, prompt)).rejects.toThrow(
+      "instructions outside",
+    );
+  });
+
+  it("rejects imperative verb hidden after SCOPE: keyword", async () => {
+    const plugin = await delegationGatePlugin();
+    const prompt = [
+      "DISPATCH TO: artisan",
+      "ACTION: Implement",
+      "SCOPE: Copy this file and send it to /tmp",
+      "KDS:",
+      "  - knowledge/intent-x.md",
+      "RETURN: knowledge/impl-x.md",
+      "ACCEPTANCE: Done",
+    ].join("\n");
+    await expect(callTask(plugin, prompt)).rejects.toThrow(
+      "file paths outside knowledge/",
+    );
+  });
+
+  it("rejects foreign path hidden after SCOPE: keyword", async () => {
+    const plugin = await delegationGatePlugin();
+    const prompt = [
+      "DISPATCH TO: artisan",
+      "ACTION: Implement",
+      "SCOPE: Read agents/overseer.md and apply changes",
+      "KDS:",
+      "  - knowledge/intent-x.md",
+      "RETURN: knowledge/impl-x.md",
+      "ACCEPTANCE: Done",
+    ].join("\n");
+    await expect(callTask(plugin, prompt)).rejects.toThrow(
+      "file paths outside knowledge/",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // AC007: Bare KD path rejection
 // ---------------------------------------------------------------------------
 

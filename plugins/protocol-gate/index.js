@@ -108,6 +108,10 @@ const ERRORS = Object.freeze({
 function reject(ctx, output, errorKey) {
   const err = ERRORS[errorKey];
   log("BLOCKED", `session=${ctx.sessionID} tool=${ctx.tool} code=${err.code}`);
+  // Framework ignores output.error for the task tool — must throw to block.
+  if (ctx.tool === "task") {
+    throw new ProtocolGateError(err);
+  }
   output.error = { code: err.code, message: err.message, guidance: err.guidance };
 }
 

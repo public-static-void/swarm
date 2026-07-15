@@ -134,16 +134,67 @@ describe("AC016: chat.params hook", () => {
 });
 
 // ---------------------------------------------------------------------------
-// AC018: Plugin does NOT hook task
+// AC018: Zero tool overlap with delegation-gate
 // ---------------------------------------------------------------------------
 
 describe("AC018: Zero tool overlap with delegation-gate", () => {
-  it("plugin has no task-specific handling — task passes through in Phase 0", async () => {
+  it("plugin has no task-specific handling — task throws in Phase 0", async () => {
     const plugin = await protocolGatePlugin();
     await init(plugin, "task-test", "overseer");
     const output = out({ description: "delegate" });
-    await exec(plugin, ctx("task", "task-test"), output);
-    // task is blocked in Phase 0 (treated as non-todowrite tool)
+    // task tool must throw — framework ignores output.error for task
+    await expect(
+      exec(plugin, ctx("task", "task-test"), output),
+    ).rejects.toThrow("Load the protocol via todowrite first.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task tool must throw (Bug 2 regression)
+// ---------------------------------------------------------------------------
+
+describe("Task tool throws ProtocolGateError (not output.error)", () => {
+  it("throws BLOCKED_NOT_LOADED for task in Phase 0", async () => {
+    const plugin = await protocolGatePlugin();
+    await init(plugin, "task-err1", "overseer");
+    const output = out({ description: "delegate" });
+    try {
+      await exec(plugin, ctx("task", "task-err1"), output);
+      expect(true).toBe(false);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ProtocolGateError);
+      expect(err.code).toBe("BLOCKED_NOT_LOADED");
+    }
+  });
+
+  it("does NOT set output.error when throwing for task tool", async () => {
+    const plugin = await protocolGatePlugin();
+    await init(plugin, "task-err2", "overseer");
+    const output = out({ description: "delegate" });
+    try {
+      await exec(plugin, ctx("task", "task-err2"), output);
+    } catch (_) {
+      // expected
+    }
+    expect(output.error).toBeUndefined();
+  });
+
+  it("task in Phase 0 does not advance phase or corrupt state", async () => {
+    const plugin = await protocolGatePlugin();
+    await init(plugin, "task-err3", "overseer");
+    const output = out({ description: "delegate" });
+    try {
+      await exec(plugin, ctx("task", "task-err3"), output);
+    } catch (_) {}
+    // Phase should remain PROTOCOL_NOT_LOADED after task rejection
+    expect(sessionPhaseMap.get("task-err3")).toBe(PROTOCOL_NOT_LOADED);
+  });
+
+  it("non-task tools still set output.error (no regression)", async () => {
+    const plugin = await protocolGatePlugin();
+    await init(plugin, "task-err4", "overseer");
+    const output = out({ filePath: "some-file.js" });
+    await exec(plugin, ctx("read", "task-err4"), output);
     expect(output.error).toBeDefined();
     expect(output.error.code).toBe("BLOCKED_NOT_LOADED");
   });
