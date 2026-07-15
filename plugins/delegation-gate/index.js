@@ -168,4 +168,6 @@ export default async function delegationGatePlugin() {
   };
 }
 
-export { DelegationGateError, ERRORS };
+// Attach for test access — avoids named exports that poison the legacy plugin loader
+delegationGatePlugin.DelegationGateError = DelegationGateError;
+delegationGatePlugin.ERRORS = ERRORS;

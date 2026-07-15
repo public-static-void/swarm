@@ -6,10 +6,10 @@
 // Accepts: template keywords with KD refs, empty/missing prompts, non-task tools.
 
 import { describe, it, expect } from "vitest";
-import delegationGatePlugin, {
-  DelegationGateError,
-  ERRORS,
-} from "../../../plugins/delegation-gate/index.js";
+import delegationGatePlugin from "../../../plugins/delegation-gate/index.js";
+
+// Named exports are attached to default export for test access
+const { DelegationGateError, ERRORS } = delegationGatePlugin;
 
 // ---------------------------------------------------------------------------
 // Helpers

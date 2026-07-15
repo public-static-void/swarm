@@ -8,7 +8,10 @@
 // Hooks: chat.params (identity), tool.execute.before (gating).
 
 import { describe, it, expect, beforeEach } from "vitest";
-import protocolGatePlugin, {
+import protocolGatePlugin from "../../../plugins/protocol-gate/index.js";
+
+// Named exports are attached to default export for test access
+const {
   PROTOCOL_NOT_LOADED,
   PROTOCOL_LOADED,
   INTENT_WRITTEN,
@@ -19,7 +22,7 @@ import protocolGatePlugin, {
   sessionPhaseMap,
   ProtocolGateError,
   ERRORS,
-} from "../../../plugins/protocol-gate/index.js";
+} = protocolGatePlugin;
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -175,17 +175,15 @@ export default async function protocolGatePlugin() {
   };
 }
 
-// Export for testing
-export {
-  PROTOCOL_NOT_LOADED,
-  PROTOCOL_LOADED,
-  INTENT_WRITTEN,
-  LIFECYCLE_KEYWORDS,
-  containsLifecycleKeywords,
-  extractTodoItems,
-  isIntentKD,
-  sessionAgentMap,
-  sessionPhaseMap,
-  ProtocolGateError,
-  ERRORS,
-};
+// Attach for test access — avoids named exports that poison the legacy plugin loader
+protocolGatePlugin.PROTOCOL_NOT_LOADED = PROTOCOL_NOT_LOADED;
+protocolGatePlugin.PROTOCOL_LOADED = PROTOCOL_LOADED;
+protocolGatePlugin.INTENT_WRITTEN = INTENT_WRITTEN;
+protocolGatePlugin.LIFECYCLE_KEYWORDS = LIFECYCLE_KEYWORDS;
+protocolGatePlugin.containsLifecycleKeywords = containsLifecycleKeywords;
+protocolGatePlugin.extractTodoItems = extractTodoItems;
+protocolGatePlugin.isIntentKD = isIntentKD;
+protocolGatePlugin.sessionAgentMap = sessionAgentMap;
+protocolGatePlugin.sessionPhaseMap = sessionPhaseMap;
+protocolGatePlugin.ProtocolGateError = ProtocolGateError;
+protocolGatePlugin.ERRORS = ERRORS;
