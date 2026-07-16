@@ -1,677 +1,410 @@
-/**
- * Protocol Gate Plugin — Overseer State Machine Enforcement
- *
- * 13-state closed-gate state machine that hooks all tools and enforces
- * phase progression, tool allowlists, and advancement criteria for
- * Overseer sessions only. Non-overseer agents pass through (fail-open).
- *
- * States: PROTOCOL_NOT_LOADED(0) → INTENT(1) → PREFLIGHT(2) → EXPLORE(3)
- *   → INVESTIGATE(4) → ALIGN(5) → DECOMPOSE(6) → SWARM(7) → VERIFY(8)
- *   → EXTRACT(9) → EVOLVE(10) → COMMIT(11) → REPORT(12)
- *
- * Hooks: chat.params (init), permission.ask (primary), tool.execute.before (safety net)
- *
- * Environment:
- *   PROTOCOL_GATE_DEBUG=true — file logging
- */
+import { execFile } from "child_process";
+import { readdirSync, readFileSync } from "fs";
+import { join } from "path";
 
-import fs from "fs";
-import path from "path";
-import os from "os";
-import { execSync } from "child_process";
+function protocolGatePlugin() {
+  const config = loadConfig();
+  const STATES = loadStates();
+  const BACKWARD_TRANSITIONS = loadBackwardTransitions(config);
+  const PHASE_AGENT_MAP = config.agents || {};
+  const MAX_RETRIES = config.maxRetriesPerPhase || 5;
 
-// ─── State Constants ─────────────────────────────────────────────────────────
+  const sessionPhaseMap = new Map();
+  const retryMap = new Map();
+  const cycleMap = new Map();
+  // Tracks whether a delegation was attempted in the current phase entry.
+  // When true and task is called again in same phase → retry.
+  // Reset on disk advancement (success) or backward transition.
+  const delegationAttempted = new Map();
 
-const PROTOCOL_NOT_LOADED = 0;
-const INTENT = 1;
-const PREFLIGHT = 2;
-const EXPLORE = 3;
-const INVESTIGATE = 4;
-const ALIGN = 5;
-const DECOMPOSE = 6;
-const SWARM = 7;
-const VERIFY = 8;
-const EXTRACT = 9;
-const EVOLVE = 10;
-const COMMIT = 11;
-const REPORT = 12;
-
-// ─── State Table ─────────────────────────────────────────────────────────────
-
-const STATES = [
-  // id,  name,                 allowedTools,                                    advanceOn,                    agent,           readAllowed
-  { id: 0,  name: "PROTOCOL_NOT_LOADED", allowedTools: ["todowrite"],                              advanceOn: "todowrite-with-all-keywords" },
-  { id: 1,  name: "INTENT",              allowedTools: ["todowrite", "write", "read", "question"], advanceOn: "write-intent-kd",            readAllowed: ["skills/kd-system/templates/template-intent.md"] },
-  { id: 2,  name: "PREFLIGHT",           allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-plan-preflight",        agent: "committer" },
-  { id: 3,  name: "EXPLORE",             allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-exploration",           agent: "explorer" },
-  { id: 4,  name: "INVESTIGATE",         allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-analysis",              agent: "analyzer" },
-  { id: 5,  name: "ALIGN",               allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-spec",                  agent: "spec-weaver" },
-  { id: 6,  name: "DECOMPOSE",           allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-plan",                  agent: "pathfinder" },
-  { id: 7,  name: "SWARM",               allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-impl",                  agent: "artisan" },
-  { id: 8,  name: "VERIFY",              allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-review-audit",          agent: "inspector" },
-  { id: 9,  name: "EXTRACT",             allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-composed",              agent: "scribe" },
-  { id: 10, name: "EVOLVE",              allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-process",               agent: "habit-builder" },
-  { id: 11, name: "COMMIT",              allowedTools: ["task", "todowrite", "glob"],              advanceOn: "glob-clean-tree",            agent: "committer" },
-  { id: 12, name: "REPORT",              allowedTools: ["todowrite", "write", "read"],             advanceOn: "write-report-kd",            readAllowed: ["skills/kd-system/templates/template-report.md"] },
-];
-
-// ─── Backward Transitions ────────────────────────────────────────────────────
-
-const BACKWARD_TRANSITIONS = {
-  8:  { from: "VERIFY",    to: 7,  toName: "SWARM",    description: "Inspector found issues → Artisan fixes" },
-  5:  { from: "ALIGN",     to: 3,  toName: "EXPLORE",   description: "Spec Weaver needs more exploration" },
-  6:  { from: "DECOMPOSE", to: 5,  toName: "ALIGN",     description: "Pathfinder needs spec clarification" },
-  7:  { from: "SWARM",     to: 6,  toName: "DECOMPOSE", description: "Artisan needs better decomposition" },
-};
-
-// ─── Phase → Agent Mapping (built from config) ─────────────────────────────
-
-const PHASE_AGENT_MAP = {};
-for (const s of STATES) {
-  if (s.agent) PHASE_AGENT_MAP[s.id] = s.agent;
-}
-
-// Agents loaded from lifecycle.json config; fallback to STATES table defaults
-let AGENT_NAMES = [
-  "committer", "explorer", "analyzer", "spec-weaver", "pathfinder",
-  "artisan", "inspector", "scribe", "habit-builder",
-];
-
-// ─── Config Loading ──────────────────────────────────────────────────────────
-
-const DEFAULT_CONFIG = {
-  phases: [
-    "INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE",
-    "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT",
-  ],
-  agents: {},
-  maxCyclesPerTransition: 3,
-  maxRetriesPerPhase: 5,
-};
-
-function loadConfig() {
-  try {
-    const configPath = path.join(
-      process.env._PROTOCOL_GATE_CONFIG_DIR ||
-        path.dirname(new URL(import.meta.url).pathname),
-      "lifecycle.json",
-    );
-    const raw = fs.readFileSync(configPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (!parsed.phases || !Array.isArray(parsed.phases) || parsed.phases.length === 0) {
-      log("CONFIG_FALLBACK", "empty or missing phases array — using defaults");
-      return DEFAULT_CONFIG;
+  class ProtocolGateError extends Error {
+    constructor(code, message, guidance) {
+      super(message);
+      this.name = "ProtocolGateError";
+      this.code = code;
+      this.guidance = guidance;
     }
-    return {
-      phases: parsed.phases,
-      agents: parsed.agents || {},
-      maxCyclesPerTransition: parsed.maxCyclesPerTransition ?? DEFAULT_CONFIG.maxCyclesPerTransition,
-      maxRetriesPerPhase: parsed.maxRetriesPerPhase ?? DEFAULT_CONFIG.maxRetriesPerPhase,
-    };
-  } catch {
-    return DEFAULT_CONFIG;
   }
-}
 
-// ─── Logging ─────────────────────────────────────────────────────────────────
-
-const LOG_DIR =
-  process.env._PROTOCOL_GATE_LOG_DIR ||
-  path.join(os.homedir(), ".config", "opencode", "logs");
-const LOG_FILE = path.join(LOG_DIR, "protocol-gate.log");
-
-function log(event, details) {
-  if (!process.env.PROTOCOL_GATE_DEBUG) return;
-  try {
-    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
-    fs.appendFileSync(LOG_FILE, `[PROTOCOL-GATE] ${new Date().toISOString()} | ${event} | ${details}\n`);
-  } catch (_) {}
-}
-
-// ─── Session State ───────────────────────────────────────────────────────────
-
-const sessionAgentMap = new Map();
-const sessionPhaseMap = new Map();
-const cycleMap = new Map();       // sessionID → Map<"from→to", count>
-const retryMap = new Map();       // sessionID → count (consecutive retries per phase)
-
-// ─── Config (loaded once at startup, R036) ───────────────────────────────────
-
-let config = loadConfig();
-
-// Override PHASE_AGENT_MAP and AGENT_NAMES from lifecycle.json config.
-// Config agents take precedence over STATES table defaults.
-if (config.agents && Object.keys(config.agents).length > 0) {
-  for (const [phaseName, agentName] of Object.entries(config.agents)) {
-    const state = STATES.find((s) => s.name === phaseName);
-    if (state) PHASE_AGENT_MAP[state.id] = agentName;
-  }
-  // Rebuild AGENT_NAMES from the merged map (unique values only)
-  AGENT_NAMES = [...new Set(Object.values(PHASE_AGENT_MAP))];
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function containsAllLifecycleKeywords(items, lifecyclePhases) {
-  if (!Array.isArray(items) || items.length === 0) return false;
-  const text = items
-    .map((i) => (typeof i === "string" ? i : i?.content || ""))
-    .join(" ")
-    .toUpperCase();
-  return lifecyclePhases.every((kw) => text.includes(kw));
-}
-
-function extractTodoItems(args) {
-  if (!args || typeof args !== "object") return null;
-  for (const key of ["items", "todos", "tasks", "entries"]) {
-    if (Array.isArray(args[key])) return args[key];
-  }
-  for (const key of Object.keys(args)) {
-    if (Array.isArray(args[key])) return args[key];
-  }
-  return null;
-}
-
-function isIntentKD(filePath) {
-  return /knowledge\/intent-.+\.md$/.test((filePath || "").replace(/^\.\//, ""));
-}
-
-function isReportKD(filePath) {
-  return /knowledge\/report-.+\.md$/.test((filePath || "").replace(/^\.\//, ""));
-}
-
-function isTemplateRead(filePath, templateSuffix) {
-  return (filePath || "").includes(`skills/kd-system/templates/${templateSuffix}`);
-}
-
-// Disk verification using fs (synchronous, R042-R044)
-function globMatches(pattern) {
-  try {
-    const knowledgeDir = path.resolve("knowledge");
-    if (!fs.existsSync(knowledgeDir)) return false;
-    const files = fs.readdirSync(knowledgeDir);
-    const regex = patternToRegex(pattern);
-    return files.some((f) => regex.test(`knowledge/${f}`));
-  } catch {
-    return false;
-  }
-}
-
-function patternToRegex(pattern) {
-  // Convert glob pattern to regex: knowledge/*.md → knowledge\/[^/]+\.md
-  // knowledge/plan-*-preflight-* → knowledge\/plan-.*-preflight-.*
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "§§GLOBSTAR§§")
-    .replace(/\*/g, "[^/]*")
-    .replace(/§§GLOBSTAR§§/g, ".*");
-  return new RegExp(`^${escaped}$`);
-}
-
-function hasCleanTree() {
-  try {
-    const knowledgeDir = path.resolve("knowledge");
-    if (!fs.existsSync(knowledgeDir)) return false;
-    const result = execSync("git status --porcelain knowledge/", {
-      encoding: "utf-8",
-      timeout: 5000,
-    }).trim();
-    return result.length === 0;
-  } catch {
-    return false;
-  }
-}
-
-// ─── Error Classes ───────────────────────────────────────────────────────────
-
-class ProtocolGateError extends Error {
-  constructor({ code, message, guidance }) {
-    super(message);
-    this.name = "ProtocolGateError";
-    this.code = code;
-    this.guidance = guidance;
-  }
-}
-
-const ERRORS = Object.freeze({
-  BLOCKED_NOT_LOADED: Object.freeze({
-    code: "BLOCKED_NOT_LOADED",
-    message: "STOP. Call todowrite now.",
-    guidance: "Load the 12-phase protocol by calling todowrite with all lifecycle keywords before using any tool.",
-  }),
-  BLOCKED_UNINITIALIZED: Object.freeze({
-    code: "BLOCKED_UNINITIALIZED",
-    message: "Session not initialized. Wait for chat.params.",
-    guidance: "The state machine is initializing. This tool call was blocked to prevent access before initialization.",
-  }),
-  BLOCKED_NO_LIFECYCLE: Object.freeze({
-    code: "BLOCKED_NO_LIFECYCLE",
-    message: "todowrite must contain all 12 lifecycle keywords.",
-    guidance: "Include all keywords: INTENT, PREFLIGHT, EXPLORE, INVESTIGATE, ALIGN, DECOMPOSE, SWARM, VERIFY, EXTRACT, EVOLVE, COMMIT, REPORT.",
-  }),
-  BLOCKED_WRONG_PHASE: Object.freeze({
-    code: "BLOCKED_WRONG_PHASE",
-    message: "Tool not allowed in current phase.",
-    guidance: "Check the current phase and use only allowed tools for this phase.",
-  }),
-  BLOCKED_INTENT_ONLY: Object.freeze({
-    code: "BLOCKED_INTENT_ONLY",
-    message: "Only INTENT KD writes allowed in INTENT phase.",
-    guidance: "Write to knowledge/intent-*.md only. Complete the intent phase before accessing other files.",
-  }),
-  BLOCKED_REPORT_ONLY: Object.freeze({
-    code: "BLOCKED_REPORT_ONLY",
-    message: "Only REPORT KD writes allowed in REPORT phase.",
-    guidance: "Write to knowledge/report-*.md only.",
-  }),
-  WRONG_AGENT: Object.freeze({
-    code: "WRONG_AGENT",
-    message: "Wrong agent for current phase.",
-    guidance: "", // dynamically filled with correct agent name
-  }),
-  CYCLE_LIMIT_REACHED: Object.freeze({
-    code: "CYCLE_LIMIT_REACHED",
-    message: "Backward transition cycle limit reached.",
-    guidance: "Escalate to user. The maximum number of backward transitions for this state pair has been reached.",
-  }),
-  BLOCKED_DISALLOWED_BACKWARD: Object.freeze({
-    code: "BLOCKED_DISALLOWED_BACKWARD",
-    message: "This backward transition is not allowed.",
-    guidance: "Only specific backward transitions are permitted. Check the allowed transitions.",
-  }),
-});
-
-function reject(ctx, output, errorKey, extraGuidance, extraMessage) {
-  const errDef = ERRORS[errorKey];
-  const err = {
-    ...errDef,
-    ...(extraMessage ? { message: extraMessage } : {}),
-    ...(extraGuidance ? { guidance: extraGuidance } : {}),
+  const ERRORS = {
+    BLOCKED_NOT_LOADED: { code: "BLOCKED_NOT_LOADED", message: "Protocol not loaded", guidance: "Call todowrite with lifecycle keywords first" },
+    BLOCKED_WRONG_PHASE: { code: "BLOCKED_WRONG_PHASE", message: "Tool not allowed in current phase", guidance: "Wait for the phase to advance" },
+    BLOCKED_NO_LIFECYCLE: { code: "BLOCKED_NO_LIFECYCLE", message: "Missing lifecycle keywords", guidance: "Include all 12 lifecycle keywords in todowrite" },
+    BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "Session not initialized", guidance: "Wait for chat.params to initialize" },
+    WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
+    RETRY_LIMIT_EXCEEDED: (phase) => ({ code: "RETRY_LIMIT_EXCEEDED", message: `Retry limit exceeded for ${phase}`, guidance: "Escalate to user — do not auto-advance" }),
+    CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "Backward transition cycle limit exceeded", guidance: "Escalate to user" },
+    TEMPLATE_MISSING: { code: "TEMPLATE_MISSING", message: "Dispatch template missing", guidance: "Check plugins/protocol-gate/templates directory" }
   };
-  log("BLOCKED", `session=${ctx.sessionID} tool=${ctx.tool} code=${err.code}`);
-  if (ctx.tool === "task") {
-    throw new ProtocolGateError(err);
-  }
-  output.error = { code: err.code, message: err.message, guidance: err.guidance };
-}
 
-// ─── Agent Routing ───────────────────────────────────────────────────────────
-
-function extractAgentFromPrompt(prompt) {
-  if (!prompt || typeof prompt !== "string") return null;
-  const lower = prompt.toLowerCase();
-  for (const name of AGENT_NAMES) {
-    // Match agent name with word boundaries — standalone or in "DISPATCH TO: <name>"
-    const idx = lower.indexOf(name);
-    if (idx !== -1) {
-      const before = idx === 0 ? " " : lower[idx - 1];
-      const after = idx + name.length < lower.length ? lower[idx + name.length] : " ";
-      if (/[\s:,\-]/.test(before) && /[\s:,\-]/.test(after)) {
-        return name;
-      }
+  function debug(msg) {
+    if (process.env.PROTOCOL_GATE_DEBUG) {
+      console.log(`[protocol-gate] ${msg}`);
     }
   }
-  return null;
-}
 
-// ─── Plugin ──────────────────────────────────────────────────────────────────
+  function loadConfig() {
+    try {
+      const configPath = join(process.cwd(), "plugins", "protocol-gate", "lifecycle.json");
+      return JSON.parse(readFileSync(configPath, "utf8"));
+    } catch (e) {
+      debug("Config load failed, using defaults");
+      return {
+        phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"],
+        agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", COMMIT: "committer" },
+        backwardTransitions: { VERIFY: ["SWARM"] },
+        maxRetriesPerPhase: 5,
+        maxCyclesPerTransition: 3,
+        templatesDir: "templates"
+      };
+    }
+  }
 
-export default async function protocolGatePlugin() {
-  log("PLUGIN_LOADED", `config: phases=${config.phases.length}, maxCycles=${config.maxCyclesPerTransition}, maxRetries=${config.maxRetriesPerPhase}`);
+  function loadStates() {
+    return {
+      PROTOCOL_NOT_LOADED: 0,
+      INTENT: 1,
+      PREFLIGHT: 2,
+      EXPLORE: 3,
+      INVESTIGATE: 4,
+      ALIGN: 5,
+      DECOMPOSE: 6,
+      SWARM: 7,
+      VERIFY: 8,
+      EXTRACT: 9,
+      EVOLVE: 10,
+      COMMIT: 11,
+      REPORT: 12
+    };
+  }
 
-  return {
-    // ─── chat.params Hook ────────────────────────────────────────────────
-    "chat.params": async (input, _output) => {
-      if (!input.sessionID || !input.agent) return;
-      sessionAgentMap.set(input.sessionID, input.agent);
-      if (input.agent === "overseer") {
-        if (!sessionPhaseMap.has(input.sessionID)) {
-          sessionPhaseMap.set(input.sessionID, PROTOCOL_NOT_LOADED);
-          retryMap.set(input.sessionID, 0);
-          log("PHASE_INIT", `session=${input.sessionID} phase=PROTOCOL_NOT_LOADED`);
-        }
-      } else {
-        sessionPhaseMap.delete(input.sessionID);
-        retryMap.delete(input.sessionID);
-        cycleMap.delete(input.sessionID);
+  function loadBackwardTransitions(config) {
+    const transitions = {};
+    const map = config.backwardTransitions || {};
+    for (const [phase, targets] of Object.entries(map)) {
+      const phaseId = STATES[phase];
+      if (phaseId !== undefined) {
+        transitions[phaseId] = targets.map(t => STATES[t]).filter(id => id !== undefined);
       }
-    },
+    }
+    return transitions;
+  }
 
-    // ─── permission.ask Hook (Primary Enforcement) ───────────────────────
-    "permission.ask": async (input, output) => {
-      const { type: tool, sessionID } = input;
-      const agent = sessionAgentMap.get(sessionID);
+  function getPhaseName(phaseId) {
+    return Object.entries(STATES).find(([, id]) => id === phaseId)?.[0];
+  }
+
+  // Build reverse map: agent name → phase ID for backward transition detection
+  function buildAgentToPhaseMap() {
+    const map = {};
+    for (const [phaseName, agentName] of Object.entries(PHASE_AGENT_MAP)) {
+      const phaseId = STATES[phaseName];
+      if (phaseId !== undefined) {
+        map[agentName.toLowerCase()] = phaseId;
+      }
+    }
+    return map;
+  }
+
+  const agentToPhaseMap = buildAgentToPhaseMap();
+
+  function checkDiskAdvancement(sessionID) {
+    const phase = sessionPhaseMap.get(sessionID);
+    if (phase === undefined) return false;
+
+    const knowledgeDir = join(process.cwd(), "knowledge");
+    let files = [];
+    try {
+      files = readdirSync(knowledgeDir);
+    } catch (e) {
+      return false;
+    }
+
+    const patterns = {
+      [STATES.PREFLIGHT]: /^plan-.*preflight-/i,
+      [STATES.EXPLORE]: /^exploration-/i,
+      [STATES.INVESTIGATE]: /^analysis-/i,
+      [STATES.ALIGN]: /^spec-/i,
+      [STATES.DECOMPOSE]: /^plan-(?!.*preflight)/i,
+      [STATES.SWARM]: /^impl-/i,
+      [STATES.VERIFY]: /^review-|^audit-/i,
+      [STATES.EXTRACT]: /^composed-/i,
+      [STATES.EVOLVE]: /^process-/i,
+      [STATES.COMMIT]: null
+    };
+
+    if (phase === STATES.COMMIT) {
+      return hasCleanTree();
+    }
+
+    const pattern = patterns[phase];
+    if (!pattern) return false;
+
+    if (phase === STATES.VERIFY) {
+      const hasReview = files.some(f => /^review-/i.test(f));
+      const hasAudit = files.some(f => /^audit-/i.test(f));
+      return hasReview && hasAudit;
+    }
+
+    return files.some(f => pattern.test(f));
+  }
+
+  function hasCleanTree() {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => resolve(false), 5000);
+      execFile("git", ["status", "--porcelain"], (error, stdout) => {
+        clearTimeout(timeout);
+        if (error) return resolve(false);
+        resolve(stdout.trim() === "");
+      });
+    });
+  }
+
+  function handleBackwardTransition(sessionID, currentPhase, targetPhase) {
+    const validTargets = BACKWARD_TRANSITIONS[currentPhase] || [];
+    if (!validTargets.includes(targetPhase)) return false;
+
+    const cycles = cycleMap.get(sessionID) || {};
+    cycles[targetPhase] = (cycles[targetPhase] || 0) + 1;
+    cycleMap.set(sessionID, cycles);
+
+    if (cycles[targetPhase] > (config.maxCyclesPerTransition || 3)) {
+      throw new ProtocolGateError(ERRORS.CYCLE_LIMIT_EXCEEDED.code, ERRORS.CYCLE_LIMIT_EXCEEDED.message, ERRORS.CYCLE_LIMIT_EXCEEDED.guidance);
+    }
+
+    const prevPhase = sessionPhaseMap.get(sessionID);
+    sessionPhaseMap.set(sessionID, targetPhase);
+    retryMap.set(sessionID, 0);
+    delegationAttempted.set(sessionID, false);
+    debug(`Backward transition: ${getPhaseName(prevPhase)} -> ${getPhaseName(targetPhase)}`);
+    return true;
+  }
+
+  function extractFieldsFromPrompt(prompt) {
+    const fields = {};
+    const lines = prompt.split("\n");
+    for (const line of lines) {
+      const match = line.match(/^(AGENT|MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):\s*(.*)/i);
+      if (match) {
+        fields[match[1].toLowerCase().replace(/\s+/g, "_")] = match[2].trim();
+      }
+    }
+    return fields;
+  }
+
+  function loadTemplate(mode) {
+    try {
+      const templatePath = join(process.cwd(), "plugins", "protocol-gate", "templates", `${mode}.json`);
+      const raw = JSON.parse(readFileSync(templatePath, "utf8"));
+      // Guard against corrupted templates (e.g. lifecycle.json content pasted into template file)
+      if (!raw.template || typeof raw.template !== "string") {
+        debug(`Template ${mode}.json missing 'template' field — corrupted file`);
+        return null;
+      }
+      return raw;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function renderTemplate(templateStr, fields) {
+    let result = templateStr;
+    for (const [key, value] of Object.entries(fields)) {
+      result = result.replace(new RegExp(`\\{${key}\\}`, "g"), value);
+    }
+    return result;
+  }
+
+  function getAllowedTools(phaseName) {
+    const map = {
+      PROTOCOL_NOT_LOADED: ["todowrite"],
+      INTENT: ["todowrite", "write", "read", "question"],
+      PREFLIGHT: ["task", "todowrite", "glob"],
+      EXPLORE: ["task", "todowrite", "glob"],
+      INVESTIGATE: ["task", "todowrite", "glob"],
+      ALIGN: ["task", "todowrite", "glob"],
+      DECOMPOSE: ["task", "todowrite", "glob"],
+      SWARM: ["task", "todowrite", "glob"],
+      VERIFY: ["task", "todowrite", "glob"],
+      EXTRACT: ["task", "todowrite", "glob"],
+      EVOLVE: ["task", "todowrite", "glob"],
+      COMMIT: ["task", "todowrite", "glob"],
+      REPORT: ["todowrite", "write", "read"]
+    };
+    return map[phaseName] || [];
+  }
+
+  async function handler(ctx) {
+    const { type } = ctx;
+
+    if (type === "chat.params") {
+      const { input } = ctx;
+      const { sessionID, agent } = input;
+
+      if (agent === "overseer") {
+        sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+        retryMap.set(sessionID, 0);
+        delegationAttempted.set(sessionID, false);
+      } else {
+        sessionPhaseMap.delete(sessionID);
+        retryMap.delete(sessionID);
+        cycleMap.delete(sessionID);
+        delegationAttempted.delete(sessionID);
+      }
+    }
+
+    else if (type === "permission.ask") {
+      const { input, output } = ctx;
+      const { sessionID, tool } = input;
       const phase = sessionPhaseMap.get(sessionID);
 
-      // R004: Non-overseer — fail-open
-      if (agent !== "overseer") return;
-      // R005b: Overseer with no phase entry — handled by tool.execute.before
       if (phase === undefined) return;
 
-      // R010b: Return early for task/todowrite — handled by tool.execute.before
-      if (tool === "task" || tool === "todowrite") return;
+      const phaseName = getPhaseName(phase);
+      if (!phaseName) return;
 
-      const state = STATES[phase];
-      if (!state) return;
-
-      const pattern = input.pattern || "";
-
-      // Check if tool is in allowlist for current state
-      if (!state.allowedTools.includes(tool)) {
+      const allowedTools = getAllowedTools(phaseName);
+      if (tool !== "task" && !allowedTools.includes(tool)) {
         output.status = "deny";
-        log("PERM_DENY", `session=${sessionID} tool=${tool} phase=${state.name} reason=tool-not-in-allowlist`);
-        return;
+        // Per R026: non-task tool blocks set output.status = "deny" without throwing
       }
+    }
 
-      // For pattern-based tools (read, write, glob, bash, edit, webfetch, websearch),
-      // validate the pattern against state-specific rules
-      if (tool === "read" && state.readAllowed) {
-        const allowed = state.readAllowed.some((tpl) => pattern.includes(tpl));
-        if (!allowed) {
-          output.status = "deny";
-          log("PERM_DENY", `session=${sessionID} tool=read phase=${state.name} pattern=${pattern} reason=not-template-path`);
-          return;
-        }
-      }
+    else if (type === "tool.execute.before") {
+      const { input, output } = ctx;
+      const { tool, sessionID, args } = input;
 
-      if (tool === "write") {
-        const valid =
-          (state.name === "INTENT" && isIntentKD(pattern)) ||
-          (state.name === "REPORT" && isReportKD(pattern));
-        if (!valid) {
-          output.status = "deny";
-          log("PERM_DENY", `session=${sessionID} tool=write phase=${state.name} pattern=${pattern} reason=wrong-kd-path`);
-          return;
-        }
-      }
-
-      // All other pattern-based tools in allowlist — allow
-    },
-
-    // ─── tool.execute.before Hook (Safety Net + Task/Todowrite Handler) ─
-    "tool.execute.before": async (ctx, output) => {
-      const { tool, sessionID } = ctx;
-      const agent = sessionAgentMap.get(sessionID);
       const phase = sessionPhaseMap.get(sessionID);
+      if (phase === undefined) throw new ProtocolGateError(ERRORS.BLOCKED_UNINITIALIZED.code, ERRORS.BLOCKED_UNINITIALIZED.message, ERRORS.BLOCKED_UNINITIALIZED.guidance);
 
-      // R004: Non-overseer — fail-open
-      if (agent !== "overseer") return;
+      const phaseName = getPhaseName(phase);
 
-      // R005b: Overseer with no phase entry — BLOCK (race condition:
-      // tool.execute.before fired before chat.params initialized the session)
-      // Must throw for ALL tools — security-critical block.
-      if (phase === undefined) {
-        const errDef = ERRORS.BLOCKED_UNINITIALIZED;
-        log("BLOCKED", `session=${sessionID} tool=${tool} code=${errDef.code}`);
-        throw new ProtocolGateError(errDef);
+      // --- todowrite handler ---
+      if (tool === "todowrite") {
+        if (phase === STATES.PROTOCOL_NOT_LOADED) {
+          if (args && args.todos && Array.isArray(args.todos)) {
+            const allKeywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+            const presentKeywords = args.todos.map(t => t.content.toUpperCase());
+            const hasAll = allKeywords.every(k => presentKeywords.some(p => p.includes(k)));
+
+            if (hasAll) {
+              sessionPhaseMap.set(sessionID, STATES.INTENT);
+            } else {
+              throw new ProtocolGateError(ERRORS.BLOCKED_NO_LIFECYCLE.code, ERRORS.BLOCKED_NO_LIFECYCLE.message, ERRORS.BLOCKED_NO_LIFECYCLE.guidance);
+            }
+          }
+        }
+        // Phase advancement happens ONLY via checkDiskAdvancement() — not via todowrite content (R009)
       }
 
-      const state = STATES[phase];
-      if (!state) return;
+      // --- write handler ---
+      else if (tool === "write") {
+        const path = args?.filePath || "";
+        if (phase === STATES.INTENT && !path.startsWith("knowledge/intent-")) {
+          throw new ProtocolGateError(ERRORS.BLOCKED_WRONG_PHASE.code, "Writes restricted to intent KDs", "Write to knowledge/intent-*.md");
+        }
+        if (phase === STATES.REPORT && !path.startsWith("knowledge/report-")) {
+          throw new ProtocolGateError(ERRORS.BLOCKED_WRONG_PHASE.code, "Writes restricted to report KDs", "Write to knowledge/report-*.md");
+        }
+      }
 
-      // Extract items once for todowrite handling
-      const items = tool === "todowrite" ? extractTodoItems(output.args) : null;
-
-      // ── R033: Backward transitions checked BEFORE disk advancement ────
-      // This ensures the phase is still in the "from" state when the
-      // backward handler validates it.
-      if (tool === "todowrite") {
-        if (items) {
-          const backwardItem = items.find(
-            (i) => typeof i === "string"
-              ? i.startsWith("BACKWARD:")
-              : (i?.content || "").startsWith("BACKWARD:"),
-          );
-          if (backwardItem) {
-            handleBackwardTransition(ctx, output, backwardItem, sessionID, phase);
-            return;
+      // --- read handler ---
+      else if (tool === "read") {
+        const path = args?.filePath || "";
+        if (phase === STATES.INTENT || phase === STATES.REPORT) {
+          if (!path.includes("templates")) {
+            throw new ProtocolGateError(ERRORS.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates", "Read from template directory only");
           }
         }
       }
 
-      // ── R023: Check disk advancement on every allowed tool call ────────
-      checkDiskAdvancement(sessionID, phase);
+      // --- task handler ---
+      else if (tool === "task") {
+        if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
+          throw new ProtocolGateError(ERRORS.BLOCKED_WRONG_PHASE.code, "Task not allowed in current phase", "Wait for delegation phase");
+        }
 
-      // Re-read phase after potential advancement
-      const currentPhase = sessionPhaseMap.get(sessionID) ?? phase;
-      const currentState = STATES[currentPhase];
+        const prompt = args?.prompt || "";
+        const fields = extractFieldsFromPrompt(prompt);
+        const agentName = fields.agent?.toLowerCase();
 
-      // ── todowrite: always allowed (R052) ──────────────────────────────
-      if (tool === "todowrite") {
-        // R006: PROTOCOL_NOT_LOADED — validate lifecycle keywords
-        if (currentPhase === PROTOCOL_NOT_LOADED) {
-          if (containsAllLifecycleKeywords(items, config.phases)) {
-            sessionPhaseMap.set(sessionID, INTENT);
+        if (agentName) {
+          const currentPhaseAgent = PHASE_AGENT_MAP[phaseName]?.toLowerCase();
+
+          // Check if agent matches current phase → normal delegation
+          if (agentName === currentPhaseAgent) {
+            // Retry tracking: if delegation was already attempted in this phase, increment counter
+            if (delegationAttempted.get(sessionID)) {
+              const retries = (retryMap.get(sessionID) || 0) + 1;
+              retryMap.set(sessionID, retries);
+              if (retries > MAX_RETRIES) {
+                throw new ProtocolGateError(ERRORS.RETRY_LIMIT_EXCEEDED(phaseName).code, ERRORS.RETRY_LIMIT_EXCEEDED(phaseName).message, ERRORS.RETRY_LIMIT_EXCEEDED(phaseName).guidance);
+              }
+            }
+            delegationAttempted.set(sessionID, true);
+
+            // Template injection
+            if (fields.mode) {
+              const template = loadTemplate(fields.mode);
+              if (template) {
+                const rendered = renderTemplate(template.template, fields);
+                output.args.prompt = rendered;
+              }
+            }
+          }
+          // Check if agent matches a backward target → backward transition
+          else {
+            const targetPhaseId = agentToPhaseMap[agentName];
+            const validTargets = BACKWARD_TRANSITIONS[phase] || [];
+
+            if (targetPhaseId !== undefined && validTargets.includes(targetPhaseId)) {
+              handleBackwardTransition(sessionID, phase, targetPhaseId);
+              // After backward transition, the task proceeds to the new phase's agent
+              // Retry counter was reset in handleBackwardTransition
+              delegationAttempted.set(sessionID, false);
+
+              // Template injection for the new phase
+              if (fields.mode) {
+                const template = loadTemplate(fields.mode);
+                if (template) {
+                  const rendered = renderTemplate(template.template, fields);
+                  output.args.prompt = rendered;
+                }
+              }
+            } else {
+              // Wrong agent — not current phase, not a valid backward target
+              const expectedAgent = currentPhaseAgent || phaseName;
+              throw new ProtocolGateError(ERRORS.WRONG_AGENT(expectedAgent).code, ERRORS.WRONG_AGENT(expectedAgent).message, ERRORS.WRONG_AGENT(expectedAgent).guidance);
+            }
+          }
+        }
+      }
+
+      // --- disk-based advancement for non-task tools (R009) ---
+      if (tool !== "task") {
+        if (await checkDiskAdvancement(sessionID)) {
+          const nextPhase = phase + 1;
+          if (nextPhase <= STATES.REPORT) {
+            sessionPhaseMap.set(sessionID, nextPhase);
             retryMap.set(sessionID, 0);
-            log("PHASE_ADVANCE", `session=${sessionID} → INTENT`);
-            return;
-          }
-          reject(ctx, output, "BLOCKED_NO_LIFECYCLE");
-          return;
-        }
-
-        return; // todowrite always passes in other phases
-      }
-
-      // ── task tool ──────────────────────────────────────────────────────
-      if (tool === "task") {
-        // R006: PROTOCOL_NOT_LOADED blocks task with specific error
-        if (currentPhase === PROTOCOL_NOT_LOADED) {
-          reject(ctx, output, "BLOCKED_NOT_LOADED");
-          return;
-        }
-        if (!currentState.allowedTools.includes("task")) {
-          reject(ctx, output, "BLOCKED_WRONG_PHASE");
-          return;
-        }
-
-        // R024-R027: Agent routing for delegation states (2-11)
-        if (currentPhase >= PREFLIGHT && currentPhase <= COMMIT) {
-          const expectedAgent = PHASE_AGENT_MAP[currentPhase];
-          const targetAgent = extractAgentFromPrompt(output.args?.prompt);
-          if (expectedAgent && targetAgent !== expectedAgent) {
-            const detail = targetAgent
-              ? `Expected ${expectedAgent}, got ${targetAgent}`
-              : `Expected ${expectedAgent}, no agent name found in prompt`;
-            const message = `Wrong agent for current phase. Dispatch ${expectedAgent}.`;
-            const guidance = `Phase ${currentState.name} requires dispatching to ${expectedAgent}. ${detail}.`;
-            reject(ctx, output, "WRONG_AGENT", guidance, message);
-            return;
-          }
-        }
-
-        // Reset retry count on new task dispatch
-        retryMap.set(sessionID, 0);
-        return;
-      }
-
-      // ── All other tools: check allowlist ───────────────────────────────
-      // R006: PROTOCOL_NOT_LOADED blocks all non-todowrite tools
-      if (currentPhase === PROTOCOL_NOT_LOADED) {
-        reject(ctx, output, "BLOCKED_NOT_LOADED");
-        return;
-      }
-      if (!currentState.allowedTools.includes(tool)) {
-        reject(ctx, output, "BLOCKED_WRONG_PHASE");
-        return;
-      }
-
-      // ── write: validate path for INTENT/REPORT phases ──────────────────
-      if (tool === "write") {
-        const filePath = output.args?.filePath || "";
-        if (currentState.name === "INTENT" && !isIntentKD(filePath)) {
-          reject(ctx, output, "BLOCKED_INTENT_ONLY");
-          return;
-        }
-        if (currentState.name === "REPORT" && !isReportKD(filePath)) {
-          reject(ctx, output, "BLOCKED_REPORT_ONLY");
-          return;
-        }
-      }
-
-      // ── read: validate path for INTENT/REPORT phases ───────────────────
-      if (tool === "read") {
-        const filePath = output.args?.filePath || "";
-        if (currentState.readAllowed) {
-          const allowed = currentState.readAllowed.some((tpl) => filePath.includes(tpl));
-          if (!allowed) {
-            reject(ctx, output, "BLOCKED_WRONG_PHASE");
-            return;
+            delegationAttempted.set(sessionID, false);
+            debug(`Advanced from ${phaseName} to ${getPhaseName(nextPhase)}`);
           }
         }
       }
-    },
-  };
-}
-
-// ─── Disk Advancement ────────────────────────────────────────────────────────
-
-function checkDiskAdvancement(sessionID, currentPhase) {
-  if (currentPhase < INTENT || currentPhase >= REPORT) return;
-
-  let advanced = false;
-
-  if (currentPhase === INTENT) {
-    // R012: INTENT → PREFLIGHT: intent KD exists on disk
-    if (globMatches("knowledge/intent-*.md")) {
-      sessionPhaseMap.set(sessionID, PREFLIGHT);
-      advanced = true;
-    }
-  } else if (currentPhase >= PREFLIGHT && currentPhase <= EVOLVE) {
-    // R013-R021: Delegation states — check for expected KD
-    const patterns = {
-      [PREFLIGHT]:   ["knowledge/plan-*-preflight-*", "knowledge/plan-*preflight*.md"],
-      [EXPLORE]:     ["knowledge/exploration-*.md"],
-      [INVESTIGATE]: ["knowledge/analysis-*.md"],
-      [ALIGN]:       ["knowledge/spec-*.md"],
-      [DECOMPOSE]:   ["knowledge/plan-*.md"],  // excluding preflight (handled by timing)
-      [SWARM]:       ["knowledge/impl-*.md"],
-      [VERIFY]:      ["knowledge/review-*.md", "knowledge/audit-*.md"],
-      [EXTRACT]:     ["knowledge/composed-*.md"],
-      [EVOLVE]:      ["knowledge/process-*.md"],
-    };
-    const pats = patterns[currentPhase];
-    if (pats) {
-      if (currentPhase === VERIFY) {
-        // R019: BOTH must exist
-        if (pats.every((p) => globMatches(p))) {
-          sessionPhaseMap.set(sessionID, currentPhase + 1);
-          advanced = true;
-        }
-      } else if (currentPhase === DECOMPOSE) {
-        // R017: plan-*.md exists, but NOT preflight pattern
-        if (globMatches("knowledge/plan-*.md") &&
-            !globMatches("knowledge/plan-*-preflight-*") &&
-            !globMatches("knowledge/plan-*preflight*.md")) {
-          sessionPhaseMap.set(sessionID, currentPhase + 1);
-          advanced = true;
-        }
-      } else {
-        if (pats.some((p) => globMatches(p))) {
-          sessionPhaseMap.set(sessionID, currentPhase + 1);
-          advanced = true;
-        }
-      }
-    }
-  } else if (currentPhase === COMMIT) {
-    // R022: COMMIT → REPORT: clean working tree
-    if (hasCleanTree()) {
-      sessionPhaseMap.set(sessionID, REPORT);
-      advanced = true;
     }
   }
 
-  if (advanced) {
-    const newState = STATES[sessionPhaseMap.get(sessionID)];
-    log("PHASE_ADVANCE", `session=${sessionID} → ${newState.name}`);
-    // Reset retry and cycle counts on forward advancement (R039, R030)
-    retryMap.set(sessionID, 0);
-    cycleMap.delete(sessionID);
-  }
+  // Test-access properties on default export
+  handler.STATES = STATES;
+  handler.sessionPhaseMap = sessionPhaseMap;
+  handler.retryMap = retryMap;
+  handler.cycleMap = cycleMap;
+  handler.delegationAttempted = delegationAttempted;
+  handler.ProtocolGateError = ProtocolGateError;
+  handler.ERRORS = ERRORS;
+
+  return handler;
 }
 
-// ─── Backward Transitions ────────────────────────────────────────────────────
-
-function handleBackwardTransition(ctx, output, backwardItem, sessionID, currentPhase) {
-  const content = typeof backwardItem === "string" ? backwardItem : backwardItem?.content || "";
-  const match = content.match(/^BACKWARD:(\w+)→(\w+)$/);
-  if (!match) {
-    reject(ctx, output, "BLOCKED_WRONG_PHASE");
-    return;
-  }
-
-  const [, fromName, toName] = match;
-  const fromState = STATES.find((s) => s.name === fromName);
-  const toState = STATES.find((s) => s.name === toName);
-
-  if (!fromState || !toState) {
-    reject(ctx, output, "BLOCKED_WRONG_PHASE");
-    return;
-  }
-
-  // Must be in the "from" state
-  if (currentPhase !== fromState.id) {
-    reject(ctx, output, "BLOCKED_WRONG_PHASE");
-    return;
-  }
-
-  // Must be an allowed backward transition (R029)
-  const transition = BACKWARD_TRANSITIONS[fromState.id];
-  if (!transition || transition.to !== toState.id) {
-    reject(ctx, output, "BLOCKED_DISALLOWED_BACKWARD");
-    return;
-  }
-
-  // Check cycle limit (R031)
-  if (!cycleMap.has(sessionID)) cycleMap.set(sessionID, new Map());
-  const sessionCycles = cycleMap.get(sessionID);
-  const key = `${fromState.id}→${toState.id}`;
-  const count = sessionCycles.get(key) || 0;
-  if (count >= config.maxCyclesPerTransition) {
-    reject(ctx, output, "CYCLE_LIMIT_REACHED");
-    return;
-  }
-
-  // Execute backward transition
-  sessionCycles.set(key, count + 1);
-  sessionPhaseMap.set(sessionID, toState.id);
-  retryMap.set(sessionID, 0);
-  log("BACKWARD", `session=${sessionID} ${fromName} → ${toName} (cycle ${count + 1}/${config.maxCyclesPerTransition})`);
-}
-
-// ─── Attach for Test Access ──────────────────────────────────────────────────
-
-protocolGatePlugin.STATES = STATES;
-protocolGatePlugin.BACKWARD_TRANSITIONS = BACKWARD_TRANSITIONS;
-protocolGatePlugin.PHASE_AGENT_MAP = PHASE_AGENT_MAP;
-protocolGatePlugin.AGENT_NAMES = AGENT_NAMES;
-protocolGatePlugin.DEFAULT_CONFIG = DEFAULT_CONFIG;
-protocolGatePlugin.config = config;
-protocolGatePlugin.sessionAgentMap = sessionAgentMap;
-protocolGatePlugin.sessionPhaseMap = sessionPhaseMap;
-protocolGatePlugin.cycleMap = cycleMap;
-protocolGatePlugin.retryMap = retryMap;
-protocolGatePlugin.ProtocolGateError = ProtocolGateError;
-protocolGatePlugin.ERRORS = ERRORS;
-protocolGatePlugin.extractAgentFromPrompt = extractAgentFromPrompt;
-protocolGatePlugin.containsAllLifecycleKeywords = containsAllLifecycleKeywords;
-protocolGatePlugin.extractTodoItems = extractTodoItems;
-protocolGatePlugin.isIntentKD = isIntentKD;
-protocolGatePlugin.isReportKD = isReportKD;
-protocolGatePlugin.globMatches = globMatches;
-protocolGatePlugin.hasCleanTree = hasCleanTree;
-
-// State constants for test access
-protocolGatePlugin.PROTOCOL_NOT_LOADED = PROTOCOL_NOT_LOADED;
-protocolGatePlugin.INTENT = INTENT;
-protocolGatePlugin.PREFLIGHT = PREFLIGHT;
-protocolGatePlugin.EXPLORE = EXPLORE;
-protocolGatePlugin.INVESTIGATE = INVESTIGATE;
-protocolGatePlugin.ALIGN = ALIGN;
-protocolGatePlugin.DECOMPOSE = DECOMPOSE;
-protocolGatePlugin.SWARM = SWARM;
-protocolGatePlugin.VERIFY = VERIFY;
-protocolGatePlugin.EXTRACT = EXTRACT;
-protocolGatePlugin.EVOLVE = EVOLVE;
-protocolGatePlugin.COMMIT = COMMIT;
-protocolGatePlugin.REPORT = REPORT;
+export default protocolGatePlugin;
