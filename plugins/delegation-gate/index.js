@@ -31,22 +31,31 @@ const ERRORS = {
   FOREIGN_PATH: { code: "FOREIGN_PATH", message: "Foreign paths detected", guidance: "Use only knowledge/*.md paths" },
   BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include all required fields: agent, mode, kd_paths, scope, result_kd" },
   MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Include agent, mode, kd_paths, scope, result_kd" },
-  INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope must be 1-200 chars, no negative framing" },
+  INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope must be a concise description (1-200 chars). No file paths, URLs, multi-sentence instructions, or negative framing" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "Result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" }
 };
 
-const LOG_DIR = join(process.cwd(), "logs");
-const LOG_FILE = join(LOG_DIR, "delegation-gate.log");
+// Lazy-initialized paths — computed at first use, not module import time.
+// Ensures process.cwd() reflects the actual workspace root.
+let _logFile = null;
 
-function ensureLogDir() {
-  try { mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
+function getLogFile() {
+  if (!_logFile) {
+    const logDir = join(process.cwd(), "logs");
+    try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
+    _logFile = join(logDir, "delegation-gate.log");
+  }
+  return _logFile;
 }
 
 function debug(msg) {
   if (process.env.DELEGATION_GATE_DEBUG) {
-    ensureLogDir();
-    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] [delegation-gate] ${msg}\n`);
+    try {
+      appendFileSync(getLogFile(), `[${new Date().toISOString()}] [delegation-gate] ${msg}\n`);
+    } catch (_) {
+      process.stderr.write(`[delegation-gate] ${msg}\n`);
+    }
   }
 }
 
@@ -110,6 +119,8 @@ function extractFieldsFromPrompt(prompt) {
   return fields;
 }
 
+// Scope must be a concise description, not free-form instructions.
+// These patterns detect scope that's been abused as a job-assignment vector.
 function validateScope(scope) {
   if (!scope || scope.trim() === "") {
     return false;
@@ -119,6 +130,26 @@ function validateScope(scope) {
   }
   const negativePatterns = /\b(do not|don't|avoid|never|must not|cannot|can't|shouldn't|wont|won't)\b/i;
   if (negativePatterns.test(scope)) {
+    return false;
+  }
+  // File paths indicate the scope contains specific file references — too detailed for a description
+  const filePathPattern = /\b\S+\.(md|js|ts|json|yaml|yml|py|rb|go|rs|java|c|cpp|h|sh|bash|txt|csv|xml|html|css|scss)\b/i;
+  if (filePathPattern.test(scope)) {
+    return false;
+  }
+  // URLs indicate the scope contains external references — should be a description, not a link
+  const urlPattern = /https?:\/\//i;
+  if (urlPattern.test(scope)) {
+    return false;
+  }
+  // Multiple sentences indicate multi-step instructions — scope should be a single phrase
+  const multiSentencePattern = /[.!?]\s+[A-Z]/;
+  if (multiSentencePattern.test(scope)) {
+    return false;
+  }
+  // Multi-step conjunctions indicate procedural instructions
+  const multiStepPattern = /\b(and then|after that|first .+ then|next .+ then)\b/i;
+  if (multiStepPattern.test(scope)) {
     return false;
   }
   return true;
@@ -141,6 +172,8 @@ function detectForeignPaths(prompt) {
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
     if (/\.\.[\/\\]/.test(trimmed)) return true;
+    // Relative paths with file extensions are foreign — knowledge/*.md paths are the only allowed format
+    if (/\.\w{1,5}$/.test(trimmed)) return true;
   }
   return false;
 }

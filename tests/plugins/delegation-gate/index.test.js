@@ -100,6 +100,20 @@ RESULT KD: knowledge/impl-foo.md
       ).rejects.toThrow("Bare KD path without structured fields");
     });
 
+    it("rejects relative file paths in non-field lines", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md
+docs/ROADMAP.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Foreign paths detected");
+    });
+
     it("validates KD paths against knowledge/*.md pattern", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
@@ -153,6 +167,72 @@ RESULT KD: knowledge/impl-foo.md`;
       await expect(
         hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
       ).rejects.toThrow("Scope validation failed");
+    });
+
+    it("rejects scope containing file paths", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-16
+SCOPE: Read docs/ROADMAP.md and identify the best item
+RESULT KD: knowledge/exploration-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Scope validation failed");
+    });
+
+    it("rejects scope containing URLs", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-16
+SCOPE: Check https://example.com/docs for API details
+RESULT KD: knowledge/exploration-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Scope validation failed");
+    });
+
+    it("rejects scope with multiple sentences", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-16
+SCOPE: Read the docs first. Then identify gaps.
+RESULT KD: knowledge/exploration-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Scope validation failed");
+    });
+
+    it("rejects scope with multi-step conjunctions", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-16
+SCOPE: Find the config file and then update it
+RESULT KD: knowledge/exploration-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Scope validation failed");
+    });
+
+    it("accepts concise scope descriptions", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-16
+SCOPE: Explore the plugin system architecture
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      // Should not throw — scope is a valid concise description
+      expect(output.args.prompt).toContain("Explore the plugin system architecture");
     });
   });
 
