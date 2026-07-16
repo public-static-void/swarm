@@ -3,8 +3,9 @@
   "plugin": [
     "./plugins/protocol-gate",
     "./plugins/delegation-gate",
-    "@franlol/opencode-md-table-formatter@latest",
+    "@franlol/opencode-md-table-formatter@latest"
   ],
+  "subagent_depth": 2,
   "default_agent": "overseer",
   "agent": {
     "build": {
