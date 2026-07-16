@@ -9,7 +9,7 @@
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
 import { execFile } from "child_process";
-import { readdirSync, readFileSync } from "fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 
 const STATES = {
@@ -69,9 +69,17 @@ function getPhaseName(phaseId) {
   return Object.entries(STATES).find(([, id]) => id === phaseId)?.[0];
 }
 
+const LOG_DIR = join(process.cwd(), "logs");
+const LOG_FILE = join(LOG_DIR, "protocol-gate.log");
+
+function ensureLogDir() {
+  try { mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
+}
+
 function debug(msg) {
   if (process.env.PROTOCOL_GATE_DEBUG) {
-    console.log(`[protocol-gate] ${msg}`);
+    ensureLogDir();
+    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
   }
 }
 

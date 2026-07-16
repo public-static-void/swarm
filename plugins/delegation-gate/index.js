@@ -14,7 +14,7 @@
 // breaking the other.
 //
 // Debug logging: set DELEGATION_GATE_DEBUG=1 in environment to enable.
-import { readFileSync } from "fs";
+import { appendFileSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 
 class DelegationGateError extends Error {
@@ -36,9 +36,17 @@ const ERRORS = {
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" }
 };
 
+const LOG_DIR = join(process.cwd(), "logs");
+const LOG_FILE = join(LOG_DIR, "delegation-gate.log");
+
+function ensureLogDir() {
+  try { mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
+}
+
 function debug(msg) {
   if (process.env.DELEGATION_GATE_DEBUG) {
-    console.log(`[delegation-gate] ${msg}`);
+    ensureLogDir();
+    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] [delegation-gate] ${msg}\n`);
   }
 }
 
