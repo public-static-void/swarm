@@ -15,7 +15,11 @@
 //
 // Debug logging: set DELEGATION_GATE_DEBUG=1 in environment to enable.
 import { appendFileSync, mkdirSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const PLUGIN_DIR = dirname(__filename);
 
 class DelegationGateError extends Error {
   constructor(code, message, guidance) {
@@ -36,13 +40,11 @@ const ERRORS = {
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" }
 };
 
-// Lazy-initialized paths — computed at first use, not module import time.
-// Ensures process.cwd() reflects the actual workspace root.
 let _logFile = null;
 
 function getLogFile() {
   if (!_logFile) {
-    const logDir = join(process.cwd(), "logs");
+    const logDir = join(PLUGIN_DIR, "..", "logs");
     try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
     _logFile = join(logDir, "delegation-gate.log");
   }
@@ -61,7 +63,7 @@ function debug(msg) {
 
 function loadConfig() {
   try {
-    const configPath = join(process.cwd(), "plugins", "delegation-gate", "config.json");
+    const configPath = join(PLUGIN_DIR, "config.json");
     return JSON.parse(readFileSync(configPath, "utf8"));
   } catch (e) {
     debug("Config load failed, using defaults");
@@ -89,7 +91,7 @@ function loadTemplates(config) {
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
     try {
-      const templatePath = join(process.cwd(), "plugins", "delegation-gate", templatesDir, `${mode}.json`);
+      const templatePath = join(PLUGIN_DIR, templatesDir, `${mode}.json`);
       const templateData = JSON.parse(readFileSync(templatePath, "utf8"));
       if (!templateData.template || typeof templateData.template !== "string") {
         debug(`Template ${mode}: disk file missing 'template' field — using fallback`);

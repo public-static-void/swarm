@@ -10,7 +10,11 @@
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
 import { execFile } from "child_process";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const PLUGIN_DIR = dirname(__filename);
 
 const STATES = {
   PROTOCOL_NOT_LOADED: 0,
@@ -69,13 +73,11 @@ function getPhaseName(phaseId) {
   return Object.entries(STATES).find(([, id]) => id === phaseId)?.[0];
 }
 
-// Lazy-initialized paths — computed at first use, not module import time.
-// Ensures process.cwd() reflects the actual workspace root.
 let _logFile = null;
 
 function getLogFile() {
   if (!_logFile) {
-    const logDir = join(process.cwd(), "logs");
+    const logDir = join(PLUGIN_DIR, "..", "logs");
     try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
     _logFile = join(logDir, "protocol-gate.log");
   }
@@ -94,7 +96,7 @@ function debug(msg) {
 
 function loadConfig() {
   try {
-    const configPath = join(process.cwd(), "plugins", "protocol-gate", "lifecycle.json");
+    const configPath = join(PLUGIN_DIR, "lifecycle.json");
     return JSON.parse(readFileSync(configPath, "utf8"));
   } catch (e) {
     debug("Config load failed, using defaults");
@@ -145,7 +147,7 @@ function extractAgentFromPrompt(prompt) {
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
   if (phase === undefined) return false;
 
-  const knowledgeDir = join(process.cwd(), "knowledge");
+  const knowledgeDir = join(PLUGIN_DIR, "..", "knowledge");
   let files = [];
   try {
     files = readdirSync(knowledgeDir);
