@@ -25,6 +25,10 @@
     "EVOLVE": "habit-builder",
     "COMMIT": "committer"
   },
+  "backwardTransitions": {
+    "VERIFY": ["SWARM", "DECOMPOSE"]
+  },
+  "maxRetriesPerPhase": 5,
   "maxCyclesPerTransition": 3,
-  "maxRetriesPerPhase": 5
+  "templatesDir": "templates"
 }
