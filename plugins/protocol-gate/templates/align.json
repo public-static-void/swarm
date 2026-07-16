@@ -1,4 +1,0 @@
-{
-  "mode": "align",
-  "template": "DISPATCH TO: {agent}\nMODE: align\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Align the requirements per the scope above. Produce a SPEC KD at {result_kd}."
-}

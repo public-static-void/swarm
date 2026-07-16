@@ -29,6 +29,5 @@
     "VERIFY": ["SWARM", "DECOMPOSE"]
   },
   "maxRetriesPerPhase": 5,
-  "maxCyclesPerTransition": 3,
-  "templatesDir": "templates"
+  "maxCyclesPerTransition": 3
 }

@@ -1,4 +1,0 @@
-{
-  "mode": "decompose",
-  "template": "DISPATCH TO: {agent}\nMODE: decompose\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Decompose the project per the scope above. Produce a PLAN KD at {result_kd}."
-}

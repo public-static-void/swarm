@@ -1,4 +1,0 @@
-{
-  "mode": "swarm",
-  "template": "DISPATCH TO: {agent}\nMODE: swarm\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Execute the swarm phase per the scope above. Produce an IMPLEMENTATION SUMMARY KD at {result_kd}."
-}
