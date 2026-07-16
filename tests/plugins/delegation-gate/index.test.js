@@ -2,24 +2,23 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import delegationGatePlugin from "../../../plugins/delegation-gate/index.js";
 
 describe("Delegation-Gate Plugin", () => {
-  let plugin;
-  let mockCtx;
+  let hooks;
 
   beforeEach(async () => {
-    plugin = await delegationGatePlugin();
-    mockCtx = {
-      type: "",
-      input: {},
-      output: {}
-    };
+    hooks = await delegationGatePlugin({}, {});
   });
 
   describe("Default Export", () => {
-    it("exports a function", () => {
+    it("exports an async function", () => {
       expect(typeof delegationGatePlugin).toBe("function");
     });
 
-    it("has no named exports", () => {
+    it("returns named hook functions", async () => {
+      const result = await delegationGatePlugin({}, {});
+      expect(typeof result["tool.execute.before"]).toBe("function");
+    });
+
+    it("has no named exports beyond default", () => {
       const module = require("../../../plugins/delegation-gate/index.js");
       const namedExports = Object.keys(module).filter(k => k !== "default" && k !== "__esModule");
       expect(namedExports).toHaveLength(0);
@@ -35,32 +34,27 @@ SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-      mockCtx.output = {};
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      await plugin(mockCtx);
-
-      expect(mockCtx.output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
     it("rejects prompt without structured fields", async () => {
       const prompt = "Please implement feature X";
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-
-      await expect(plugin(mockCtx)).rejects.toThrow("Missing required structured fields");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Missing required structured fields");
     });
 
     it("rejects prompt missing any required field", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-
-      await expect(plugin(mockCtx)).rejects.toThrow("Missing required structured fields");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Missing required structured fields");
     });
   });
 
@@ -77,10 +71,9 @@ RESULT KD: knowledge/impl-foo.md
 console.log("test");
 \`\`\``;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-
-      await expect(plugin(mockCtx)).rejects.toThrow("Code blocks detected in prompt");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Code blocks detected in prompt");
     });
 
     it("rejects foreign paths in free-form text (not structured fields)", async () => {
@@ -94,19 +87,17 @@ SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md
 /home/user/secret-file.txt`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-
-      await expect(plugin(mockCtx)).rejects.toThrow("Foreign paths detected");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Foreign paths detected");
     });
 
     it("rejects bare KD path without structured fields", async () => {
       const prompt = "knowledge/intent-foo.md";
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-
-      await expect(plugin(mockCtx)).rejects.toThrow("Bare KD path without structured fields");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Bare KD path without structured fields");
     });
 
     it("validates KD paths against knowledge/*.md pattern", async () => {
@@ -117,10 +108,9 @@ SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
 RESULT KD: invalid-path.md`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-
-      await expect(plugin(mockCtx)).rejects.toThrow("Invalid result KD path");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Invalid result KD path");
     });
   });
 
@@ -133,10 +123,9 @@ SESSION DATE: 2026-07-15
 SCOPE: 
 RESULT KD: knowledge/impl-foo.md`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-
-      await expect(plugin(mockCtx)).rejects.toThrow("Scope validation failed");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Scope validation failed");
     });
 
     it("rejects scope exceeding 200 characters", async () => {
@@ -148,10 +137,9 @@ SESSION DATE: 2026-07-15
 SCOPE: ${longScope}
 RESULT KD: knowledge/impl-foo.md`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-
-      await expect(plugin(mockCtx)).rejects.toThrow("Scope validation failed");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Scope validation failed");
     });
 
     it("rejects negative framing in scope", async () => {
@@ -162,10 +150,9 @@ SESSION DATE: 2026-07-15
 SCOPE: Do not use TypeScript
 RESULT KD: knowledge/impl-foo.md`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-
-      await expect(plugin(mockCtx)).rejects.toThrow("Scope validation failed");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Scope validation failed");
     });
   });
 
@@ -178,15 +165,12 @@ SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-      mockCtx.output = {};
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      await plugin(mockCtx);
-
-      expect(mockCtx.output.args.prompt).toContain("knowledge/intent-foo.md");
-      expect(mockCtx.output.args.prompt).toContain("2026-07-15");
-      expect(mockCtx.output.args.prompt).toContain("Implement feature X");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("2026-07-15");
+      expect(output.args.prompt).toContain("Implement feature X");
     });
 
     it("replaces output.args.prompt with rendered template", async () => {
@@ -197,14 +181,11 @@ SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-      mockCtx.output = {};
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      await plugin(mockCtx);
-
-      expect(mockCtx.output.args.prompt).not.toBe(prompt);
-      expect(mockCtx.output.args.prompt).toBeDefined();
+      expect(output.args.prompt).not.toBe(prompt);
+      expect(output.args.prompt).toBeDefined();
     });
   });
 
@@ -217,13 +198,10 @@ SESSION DATE: 2026-07-15
 SCOPE: Setup workspace
 RESULT KD: knowledge/plan-preflight.md`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-      mockCtx.output = {};
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      await plugin(mockCtx);
-
-      expect(mockCtx.output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
   });
 
@@ -236,25 +214,19 @@ SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "task", args: { prompt } };
-      mockCtx.output = {};
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      await plugin(mockCtx);
-
-      expect(mockCtx.output.args.description).toContain("Delegation Prompt Format");
+      expect(output.args.description).toContain("Delegation Prompt Format");
     });
   });
 
   describe("Non-Task Tools", () => {
     it("passes through non-task tools without validation", async () => {
-      mockCtx.type = "tool.execute.before";
-      mockCtx.input = { tool: "read", args: { filePath: "some-file.md" } };
-      mockCtx.output = {};
-
-      await plugin(mockCtx);
+      const output = { args: { filePath: "some-file.md" } };
+      await hooks["tool.execute.before"]({ tool: "read", sessionID: "s1", callID: "c1" }, output);
       // Should not throw — handler returns early for non-task tools
-      expect(mockCtx.output).toEqual({});
+      expect(output).toEqual({ args: { filePath: "some-file.md" } });
     });
   });
 });
