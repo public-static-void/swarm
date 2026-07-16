@@ -1,207 +1,224 @@
-/**
- * Delegation Gate Plugin — Prompt Content Validator
- *
- * Validates that task tool prompts contain only KD path references and
- * template keywords. Blocks free-form injection, code blocks, and
- * foreign file paths.
- *
- * Hook: tool.execute.before on `task` only.
- * No tool.definition hook — zero schema mutations.
- *
- * Environment:
- *   DELEGATION_GATE_DEBUG=true — file logging
- */
+import { readFileSync } from "fs";
+import { join } from "path";
 
-import fs from "fs";
-import path from "path";
-import os from "os";
+function delegationGatePlugin() {
+  const config = loadConfig();
+  const templates = loadTemplates(config);
 
-// --- Logging ---
-
-const LOG_DIR =
-  process.env._DELEGATION_GATE_LOG_DIR ||
-  path.join(os.homedir(), ".config", "opencode", "logs");
-const LOG_FILE = path.join(LOG_DIR, "delegation-gate.log");
-
-function log(event, details) {
-  if (!process.env.DELEGATION_GATE_DEBUG) return;
-  try {
-    if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
-    fs.appendFileSync(LOG_FILE, `[DELEGATION-GATE] ${new Date().toISOString()} | ${event} | ${details}\n`);
-  } catch (_) {}
-}
-
-// --- Error class ---
-
-class DelegationGateError extends Error {
-  constructor({ code, message, guidance }) {
-    super(message);
-    this.name = "DelegationGateError";
-    this.code = code;
-    this.guidance = guidance;
-  }
-}
-
-const ERRORS = Object.freeze({
-  CODE_BLOCK: Object.freeze({
-    code: "CODE_BLOCK",
-    message: "Prompt contains code blocks. Dispatch templates do not include code.",
-    guidance: "Remove code blocks from the prompt. Use structured dispatch fields only.",
-  }),
-  FOREIGN_PATH: Object.freeze({
-    code: "FOREIGN_PATH",
-    message: "Prompt contains file paths outside knowledge/.",
-    guidance: "Only knowledge/*.md references are allowed in dispatch prompts.",
-  }),
-  BARE_KD_PATH: Object.freeze({
-    code: "BARE_KD_PATH",
-    message: "Prompt is a bare KD path without dispatch structure.",
-    guidance: "Use the delegation-gate template format: DISPATCH TO / ACTION / KDS / RETURN / ACCEPTANCE.",
-  }),
-  INJECTED_INSTRUCTION: Object.freeze({
-    code: "INJECTED_INSTRUCTION",
-    message: "Prompt contains instructions outside the dispatch template.",
-    guidance: "Remove free-form instructions. The dispatch template provides all instructions to the subagent.",
-  }),
-  MISSING_KD_REFERENCE: Object.freeze({
-    code: "MISSING_KD_REFERENCE",
-    message: "Prompt contains no KD path reference (knowledge/*.md). Every delegation must reference at least one KD.",
-    guidance: "Add a knowledge/*.md path to the KDS field so the subagent has context.",
-  }),
-});
-
-// --- Constants ---
-
-const TEMPLATE_KEYWORDS = [
-  "DISPATCH TO:", "ACTION:", "ARTIFACT:", "SCOPE:",
-  "KDS:", "RETURN:", "ACCEPTANCE:", "MODE:",
-];
-
-const IMPERATIVE_VERBS = [
-  "read", "write", "send", "return", "copy", "fetch",
-  "execute", "run", "delete", "remove", "create", "make",
-  "build", "compile", "install",
-];
-
-const KD_PATH_PATTERN = /knowledge\/[^\/\s]+\.(md|txt)/i;
-// Catches absolute paths (/etc/passwd), Windows paths (C:\...), ./relative paths,
-// and bare relative paths (agents/overseer.md, src/main.js)
-const FOREIGN_PATH_PATTERN =
-  /(?:^|\s)(\/\S+|[a-zA-Z]:\\\S+|(?:\.\.?\/)+\S+|\w+\/[\w./-]*\.\w{1,10})\b/;
-
-// --- Validation ---
-
-function hasCodeBlocks(text) {
-  return text.includes("```") || text.includes("~~~");
-}
-
-// Strips a template keyword prefix (e.g. "ACTION: Read file") → "Read file".
-// Returns the text after the keyword prefix, or the original text if no keyword matches.
-function stripTemplatePrefix(text) {
-  for (const kw of TEMPLATE_KEYWORDS) {
-    if (text.startsWith(kw)) {
-      return text.slice(kw.length).trim();
+  class DelegationGateError extends Error {
+    constructor(code, message, guidance) {
+      super(message);
+      this.name = "DelegationGateError";
+      this.code = code;
+      this.guidance = guidance;
     }
   }
-  return text;
-}
 
-function hasForeignPaths(text) {
-  const lines = text.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    // Validate remainder after stripping keyword prefix — prevents
-    // free-form content hidden on keyword lines from bypassing checks.
-    const remainder = stripTemplatePrefix(trimmed);
-    if (!remainder) continue;
-    if (KD_PATH_PATTERN.test(remainder)) continue;
-    if (FOREIGN_PATH_PATTERN.test(remainder)) return true;
-  }
-  return false;
-}
-
-function isBareKDPath(text) {
-  const trimmed = text.trim();
-  if (!TEMPLATE_KEYWORDS.some(kw => trimmed.startsWith(kw))) {
-    if (/^knowledge\/\S+\.md$/i.test(trimmed)) return true;
-  }
-  return false;
-}
-
-function hasInjectedInstructions(text) {
-  const lines = text.split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    // Validate remainder after stripping keyword prefix — prevents
-    // imperative verbs hidden on keyword lines from bypassing checks.
-    const remainder = stripTemplatePrefix(trimmed);
-    if (!remainder) continue;
-    if (KD_PATH_PATTERN.test(remainder)) continue;
-    const words = remainder.toLowerCase().split(/\s+/);
-    if (words.some(w => IMPERATIVE_VERBS.includes(w))) return true;
-  }
-  return false;
-}
-
-// Positive enforcement: every delegation must carry at least one KD reference.
-function hasKDPathReference(text) {
-  return KD_PATH_PATTERN.test(text);
-}
-
-// --- Plugin ---
-
-export default async function delegationGatePlugin() {
-  log("PLUGIN_LOADED", "delegation-gate initializing");
-  return {
-    "tool.execute.before": async (ctx, output) => {
-      if (ctx.tool !== "task") return;
-
-      const prompt = output.args?.prompt;
-      if (!prompt || typeof prompt !== "string") return;
-
-      log("RECEIVED", `prompt_length=${prompt.length}`);
-
-      if (hasCodeBlocks(prompt)) {
-        const err = new DelegationGateError(ERRORS.CODE_BLOCK);
-        log("REJECTED", err.code);
-        throw err;
-      }
-
-      if (hasForeignPaths(prompt)) {
-        const err = new DelegationGateError(ERRORS.FOREIGN_PATH);
-        log("REJECTED", err.code);
-        throw err;
-      }
-
-      if (isBareKDPath(prompt)) {
-        const err = new DelegationGateError(ERRORS.BARE_KD_PATH);
-        log("REJECTED", err.code);
-        throw err;
-      }
-
-      // Check for injected instructions when prompt has KD refs or template keywords
-      const hasKDRefs = KD_PATH_PATTERN.test(prompt);
-      const hasKeywords = TEMPLATE_KEYWORDS.some(kw => prompt.includes(kw));
-      if ((hasKeywords || hasKDRefs) && hasInjectedInstructions(prompt)) {
-        const err = new DelegationGateError(ERRORS.INJECTED_INSTRUCTION);
-        log("REJECTED", err.code);
-        throw err;
-      }
-
-      // Positive enforcement: every delegation must carry at least one KD reference.
-      if (!hasKDPathReference(prompt)) {
-        const err = new DelegationGateError(ERRORS.MISSING_KD_REFERENCE);
-        log("REJECTED", err.code);
-        throw err;
-      }
-
-      log("PASSED", "prompt validated");
-    },
+  const ERRORS = {
+    CODE_BLOCK: { code: "CODE_BLOCK", message: "Code blocks detected in prompt", guidance: "Remove all code blocks from delegation prompt" },
+    FOREIGN_PATH: { code: "FOREIGN_PATH", message: "Foreign paths detected", guidance: "Use only knowledge/*.md paths" },
+    BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include all required fields: agent, mode, kd_paths, scope, result_kd" },
+    MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Include agent, mode, kd_paths, scope, result_kd" },
+    INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope must be 1-200 chars, no negative framing" },
+    INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "Result KD must match knowledge/*.md pattern" },
+    MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" }
   };
+
+  function debug(msg) {
+    if (process.env.DELEGATION_GATE_DEBUG) {
+      console.log(`[delegation-gate] ${msg}`);
+    }
+  }
+
+  function loadConfig() {
+    try {
+      const configPath = join(process.cwd(), "plugins", "delegation-gate", "config.json");
+      return JSON.parse(readFileSync(configPath, "utf8"));
+    } catch (e) {
+      debug("Config load failed, using defaults");
+      return { templatesDir: "templates" };
+    }
+  }
+
+  function loadTemplates(config) {
+    const templates = {};
+    const templatesDir = config.templatesDir || "templates";
+    
+    const defaultTemplates = {
+      explore: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Explore the codebase per the scope above. Produce an EXPLORATION KD at {result_kd}.",
+      investigate: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Investigate the codebase per the scope above. Produce an ANALYSIS KD at {result_kd}.",
+      align: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Align the requirements per the scope above. Produce a SPEC KD at {result_kd}.",
+      decompose: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Decompose the project per the scope above. Produce a PLAN KD at {result_kd}.",
+      swarm: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Execute the swarm phase per the scope above. Produce an IMPLEMENTATION SUMMARY KD at {result_kd}.",
+      verify: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Verify the implementation per the scope above. Produce REVIEW and AUDIT KDs at {result_kd}.",
+      extract: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd}.",
+      evolve: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Evolve the process per the scope above. Produce a PROCESS KD at {result_kd}.",
+      commit: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Commit the changes per the scope above.",
+      checkpoint: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Create a checkpoint commit per the scope above.",
+      preflight: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Perform preflight checks per the scope above. Produce a PLAN KD at {result_kd}."
+    };
+
+    for (const [mode, content] of Object.entries(defaultTemplates)) {
+      try {
+        const templatePath = join(process.cwd(), "plugins", "delegation-gate", templatesDir, `${mode}.json`);
+        const templateData = JSON.parse(readFileSync(templatePath, "utf8"));
+        templates[mode] = templateData.template;
+      } catch (e) {
+        templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
+      }
+    }
+
+    return templates;
+  }
+
+  function extractFieldsFromPrompt(prompt) {
+    const fields = {};
+    const lines = prompt.split("\n");
+    for (const line of lines) {
+      const match = line.match(/^(AGENT|MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):\s*(.*)/i);
+      if (match) {
+        fields[match[1].toLowerCase().replace(/\s+/g, "_")] = match[2].trim();
+      }
+    }
+    return fields;
+  }
+
+  function validateScope(scope) {
+    if (!scope || scope.trim() === "") {
+      return false;
+    }
+    if (scope.length > 200) {
+      return false;
+    }
+    const negativePatterns = /\b(do not|don't|avoid|never|must not|cannot|can't|shouldn't|wont|won't)\b/i;
+    if (negativePatterns.test(scope)) {
+      return false;
+    }
+    return true;
+  }
+
+  function validateKDPath(path) {
+    return /^knowledge\/[a-zA-Z0-9_-]+\.md$/.test(path);
+  }
+
+  function detectCodeBlocks(prompt) {
+    return /```[\s\S]*?```|~~~[\s\S]*?~~~/.test(prompt);
+  }
+
+  function detectForeignPaths(prompt) {
+    // Match absolute paths, Windows paths, or relative paths outside knowledge/
+    // Exclude knowledge/*.md paths and structured field lines (AGENT: ..., etc.)
+    const lines = prompt.split("\n");
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // Skip empty lines and structured field lines
+      if (!trimmed || /^(AGENT|MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):/i.test(trimmed)) continue;
+      // Skip knowledge/*.md paths
+      if (/^knowledge\/[a-zA-Z0-9_-]+\.md$/i.test(trimmed)) continue;
+      // Check for absolute paths
+      if (/^\//.test(trimmed)) return true;
+      // Check for Windows paths
+      if (/^[A-Z]:\\/.test(trimmed)) return true;
+      // Check for relative paths outside knowledge/
+      if (/\.\.[\/\\]/.test(trimmed)) return true;
+    }
+    return false;
+  }
+
+  function isBareKDPath(prompt) {
+    return /^knowledge\/[a-zA-Z0-9_-]+\.md$/.test(prompt.trim());
+  }
+
+  function renderTemplate(template, fields) {
+    let result = template;
+    for (const [key, value] of Object.entries(fields)) {
+      result = result.replace(new RegExp(`\\{${key}\\}`, "g"), value);
+    }
+    return result;
+  }
+
+  function injectToolDocs(output) {
+    const formatHint = `
+Delegation Prompt Format:
+AGENT: <target_agent>
+MODE: <dispatch_mode>
+INTENT KD: <intent_kd_path>
+SESSION DATE: <session_date>
+SCOPE: <scope_description>
+RESULT KD: <result_kd_path>
+KD PATHS: <kd_path1>, <kd_path2>
+`;
+    
+    if (!output.args) output.args = {};
+    output.args.description = (output.args.description || "") + formatHint;
+  }
+
+  async function handler(ctx) {
+    const { type } = ctx;
+    
+    if (type === "tool.execute.before") {
+      const { input, output } = ctx;
+      const { tool, args } = input;
+      
+      if (tool !== "task") return;
+      
+      injectToolDocs(output);
+      
+      const prompt = args?.prompt || "";
+      
+      if (isBareKDPath(prompt)) {
+        throw new DelegationGateError(ERRORS.BARE_KD_PATH.code, ERRORS.BARE_KD_PATH.message, ERRORS.BARE_KD_PATH.guidance);
+      }
+      
+      if (detectCodeBlocks(prompt)) {
+        throw new DelegationGateError(ERRORS.CODE_BLOCK.code, ERRORS.CODE_BLOCK.message, ERRORS.CODE_BLOCK.guidance);
+      }
+      
+      if (detectForeignPaths(prompt)) {
+        throw new DelegationGateError(ERRORS.FOREIGN_PATH.code, ERRORS.FOREIGN_PATH.message, ERRORS.FOREIGN_PATH.guidance);
+      }
+      
+      const fields = extractFieldsFromPrompt(prompt);
+      const requiredFields = ["agent", "mode", "intent_kd", "session_date", "scope", "result_kd"];
+      
+      for (const field of requiredFields) {
+        if (fields[field] === undefined || fields[field] === null) {
+          throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, ERRORS.MISSING_STRUCTURED_FIELDS.message, ERRORS.MISSING_STRUCTURED_FIELDS.guidance);
+        }
+      }
+      
+      if (!validateScope(fields.scope)) {
+        throw new DelegationGateError(ERRORS.INVALID_SCOPE.code, ERRORS.INVALID_SCOPE.message, ERRORS.INVALID_SCOPE.guidance);
+      }
+      
+      if (!validateKDPath(fields.result_kd)) {
+        throw new DelegationGateError(ERRORS.INVALID_RESULT_KD.code, ERRORS.INVALID_RESULT_KD.message, ERRORS.INVALID_RESULT_KD.guidance);
+      }
+      
+      if (fields.kd_paths) {
+        const paths = fields.kd_paths.split(",").map(p => p.trim());
+        for (const path of paths) {
+          if (!validateKDPath(path)) {
+            throw new DelegationGateError(ERRORS.FOREIGN_PATH.code, ERRORS.FOREIGN_PATH.message, ERRORS.FOREIGN_PATH.guidance);
+          }
+        }
+      }
+      
+      const template = templates[fields.mode];
+      if (!template) {
+        throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, `No template found for mode: ${fields.mode}`, "Check plugins/delegation-gate/templates directory");
+      }
+      
+      const rendered = renderTemplate(template, fields);
+      output.args.prompt = rendered;
+    }
+  }
+
+  handler.DelegationGateError = DelegationGateError;
+  handler.ERRORS = ERRORS;
+  handler.templates = templates;
+
+  return handler;
 }
 
-// Attach for test access — avoids named exports that poison the legacy plugin loader
-delegationGatePlugin.DelegationGateError = DelegationGateError;
-delegationGatePlugin.ERRORS = ERRORS;
+export default delegationGatePlugin;
