@@ -198,223 +198,225 @@ function hasCleanTree() {
   });
 }
 
-export default async function protocolGatePlugin(input, options) {
-  const config = loadConfig();
-  const BACKWARD_TRANSITIONS = loadBackwardTransitions(config);
-  const PHASE_AGENT_MAP = config.agents || {};
-  const MAX_RETRIES = config.maxRetriesPerPhase || 5;
+export default {
+  id: "protocol-gate",
+  server: async function protocolGateServer(input, options) {
+    const config = loadConfig();
+    const BACKWARD_TRANSITIONS = loadBackwardTransitions(config);
+    const PHASE_AGENT_MAP = config.agents || {};
+    const MAX_RETRIES = config.maxRetriesPerPhase || 5;
 
-  const sessionPhaseMap = new Map();
-  const retryMap = new Map();
-  const cycleMap = new Map();
-  // Tracks whether a delegation was attempted in the current phase entry.
-  // When true and task is called again in same phase → retry.
-  // Reset on disk advancement (success) or backward transition.
-  const delegationAttempted = new Map();
+    const sessionPhaseMap = new Map();
+    const retryMap = new Map();
+    const cycleMap = new Map();
+    // Tracks whether a delegation was attempted in the current phase entry.
+    // When true and task is called again in same phase → retry.
+    // Reset on disk advancement (success) or backward transition.
+    const delegationAttempted = new Map();
 
-  const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
+    const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
 
-  debug("Plugin initializing…");
-  debug(`Loaded config: ${Object.keys(STATES).length} states, maxRetries=${MAX_RETRIES}, maxCycles=${config.maxCyclesPerTransition || 3}`);
-  debug(`Backward transitions: ${JSON.stringify(BACKWARD_TRANSITIONS)}`);
-  debug(`Phase→agent map: ${JSON.stringify(PHASE_AGENT_MAP)}`);
+    debug("Plugin initializing…");
+    debug(`Loaded config: ${Object.keys(STATES).length} states, maxRetries=${MAX_RETRIES}, maxCycles=${config.maxCyclesPerTransition || 3}`);
+    debug(`Backward transitions: ${JSON.stringify(BACKWARD_TRANSITIONS)}`);
+    debug(`Phase→agent map: ${JSON.stringify(PHASE_AGENT_MAP)}`);
 
-  function handleBackwardTransition(sessionID, currentPhase, targetPhase) {
-    const validTargets = BACKWARD_TRANSITIONS[currentPhase] || [];
-    if (!validTargets.includes(targetPhase)) return false;
+    function handleBackwardTransition(sessionID, currentPhase, targetPhase) {
+      const validTargets = BACKWARD_TRANSITIONS[currentPhase] || [];
+      if (!validTargets.includes(targetPhase)) return false;
 
-    const cycles = cycleMap.get(sessionID) || {};
-    cycles[targetPhase] = (cycles[targetPhase] || 0) + 1;
-    cycleMap.set(sessionID, cycles);
+      const cycles = cycleMap.get(sessionID) || {};
+      cycles[targetPhase] = (cycles[targetPhase] || 0) + 1;
+      cycleMap.set(sessionID, cycles);
 
-    const cycleCount = cycles[targetPhase];
-    const maxCycles = config.maxCyclesPerTransition || 3;
-    debug(`Backward transition: ${getPhaseName(currentPhase)} → ${getPhaseName(targetPhase)} (cycle ${cycleCount}/${maxCycles})`);
+      const cycleCount = cycles[targetPhase];
+      const maxCycles = config.maxCyclesPerTransition || 3;
+      debug(`Backward transition: ${getPhaseName(currentPhase)} → ${getPhaseName(targetPhase)} (cycle ${cycleCount}/${maxCycles})`);
 
-    if (cycleCount > maxCycles) {
-      debug(`ERROR: Cycle limit exceeded for ${getPhaseName(targetPhase)}: ${cycleCount} > ${maxCycles}`);
-      throw new ProtocolGateError(ERROR_TEMPLATES.CYCLE_LIMIT_EXCEEDED.code, ERROR_TEMPLATES.CYCLE_LIMIT_EXCEEDED.message, ERROR_TEMPLATES.CYCLE_LIMIT_EXCEEDED.guidance);
-    }
+      if (cycleCount > maxCycles) {
+        debug(`ERROR: Cycle limit exceeded for ${getPhaseName(targetPhase)}: ${cycleCount} > ${maxCycles}`);
+        throw new ProtocolGateError(ERROR_TEMPLATES.CYCLE_LIMIT_EXCEEDED.code, ERROR_TEMPLATES.CYCLE_LIMIT_EXCEEDED.message, ERROR_TEMPLATES.CYCLE_LIMIT_EXCEEDED.guidance);
+      }
 
-    const prevPhase = sessionPhaseMap.get(sessionID);
-    sessionPhaseMap.set(sessionID, targetPhase);
-    retryMap.set(sessionID, 0);
-    delegationAttempted.set(sessionID, false);
-    debug(`Backward transition complete: ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}, retry counter reset`);
-    return true;
-  }
-
-  // --- Hook: chat.params ---
-  // Permission type uses `type` field for tool name, not `tool`
-  async function chatParams(input, output) {
-    const { sessionID, agent } = input;
-
-    if (agent === "overseer") {
-      debug(`chat.params: initializing overseer session ${sessionID}`);
-      sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+      const prevPhase = sessionPhaseMap.get(sessionID);
+      sessionPhaseMap.set(sessionID, targetPhase);
       retryMap.set(sessionID, 0);
       delegationAttempted.set(sessionID, false);
-    } else {
-      debug(`chat.params: cleaning up non-overseer session ${sessionID} (agent=${agent})`);
-      sessionPhaseMap.delete(sessionID);
-      retryMap.delete(sessionID);
-      cycleMap.delete(sessionID);
-      delegationAttempted.delete(sessionID);
-    }
-  }
-
-  // --- Hook: permission.ask ---
-  async function permissionAsk(input, output) {
-    // Permission type: input.type is the tool name
-    const { sessionID, type: tool } = input;
-    const phase = sessionPhaseMap.get(sessionID);
-
-    if (phase === undefined) return;
-
-    const phaseName = getPhaseName(phase);
-    if (!phaseName) return;
-
-    const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-    if (tool !== "task" && !allowedTools.includes(tool)) {
-      debug(`permission.ask: DENY tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
-      output.status = "deny";
-      // Per R026: non-task tool blocks set output.status = "deny" without throwing
-    } else {
-      debug(`permission.ask: ALLOW tool=${tool} in phase=${phaseName}`);
-    }
-  }
-
-  // --- Hook: tool.execute.before ---
-  async function toolExecuteBefore(input, output) {
-    const { tool, sessionID, callID } = input;
-    // opencode API: tool args live on output.args, not input.args
-    const args = output.args || {};
-
-    const phase = sessionPhaseMap.get(sessionID);
-    if (phase === undefined) {
-      debug(`tool.execute.before: BLOCKED_UNINITIALIZED session=${sessionID} tool=${tool}`);
-      throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.code, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.message, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.guidance);
+      debug(`Backward transition complete: ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}, retry counter reset`);
+      return true;
     }
 
-    const phaseName = getPhaseName(phase);
+    // --- Hook: chat.params ---
+    async function chatParams(input, output) {
+      const { sessionID, agent } = input;
 
-    // --- todowrite handler ---
-    if (tool === "todowrite") {
-      if (phase === STATES.PROTOCOL_NOT_LOADED) {
-        if (args && args.todos && Array.isArray(args.todos)) {
-          const presentKeywords = args.todos.map(t => t.content.toUpperCase());
-          const hasAll = ALL_KEYWORDS.every(k => presentKeywords.some(p => p.includes(k)));
-
-          if (hasAll) {
-            debug(`todowrite: all lifecycle keywords present → advancing to INTENT`);
-            sessionPhaseMap.set(sessionID, STATES.INTENT);
-          } else {
-            debug(`todowrite: missing lifecycle keywords in PROTOCOL_NOT_LOADED`);
-            throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.code, ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.message, ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.guidance);
-          }
-        }
-      }
-      // Phase advancement happens ONLY via checkDiskAdvancement() — not via todowrite content (R009)
-    }
-
-    // --- write handler ---
-    else if (tool === "write") {
-      const path = args?.filePath || "";
-      if (phase === STATES.INTENT && !path.startsWith("knowledge/intent-")) {
-        debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/intent-)`);
-        throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to intent KDs", "Write to knowledge/intent-*.md");
-      }
-      if (phase === STATES.REPORT && !path.startsWith("knowledge/report-")) {
-        debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/report-)`);
-        throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to report KDs", "Write to knowledge/report-*.md");
+      if (agent === "overseer") {
+        debug(`chat.params: initializing overseer session ${sessionID}`);
+        sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+        retryMap.set(sessionID, 0);
+        delegationAttempted.set(sessionID, false);
+      } else {
+        debug(`chat.params: cleaning up non-overseer session ${sessionID} (agent=${agent})`);
+        sessionPhaseMap.delete(sessionID);
+        retryMap.delete(sessionID);
+        cycleMap.delete(sessionID);
+        delegationAttempted.delete(sessionID);
       }
     }
 
-    // --- read handler ---
-    else if (tool === "read") {
-      const path = args?.filePath || "";
-      if (phase === STATES.INTENT || phase === STATES.REPORT) {
-        if (!path.includes("templates")) {
-          debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to templates)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates", "Read from template directory only");
-        }
+    // --- Hook: permission.ask ---
+    async function permissionAsk(input, output) {
+      // Permission type: input.type is the tool name
+      const { sessionID, type: tool } = input;
+      const phase = sessionPhaseMap.get(sessionID);
+
+      if (phase === undefined) return;
+
+      const phaseName = getPhaseName(phase);
+      if (!phaseName) return;
+
+      const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
+      if (tool !== "task" && !allowedTools.includes(tool)) {
+        debug(`permission.ask: DENY tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
+        output.status = "deny";
+        // Per R026: non-task tool blocks set output.status = "deny" without throwing
+      } else {
+        debug(`permission.ask: ALLOW tool=${tool} in phase=${phaseName}`);
       }
     }
 
-    // --- task handler ---
-    else if (tool === "task") {
-      if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
-        debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
-        throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task not allowed in current phase", "Wait for delegation phase");
+    // --- Hook: tool.execute.before ---
+    async function toolExecuteBefore(input, output) {
+      const { tool, sessionID, callID } = input;
+      // opencode API: tool args live on output.args, not input.args
+      const args = output.args || {};
+
+      const phase = sessionPhaseMap.get(sessionID);
+      if (phase === undefined) {
+        debug(`tool.execute.before: BLOCKED_UNINITIALIZED session=${sessionID} tool=${tool}`);
+        throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.code, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.message, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.guidance);
       }
 
-      const prompt = args?.prompt || "";
-      const agentName = extractAgentFromPrompt(prompt);
+      const phaseName = getPhaseName(phase);
 
-      if (agentName) {
-        const currentPhaseAgent = PHASE_AGENT_MAP[phaseName]?.toLowerCase();
+      // --- todowrite handler ---
+      if (tool === "todowrite") {
+        if (phase === STATES.PROTOCOL_NOT_LOADED) {
+          if (args && args.todos && Array.isArray(args.todos)) {
+            const presentKeywords = args.todos.map(t => t.content.toUpperCase());
+            const hasAll = ALL_KEYWORDS.every(k => presentKeywords.some(p => p.includes(k)));
 
-        // Check if agent matches current phase → normal delegation
-        if (agentName === currentPhaseAgent) {
-          // Retry tracking: if delegation was already attempted in this phase, increment counter
-          if (delegationAttempted.get(sessionID)) {
-            const retries = (retryMap.get(sessionID) || 0) + 1;
-            retryMap.set(sessionID, retries);
-            debug(`task: RETRY #${retries} in phase=${phaseName} (max=${MAX_RETRIES})`);
-            if (retries > MAX_RETRIES) {
-              debug(`task: BLOCKED retry limit exceeded for ${phaseName}: ${retries} > ${MAX_RETRIES}`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.RETRY_LIMIT_EXCEEDED(phaseName).code, ERROR_TEMPLATES.RETRY_LIMIT_EXCEEDED(phaseName).message, ERROR_TEMPLATES.RETRY_LIMIT_EXCEEDED(phaseName).guidance);
+            if (hasAll) {
+              debug(`todowrite: all lifecycle keywords present → advancing to INTENT`);
+              sessionPhaseMap.set(sessionID, STATES.INTENT);
+            } else {
+              debug(`todowrite: missing lifecycle keywords in PROTOCOL_NOT_LOADED`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.code, ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.message, ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.guidance);
             }
           }
-          delegationAttempted.set(sessionID, true);
-          debug(`task: ALLOW agent=${agentName} for phase=${phaseName}`);
         }
-        // Check if agent matches a backward target → backward transition
-        else {
-          const targetPhaseId = agentToPhaseMap[agentName];
-          const validTargets = BACKWARD_TRANSITIONS[phase] || [];
+        // Phase advancement happens ONLY via checkDiskAdvancement() — not via todowrite content (R009)
+      }
 
-          if (targetPhaseId !== undefined && validTargets.includes(targetPhaseId)) {
-            debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
-            handleBackwardTransition(sessionID, phase, targetPhaseId);
-            // After backward transition, the task proceeds to the new phase's agent
-            // Retry counter was reset in handleBackwardTransition
+      // --- write handler ---
+      else if (tool === "write") {
+        const path = args?.filePath || "";
+        if (phase === STATES.INTENT && !path.startsWith("knowledge/intent-")) {
+          debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/intent-)`);
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to intent KDs", "Write to knowledge/intent-*.md");
+        }
+        if (phase === STATES.REPORT && !path.startsWith("knowledge/report-")) {
+          debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/report-)`);
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to report KDs", "Write to knowledge/report-*.md");
+        }
+      }
+
+      // --- read handler ---
+      else if (tool === "read") {
+        const path = args?.filePath || "";
+        if (phase === STATES.INTENT || phase === STATES.REPORT) {
+          if (!path.includes("templates")) {
+            debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to templates)`);
+            throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates", "Read from template directory only");
+          }
+        }
+      }
+
+      // --- task handler ---
+      else if (tool === "task") {
+        if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
+          debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task not allowed in current phase", "Wait for delegation phase");
+        }
+
+        const prompt = args?.prompt || "";
+        const agentName = extractAgentFromPrompt(prompt);
+
+        if (agentName) {
+          const currentPhaseAgent = PHASE_AGENT_MAP[phaseName]?.toLowerCase();
+
+          // Check if agent matches current phase → normal delegation
+          if (agentName === currentPhaseAgent) {
+            // Retry tracking: if delegation was already attempted in this phase, increment counter
+            if (delegationAttempted.get(sessionID)) {
+              const retries = (retryMap.get(sessionID) || 0) + 1;
+              retryMap.set(sessionID, retries);
+              debug(`task: RETRY #${retries} in phase=${phaseName} (max=${MAX_RETRIES})`);
+              if (retries > MAX_RETRIES) {
+                debug(`task: BLOCKED retry limit exceeded for ${phaseName}: ${retries} > ${MAX_RETRIES}`);
+                throw new ProtocolGateError(ERROR_TEMPLATES.RETRY_LIMIT_EXCEEDED(phaseName).code, ERROR_TEMPLATES.RETRY_LIMIT_EXCEEDED(phaseName).message, ERROR_TEMPLATES.RETRY_LIMIT_EXCEEDED(phaseName).guidance);
+              }
+            }
+            delegationAttempted.set(sessionID, true);
+            debug(`task: ALLOW agent=${agentName} for phase=${phaseName}`);
+          }
+          // Check if agent matches a backward target → backward transition
+          else {
+            const targetPhaseId = agentToPhaseMap[agentName];
+            const validTargets = BACKWARD_TRANSITIONS[phase] || [];
+
+            if (targetPhaseId !== undefined && validTargets.includes(targetPhaseId)) {
+              debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
+              handleBackwardTransition(sessionID, phase, targetPhaseId);
+              // After backward transition, the task proceeds to the new phase's agent
+              // Retry counter was reset in handleBackwardTransition
+              delegationAttempted.set(sessionID, false);
+            } else {
+              // Wrong agent — not current phase, not a valid backward target
+              const expectedAgent = currentPhaseAgent || phaseName;
+              debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+            }
+          }
+        }
+      }
+
+      // --- disk-based advancement for non-task tools (R009) ---
+      if (tool !== "task") {
+        if (await checkDiskAdvancement(sessionID, phase, sessionPhaseMap)) {
+          const nextPhase = phase + 1;
+          if (nextPhase <= STATES.REPORT) {
+            sessionPhaseMap.set(sessionID, nextPhase);
+            retryMap.set(sessionID, 0);
             delegationAttempted.set(sessionID, false);
-          } else {
-            // Wrong agent — not current phase, not a valid backward target
-            const expectedAgent = currentPhaseAgent || phaseName;
-            debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
-            throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+            debug(`Disk advancement: ${phaseName} → ${getPhaseName(nextPhase)}`);
           }
         }
       }
     }
 
-    // --- disk-based advancement for non-task tools (R009) ---
-    if (tool !== "task") {
-      if (await checkDiskAdvancement(sessionID, phase, sessionPhaseMap)) {
-        const nextPhase = phase + 1;
-        if (nextPhase <= STATES.REPORT) {
-          sessionPhaseMap.set(sessionID, nextPhase);
-          retryMap.set(sessionID, 0);
-          delegationAttempted.set(sessionID, false);
-          debug(`Disk advancement: ${phaseName} → ${getPhaseName(nextPhase)}`);
-        }
-      }
-    }
+    return {
+      "chat.params": chatParams,
+      "permission.ask": permissionAsk,
+      "tool.execute.before": toolExecuteBefore,
+      // Test-access properties
+      STATES,
+      sessionPhaseMap,
+      retryMap,
+      cycleMap,
+      delegationAttempted,
+      ProtocolGateError,
+      ERRORS: ERROR_TEMPLATES
+    };
   }
-
-  return {
-    "chat.params": chatParams,
-    "permission.ask": permissionAsk,
-    "tool.execute.before": toolExecuteBefore,
-    // Test-access properties
-    STATES,
-    sessionPhaseMap,
-    retryMap,
-    cycleMap,
-    delegationAttempted,
-    ProtocolGateError,
-    ERRORS: ERROR_TEMPLATES
-  };
-}
+};

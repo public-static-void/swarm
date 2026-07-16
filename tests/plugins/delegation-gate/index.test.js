@@ -1,20 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import delegationGatePlugin from "../../../plugins/delegation-gate/index.js";
+import pluginModule from "../../../plugins/delegation-gate/index.js";
 
 describe("Delegation-Gate Plugin", () => {
   let hooks;
 
   beforeEach(async () => {
-    hooks = await delegationGatePlugin({}, {});
+    hooks = await pluginModule.server({}, {});
   });
 
   describe("Default Export", () => {
-    it("exports an async function", () => {
-      expect(typeof delegationGatePlugin).toBe("function");
+    it("exports a PluginModule object with id and server", () => {
+      expect(typeof pluginModule).toBe("object");
+      expect(pluginModule.id).toBe("delegation-gate");
+      expect(typeof pluginModule.server).toBe("function");
     });
 
-    it("returns named hook functions", async () => {
-      const result = await delegationGatePlugin({}, {});
+    it("server() returns named hook functions", async () => {
+      const result = await pluginModule.server({}, {});
       expect(typeof result["tool.execute.before"]).toBe("function");
     });
 

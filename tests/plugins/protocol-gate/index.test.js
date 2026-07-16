@@ -1,20 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import protocolGatePlugin from "../../../plugins/protocol-gate/index.js";
+import pluginModule from "../../../plugins/protocol-gate/index.js";
 
 describe("Protocol-Gate Plugin", () => {
   let hooks;
 
   beforeEach(async () => {
-    hooks = await protocolGatePlugin({}, {});
+    hooks = await pluginModule.server({}, {});
   });
 
   describe("Default Export", () => {
-    it("exports an async function", () => {
-      expect(typeof protocolGatePlugin).toBe("function");
+    it("exports a PluginModule object with id and server", () => {
+      expect(typeof pluginModule).toBe("object");
+      expect(pluginModule.id).toBe("protocol-gate");
+      expect(typeof pluginModule.server).toBe("function");
     });
 
-    it("returns named hook functions", async () => {
-      const result = await protocolGatePlugin({}, {});
+    it("server() returns named hook functions", async () => {
+      const result = await pluginModule.server({}, {});
       expect(typeof result["chat.params"]).toBe("function");
       expect(typeof result["permission.ask"]).toBe("function");
       expect(typeof result["tool.execute.before"]).toBe("function");
