@@ -21,6 +21,9 @@ function delegationGatePlugin() {
   const config = loadConfig();
   const templates = loadTemplates(config);
 
+  debug(`Loaded config: templatesDir=${config.templatesDir || "templates"}`);
+  debug(`Loaded ${Object.keys(templates).length} templates: ${Object.keys(templates).join(", ")}`);
+
   class DelegationGateError extends Error {
     constructor(code, message, guidance) {
       super(message);
@@ -45,6 +48,8 @@ function delegationGatePlugin() {
       console.log(`[delegation-gate] ${msg}`);
     }
   }
+
+  debug("Plugin initializing…");
 
   function loadConfig() {
     try {
@@ -79,13 +84,14 @@ function delegationGatePlugin() {
         const templatePath = join(process.cwd(), "plugins", "delegation-gate", templatesDir, `${mode}.json`);
         const templateData = JSON.parse(readFileSync(templatePath, "utf8"));
         if (!templateData.template || typeof templateData.template !== "string") {
-          debug(`Template ${mode}.json missing 'template' field — using fallback`);
+          debug(`Template ${mode}: disk file missing 'template' field — using fallback`);
           templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
         } else {
+          debug(`Template ${mode}: loaded from disk`);
           templates[mode] = templateData.template;
         }
       } catch (e) {
-        debug(`Template ${mode}.json not found on disk — using fallback`);
+        debug(`Template ${mode}: not found on disk — using fallback`);
         templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
       }
     }
@@ -184,36 +190,46 @@ KD PATHS: <kd_path1>, <kd_path2>
       
       if (tool !== "task") return;
       
+      debug(`tool.execute.before: task tool — processing delegation prompt`);
+      
       injectToolDocs(output);
       
       const prompt = args?.prompt || "";
       
       if (isBareKDPath(prompt)) {
+        debug(`VALIDATION FAILED: bare KD path without structured fields`);
         throw new DelegationGateError(ERRORS.BARE_KD_PATH.code, ERRORS.BARE_KD_PATH.message, ERRORS.BARE_KD_PATH.guidance);
       }
       
       if (detectCodeBlocks(prompt)) {
+        debug(`VALIDATION FAILED: code blocks detected in prompt`);
         throw new DelegationGateError(ERRORS.CODE_BLOCK.code, ERRORS.CODE_BLOCK.message, ERRORS.CODE_BLOCK.guidance);
       }
       
       if (detectForeignPaths(prompt)) {
+        debug(`VALIDATION FAILED: foreign paths detected in prompt`);
         throw new DelegationGateError(ERRORS.FOREIGN_PATH.code, ERRORS.FOREIGN_PATH.message, ERRORS.FOREIGN_PATH.guidance);
       }
       
       const fields = extractFieldsFromPrompt(prompt);
       const requiredFields = ["agent", "mode", "intent_kd", "session_date", "scope", "result_kd"];
       
+      debug(`Extracted fields: ${Object.keys(fields).join(", ")}`);
+      
       for (const field of requiredFields) {
         if (fields[field] === undefined || fields[field] === null) {
+          debug(`VALIDATION FAILED: missing required field '${field}'`);
           throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, ERRORS.MISSING_STRUCTURED_FIELDS.message, ERRORS.MISSING_STRUCTURED_FIELDS.guidance);
         }
       }
       
       if (!validateScope(fields.scope)) {
+        debug(`VALIDATION FAILED: scope validation failed (len=${fields.scope.length}, content='${fields.scope.substring(0, 50)}...')`);
         throw new DelegationGateError(ERRORS.INVALID_SCOPE.code, ERRORS.INVALID_SCOPE.message, ERRORS.INVALID_SCOPE.guidance);
       }
       
       if (!validateKDPath(fields.result_kd)) {
+        debug(`VALIDATION FAILED: invalid result KD path '${fields.result_kd}'`);
         throw new DelegationGateError(ERRORS.INVALID_RESULT_KD.code, ERRORS.INVALID_RESULT_KD.message, ERRORS.INVALID_RESULT_KD.guidance);
       }
       
@@ -221,6 +237,7 @@ KD PATHS: <kd_path1>, <kd_path2>
         const paths = fields.kd_paths.split(",").map(p => p.trim());
         for (const path of paths) {
           if (!validateKDPath(path)) {
+            debug(`VALIDATION FAILED: invalid KD path '${path}'`);
             throw new DelegationGateError(ERRORS.FOREIGN_PATH.code, ERRORS.FOREIGN_PATH.message, ERRORS.FOREIGN_PATH.guidance);
           }
         }
@@ -228,11 +245,14 @@ KD PATHS: <kd_path1>, <kd_path2>
       
       const template = templates[fields.mode];
       if (!template) {
+        debug(`VALIDATION FAILED: no template found for mode '${fields.mode}'`);
         throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, `No template found for mode: ${fields.mode}`, "Check plugins/delegation-gate/templates directory");
       }
       
+      debug(`Rendering template for mode='${fields.mode}', agent='${fields.agent}'`);
       const rendered = renderTemplate(template, fields);
       output.args.prompt = rendered;
+      debug(`Prompt rendered successfully (${rendered.length} chars)`);
     }
   }
 
