@@ -322,8 +322,8 @@ describe("Protocol-Gate Plugin", () => {
     });
   });
 
-  describe("Template Loading", () => {
-    it("loads and renders template for task delegation", async () => {
+  describe("Agent Extraction", () => {
+    it("extracts agent from raw prompt (AGENT: format)", async () => {
       mockCtx.type = "chat.params";
       mockCtx.input = { sessionID: "test-1", agent: "overseer" };
       await plugin(mockCtx);
@@ -339,13 +339,12 @@ describe("Protocol-Gate Plugin", () => {
       mockCtx.output = { args: {} };
 
       await plugin(mockCtx);
-      expect(mockCtx.output.args.prompt).toContain("knowledge/intent-foo.md");
-      expect(mockCtx.output.args.prompt).toContain("2026-07-16");
-      expect(mockCtx.output.args.prompt).toContain("Setup workspace");
+      // Protocol-gate does NOT modify the prompt — only delegation-gate renders templates
+      expect(mockCtx.output.args.prompt).toBeUndefined();
     });
 
-    it("guards against corrupted template files (missing template field)", async () => {
-      // loadTemplate returns null for corrupted/missing templates → prompt passes through unchanged
+    it("extracts agent from rendered prompt (DISPATCH TO: format)", async () => {
+      // Simulates delegation-gate running first and rendering the prompt
       mockCtx.type = "chat.params";
       mockCtx.input = { sessionID: "test-1", agent: "overseer" };
       await plugin(mockCtx);
@@ -356,14 +355,34 @@ describe("Protocol-Gate Plugin", () => {
       mockCtx.input = {
         tool: "task",
         sessionID: "test-1",
-        args: { prompt: "AGENT: committer\nMODE: nonexistent\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Setup workspace\nRESULT KD: knowledge/plan-preflight.md" }
+        args: { prompt: "DISPATCH TO: committer\nMODE: preflight\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Setup workspace\nRESULT KD: knowledge/plan-preflight.md" }
       };
       mockCtx.output = { args: {} };
 
       await plugin(mockCtx);
-      // No template found → output.args.prompt not set, original prompt preserved
+      // Should not throw — agent extraction works on rendered format too
       expect(mockCtx.output.args.prompt).toBeUndefined();
-      expect(mockCtx.input.args.prompt).toContain("AGENT: committer");
+    });
+
+    it("does not modify prompt — template rendering is delegation-gate's responsibility", async () => {
+      mockCtx.type = "chat.params";
+      mockCtx.input = { sessionID: "test-1", agent: "overseer" };
+      await plugin(mockCtx);
+
+      plugin.sessionPhaseMap.set("test-1", plugin.STATES.PREFLIGHT);
+
+      const originalPrompt = "AGENT: committer\nMODE: preflight\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Setup workspace\nRESULT KD: knowledge/plan-preflight.md";
+      mockCtx.type = "tool.execute.before";
+      mockCtx.input = {
+        tool: "task",
+        sessionID: "test-1",
+        args: { prompt: originalPrompt }
+      };
+      mockCtx.output = { args: { prompt: originalPrompt } };
+
+      await plugin(mockCtx);
+      // Prompt should be unchanged — protocol-gate only validates routing
+      expect(mockCtx.output.args.prompt).toBe(originalPrompt);
     });
   });
 });

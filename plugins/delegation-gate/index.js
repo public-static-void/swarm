@@ -1,3 +1,19 @@
+// Delegation-Gate Plugin — HOW: prompt validation, field extraction, template injection
+//
+// Hooks: tool.execute.before (task tool only)
+// Scope: All dispatching agents (Overseer, Artisan, any agent that delegates via task).
+//
+// Extracts structured fields from delegation prompts, validates completeness,
+// loads the appropriate template from plugins/delegation-gate/templates/, renders
+// it with the extracted fields, and replaces the prompt with the rendered output.
+// Also injects delegation format into tool docs so agents know how to structure
+// prompts before the first delegation attempt.
+//
+// This plugin owns delegation prompt formatting. Protocol-gate owns state machine
+// enforcement (WHEN). They are independent — either can be deactivated without
+// breaking the other.
+//
+// Debug logging: set DELEGATION_GATE_DEBUG=1 in environment to enable.
 import { readFileSync } from "fs";
 import { join } from "path";
 
@@ -43,7 +59,7 @@ function delegationGatePlugin() {
   function loadTemplates(config) {
     const templates = {};
     const templatesDir = config.templatesDir || "templates";
-    
+
     const defaultTemplates = {
       explore: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Explore the codebase per the scope above. Produce an EXPLORATION KD at {result_kd}.",
       investigate: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Investigate the codebase per the scope above. Produce an ANALYSIS KD at {result_kd}.",
@@ -62,8 +78,14 @@ function delegationGatePlugin() {
       try {
         const templatePath = join(process.cwd(), "plugins", "delegation-gate", templatesDir, `${mode}.json`);
         const templateData = JSON.parse(readFileSync(templatePath, "utf8"));
-        templates[mode] = templateData.template;
+        if (!templateData.template || typeof templateData.template !== "string") {
+          debug(`Template ${mode}.json missing 'template' field — using fallback`);
+          templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
+        } else {
+          templates[mode] = templateData.template;
+        }
       } catch (e) {
+        debug(`Template ${mode}.json not found on disk — using fallback`);
         templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
       }
     }

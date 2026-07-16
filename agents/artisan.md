@@ -86,7 +86,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 2. Scan project for existing conventions — detect tech stack, file structure, coding patterns
 3. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
 4. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
-5. Implement incrementally — one plan step at a time. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The dispatch-gate plugin generates the dispatch prompt from the checkpoint template.
+5. Implement incrementally — one plan step at a time. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The delegation-gate plugin generates the dispatch prompt from the checkpoint template.
 
    ### Dispatching Committer
    
@@ -109,7 +109,7 @@ Read the specification and plan, implement each step, write tests, produce an im
    })
    ```
    
-   The `description` and `prompt` are placeholders required for schema validation; the dispatch-gate plugin overrides them from the template.
+   The `description` and `prompt` are placeholders required for schema validation; the delegation-gate plugin overrides them from the template.
 
 6. Write tests first (TDD: red → green → refactor)
 7. Check off completed items in the TODO list as you go

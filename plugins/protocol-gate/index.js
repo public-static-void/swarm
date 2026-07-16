@@ -1,3 +1,13 @@
+// Protocol-Gate Plugin — WHEN: state machine, phase advancement, agent routing, retry tracking
+//
+// Hooks: chat.params, permission.ask, tool.execute.before
+// Scope: Overseer-only. Other agents pass through unaffected.
+//
+// This plugin enforces which state the Overseer is in and what it can do
+// in that state. It does NOT handle delegation prompt formatting — that
+// responsibility belongs to delegation-gate (HOW).
+//
+// Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
 import { execFile } from "child_process";
 import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
@@ -33,8 +43,7 @@ function protocolGatePlugin() {
     BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "Session not initialized", guidance: "Wait for chat.params to initialize" },
     WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
     RETRY_LIMIT_EXCEEDED: (phase) => ({ code: "RETRY_LIMIT_EXCEEDED", message: `Retry limit exceeded for ${phase}`, guidance: "Escalate to user — do not auto-advance" }),
-    CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "Backward transition cycle limit exceeded", guidance: "Escalate to user" },
-    TEMPLATE_MISSING: { code: "TEMPLATE_MISSING", message: "Dispatch template missing", guidance: "Check plugins/protocol-gate/templates directory" }
+    CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "Backward transition cycle limit exceeded", guidance: "Escalate to user" }
   };
 
   function debug(msg) {
@@ -54,8 +63,7 @@ function protocolGatePlugin() {
         agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", COMMIT: "committer" },
         backwardTransitions: { VERIFY: ["SWARM"] },
         maxRetriesPerPhase: 5,
-        maxCyclesPerTransition: 3,
-        templatesDir: "templates"
+        maxCyclesPerTransition: 3
       };
     }
   }
@@ -180,39 +188,18 @@ function protocolGatePlugin() {
     return true;
   }
 
-  function extractFieldsFromPrompt(prompt) {
-    const fields = {};
+  // Extracts agent name from raw prompt (AGENT: x) or rendered prompt (DISPATCH TO: x).
+  // Handles both formats because hook execution order between protocol-gate and
+  // delegation-gate is not guaranteed — delegation-gate may render before we run.
+  function extractAgentFromPrompt(prompt) {
     const lines = prompt.split("\n");
     for (const line of lines) {
-      const match = line.match(/^(AGENT|MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):\s*(.*)/i);
-      if (match) {
-        fields[match[1].toLowerCase().replace(/\s+/g, "_")] = match[2].trim();
-      }
+      const rawMatch = line.match(/^AGENT:\s*(.*)/i);
+      if (rawMatch) return rawMatch[1].trim().toLowerCase();
+      const renderedMatch = line.match(/^DISPATCH TO:\s*(.*)/i);
+      if (renderedMatch) return renderedMatch[1].trim().toLowerCase();
     }
-    return fields;
-  }
-
-  function loadTemplate(mode) {
-    try {
-      const templatePath = join(process.cwd(), "plugins", "protocol-gate", "templates", `${mode}.json`);
-      const raw = JSON.parse(readFileSync(templatePath, "utf8"));
-      // Guard against corrupted templates (e.g. lifecycle.json content pasted into template file)
-      if (!raw.template || typeof raw.template !== "string") {
-        debug(`Template ${mode}.json missing 'template' field — corrupted file`);
-        return null;
-      }
-      return raw;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  function renderTemplate(templateStr, fields) {
-    let result = templateStr;
-    for (const [key, value] of Object.entries(fields)) {
-      result = result.replace(new RegExp(`\\{${key}\\}`, "g"), value);
-    }
-    return result;
+    return null;
   }
 
   function getAllowedTools(phaseName) {
@@ -325,8 +312,7 @@ function protocolGatePlugin() {
         }
 
         const prompt = args?.prompt || "";
-        const fields = extractFieldsFromPrompt(prompt);
-        const agentName = fields.agent?.toLowerCase();
+        const agentName = extractAgentFromPrompt(prompt);
 
         if (agentName) {
           const currentPhaseAgent = PHASE_AGENT_MAP[phaseName]?.toLowerCase();
@@ -342,15 +328,6 @@ function protocolGatePlugin() {
               }
             }
             delegationAttempted.set(sessionID, true);
-
-            // Template injection
-            if (fields.mode) {
-              const template = loadTemplate(fields.mode);
-              if (template) {
-                const rendered = renderTemplate(template.template, fields);
-                output.args.prompt = rendered;
-              }
-            }
           }
           // Check if agent matches a backward target → backward transition
           else {
@@ -362,15 +339,6 @@ function protocolGatePlugin() {
               // After backward transition, the task proceeds to the new phase's agent
               // Retry counter was reset in handleBackwardTransition
               delegationAttempted.set(sessionID, false);
-
-              // Template injection for the new phase
-              if (fields.mode) {
-                const template = loadTemplate(fields.mode);
-                if (template) {
-                  const rendered = renderTemplate(template.template, fields);
-                  output.args.prompt = rendered;
-                }
-              }
             } else {
               // Wrong agent — not current phase, not a valid backward target
               const expectedAgent = currentPhaseAgent || phaseName;
