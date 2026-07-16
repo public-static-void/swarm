@@ -69,17 +69,26 @@ function getPhaseName(phaseId) {
   return Object.entries(STATES).find(([, id]) => id === phaseId)?.[0];
 }
 
-const LOG_DIR = join(process.cwd(), "logs");
-const LOG_FILE = join(LOG_DIR, "protocol-gate.log");
+// Lazy-initialized paths — computed at first use, not module import time.
+// Ensures process.cwd() reflects the actual workspace root.
+let _logFile = null;
 
-function ensureLogDir() {
-  try { mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
+function getLogFile() {
+  if (!_logFile) {
+    const logDir = join(process.cwd(), "logs");
+    try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
+    _logFile = join(logDir, "protocol-gate.log");
+  }
+  return _logFile;
 }
 
 function debug(msg) {
   if (process.env.PROTOCOL_GATE_DEBUG) {
-    ensureLogDir();
-    appendFileSync(LOG_FILE, `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
+    try {
+      appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
+    } catch (_) {
+      process.stderr.write(`[protocol-gate] ${msg}\n`);
+    }
   }
 }
 
