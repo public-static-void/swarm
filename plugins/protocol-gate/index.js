@@ -147,7 +147,9 @@ function extractAgentFromPrompt(prompt) {
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
   if (phase === undefined) return false;
 
-  const knowledgeDir = join(PLUGIN_DIR, "..", "knowledge");
+  // Knowledge directory is project-relative (cwd), not plugin-relative.
+  // PLUGIN_DIR stays for log paths which ARE relative to plugin location.
+  const knowledgeDir = join(process.cwd(), "knowledge");
   let files = [];
   try {
     files = readdirSync(knowledgeDir);
