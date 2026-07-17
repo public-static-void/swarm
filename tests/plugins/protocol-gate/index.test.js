@@ -36,9 +36,10 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(0);
     });
 
-    it("cleans up non-overseer session state", async () => {
+    it("does not track non-overseer session in phase map", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "artisan" }, {});
 
+      // Non-overseer sessions pass through — never added to the map
       expect(hooks.sessionPhaseMap.has("test-1")).toBe(false);
     });
 
@@ -80,10 +81,11 @@ describe("Protocol-Gate Plugin", () => {
   });
 
   describe("tool.execute.before Hook", () => {
-    it("throws BLOCKED_UNINITIALIZED for unknown session", async () => {
-      await expect(
-        hooks["tool.execute.before"]({ tool: "todowrite", sessionID: "unknown", callID: "c1" }, { args: {} })
-      ).rejects.toThrow("Session not initialized");
+    it("passes through non-overseer session (unknown session — not in phase map)", async () => {
+      const output = { args: {} };
+      // Non-overseer session: phase is undefined → returns early, allows passage
+      await hooks["tool.execute.before"]({ tool: "todowrite", sessionID: "unknown", callID: "c1" }, output);
+      // Should not throw — non-overseer sessions pass through unaffected
     });
 
     it("transitions to INTENT on todowrite with all keywords", async () => {

@@ -278,11 +278,10 @@ export default {
           delegationAttempted.set(sessionID, false);
         }
       } else {
-        debug(`chat.params: cleaning up non-overseer session ${sessionID} (agent=${agent})`);
-        sessionPhaseMap.delete(sessionID);
-        retryMap.delete(sessionID);
-        cycleMap.delete(sessionID);
-        delegationAttempted.delete(sessionID);
+        // Non-overseer sessions pass through unaffected — don't touch the maps.
+        // Protocol-gate is Overseer-only; subagent tool calls must not be blocked.
+        debug(`chat.params: non-overseer session ${sessionID} (agent=${agent}) — passing through`);
+        return;
       }
     }
 
@@ -315,8 +314,10 @@ export default {
 
       const phase = sessionPhaseMap.get(sessionID);
       if (phase === undefined) {
-        debug(`tool.execute.before: BLOCKED_UNINITIALIZED session=${sessionID} tool=${tool}`);
-        throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.code, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.message, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.guidance);
+        // Session not tracked by protocol-gate (non-overseer) — allow passage.
+        // Subagent sessions are never in the map; only overseer sessions are.
+        debug(`tool.execute.before: non-overseer session ${sessionID} tool=${tool} — passing through`);
+        return;
       }
 
       const phaseName = getPhaseName(phase);

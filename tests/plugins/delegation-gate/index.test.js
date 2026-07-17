@@ -70,6 +70,21 @@ RESULT KD: knowledge/impl-foo.md`;
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
+    it("extracts fields with underscore variants (intent_kd, session_date, result_kd)", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+intent_kd: knowledge/intent-foo.md
+session_date: 2026-07-15
+SCOPE: Implement feature X
+result_kd: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("2026-07-15");
+    });
+
     it("rejects prompt without structured fields", async () => {
       const prompt = "Please implement feature X";
 
@@ -328,6 +343,22 @@ RESULT KD: knowledge/impl-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
       expect(output.args.description).toContain("Delegation Prompt Format");
+    });
+
+    it("does not duplicate format hint when description already contains it", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt, description: "Existing description with Delegation Prompt Format: already here" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      // Should not append a second copy
+      const matches = output.args.description.match(/Delegation Prompt Format:/g);
+      expect(matches).toHaveLength(1);
     });
   });
 

@@ -123,7 +123,7 @@ function extractFieldsFromPrompt(prompt, subagentType, description) {
       fields["agent"] = agentMatch[2].trim();
       continue;
     }
-    const match = line.match(/^(MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):\s*(.*)/i);
+    const match = line.match(/^(MODE|INTENT.KD|SESSION.DATE|SCOPE|RESULT.KD|KD.PATHS):\s*(.*)/i);
     if (match) {
       fields[match[1].toLowerCase().replace(/\s+/g, "_")] = match[2].trim();
     }
@@ -187,7 +187,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed || /^(AGENT|DISPATCH TO|MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):/i.test(trimmed)) continue;
+    if (!trimmed || /^(AGENT|DISPATCH TO|MODE|INTENT.KD|SESSION.DATE|SCOPE|RESULT.KD|KD.PATHS):/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9_-]+\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
@@ -216,17 +216,19 @@ function renderTemplate(template, fields) {
 function injectToolDocs(output) {
   const formatHint = `
 Delegation Prompt Format:
-DISPATCH TO: <target_agent>
-MODE: <dispatch_mode>
-INTENT KD: <intent_kd_path>
-SESSION DATE: <session_date>
-SCOPE: <scope_description>
-RESULT KD: <result_kd_path>
-KD PATHS: <kd_path1>, <kd_path2>
+DISPATCH TO: explorer
+MODE: explore
+INTENT KD: knowledge/intent-*.md
+SESSION DATE: 2026-07-17
+SCOPE: <your scope description>
+RESULT KD: knowledge/exploration-*.md
+KD PATHS: knowledge/intent-*.md
 `;
 
   if (!output.args) output.args = {};
-  output.args.description = (output.args.description || "") + formatHint;
+  if (!output.args.description?.includes("Delegation Prompt Format:")) {
+    output.args.description = (output.args.description || "") + formatHint;
+  }
 }
 
 export default {
