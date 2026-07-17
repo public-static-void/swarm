@@ -225,6 +225,7 @@ export default {
     const MAX_RETRIES = config.maxRetriesPerPhase || 5;
 
     const sessionPhaseMap = new Map();
+    const overseerSessions = new Set();
     const retryMap = new Map();
     const cycleMap = new Map();
     // Tracks whether a delegation was attempted in the current phase entry.
@@ -277,6 +278,7 @@ export default {
       const { sessionID, agent } = input;
 
       if (agent === "overseer") {
+        overseerSessions.add(sessionID);
         // Only initialize when session isn't already tracked (opencode calls
         // chat.params on every tool invocation cycle, not once per session).
         if (!sessionPhaseMap.has(sessionID)) {
@@ -314,18 +316,34 @@ export default {
       }
     }
 
+    // --- Helper: overseer detection ---
+    // Only sessions where chat.params received agent:"overseer" are tracked.
+    // sessionPhaseMap alone is unreliable — a race between chat.params and
+    // tool.execute.before could cause a newly-initialized overseer session
+    // to have an undefined phase. The overseerSessions set is the source of truth.
+    function isOverseerSession(sid) {
+      return overseerSessions.has(sid);
+    }
+
     // --- Hook: tool.execute.before ---
     async function toolExecuteBefore(input, output) {
       const { tool, sessionID, callID } = input;
       // opencode API: tool args live on output.args, not input.args
       const args = output.args || {};
 
-      const phase = sessionPhaseMap.get(sessionID);
-      if (phase === undefined) {
-        // Session not tracked by protocol-gate (non-overseer) — allow passage.
-        // Subagent sessions are never in the map; only overseer sessions are.
+      if (!isOverseerSession(sessionID)) {
+        // Session never identified as overseer via chat.params — pass through.
+        // Subagent sessions are never in overseerSessions.
         debug(`tool.execute.before: non-overseer session ${sessionID} tool=${tool} — passing through`);
         return;
+      }
+
+      const phase = sessionPhaseMap.get(sessionID);
+      if (phase === undefined) {
+        // BUG 2 FIX: fail-closed — overseer session exists but phase is missing.
+        // This is an error state; block rather than silently allow.
+        debug(`tool.execute.before: BLOCKED overseer session ${sessionID} has no phase entry (tool=${tool})`);
+        throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.code, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.message, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.guidance);
       }
 
       const phaseName = getPhaseName(phase);
@@ -484,6 +502,8 @@ export default {
       // Test-access properties
       STATES,
       sessionPhaseMap,
+      overseerSessions,
+      isOverseerSession,
       retryMap,
       cycleMap,
       delegationAttempted,
