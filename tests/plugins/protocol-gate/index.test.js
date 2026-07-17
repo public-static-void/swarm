@@ -36,11 +36,20 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(0);
     });
 
-    it("does not track non-overseer session in phase map", async () => {
+    it("tracks overseer sessions in overseerSessions set", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      expect(hooks.overseerSessions.has("test-1")).toBe(true);
+      expect(hooks.isOverseerSession("test-1")).toBe(true);
+    });
+
+    it("does not track non-overseer session in phase map or overseer set", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "artisan" }, {});
 
       // Non-overseer sessions pass through — never added to the map
       expect(hooks.sessionPhaseMap.has("test-1")).toBe(false);
+      expect(hooks.overseerSessions.has("test-1")).toBe(false);
+      expect(hooks.isOverseerSession("test-1")).toBe(false);
     });
 
     it("tracks concurrent sessions independently", async () => {
@@ -49,6 +58,8 @@ describe("Protocol-Gate Plugin", () => {
 
       expect(hooks.sessionPhaseMap.get("session-1")).toBe(0);
       expect(hooks.sessionPhaseMap.get("session-2")).toBe(0);
+      expect(hooks.isOverseerSession("session-1")).toBe(true);
+      expect(hooks.isOverseerSession("session-2")).toBe(true);
     });
   });
 
@@ -85,6 +96,26 @@ describe("Protocol-Gate Plugin", () => {
       const output = { args: {} };
       // Non-overseer session: phase is undefined → returns early, allows passage
       await hooks["tool.execute.before"]({ tool: "todowrite", sessionID: "unknown", callID: "c1" }, output);
+      // Should not throw — non-overseer sessions pass through unaffected
+    });
+
+    it("blocks overseer session with missing phase entry (fail-closed, BUG 2)", async () => {
+      // Simulate an overseer session that was tracked but lost its phase entry
+      hooks.overseerSessions.add("orphan-overseer");
+      // Session is in overseerSessions but NOT in sessionPhaseMap
+
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: "orphan-overseer", callID: "c1" },
+          { args: { prompt: "AGENT: explorer\nMODE: explore\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-17\nSCOPE: Explore codebase\nRESULT KD: knowledge/exploration-foo.md" } }
+        )
+      ).rejects.toThrow("Session not initialized");
+    });
+
+    it("passes through non-overseer session calling task tool", async () => {
+      // A non-overseer session (e.g., explorer) calls task tool — should pass through
+      const output = { args: { prompt: "some task" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "explorer-session", callID: "c1" }, output);
       // Should not throw — non-overseer sessions pass through unaffected
     });
 
