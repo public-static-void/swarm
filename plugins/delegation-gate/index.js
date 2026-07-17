@@ -109,32 +109,46 @@ function loadTemplates(config) {
   return templates;
 }
 
-// subagentType and description are fallback sources — the Overseer puts agent in
-// output.args.subagent_type (not in prompt text) and may put scope-like content
-// in output.args.description. When the regex doesn't find a field in the prompt
-// text, these fallback parameters supply the missing values.
-function extractFieldsFromPrompt(prompt, subagentType, description) {
-  const fields = {};
-  const lines = prompt.split("\n");
-  for (const line of lines) {
+// Scan a text block for structured delegation fields. Returns fields found.
+// Both prompt and description are scanned because injectToolDocs puts the format
+// hint in description — agents see the hint there and naturally place structured
+// fields in description rather than prompt.
+function extractFromText(text, fields) {
+  if (!text) return;
+  for (const line of text.split("\n")) {
     // Templates use "DISPATCH TO:" but agents may send raw "AGENT:" format — accept both
     const agentMatch = line.match(/^(AGENT|DISPATCH TO):\s*(.*)/i);
     if (agentMatch) {
-      fields["agent"] = agentMatch[2].trim();
+      if (!fields["agent"]) fields["agent"] = agentMatch[2].trim();
       continue;
     }
     const match = line.match(/^(MODE|INTENT.KD|SESSION.DATE|SCOPE|RESULT.KD|KD.PATHS):\s*(.*)/i);
     if (match) {
-      fields[match[1].toLowerCase().replace(/\s+/g, "_")] = match[2].trim();
+      const key = match[1].toLowerCase().replace(/\s+/g, "_");
+      if (!fields[key]) fields[key] = match[2].trim();
     }
   }
+}
+
+// subagentType is a fallback — the Overseer puts agent in output.args.subagent_type,
+// not in prompt text. Scan both prompt and description for structured fields because
+// the format hint is injected into description, causing agents to place fields there.
+function extractFieldsFromPrompt(prompt, subagentType, description) {
+  const fields = {};
+  // Primary source: prompt text
+  extractFromText(prompt, fields);
+  // Secondary source: description (where format hint is injected)
+  extractFromText(description, fields);
   // Fallback: agent lives in subagent_type parameter, not in prompt text
   if (!fields["agent"] && subagentType) {
     fields["agent"] = subagentType;
   }
-  // Fallback: scope-like content may live in the description parameter
-  if (!fields["scope"] && description) {
-    fields["scope"] = description;
+  // Fallback: when scope is missing from structured fields but description has
+  // plain text content, use the entire description as scope. This handles the
+  // case where the agent puts a natural-language scope in description without
+  // the "SCOPE:" prefix.
+  if (!fields["scope"] && description && description.trim()) {
+    fields["scope"] = description.trim();
   }
   return fields;
 }
@@ -255,6 +269,11 @@ export default {
       // The Overseer puts agent in subagent_type, not in prompt text — pass as fallback
       const subagentType = args?.subagent_type || "";
       const description = args?.description || "";
+
+      // Log raw inputs before any mutation — critical for debugging delegation failures
+      debug(`RAW PROMPT (${prompt.length} chars): ${prompt.substring(0, 500)}`);
+      debug(`RAW DESCRIPTION (${description.length} chars): ${description.substring(0, 500)}`);
+      debug(`RAW SUBAGENT_TYPE: ${subagentType}`);
 
       injectToolDocs(output);
 

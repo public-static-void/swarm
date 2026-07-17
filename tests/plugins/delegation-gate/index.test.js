@@ -439,6 +439,89 @@ RESULT KD: knowledge/impl-foo.md`;
     });
   });
 
+  describe("Description Field Extraction (Issue 2)", () => {
+    it("extracts all fields from description when prompt is empty", async () => {
+      // Simulates the agent putting all structured fields in description
+      // where injectToolDocs placed the format hint
+      const description = `MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt: "", description, subagent_type: "artisan" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("2026-07-17");
+      expect(output.args.prompt).toContain("Implement feature X");
+    });
+
+    it("extracts fields split across prompt and description", async () => {
+      // Agent puts some fields in prompt, others in description
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md`;
+      const description = `SESSION DATE: 2026-07-17
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt, description } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("2026-07-17");
+      expect(output.args.prompt).toContain("Implement feature X");
+    });
+
+    it("extracts result_kd from description (was NEVER found before fix)", async () => {
+      // This was the specific failure mode: result_kd in description was silently ignored
+      const prompt = `MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
+SCOPE: Implement feature X`;
+      const description = `RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt, description, subagent_type: "artisan" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("knowledge/impl-foo.md");
+    });
+
+    it("prompt fields take precedence over description fields", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
+SCOPE: From prompt
+RESULT KD: knowledge/impl-foo.md`;
+      const description = `SCOPE: From description`;
+
+      const output = { args: { prompt, description } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("From prompt");
+    });
+
+    it("valid end-to-end: all fields in description (agent via subagent_type)", async () => {
+      // Recreates the exact Overseer behavior: fields in description, agent in subagent_type
+      const description = `MODE: preflight
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
+SCOPE: Setup workspace
+RESULT KD: knowledge/plan-preflight.md`;
+
+      const output = { args: { prompt: "", description, subagent_type: "committer" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("committer");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("2026-07-17");
+      expect(output.args.prompt).toContain("Setup workspace");
+      expect(output.args.prompt).toContain("knowledge/plan-preflight.md");
+    });
+  });
+
   describe("Non-Task Tools", () => {
     it("passes through non-task tools without validation", async () => {
       const output = { args: { filePath: "some-file.md" } };
