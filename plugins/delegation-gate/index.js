@@ -113,7 +113,13 @@ function extractFieldsFromPrompt(prompt) {
   const fields = {};
   const lines = prompt.split("\n");
   for (const line of lines) {
-    const match = line.match(/^(AGENT|MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):\s*(.*)/i);
+    // Templates use "DISPATCH TO:" but agents may send raw "AGENT:" format — accept both
+    const agentMatch = line.match(/^(AGENT|DISPATCH TO):\s*(.*)/i);
+    if (agentMatch) {
+      fields["agent"] = agentMatch[2].trim();
+      continue;
+    }
+    const match = line.match(/^(MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):\s*(.*)/i);
     if (match) {
       fields[match[1].toLowerCase().replace(/\s+/g, "_")] = match[2].trim();
     }
@@ -169,7 +175,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed || /^(AGENT|MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):/i.test(trimmed)) continue;
+    if (!trimmed || /^(AGENT|DISPATCH TO|MODE|INTENT KD|SESSION DATE|SCOPE|RESULT KD|KD PATHS):/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9_-]+\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
@@ -198,7 +204,7 @@ function renderTemplate(template, fields) {
 function injectToolDocs(output) {
   const formatHint = `
 Delegation Prompt Format:
-AGENT: <target_agent>
+DISPATCH TO: <target_agent>
 MODE: <dispatch_mode>
 INTENT KD: <intent_kd_path>
 SESSION DATE: <session_date>

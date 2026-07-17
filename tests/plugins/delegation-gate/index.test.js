@@ -42,6 +42,34 @@ RESULT KD: knowledge/impl-foo.md`;
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
+    it("extracts agent from DISPATCH TO: format (template-rendered)", async () => {
+      const prompt = `DISPATCH TO: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
+    it("extracts agent from AGENT: format (raw prompt)", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
     it("rejects prompt without structured fields", async () => {
       const prompt = "Please implement feature X";
 
@@ -372,6 +400,20 @@ RESULT KD: knowledge/impl-foo.md
       await expect(
         hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
       ).rejects.toThrow("Foreign paths detected");
+    });
+
+    it("skips DISPATCH TO: lines in foreign path detection", async () => {
+      const prompt = `DISPATCH TO: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      // DISPATCH TO: line should not trigger foreign path detection
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
   });
 });
