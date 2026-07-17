@@ -190,7 +190,9 @@ function validateScope(scope) {
 }
 
 function validateKDPath(path) {
-  return /^knowledge\/[a-zA-Z0-9_-]+\.md$/.test(path);
+  // Accept knowledge/<name>.md where name may contain letters, digits, hyphens,
+  // underscores, and dots. Reject globs (*), absolute paths, and nested dirs.
+  return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(path);
 }
 
 function detectCodeBlocks(prompt) {
@@ -232,11 +234,11 @@ function injectToolDocs(output) {
 Delegation Prompt Format:
 DISPATCH TO: explorer
 MODE: explore
-INTENT KD: knowledge/intent-*.md
+INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: 2026-07-17
 SCOPE: <your scope description>
-RESULT KD: knowledge/exploration-*.md
-KD PATHS: knowledge/intent-*.md
+RESULT KD: knowledge/exploration-<name>.md
+KD PATHS: knowledge/intent-<name>.md
 `;
 
   if (!output.args) output.args = {};
@@ -323,6 +325,8 @@ export default {
           }
         }
       }
+
+      debug(`ALLOW delegation: agent=${fields.agent} mode=${fields.mode} intent_kd=${fields.intent_kd} result_kd=${fields.result_kd}`);
 
       const template = templates[fields.mode];
       if (!template) {
