@@ -255,10 +255,14 @@ export default {
       const { sessionID, agent } = input;
 
       if (agent === "overseer") {
-        debug(`chat.params: initializing overseer session ${sessionID}`);
-        sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
-        retryMap.set(sessionID, 0);
-        delegationAttempted.set(sessionID, false);
+        // Only initialize when session isn't already tracked (opencode calls
+        // chat.params on every tool invocation cycle, not once per session).
+        if (!sessionPhaseMap.has(sessionID)) {
+          debug(`chat.params: initializing overseer session ${sessionID}`);
+          sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+          retryMap.set(sessionID, 0);
+          delegationAttempted.set(sessionID, false);
+        }
       } else {
         debug(`chat.params: cleaning up non-overseer session ${sessionID} (agent=${agent})`);
         sessionPhaseMap.delete(sessionID);
