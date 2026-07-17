@@ -331,6 +331,83 @@ RESULT KD: knowledge/impl-foo.md`;
     });
   });
 
+  describe("Subagent Type Fallback", () => {
+    it("extracts agent from subagent_type when not in prompt text", async () => {
+      // Overseer puts agent in output.args.subagent_type, not in prompt
+      const prompt = `MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt, subagent_type: "artisan" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("artisan");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
+    it("prompt text agent takes precedence over subagent_type", async () => {
+      const prompt = `AGENT: committer
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt, subagent_type: "artisan" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      // Template renders with committer (from prompt), not artisan (from subagent_type)
+      expect(output.args.prompt).toContain("committer");
+    });
+
+    it("full end-to-end: subagent_type provides agent field", async () => {
+      const prompt = `MODE: investigate
+INTENT KD: knowledge/intent-bar.md
+SESSION DATE: 2026-07-17
+SCOPE: Analyze plugin system
+RESULT KD: knowledge/analysis-bar.md`;
+
+      const output = { args: { prompt, subagent_type: "artisan" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("artisan");
+      expect(output.args.prompt).toContain("knowledge/intent-bar.md");
+      expect(output.args.prompt).toContain("Analyze plugin system");
+    });
+  });
+
+  describe("Description Scope Fallback", () => {
+    it("extracts scope from description when not in prompt text", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt, description: "Implement feature X" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("Implement feature X");
+    });
+
+    it("prompt text scope takes precedence over description", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
+SCOPE: Fix the bug
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt, description: "Implement feature X" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      // Template renders with "Fix the bug" (from prompt), not "Implement feature X" (from description)
+      expect(output.args.prompt).toContain("Fix the bug");
+    });
+  });
+
   describe("Non-Task Tools", () => {
     it("passes through non-task tools without validation", async () => {
       const output = { args: { filePath: "some-file.md" } };

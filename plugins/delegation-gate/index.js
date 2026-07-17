@@ -109,7 +109,11 @@ function loadTemplates(config) {
   return templates;
 }
 
-function extractFieldsFromPrompt(prompt) {
+// subagentType and description are fallback sources — the Overseer puts agent in
+// output.args.subagent_type (not in prompt text) and may put scope-like content
+// in output.args.description. When the regex doesn't find a field in the prompt
+// text, these fallback parameters supply the missing values.
+function extractFieldsFromPrompt(prompt, subagentType, description) {
   const fields = {};
   const lines = prompt.split("\n");
   for (const line of lines) {
@@ -123,6 +127,14 @@ function extractFieldsFromPrompt(prompt) {
     if (match) {
       fields[match[1].toLowerCase().replace(/\s+/g, "_")] = match[2].trim();
     }
+  }
+  // Fallback: agent lives in subagent_type parameter, not in prompt text
+  if (!fields["agent"] && subagentType) {
+    fields["agent"] = subagentType;
+  }
+  // Fallback: scope-like content may live in the description parameter
+  if (!fields["scope"] && description) {
+    fields["scope"] = description;
   }
   return fields;
 }
@@ -236,9 +248,13 @@ export default {
 
       debug(`tool.execute.before: task tool — processing delegation prompt`);
 
-      injectToolDocs(output);
-
+      // Capture original description before injectToolDocs appends format hint
       const prompt = args?.prompt || "";
+      // The Overseer puts agent in subagent_type, not in prompt text — pass as fallback
+      const subagentType = args?.subagent_type || "";
+      const description = args?.description || "";
+
+      injectToolDocs(output);
 
       if (isBareKDPath(prompt)) {
         debug(`VALIDATION FAILED: bare KD path without structured fields`);
@@ -255,7 +271,7 @@ export default {
         throw new DelegationGateError(ERRORS.FOREIGN_PATH.code, ERRORS.FOREIGN_PATH.message, ERRORS.FOREIGN_PATH.guidance);
       }
 
-      const fields = extractFieldsFromPrompt(prompt);
+      const fields = extractFieldsFromPrompt(prompt, subagentType, description);
       const requiredFields = ["agent", "mode", "intent_kd", "session_date", "scope", "result_kd"];
 
       debug(`Extracted fields: ${Object.keys(fields).join(", ")}`);
