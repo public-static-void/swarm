@@ -144,6 +144,19 @@ function extractAgentFromPrompt(prompt) {
   return null;
 }
 
+// Normalize absolute paths to project-relative for prefix matching.
+// opencode passes absolute paths (e.g. /home/user/project/knowledge/intent-foo.md)
+// but our checks use relative patterns (e.g. knowledge/intent-).
+// Handles paths from different locations by checking if pattern exists anywhere.
+function toProjectRelative(filePath) {
+  const cwd = process.cwd();
+  if (filePath.startsWith(cwd + "/")) {
+    return filePath.slice(cwd.length + 1);
+  }
+  // Fallback: check if the pattern exists in the path (handles nested workspaces)
+  return filePath;
+}
+
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
   if (phase === undefined) return false;
 
@@ -159,6 +172,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
   }
 
   const patterns = {
+    [STATES.INTENT]: /^intent-/i,
     [STATES.PREFLIGHT]: /^plan-.*preflight-/i,
     [STATES.EXPLORE]: /^exploration-/i,
     [STATES.INVESTIGATE]: /^analysis-/i,
@@ -329,11 +343,17 @@ export default {
       // --- write handler ---
       else if (tool === "write") {
         const path = args?.filePath || "";
-        if (phase === STATES.INTENT && !path.startsWith("knowledge/intent-")) {
+        const relPath = toProjectRelative(path);
+
+        // Check if path matches the required pattern (handles both relative and absolute paths)
+        const isIntentKD = relPath.startsWith("knowledge/intent-") || relPath.includes("/knowledge/intent-");
+        const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
+
+        if (phase === STATES.INTENT && !isIntentKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/intent-)`);
           throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to intent KDs", "Write to knowledge/intent-*.md");
         }
-        if (phase === STATES.REPORT && !path.startsWith("knowledge/report-")) {
+        if (phase === STATES.REPORT && !isReportKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/report-)`);
           throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to report KDs", "Write to knowledge/report-*.md");
         }
@@ -343,9 +363,13 @@ export default {
       else if (tool === "read") {
         const path = args?.filePath || "";
         if (phase === STATES.INTENT || phase === STATES.REPORT) {
-          if (!path.includes("templates")) {
-            debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to templates)`);
-            throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates", "Read from template directory only");
+          const relPath = toProjectRelative(path);
+          const isTemplate = relPath.includes("templates");
+          const isKnowledge = relPath.startsWith("knowledge/") || relPath.includes("/knowledge/");
+
+          if (!isTemplate && !isKnowledge) {
+            debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to templates and knowledge KDs)`);
+            throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates and knowledge KDs", "Read from template or knowledge directory only");
           }
         }
       }
@@ -400,14 +424,19 @@ export default {
       }
 
       // --- disk-based advancement for non-task tools (R009) ---
+      // Re-read phase after tool handlers — todowrite may have advanced
+      // from PROTOCOL_NOT_LOADED to INTENT, and stale variable would miss
+      // the INTENT pattern in checkDiskAdvancement.
       if (tool !== "task") {
-        if (await checkDiskAdvancement(sessionID, phase, sessionPhaseMap)) {
-          const nextPhase = phase + 1;
+        const currentPhase = sessionPhaseMap.get(sessionID);
+        const currentPhaseName = getPhaseName(currentPhase);
+        if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap)) {
+          const nextPhase = currentPhase + 1;
           if (nextPhase <= STATES.REPORT) {
             sessionPhaseMap.set(sessionID, nextPhase);
             retryMap.set(sessionID, 0);
             delegationAttempted.set(sessionID, false);
-            debug(`Disk advancement: ${phaseName} → ${getPhaseName(nextPhase)}`);
+            debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(nextPhase)}`);
           }
         }
       }
