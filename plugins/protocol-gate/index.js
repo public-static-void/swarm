@@ -231,6 +231,14 @@ export default {
     // When true and task is called again in same phase → retry.
     // Reset on disk advancement (success) or backward transition.
     const delegationAttempted = new Map();
+    // Prevents instant phase jump: when todowrite advances the phase,
+    // skip the disk check in the same call. Without this, todowrite
+    // advances PROTOCOL_NOT_LOADED → INTENT, then the disk check
+    // immediately finds a pre-existing intent KD and jumps to PREFLIGHT.
+    const skipDiskCheckAfterTodo = new Map();
+    // Tracks consecutive disk check failures per session to detect stuck phases.
+    // After 10 failed checks, logs a diagnostic suggesting the delegation is blocked.
+    const diskCheckFailures = new Map();
 
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
 
@@ -332,6 +340,7 @@ export default {
             if (hasAll) {
               debug(`todowrite: all lifecycle keywords present → advancing to INTENT`);
               sessionPhaseMap.set(sessionID, STATES.INTENT);
+              skipDiskCheckAfterTodo.set(sessionID, true);
             } else {
               debug(`todowrite: missing lifecycle keywords in PROTOCOL_NOT_LOADED`);
               throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.code, ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.message, ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.guidance);
@@ -366,11 +375,23 @@ export default {
         if (phase === STATES.INTENT || phase === STATES.REPORT) {
           const relPath = toProjectRelative(path);
           const isTemplate = relPath.includes("templates");
-          const isKnowledge = relPath.startsWith("knowledge/") || relPath.includes("/knowledge/");
 
-          if (!isTemplate && !isKnowledge) {
-            debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to templates and knowledge KDs)`);
-            throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates and knowledge KDs", "Read from template or knowledge directory only");
+          if (phase === STATES.INTENT) {
+            // INTENT phase: only allow templates and the current session's intent KDs.
+            // Restricting to intent KDs prevents the Overseer from reading prior-session
+            // reports or other KDs and falling back to self-execution.
+            const isIntentKD = /knowledge\/intent-/i.test(relPath);
+            if (!isTemplate && !isIntentKD) {
+              debug(`read: BLOCKED phase=${phaseName} path=${path} (INTENT reads restricted to templates and intent KDs)`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates and intent KDs", "Read from template or knowledge/intent-*.md only");
+            }
+          } else {
+            // REPORT phase: allow templates and any knowledge KD (needed to compose report)
+            const isKnowledge = relPath.startsWith("knowledge/") || relPath.includes("/knowledge/");
+            if (!isTemplate && !isKnowledge) {
+              debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to templates and knowledge KDs)`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates and knowledge KDs", "Read from template or knowledge directory only");
+            }
           }
         }
       }
@@ -429,15 +450,28 @@ export default {
       // from PROTOCOL_NOT_LOADED to INTENT, and stale variable would miss
       // the INTENT pattern in checkDiskAdvancement.
       if (tool !== "task") {
-        const currentPhase = sessionPhaseMap.get(sessionID);
-        const currentPhaseName = getPhaseName(currentPhase);
-        if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap)) {
-          const nextPhase = currentPhase + 1;
-          if (nextPhase <= STATES.REPORT) {
-            sessionPhaseMap.set(sessionID, nextPhase);
+        // Skip disk check when todowrite just advanced the phase in this call.
+        // Without this guard, todowrite advances to INTENT, then the disk check
+        // immediately finds a pre-existing intent KD and jumps to PREFLIGHT.
+        if (skipDiskCheckAfterTodo.get(sessionID)) {
+          skipDiskCheckAfterTodo.set(sessionID, false);
+          debug(`Disk advancement: skipped — phase just advanced by todowrite`);
+        } else {
+          const currentPhase = sessionPhaseMap.get(sessionID);
+          const currentPhaseName = getPhaseName(currentPhase);
+          if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap)) {
+            sessionPhaseMap.set(sessionID, currentPhase + 1);
             retryMap.set(sessionID, 0);
             delegationAttempted.set(sessionID, false);
-            debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(nextPhase)}`);
+            diskCheckFailures.set(sessionID, 0);
+            debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(currentPhase + 1)}`);
+          } else {
+            // Track consecutive failures to detect stuck phases
+            const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
+            diskCheckFailures.set(sessionID, failures);
+            if (failures === 10) {
+              debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
+            }
           }
         }
       }

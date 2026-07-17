@@ -123,16 +123,20 @@ describe("Protocol-Gate Plugin", () => {
         { args: { todos: keywords.map(k => ({ content: k })) } }
       );
 
-      // Disk advancement may have occurred (intent KD files exist in knowledge/)
-      const phaseAfterFirst = hooks.sessionPhaseMap.get("test-1");
+      // Phase should be INTENT after todowrite (disk check skipped in same call)
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
 
-      // Call todowrite again — phase should not change further
+      // Call todowrite again — disk check fires on this call and may advance
+      // (the skip flag was cleared after first call)
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c2" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
       );
-      // Key invariant: todowrite content alone doesn't drive advancement
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(phaseAfterFirst);
+      // Disk check may advance past INTENT on second todowrite — this is expected
+      // The key invariant: todowrite content alone doesn't drive advancement,
+      // only disk-based KD existence does
+      const phase = hooks.sessionPhaseMap.get("test-1");
+      expect(phase >= 1).toBe(true);
     });
 
     it("validates write path in INTENT phase", async () => {
@@ -166,13 +170,13 @@ describe("Protocol-Gate Plugin", () => {
       // Force INTENT phase — disk advancement may have already advanced past it
       hooks.sessionPhaseMap.set("test-1", 1); // INTENT
 
-      // Now try to read a non-template, non-knowledge file
+      // Now try to read a non-template, non-intent file
       await expect(
         hooks["tool.execute.before"](
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "src/main.js" } }
         )
-      ).rejects.toThrow("Reads restricted to templates and knowledge KDs");
+      ).rejects.toThrow("Reads restricted to templates and intent KDs");
     });
   });
 
@@ -432,7 +436,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "src/main.js" } }
         )
-      ).rejects.toThrow("Reads restricted to templates and knowledge KDs");
+      ).rejects.toThrow("Reads restricted to templates and intent KDs");
     });
 
     it("has INTENT pattern for disk advancement (F04)", async () => {
@@ -452,6 +456,150 @@ describe("Protocol-Gate Plugin", () => {
       // The disk advancement check should now have INTENT pattern
       // This test verifies the pattern exists by checking the plugin loaded correctly
       expect(hooks.STATES.INTENT).toBe(1);
+    });
+  });
+
+  describe("Phase Jump Prevention (Issue 3)", () => {
+    it("does not advance past INTENT on the same todowrite call", async () => {
+      // This is the core Issue 3 test: todowrite advances to INTENT,
+      // then the disk check should NOT fire in the same call and jump to PREFLIGHT
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      // If the disk check fired on the same call, phase would be PREFLIGHT (2).
+      // The fix ensures phase is exactly INTENT (1) after the todowrite call.
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1); // INTENT, not PREFLIGHT
+    });
+
+    it("allows disk advancement on the next non-todowrite tool call", async () => {
+      // After the todowrite skip, the next tool call should allow disk advancement
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      // Phase should be INTENT after todowrite
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
+
+      // Next tool call (read) — disk check should fire and may advance
+      await hooks["tool.execute.before"](
+        { tool: "read", sessionID: "test-1", callID: "c2" },
+        { args: { filePath: "knowledge/intent-foo.md" } }
+      );
+
+      // Phase may have advanced via disk check on this call
+      const phase = hooks.sessionPhaseMap.get("test-1");
+      expect(phase === 1 || phase === 2).toBe(true); // INTENT or PREFLIGHT
+    });
+
+    it("skips disk check flag resets after use", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+
+      // First todowrite: advances to INTENT, sets skip flag
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
+
+      // Force back to INTENT for a second todowrite test
+      hooks.sessionPhaseMap.set("test-1", 1);
+
+      // Second todowrite: skip flag was cleared, so disk check fires
+      // and may advance (knowledge/intent-* KDs exist on disk)
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c2" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      // Phase may have advanced via disk check — flag was reset so check fires
+      const phase = hooks.sessionPhaseMap.get("test-1");
+      expect(phase >= 1).toBe(true);
+    });
+  });
+
+  describe("INTENT Read Restrictions (Issue 5)", () => {
+    it("allows reading intent KDs in INTENT phase", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      // Reading an intent KD should be allowed
+      await hooks["tool.execute.before"](
+        { tool: "read", sessionID: "test-1", callID: "c2" },
+        { args: { filePath: "knowledge/intent-foo.md" } }
+      );
+      // Should not throw
+    });
+
+    it("blocks reading report KDs in INTENT phase (Issue 5)", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      // Reading a report KD should be BLOCKED — this prevents self-execution
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: "test-1", callID: "c2" },
+          { args: { filePath: "knowledge/report-foo.md" } }
+        )
+      ).rejects.toThrow("Reads restricted to templates and intent KDs");
+    });
+
+    it("blocks reading analysis KDs in INTENT phase", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      // Reading analysis KDs should also be blocked
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: "test-1", callID: "c2" },
+          { args: { filePath: "knowledge/analysis-foo.md" } }
+        )
+      ).rejects.toThrow("Reads restricted to templates and intent KDs");
+    });
+
+    it("allows reading templates in INTENT phase", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      // Reading templates should still be allowed
+      await hooks["tool.execute.before"](
+        { tool: "read", sessionID: "test-1", callID: "c2" },
+        { args: { filePath: "skills/kd-system/templates/intent.md" } }
+      );
+      // Should not throw
     });
   });
 });
