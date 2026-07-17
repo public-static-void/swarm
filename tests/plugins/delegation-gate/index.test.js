@@ -311,4 +311,67 @@ RESULT KD: knowledge/impl-foo.md`;
       expect(output).toEqual({ args: { filePath: "some-file.md" } });
     });
   });
+
+  describe("Embedded KD Paths", () => {
+    it("accepts lines with embedded KD paths in body text", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md
+
+Read the INTENT KD at knowledge/intent-foo.md for details.`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      // Should not throw — embedded KD paths are valid
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
+    it("accepts KD paths embedded in template-rendered text", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md
+
+Load the kd-system skill. Read the INTENT KD at knowledge/intent-foo.md. Execute the swarm phase per the scope above. Produce an IMPLEMENTATION SUMMARY KD at knowledge/impl-foo.md.`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      // Should not throw — multiple embedded KD paths are valid
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("knowledge/impl-foo.md");
+    });
+
+    it("still rejects foreign paths on their own lines", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md
+docs/ROADMAP.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Foreign paths detected");
+    });
+
+    it("still rejects absolute paths on their own lines", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md
+/home/user/config.json`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Foreign paths detected");
+    });
+  });
 });

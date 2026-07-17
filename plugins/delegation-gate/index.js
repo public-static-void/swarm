@@ -174,6 +174,9 @@ function detectForeignPaths(prompt) {
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
     if (/\.\.[\/\\]/.test(trimmed)) return true;
+    // Allow lines containing knowledge/*.md paths (positive whitelist)
+    // This handles KD paths embedded in body text from template rendering or agent text
+    if (/knowledge\/[a-zA-Z0-9_-]+\.md/i.test(trimmed)) continue;
     // Relative paths with file extensions are foreign — knowledge/*.md paths are the only allowed format
     if (/\.\w{1,5}$/.test(trimmed)) return true;
   }
