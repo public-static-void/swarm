@@ -110,45 +110,33 @@ function loadTemplates(config) {
 }
 
 // Scan a text block for structured delegation fields. Returns fields found.
-// Both prompt and description are scanned because injectToolDocs puts the format
-// hint in description — agents see the hint there and naturally place structured
-// fields in description rather than prompt.
 function extractFromText(text, fields) {
   if (!text) return;
   for (const line of text.split("\n")) {
-    // Templates use "DISPATCH TO:" but agents may send raw "AGENT:" format — accept both
-    const agentMatch = line.match(/^(AGENT|DISPATCH TO):\s*(.*)/i);
+    // Accept both "AGENT:" and "DISPATCH TO:" with optional Markdown heading prefix (##, ###, etc.)
+    const agentMatch = line.match(/^(?:#{1,6}\s*)?(AGENT|DISPATCH TO):\s*(.*)/i);
     if (agentMatch) {
       if (!fields["agent"]) fields["agent"] = agentMatch[2].trim();
       continue;
     }
-    const match = line.match(/^(MODE|INTENT.KD|SESSION.DATE|SCOPE|RESULT.KD|KD.PATHS):\s*(.*)/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS):\s*(.*)/i);
     if (match) {
-      const key = match[1].toLowerCase().replace(/\s+/g, "_");
+      const key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       if (!fields[key]) fields[key] = match[2].trim();
     }
   }
 }
 
 // subagentType is a fallback — the Overseer puts agent in output.args.subagent_type,
-// not in prompt text. Scan both prompt and description for structured fields because
-// the format hint is injected into description, causing agents to place fields there.
-function extractFieldsFromPrompt(prompt, subagentType, description) {
+// not in prompt text. Only scan prompt for structured fields; description is NOT
+// scanned because injectToolDocs appends format hints there, and scanning would
+// extract placeholder values like <name> as real field values.
+function extractFieldsFromPrompt(prompt, subagentType) {
   const fields = {};
-  // Primary source: prompt text
   extractFromText(prompt, fields);
-  // Secondary source: description (where format hint is injected)
-  extractFromText(description, fields);
   // Fallback: agent lives in subagent_type parameter, not in prompt text
   if (!fields["agent"] && subagentType) {
     fields["agent"] = subagentType;
-  }
-  // Fallback: when scope is missing from structured fields but description has
-  // plain text content, use the entire description as scope. This handles the
-  // case where the agent puts a natural-language scope in description without
-  // the "SCOPE:" prefix.
-  if (!fields["scope"] && description && description.trim()) {
-    fields["scope"] = description.trim();
   }
   return fields;
 }
@@ -166,8 +154,9 @@ function validateScope(scope) {
   if (negativePatterns.test(scope)) {
     return false;
   }
-  // File paths indicate the scope contains specific file references — too detailed for a description
-  const filePathPattern = /\b\S+\.(md|js|ts|json|yaml|yml|py|rb|go|rs|java|c|cpp|h|sh|bash|txt|csv|xml|html|css|scss)\b/i;
+  // File paths indicate the scope contains specific file references — too detailed for a description.
+  // Require a path separator to distinguish actual paths from extension mentions in topic descriptions.
+  const filePathPattern = /[/\\]\S+\.(md|js|ts|json|yaml|yml|py|rb|go|rs|java|c|cpp|h|sh|bash|txt|csv|xml|html|css|scss)\b/i;
   if (filePathPattern.test(scope)) {
     return false;
   }
@@ -176,9 +165,10 @@ function validateScope(scope) {
   if (urlPattern.test(scope)) {
     return false;
   }
-  // Multiple sentences indicate multi-step instructions — scope should be a single phrase
-  const multiSentencePattern = /[.!?]\s+[A-Z]/;
-  if (multiSentencePattern.test(scope)) {
+  // Multiple sentences (3+) indicate multi-step instructions — scope should be a single phrase.
+  // Allow 2 sentences for concise compound scopes like "Fix the login bug. Ensure backward compatibility."
+  const sentenceCount = scope.split(/[.!?]+\s+[A-Z]/).length;
+  if (sentenceCount > 2) {
     return false;
   }
   // Multi-step conjunctions indicate procedural instructions
@@ -203,14 +193,14 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed || /^(AGENT|DISPATCH TO|MODE|INTENT.KD|SESSION.DATE|SCOPE|RESULT.KD|KD.PATHS):/i.test(trimmed)) continue;
-    if (/^knowledge\/[a-zA-Z0-9_-]+\.md$/i.test(trimmed)) continue;
+    if (!trimmed || /^(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS):/i.test(trimmed)) continue;
+    if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
     if (/\.\.[\/\\]/.test(trimmed)) return true;
     // Allow lines containing knowledge/*.md paths (positive whitelist)
     // This handles KD paths embedded in body text from template rendering or agent text
-    if (/knowledge\/[a-zA-Z0-9_-]+\.md/i.test(trimmed)) continue;
+    if (/knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md/i.test(trimmed)) continue;
     // Relative paths with file extensions are foreign — knowledge/*.md paths are the only allowed format
     if (/\.\w{1,5}$/.test(trimmed)) return true;
   }
@@ -218,27 +208,29 @@ function detectForeignPaths(prompt) {
 }
 
 function isBareKDPath(prompt) {
-  return /^knowledge\/[a-zA-Z0-9_-]+\.md$/.test(prompt.trim());
+  return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(prompt.trim());
 }
 
 function renderTemplate(template, fields) {
   let result = template;
   for (const [key, value] of Object.entries(fields)) {
-    result = result.replace(new RegExp(`\\{${key}\\}`, "g"), value);
+    // Function replacement avoids $-special-character interpretation in replacement strings
+    result = result.replace(new RegExp(`\\{${key}\\}`, "g"), () => value);
   }
   return result;
 }
 
 function injectToolDocs(output) {
+  const today = new Date().toISOString().slice(0, 10);
   const formatHint = `
-Delegation Prompt Format:
-DISPATCH TO: explorer
-MODE: explore
-INTENT KD: knowledge/intent-<name>.md
-SESSION DATE: 2026-07-17
-SCOPE: <your scope description>
-RESULT KD: knowledge/exploration-<name>.md
-KD PATHS: knowledge/intent-<name>.md
+Delegation Prompt Format (replace all <placeholder> values):
+DISPATCH TO: <agent-name>
+MODE: <mode>
+INTENT KD: knowledge/intent-<descriptive-name>.md
+SESSION DATE: ${today}
+SCOPE: <concise description>
+RESULT KD: knowledge/<output-type>-<descriptive-name>.md
+KD PATHS: knowledge/intent-<descriptive-name>.md
 `;
 
   if (!output.args) output.args = {};
@@ -294,7 +286,7 @@ export default {
         throw new DelegationGateError(ERRORS.FOREIGN_PATH.code, ERRORS.FOREIGN_PATH.message, ERRORS.FOREIGN_PATH.guidance);
       }
 
-      const fields = extractFieldsFromPrompt(prompt, subagentType, description);
+      const fields = extractFieldsFromPrompt(prompt, subagentType);
       const requiredFields = ["agent", "mode", "intent_kd", "session_date", "scope", "result_kd"];
 
       debug(`Extracted fields: ${Object.keys(fields).join(", ")}`);

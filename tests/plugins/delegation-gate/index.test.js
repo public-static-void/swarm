@@ -240,12 +240,12 @@ RESULT KD: knowledge/exploration-foo.md`;
       ).rejects.toThrow("Scope validation failed");
     });
 
-    it("rejects scope with multiple sentences", async () => {
+    it("rejects scope with multiple sentences (3+)", async () => {
       const prompt = `AGENT: explorer
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-16
-SCOPE: Read the docs first. Then identify gaps.
+SCOPE: Read the docs first. Then identify gaps. Finally produce a summary.
 RESULT KD: knowledge/exploration-foo.md`;
 
       await expect(
@@ -410,7 +410,7 @@ RESULT KD: knowledge/analysis-bar.md`;
   });
 
   describe("Description Scope Fallback", () => {
-    it("extracts scope from description when not in prompt text", async () => {
+    it("requires explicit SCOPE: field — description text is NOT used as scope fallback", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -418,9 +418,9 @@ SESSION DATE: 2026-07-17
 RESULT KD: knowledge/impl-foo.md`;
 
       const output = { args: { prompt, description: "Implement feature X" } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-
-      expect(output.args.prompt).toContain("Implement feature X");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output)
+      ).rejects.toThrow("Missing required structured fields");
     });
 
     it("prompt text scope takes precedence over description", async () => {
@@ -440,9 +440,9 @@ RESULT KD: knowledge/impl-foo.md`;
   });
 
   describe("Description Field Extraction (Issue 2)", () => {
-    it("extracts all fields from description when prompt is empty", async () => {
-      // Simulates the agent putting all structured fields in description
-      // where injectToolDocs placed the format hint
+    it("does NOT extract fields from description — description scanning removed to prevent placeholder contamination", async () => {
+      // With description scanning removed, fields in description are ignored.
+      // Only prompt text and subagent_type are scanned.
       const description = `MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
@@ -450,45 +450,32 @@ SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
       const output = { args: { prompt: "", description, subagent_type: "artisan" } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-
-      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
-      expect(output.args.prompt).toContain("2026-07-17");
-      expect(output.args.prompt).toContain("Implement feature X");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output)
+      ).rejects.toThrow("Missing required structured fields");
     });
 
-    it("extracts fields split across prompt and description", async () => {
-      // Agent puts some fields in prompt, others in description
+    it("fields only come from prompt text, not description", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
-INTENT KD: knowledge/intent-foo.md`;
-      const description = `SESSION DATE: 2026-07-17
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
+      const description = `SESSION DATE: 2099-01-01
+SCOPE: From description
+RESULT KD: knowledge/wrong.md`;
 
       const output = { args: { prompt, description } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      // Uses prompt's values, not description's
       expect(output.args.prompt).toContain("2026-07-17");
       expect(output.args.prompt).toContain("Implement feature X");
-    });
-
-    it("extracts result_kd from description (was NEVER found before fix)", async () => {
-      // This was the specific failure mode: result_kd in description was silently ignored
-      const prompt = `MODE: checkpoint
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-17
-SCOPE: Implement feature X`;
-      const description = `RESULT KD: knowledge/impl-foo.md`;
-
-      const output = { args: { prompt, description, subagent_type: "artisan" } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-
       expect(output.args.prompt).toContain("knowledge/impl-foo.md");
     });
 
-    it("prompt fields take precedence over description fields", async () => {
+    it("prompt fields are used even when description has different values", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -503,15 +490,14 @@ RESULT KD: knowledge/impl-foo.md`;
       expect(output.args.prompt).toContain("From prompt");
     });
 
-    it("valid end-to-end: all fields in description (agent via subagent_type)", async () => {
-      // Recreates the exact Overseer behavior: fields in description, agent in subagent_type
-      const description = `MODE: preflight
+    it("valid end-to-end: all fields in prompt, agent via subagent_type", async () => {
+      const prompt = `MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
 SCOPE: Setup workspace
 RESULT KD: knowledge/plan-preflight.md`;
 
-      const output = { args: { prompt: "", description, subagent_type: "committer" } };
+      const output = { args: { prompt, subagent_type: "committer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
       expect(output.args.prompt).toContain("committer");

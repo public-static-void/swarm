@@ -173,11 +173,11 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
 
   const patterns = {
     [STATES.INTENT]: /^intent-/i,
-    [STATES.PREFLIGHT]: /^plan-.*preflight-/i,
+    [STATES.PREFLIGHT]: /^plan-/i,
     [STATES.EXPLORE]: /^exploration-/i,
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
-    [STATES.DECOMPOSE]: /^plan-(?!.*preflight)/i,
+    [STATES.DECOMPOSE]: /^plan-/i,
     [STATES.SWARM]: /^impl-/i,
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
@@ -422,7 +422,14 @@ export default {
         }
 
         const prompt = args?.prompt || "";
-        const agentName = extractAgentFromPrompt(prompt);
+        // Try prompt text first; fall back to subagent_type parameter.
+        // When protocol-gate runs before delegation-gate, the raw prompt
+        // has no structured fields — subagent_type is the reliable source.
+        let agentName = extractAgentFromPrompt(prompt);
+        if (!agentName && args?.subagent_type) {
+          agentName = args.subagent_type.toLowerCase();
+          debug(`task: agent from subagent_type fallback: ${agentName}`);
+        }
 
         if (agentName) {
           const currentPhaseAgent = PHASE_AGENT_MAP[phaseName]?.toLowerCase();
