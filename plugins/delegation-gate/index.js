@@ -33,10 +33,10 @@ class DelegationGateError extends Error {
 const ERRORS = {
   CODE_BLOCK: { code: "CODE_BLOCK", message: "Code blocks detected in prompt", guidance: "Remove all code blocks from delegation prompt" },
   FOREIGN_PATH: { code: "FOREIGN_PATH", message: "Foreign paths detected", guidance: "Use only knowledge/*.md paths" },
-  BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include all required fields: agent, mode, kd_paths, scope, result_kd" },
-  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Include agent, mode, kd_paths, scope, result_kd" },
+  BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include required fields: agent, mode, intent_kd, session_date" },
+  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Include agent, mode, intent_kd, session_date" },
   INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope must be a concise description (1-200 chars). No file paths, URLs, multi-sentence instructions, or negative framing" },
-  INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "Result KD must match knowledge/*.md pattern" },
+  INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" }
 };
 
@@ -228,9 +228,6 @@ DISPATCH TO: <agent-name>
 MODE: <mode>
 INTENT KD: knowledge/intent-<descriptive-name>.md
 SESSION DATE: ${today}
-SCOPE: <concise description>
-RESULT KD: knowledge/<output-type>-<descriptive-name>.md
-KD PATHS: knowledge/intent-<descriptive-name>.md
 `;
 
   if (!output.args) output.args = {};
@@ -287,7 +284,8 @@ export default {
       }
 
       const fields = extractFieldsFromPrompt(prompt, subagentType);
-      const requiredFields = ["agent", "mode", "intent_kd", "session_date", "scope", "result_kd"];
+      // scope and result_kd are optional — templates fill defaults, disk-based advancement handles verification
+      const requiredFields = ["agent", "mode", "intent_kd", "session_date"];
 
       debug(`Extracted fields: ${Object.keys(fields).join(", ")}`);
 
@@ -298,12 +296,14 @@ export default {
         }
       }
 
-      if (!validateScope(fields.scope)) {
+      // Validate scope only when provided — template fills defaults for missing scope
+      if (fields.scope !== undefined && !validateScope(fields.scope)) {
         debug(`VALIDATION FAILED: scope validation failed (len=${fields.scope.length}, content='${fields.scope.substring(0, 50)}...')`);
         throw new DelegationGateError(ERRORS.INVALID_SCOPE.code, ERRORS.INVALID_SCOPE.message, ERRORS.INVALID_SCOPE.guidance);
       }
 
-      if (!validateKDPath(fields.result_kd)) {
+      // Validate result_kd only when provided — disk-based advancement handles verification
+      if (fields.result_kd !== undefined && !validateKDPath(fields.result_kd)) {
         debug(`VALIDATION FAILED: invalid result KD path '${fields.result_kd}'`);
         throw new DelegationGateError(ERRORS.INVALID_RESULT_KD.code, ERRORS.INVALID_RESULT_KD.message, ERRORS.INVALID_RESULT_KD.guidance);
       }

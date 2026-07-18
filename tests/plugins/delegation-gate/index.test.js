@@ -159,7 +159,7 @@ docs/ROADMAP.md`;
       ).rejects.toThrow("Foreign paths detected");
     });
 
-    it("validates KD paths against knowledge/*.md pattern", async () => {
+    it("validates KD paths against knowledge/*.md pattern when result_kd is provided", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -171,10 +171,22 @@ RESULT KD: invalid-path.md`;
         hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
       ).rejects.toThrow("Invalid result KD path");
     });
+
+    it("accepts prompt without result_kd (optional field)", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
   });
 
   describe("Scope Validation", () => {
-    it("rejects empty scope", async () => {
+    it("rejects empty scope when provided", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -278,6 +290,17 @@ RESULT KD: knowledge/exploration-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       // Should not throw — scope is a valid concise description
       expect(output.args.prompt).toContain("Explore the plugin system architecture");
+    });
+
+    it("accepts prompt without scope or result_kd (both optional)", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
   });
 
@@ -410,7 +433,7 @@ RESULT KD: knowledge/analysis-bar.md`;
   });
 
   describe("Description Scope Fallback", () => {
-    it("requires explicit SCOPE: field — description text is NOT used as scope fallback", async () => {
+    it("accepts prompt without SCOPE field (scope is optional)", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -418,9 +441,9 @@ SESSION DATE: 2026-07-17
 RESULT KD: knowledge/impl-foo.md`;
 
       const output = { args: { prompt, description: "Implement feature X" } };
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output)
-      ).rejects.toThrow("Missing required structured fields");
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      // Should not throw — scope is optional
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
     it("prompt text scope takes precedence over description", async () => {
