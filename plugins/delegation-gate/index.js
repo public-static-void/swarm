@@ -114,12 +114,12 @@ function extractFromText(text, fields) {
   if (!text) return;
   for (const line of text.split("\n")) {
     // Accept both "AGENT:" and "DISPATCH TO:" with optional Markdown heading prefix (##, ###, etc.)
-    const agentMatch = line.match(/^(?:#{1,6}\s*)?(AGENT|DISPATCH TO):\s*(.*)/i);
+    const agentMatch = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(AGENT|DISPATCH TO)(?:\*\*)?:\s*(.*)/i);
     if (agentMatch) {
       if (!fields["agent"]) fields["agent"] = agentMatch[2].trim();
       continue;
     }
-    const match = line.match(/^(?:#{1,6}\s*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS):\s*(.*)/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       const key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       if (!fields[key]) fields[key] = match[2].trim();
@@ -193,7 +193,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed || /^(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS):/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;

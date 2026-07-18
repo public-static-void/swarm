@@ -181,12 +181,12 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
   // Filter to only files created in the current session (date in filename).
   const sessionFiles = files.filter(f => f.includes(sessionDate));
 
-  // PREFLIGHT and DECOMPOSE share `/^plan-/i` by design — both advance when
-  // a plan KD exists. The session-date filter prevents stale plans from
-  // prior sessions from triggering advancement.
+  // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
+  // PREFLIGHT uses hasCleanTree() — it's a validation gate, not a KD-producing phase.
+  // The session-date filter prevents stale KDs from prior sessions from triggering advancement.
   const patterns = {
     [STATES.INTENT]: /^intent-/i,
-    [STATES.PREFLIGHT]: /^plan-/i,
+    [STATES.PREFLIGHT]: null,  // Preflight advances via hasCleanTree(), not KD artifacts
     [STATES.EXPLORE]: /^exploration-/i,
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
@@ -199,6 +199,13 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
   };
 
   if (phase === STATES.COMMIT) {
+    return hasCleanTree();
+  }
+
+  // Preflight is a validation gate, not a KD-producing phase.
+  // Advance when git tree is clean — the committer confirmed workspace readiness.
+  if (phase === STATES.PREFLIGHT) {
+    debug(`Disk check PREFLIGHT: using hasCleanTree()`);
     return hasCleanTree();
   }
 
