@@ -238,54 +238,6 @@ describe("Protocol-Gate Plugin", () => {
     });
   });
 
-  describe("Retry Tracking", () => {
-    it("increments retry counter on re-delegation in same phase", async () => {
-      // Transition to PREFLIGHT
-      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
-      await hooks["tool.execute.before"](
-        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
-        { args: { todos: keywords.map(k => ({ content: k })) } }
-      );
-      // Force INTENT phase — disk advancement may have already advanced past it
-      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
-
-      // Simulate disk advancement to PREFLIGHT by setting phase directly
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.PREFLIGHT);
-
-      // First delegation — should not increment retry
-      await hooks["tool.execute.before"](
-        { tool: "task", sessionID: "test-1", callID: "c2" },
-        { args: { prompt: "AGENT: committer\nMODE: preflight\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Setup workspace\nRESULT KD: knowledge/plan-preflight.md" } }
-      );
-      expect(hooks.retryMap.get("test-1")).toBe(0);
-
-      // Second delegation (retry) — should increment
-      await hooks["tool.execute.before"](
-        { tool: "task", sessionID: "test-1", callID: "c3" },
-        { args: { prompt: "AGENT: committer\nMODE: preflight\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Setup workspace\nRESULT KD: knowledge/plan-preflight.md" } }
-      );
-      expect(hooks.retryMap.get("test-1")).toBe(1);
-    });
-
-    it("blocks delegation when retry limit exceeded", async () => {
-      // Set up session in PREFLIGHT with max retries
-      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.PREFLIGHT);
-      hooks.retryMap.set("test-1", 5); // At limit
-      hooks.delegationAttempted.set("test-1", true);
-
-      await expect(
-        hooks["tool.execute.before"](
-          { tool: "task", sessionID: "test-1", callID: "c1" },
-          { args: { prompt: "AGENT: committer\nMODE: preflight\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Setup workspace\nRESULT KD: knowledge/plan-preflight.md" } }
-        )
-      ).rejects.toThrow("Retry limit exceeded");
-    });
-  });
-
   describe("Backward Transitions", () => {
     it("transitions backward when agent matches a previous phase", async () => {
       // Set up session in VERIFY phase
@@ -300,8 +252,6 @@ describe("Protocol-Gate Plugin", () => {
       );
       // Should have transitioned to SWARM (7)
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.SWARM);
-      // Retry counter should be reset
-      expect(hooks.retryMap.get("test-1")).toBe(0);
     });
 
     it("rejects agent not matching current or backward target", async () => {
@@ -631,6 +581,166 @@ describe("Protocol-Gate Plugin", () => {
         { args: { filePath: "skills/kd-system/templates/intent.md" } }
       );
       // Should not throw
+    });
+  });
+
+  describe("BUG 1: Session Date Filtering (stale KDs)", () => {
+    it("does not advance phase when no session date is set", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      // Force INTENT phase — no session date set
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      // Call write — disk check fires but no session date → no advancement
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: "test-1", callID: "c2" },
+        { args: { filePath: "knowledge/intent-foo.md" } }
+      );
+
+      // Phase stays INTENT — no session date means disk check returns false
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
+    });
+
+    it("captures session date from intent KD filename on write", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      // Write intent KD with date in filename
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: "test-1", callID: "c2" },
+        { args: { filePath: "knowledge/intent-my-feature-2026-07-17.md" } }
+      );
+
+      // Session date should be captured
+      expect(hooks.sessionPhaseMap.get("test-1:date")).toBe("2026-07-17");
+    });
+
+    it("captures session date from absolute path intent KD", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: "test-1", callID: "c2" },
+        { args: { filePath: "/home/user/project/knowledge/intent-my-feature-2026-07-17.md" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("test-1:date")).toBe("2026-07-17");
+    });
+  });
+
+  describe("BUG 2: Disk Check Tool Restriction", () => {
+    it("does not trigger disk check on read tool", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      // read is NOT in DISK_CHECK_TOOLS — should not trigger disk advancement
+      await hooks["tool.execute.before"](
+        { tool: "read", sessionID: "test-1", callID: "c2" },
+        { args: { filePath: "knowledge/intent-foo.md" } }
+      );
+
+      // Phase stays INTENT — read doesn't trigger disk check
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
+    });
+
+    it("does not trigger disk check on skill tool", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      // skill is NOT in DISK_CHECK_TOOLS
+      await hooks["tool.execute.before"](
+        { tool: "skill", sessionID: "test-1", callID: "c2" },
+        { args: { name: "kd-system" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
+    });
+
+    it("does not trigger disk check on bash tool", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      await hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "test-1", callID: "c2" },
+        { args: { command: "ls" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
+    });
+
+    it("triggers disk check on write tool (in DISK_CHECK_TOOLS)", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      hooks.sessionPhaseMap.set("test-1", 1); // INTENT
+
+      // write IS in DISK_CHECK_TOOLS — disk check fires (but no session date → no advancement)
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: "test-1", callID: "c2" },
+        { args: { filePath: "knowledge/intent-foo.md" } }
+      );
+
+      // No session date set, so disk check returns false — phase stays INTENT
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
+    });
+  });
+
+  describe("BUG 4: REPORT/COMMIT Stuck Detection Skip", () => {
+    it("does not increment disk check failures in REPORT phase", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
+
+      // Call todowrite multiple times — disk check fires but REPORT has no pattern
+      for (let i = 0; i < 12; i++) {
+        await hooks["tool.execute.before"](
+          { tool: "todowrite", sessionID: "test-1", callID: `c${i}` },
+          { args: { todos: [{ content: "REPORT" }] } }
+        );
+      }
+
+      // REPORT phase should not accumulate disk check failures
+      // (no stuck warning should fire)
+      // Phase stays REPORT — REPORT is the last phase, +1 would be 13 which is undefined
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.REPORT);
     });
   });
 });

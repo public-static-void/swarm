@@ -1,4 +1,4 @@
-// Protocol-Gate Plugin — WHEN: state machine, phase advancement, agent routing, retry tracking
+// Protocol-Gate Plugin — WHEN: state machine, phase advancement, agent routing
 //
 // Hooks: chat.params, permission.ask, tool.execute.before
 // Scope: Overseer-only. Other agents pass through unaffected.
@@ -65,7 +65,6 @@ const ERROR_TEMPLATES = {
   BLOCKED_NO_LIFECYCLE: { code: "BLOCKED_NO_LIFECYCLE", message: "Missing lifecycle keywords", guidance: "Include all 12 lifecycle keywords in todowrite" },
   BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "Session not initialized", guidance: "Wait for chat.params to initialize" },
   WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
-  RETRY_LIMIT_EXCEEDED: (phase) => ({ code: "RETRY_LIMIT_EXCEEDED", message: `Retry limit exceeded for ${phase}`, guidance: "Escalate to user — do not auto-advance" }),
   CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "Backward transition cycle limit exceeded", guidance: "Escalate to user" }
 };
 
@@ -104,7 +103,6 @@ function loadConfig() {
       phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"],
       agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", COMMIT: "committer" },
       backwardTransitions: { VERIFY: ["SWARM"] },
-      maxRetriesPerPhase: 5,
       maxCyclesPerTransition: 3
     };
   }
@@ -160,6 +158,14 @@ function toProjectRelative(filePath) {
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
   if (phase === undefined) return false;
 
+  // Session date is required to filter out stale KDs from prior sessions.
+  // Without this, a plan-*.md from last Tuesday instantly advances PREFLIGHT.
+  const sessionDate = sessionPhaseMap.get(`${sessionID}:date`);
+  if (!sessionDate) {
+    debug(`Disk check: no session date set for ${sessionID} — skipping`);
+    return false;
+  }
+
   // Knowledge directory is project-relative (cwd), not plugin-relative.
   // PLUGIN_DIR stays for log paths which ARE relative to plugin location.
   const knowledgeDir = join(process.cwd(), "knowledge");
@@ -171,6 +177,12 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
     return false;
   }
 
+  // Filter to only files created in the current session (date in filename).
+  const sessionFiles = files.filter(f => f.includes(sessionDate));
+
+  // PREFLIGHT and DECOMPOSE share `/^plan-/i` by design — both advance when
+  // a plan KD exists. The session-date filter prevents stale plans from
+  // prior sessions from triggering advancement.
   const patterns = {
     [STATES.INTENT]: /^intent-/i,
     [STATES.PREFLIGHT]: /^plan-/i,
@@ -193,15 +205,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
   if (!pattern) return false;
 
   if (phase === STATES.VERIFY) {
-    const hasReview = files.some(f => /^review-/i.test(f));
-    const hasAudit = files.some(f => /^audit-/i.test(f));
+    const hasReview = sessionFiles.some(f => /^review-/i.test(f));
+    const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
     const result = hasReview && hasAudit;
     debug(`Disk check VERIFY: review=${hasReview}, audit=${hasAudit} → ${result}`);
     return result;
   }
 
-  const result = files.some(f => pattern.test(f));
-  debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern} → ${result}`);
+  const result = sessionFiles.some(f => pattern.test(f));
+  debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, date=${sessionDate} → ${result}`);
   return result;
 }
 
@@ -222,16 +234,10 @@ export default {
     const config = loadConfig();
     const BACKWARD_TRANSITIONS = loadBackwardTransitions(config);
     const PHASE_AGENT_MAP = config.agents || {};
-    const MAX_RETRIES = config.maxRetriesPerPhase || 5;
 
     const sessionPhaseMap = new Map();
     const overseerSessions = new Set();
-    const retryMap = new Map();
     const cycleMap = new Map();
-    // Tracks whether a delegation was attempted in the current phase entry.
-    // When true and task is called again in same phase → retry.
-    // Reset on disk advancement (success) or backward transition.
-    const delegationAttempted = new Map();
     // Prevents instant phase jump: when todowrite advances the phase,
     // skip the disk check in the same call. Without this, todowrite
     // advances PROTOCOL_NOT_LOADED → INTENT, then the disk check
@@ -244,7 +250,7 @@ export default {
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
 
     debug("Plugin initializing…");
-    debug(`Loaded config: ${Object.keys(STATES).length} states, maxRetries=${MAX_RETRIES}, maxCycles=${config.maxCyclesPerTransition || 3}`);
+    debug(`Loaded config: ${Object.keys(STATES).length} states, maxCycles=${config.maxCyclesPerTransition || 3}`);
     debug(`Backward transitions: ${JSON.stringify(BACKWARD_TRANSITIONS)}`);
     debug(`Phase→agent map: ${JSON.stringify(PHASE_AGENT_MAP)}`);
 
@@ -267,9 +273,7 @@ export default {
 
       const prevPhase = sessionPhaseMap.get(sessionID);
       sessionPhaseMap.set(sessionID, targetPhase);
-      retryMap.set(sessionID, 0);
-      delegationAttempted.set(sessionID, false);
-      debug(`Backward transition complete: ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}, retry counter reset`);
+      debug(`Backward transition complete: ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
       return true;
     }
 
@@ -284,8 +288,6 @@ export default {
         if (!sessionPhaseMap.has(sessionID)) {
           debug(`chat.params: initializing overseer session ${sessionID}`);
           sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
-          retryMap.set(sessionID, 0);
-          delegationAttempted.set(sessionID, false);
         }
       } else {
         // Non-overseer sessions pass through unaffected — don't touch the maps.
@@ -377,6 +379,16 @@ export default {
         const isIntentKD = relPath.startsWith("knowledge/intent-") || relPath.includes("/knowledge/intent-");
         const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
 
+        // Capture session date from the intent KD filename (YYYY-MM-DD suffix).
+        // This date is used by checkDiskAdvancement to filter out stale KDs.
+        if (isIntentKD && phase === STATES.INTENT) {
+          const dateMatch = relPath.match(/(\d{4}-\d{2}-\d{2})\.md$/);
+          if (dateMatch) {
+            sessionPhaseMap.set(`${sessionID}:date`, dateMatch[1]);
+            debug(`write: captured session date ${dateMatch[1]} for session ${sessionID}`);
+          }
+        }
+
         if (phase === STATES.INTENT && !isIntentKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/intent-)`);
           throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to intent KDs", "Write to knowledge/intent-*.md");
@@ -436,17 +448,6 @@ export default {
 
           // Check if agent matches current phase → normal delegation
           if (agentName === currentPhaseAgent) {
-            // Retry tracking: if delegation was already attempted in this phase, increment counter
-            if (delegationAttempted.get(sessionID)) {
-              const retries = (retryMap.get(sessionID) || 0) + 1;
-              retryMap.set(sessionID, retries);
-              debug(`task: RETRY #${retries} in phase=${phaseName} (max=${MAX_RETRIES})`);
-              if (retries > MAX_RETRIES) {
-                debug(`task: BLOCKED retry limit exceeded for ${phaseName}: ${retries} > ${MAX_RETRIES}`);
-                throw new ProtocolGateError(ERROR_TEMPLATES.RETRY_LIMIT_EXCEEDED(phaseName).code, ERROR_TEMPLATES.RETRY_LIMIT_EXCEEDED(phaseName).message, ERROR_TEMPLATES.RETRY_LIMIT_EXCEEDED(phaseName).guidance);
-              }
-            }
-            delegationAttempted.set(sessionID, true);
             debug(`task: ALLOW agent=${agentName} for phase=${phaseName}`);
           }
           // Check if agent matches a backward target → backward transition
@@ -457,9 +458,6 @@ export default {
             if (targetPhaseId !== undefined && validTargets.includes(targetPhaseId)) {
               debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
               handleBackwardTransition(sessionID, phase, targetPhaseId);
-              // After backward transition, the task proceeds to the new phase's agent
-              // Retry counter was reset in handleBackwardTransition
-              delegationAttempted.set(sessionID, false);
             } else {
               // Wrong agent — not current phase, not a valid backward target
               const expectedAgent = currentPhaseAgent || phaseName;
@@ -470,11 +468,12 @@ export default {
         }
       }
 
-      // --- disk-based advancement for non-task tools (R009) ---
-      // Re-read phase after tool handlers — todowrite may have advanced
-      // from PROTOCOL_NOT_LOADED to INTENT, and stale variable would miss
-      // the INTENT pattern in checkDiskAdvancement.
-      if (tool !== "task") {
+      // --- disk-based advancement for lifecycle tools (R009) ---
+      // Only write (creates KDs), glob (verifies KDs exist), and todowrite
+      // (updates lifecycle state) should trigger disk advancement checks.
+      // Other tools (skill, bash, read) are not part of the delegation lifecycle.
+      const DISK_CHECK_TOOLS = ["write", "glob", "todowrite"];
+      if (DISK_CHECK_TOOLS.includes(tool)) {
         // Skip disk check when todowrite just advanced the phase in this call.
         // Without this guard, todowrite advances to INTENT, then the disk check
         // immediately finds a pre-existing intent KD and jumps to PREFLIGHT.
@@ -486,16 +485,17 @@ export default {
           const currentPhaseName = getPhaseName(currentPhase);
           if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap)) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
-            retryMap.set(sessionID, 0);
-            delegationAttempted.set(sessionID, false);
             diskCheckFailures.set(sessionID, 0);
             debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(currentPhase + 1)}`);
           } else {
-            // Track consecutive failures to detect stuck phases
-            const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
-            diskCheckFailures.set(sessionID, failures);
-            if (failures === 10) {
-              debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
+            // REPORT and COMMIT don't use disk-based advancement — skip stuck detection.
+            // REPORT writes the KD directly; COMMIT checks git tree cleanliness.
+            if (currentPhase !== STATES.REPORT && currentPhase !== STATES.COMMIT) {
+              const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
+              diskCheckFailures.set(sessionID, failures);
+              if (failures === 10) {
+                debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
+              }
             }
           }
         }
@@ -511,9 +511,7 @@ export default {
       sessionPhaseMap,
       overseerSessions,
       isOverseerSession,
-      retryMap,
       cycleMap,
-      delegationAttempted,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES
     };
