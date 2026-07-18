@@ -1,6 +1,7 @@
 // Protocol-Gate Plugin — WHEN: state machine, phase advancement, agent routing
 //
-// Hooks: chat.params, permission.ask, tool.execute.before
+// Hooks: chat.params, permission.ask, tool.execute.before,
+//        tool.definition, experimental.chat.system.transform
 // Scope: Overseer-only. Other agents pass through unaffected.
 //
 // This plugin enforces which state the Overseer is in and what it can do
@@ -246,6 +247,9 @@ export default {
     // Tracks consecutive disk check failures per session to detect stuck phases.
     // After 10 failed checks, logs a diagnostic suggesting the delegation is blocked.
     const diskCheckFailures = new Map();
+    // tool.definition doesn't receive sessionID — track the most recent session
+    // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
+    let lastSeenSession = null;
 
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
 
@@ -280,6 +284,7 @@ export default {
     // --- Hook: chat.params ---
     async function chatParams(input, output) {
       const { sessionID, agent } = input;
+      lastSeenSession = sessionID;
 
       if (agent === "overseer") {
         overseerSessions.add(sessionID);
@@ -330,6 +335,7 @@ export default {
     // --- Hook: tool.execute.before ---
     async function toolExecuteBefore(input, output) {
       const { tool, sessionID, callID } = input;
+      lastSeenSession = sessionID;
       // opencode API: tool args live on output.args, not input.args
       const args = output.args || {};
 
@@ -350,6 +356,19 @@ export default {
 
       const phaseName = getPhaseName(phase);
 
+      // Enforce tool allowlist — safety net for tools not gated by permission.ask
+      if (tool !== "task") {
+        const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
+        if (!allowedTools.includes(tool)) {
+          debug(`tool.execute.before: BLOCKED tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
+          throw new ProtocolGateError(
+            ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
+            `Tool '${tool}' not allowed in ${phaseName} phase`,
+            `Allowed tools: ${allowedTools.join(", ")}`
+          );
+        }
+      }
+
       // --- todowrite handler ---
       if (tool === "todowrite") {
         if (phase === STATES.PROTOCOL_NOT_LOADED) {
@@ -360,6 +379,7 @@ export default {
             if (hasAll) {
               debug(`todowrite: all lifecycle keywords present → advancing to INTENT`);
               sessionPhaseMap.set(sessionID, STATES.INTENT);
+              debug("INTENT phase: write intent KD with raw user request. No file reading or exploration needed.");
               skipDiskCheckAfterTodo.set(sessionID, true);
             } else {
               debug(`todowrite: missing lifecycle keywords in PROTOCOL_NOT_LOADED`);
@@ -502,10 +522,53 @@ export default {
       }
     }
 
+    // --- Hook: tool.definition ---
+    // Layer 1 prevention: modify descriptions of blocked tools so the LLM
+    // sees them as unavailable. Runs for EVERY tool on EVERY LLM call.
+    // Uses lastSeenSession since the hook doesn't receive sessionID.
+    async function toolDefinition(input, output) {
+      const { toolID } = input;
+      const sessionID = lastSeenSession;
+      if (!sessionID) return;
+      if (!isOverseerSession(sessionID)) return;
+      const phase = sessionPhaseMap.get(sessionID);
+      if (phase === undefined) return;
+      const phaseName = getPhaseName(phase);
+      if (!phaseName) return;
+      const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
+      // task is always allowed (delegation mechanism) — never block it
+      if (toolID === "task" || allowedTools.includes(toolID)) return;
+      // Prepend blocking notice — LLM sees this as the tool's availability status
+      output.description = `⛔ NOT AVAILABLE in ${phaseName} phase. Allowed tools: ${allowedTools.join(", ")}. ${output.description}`;
+      debug(`tool.definition: blocked tool=${toolID} in phase=${phaseName}`);
+    }
+
+    // --- Hook: experimental.chat.system.transform ---
+    // Layer 2 prevention: inject a hard constraint into the system prompt
+    // telling the LLM exactly which tools it may use in the current phase.
+    // The SDK passes output.system as an array of strings.
+    async function systemTransform(input, output) {
+      const sessionID = lastSeenSession;
+      if (!sessionID) return;
+      if (!isOverseerSession(sessionID)) return;
+      const phase = sessionPhaseMap.get(sessionID);
+      if (phase === undefined) return;
+      const phaseName = getPhaseName(phase);
+      if (!phaseName) return;
+      const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
+      // Append constraint — the array is joined into the final system message
+      output.system.push(
+        `[Protocol Gate] Current phase: ${phaseName}. You may ONLY use these tools: ${allowedTools.join(", ")}. All other tools are structurally blocked.`
+      );
+      debug(`systemTransform: injected phase constraint for phase=${phaseName}`);
+    }
+
     return {
       "chat.params": chatParams,
       "permission.ask": permissionAsk,
       "tool.execute.before": toolExecuteBefore,
+      "tool.definition": toolDefinition,
+      "experimental.chat.system.transform": systemTransform,
       // Test-access properties
       STATES,
       sessionPhaseMap,
@@ -513,7 +576,8 @@ export default {
       isOverseerSession,
       cycleMap,
       ProtocolGateError,
-      ERRORS: ERROR_TEMPLATES
+      ERRORS: ERROR_TEMPLATES,
+      get lastSeenSession() { return lastSeenSession; }
     };
   }
 };

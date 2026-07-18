@@ -20,6 +20,8 @@ describe("Protocol-Gate Plugin", () => {
       expect(typeof result["chat.params"]).toBe("function");
       expect(typeof result["permission.ask"]).toBe("function");
       expect(typeof result["tool.execute.before"]).toBe("function");
+      expect(typeof result["tool.definition"]).toBe("function");
+      expect(typeof result["experimental.chat.system.transform"]).toBe("function");
     });
 
     it("has no named exports beyond default", () => {
@@ -741,6 +743,173 @@ describe("Protocol-Gate Plugin", () => {
       // (no stuck warning should fire)
       // Phase stays REPORT — REPORT is the last phase, +1 would be 13 which is undefined
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.REPORT);
+    });
+  });
+
+  describe("lastSeenSession Tracking", () => {
+    it("is null before any hook is called", () => {
+      expect(hooks.lastSeenSession).toBeNull();
+    });
+
+    it("updates when chat.params is called for overseer", async () => {
+      await hooks["chat.params"]({ sessionID: "sess-1", agent: "overseer" }, {});
+      expect(hooks.lastSeenSession).toBe("sess-1");
+    });
+
+    it("updates when chat.params is called for non-overseer", async () => {
+      await hooks["chat.params"]({ sessionID: "sess-2", agent: "artisan" }, {});
+      expect(hooks.lastSeenSession).toBe("sess-2");
+    });
+
+    it("updates when tool.execute.before is called", async () => {
+      await hooks["chat.params"]({ sessionID: "sess-1", agent: "overseer" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "sess-2", callID: "c1" },
+        { args: {} }
+      );
+      expect(hooks.lastSeenSession).toBe("sess-2");
+    });
+
+    it("tracks the most recent session across multiple calls", async () => {
+      await hooks["chat.params"]({ sessionID: "a", agent: "overseer" }, {});
+      await hooks["chat.params"]({ sessionID: "b", agent: "overseer" }, {});
+      expect(hooks.lastSeenSession).toBe("b");
+    });
+  });
+
+  describe("tool.definition Hook", () => {
+    it("passes through when no session has been seen", async () => {
+      const output = { description: "Read a file", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "read" }, output);
+      expect(output.description).toBe("Read a file");
+    });
+
+    it("passes through for non-overseer sessions", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "artisan" }, {});
+      const output = { description: "Read a file", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "read" }, output);
+      expect(output.description).toBe("Read a file");
+    });
+
+    it("passes through for allowed tools", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      // PROTOCOL_NOT_LOADED phase allows todowrite
+      const output = { description: "Write todos", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "todowrite" }, output);
+      expect(output.description).toBe("Write todos");
+    });
+
+    it("passes through for task tool (always allowed)", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      // PROTOCOL_NOT_LOADED — task is not in allowlist but is always allowed
+      const output = { description: "Delegate to agent", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "task" }, output);
+      expect(output.description).toBe("Delegate to agent");
+    });
+
+    it("blocks non-allowed tools with description prefix", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      // PROTOCOL_NOT_LOADED only allows todowrite
+      const output = { description: "Read a file", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "read" }, output);
+      expect(output.description).toContain("NOT AVAILABLE in PROTOCOL_NOT_LOADED phase");
+      expect(output.description).toContain("Allowed tools: todowrite");
+      expect(output.description).toContain("Read a file");
+    });
+
+    it("preserves original description after blocking prefix", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT); // INTENT: todowrite, write, read, question
+      const original = "Search files by pattern";
+      const output = { description: original, parameters: {} };
+      await hooks["tool.definition"]({ toolID: "glob" }, output);
+      expect(output.description).toBe(`⛔ NOT AVAILABLE in INTENT phase. Allowed tools: todowrite, write, read, question. ${original}`);
+    });
+
+    it("allows all tools in INTENT phase (todowrite, write, read, question)", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT);
+
+      for (const toolID of ["todowrite", "write", "read", "question", "task"]) {
+        const output = { description: "test", parameters: {} };
+        await hooks["tool.definition"]({ toolID }, output);
+        expect(output.description).toBe("test");
+      }
+    });
+
+    it("blocks non-allowlisted tools in INTENT phase", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT);
+
+      const blocked = ["bash", "edit", "glob", "grep", "skill"];
+      for (const toolID of blocked) {
+        const output = { description: "original", parameters: {} };
+        await hooks["tool.definition"]({ toolID }, output);
+        expect(output.description).toContain("NOT AVAILABLE in INTENT phase");
+      }
+    });
+  });
+
+  describe("experimental.chat.system.transform Hook", () => {
+    it("passes through when no session has been seen", async () => {
+      const output = { system: ["base system prompt"] };
+      await hooks["experimental.chat.system.transform"]({}, output);
+      expect(output.system).toEqual(["base system prompt"]);
+    });
+
+    it("passes through for non-overseer sessions", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "artisan" }, {});
+      const output = { system: ["base"] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
+      expect(output.system).toEqual(["base"]);
+    });
+
+    it("injects phase constraint for overseer sessions", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      const output = { system: ["base system"] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
+      expect(output.system).toHaveLength(2);
+      expect(output.system[1]).toContain("[Protocol Gate]");
+      expect(output.system[1]).toContain("PROTOCOL_NOT_LOADED");
+      expect(output.system[1]).toContain("todowrite");
+    });
+
+    it("injects correct phase name for INTENT phase", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT);
+      const output = { system: ["base"] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
+      expect(output.system[1]).toContain("INTENT");
+      expect(output.system[1]).toContain("todowrite, write, read, question");
+    });
+
+    it("injects allowed tools list matching TOOL_ALLOWLIST", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.SWARM);
+      const output = { system: ["base"] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
+      expect(output.system[1]).toContain("SWARM");
+      expect(output.system[1]).toContain("task, todowrite, glob");
+      expect(output.system[1]).toContain("structurally blocked");
+    });
+
+    it("appends to system array without modifying existing entries", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      const output = { system: ["prompt-1", "prompt-2", "prompt-3"] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
+      expect(output.system).toHaveLength(4);
+      expect(output.system[0]).toBe("prompt-1");
+      expect(output.system[1]).toBe("prompt-2");
+      expect(output.system[2]).toBe("prompt-3");
+      expect(output.system[3]).toContain("[Protocol Gate]");
+    });
+
+    it("does not inject when session is not tracked in overseerSessions", async () => {
+      // Manually set lastSeenSession via tool.execute.before for non-overseer
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "artisan" }, {});
+      const output = { system: ["base"] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
+      expect(output.system).toEqual(["base"]);
     });
   });
 });
