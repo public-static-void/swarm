@@ -668,7 +668,7 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
     });
 
-    it("does not trigger disk check on skill tool", async () => {
+    it("blocks skill tool in INTENT phase (not in allowlist)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
       const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
@@ -678,16 +678,16 @@ describe("Protocol-Gate Plugin", () => {
       );
       hooks.sessionPhaseMap.set("test-1", 1); // INTENT
 
-      // skill is NOT in DISK_CHECK_TOOLS
-      await hooks["tool.execute.before"](
-        { tool: "skill", sessionID: "test-1", callID: "c2" },
-        { args: { name: "kd-system" } }
-      );
-
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
+      // skill is not in INTENT allowlist — should be blocked
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "skill", sessionID: "test-1", callID: "c2" },
+          { args: { name: "kd-system" } }
+        )
+      ).rejects.toThrow("not allowed in INTENT phase");
     });
 
-    it("does not trigger disk check on bash tool", async () => {
+    it("blocks bash tool in INTENT phase (not in allowlist)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
       const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
@@ -697,12 +697,13 @@ describe("Protocol-Gate Plugin", () => {
       );
       hooks.sessionPhaseMap.set("test-1", 1); // INTENT
 
-      await hooks["tool.execute.before"](
-        { tool: "bash", sessionID: "test-1", callID: "c2" },
-        { args: { command: "ls" } }
-      );
-
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
+      // bash is not in INTENT allowlist — should be blocked
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "bash", sessionID: "test-1", callID: "c2" },
+          { args: { command: "ls" } }
+        )
+      ).rejects.toThrow("not allowed in INTENT phase");
     });
 
     it("triggers disk check on write tool (in DISK_CHECK_TOOLS)", async () => {
