@@ -35,9 +35,26 @@ const STATES = {
 
 const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
 
+// Behavioral constraints injected into the system prompt per phase.
+// The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
+const PHASE_INSTRUCTIONS = {
+  INTENT: "Write an intent KD capturing the user's exact request as the Raw Request. Use the user's words verbatim — agents resolve details after dispatch.",
+  PREFLIGHT: "Dispatch the Committer agent.",
+  EXPLORE: "Dispatch the Explorer agent.",
+  INVESTIGATE: "Dispatch the Analyzer agent.",
+  ALIGN: "Dispatch the Spec Weaver agent.",
+  DECOMPOSE: "Dispatch the Pathfinder agent.",
+  SWARM: "Dispatch the Artisan agent.",
+  VERIFY: "Dispatch the Inspector agent.",
+  EXTRACT: "Dispatch the Scribe agent.",
+  EVOLVE: "Dispatch the Habit Builder agent.",
+  COMMIT: "Dispatch the Committer agent.",
+  REPORT: "Write a report KD summarizing lifecycle results."
+};
+
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "read", "question", "skill", "bash"],
+  INTENT: ["todowrite", "write", "read", "skill"],
   PREFLIGHT: ["task", "todowrite", "glob", "bash"],
   EXPLORE: ["task", "todowrite", "glob"],
   INVESTIGATE: ["task", "todowrite", "glob"],
@@ -586,14 +603,10 @@ export default {
       if (phase === undefined) return;
       const phaseName = getPhaseName(phase);
       if (!phaseName) return;
-      const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-      // Annotate tools that have per-tool restrictions so the LLM doesn't treat them as unrestricted
-      const restrictions = TOOL_RESTRICTIONS[phaseName] || {};
-      const annotatedTools = allowedTools.map(tool => restrictions[tool] ? `${tool} (${restrictions[tool]})` : tool);
-      // Append constraint — the array is joined into the final system message
-      output.system.push(
-        `[Protocol Gate] Current phase: ${phaseName}. You may ONLY use these tools: ${annotatedTools.join(", ")}. All other tools are structurally blocked.`
-      );
+      const instructions = PHASE_INSTRUCTIONS[phaseName];
+      if (instructions) {
+        output.system.push(`[Protocol Gate] Phase ${phaseName}: ${instructions}`);
+      }
       debug(`systemTransform: injected phase constraint for phase=${phaseName}`);
     }
 
