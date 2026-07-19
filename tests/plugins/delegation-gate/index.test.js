@@ -183,6 +183,59 @@ SCOPE: Implement feature X`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
+
+    it("rejects literal placeholder {scope} in scope field", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: {scope}`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("unresolved placeholder");
+    });
+
+    it("rejects literal placeholder {result_kd} in result_kd field", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: {result_kd}`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("unresolved placeholder");
+    });
+
+    it("rejects literal placeholder {intent_kd} in intent_kd field", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: {intent_kd}
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("unresolved placeholder");
+    });
+
+    it("strips unresolved placeholders from rendered template", async () => {
+      // When scope is required but result_kd is not provided,
+      // the template's {result_kd} placeholder should be stripped from output
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      // result_kd not provided — {result_kd} placeholder should be stripped
+      expect(output.args.prompt).not.toContain("{result_kd}");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
   });
 
   describe("Scope Validation", () => {
@@ -292,15 +345,27 @@ RESULT KD: knowledge/exploration-foo.md`;
       expect(output.args.prompt).toContain("Explore the plugin system architecture");
     });
 
-    it("accepts prompt without scope or result_kd (both optional)", async () => {
+    it("rejects prompt without scope (scope is required)", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-17
+RESULT KD: knowledge/impl-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Missing required structured fields");
+    });
+
+    it("rejects prompt without scope or result_kd (scope is required)", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17`;
 
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Missing required structured fields");
     });
   });
 
@@ -433,17 +498,16 @@ RESULT KD: knowledge/analysis-bar.md`;
   });
 
   describe("Description Scope Fallback", () => {
-    it("accepts prompt without SCOPE field (scope is optional)", async () => {
+    it("rejects prompt without SCOPE field (scope is required)", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
 RESULT KD: knowledge/impl-foo.md`;
 
-      const output = { args: { prompt, description: "Implement feature X" } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      // Should not throw — scope is optional
-      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt, description: "Implement feature X" } })
+      ).rejects.toThrow("Missing required structured fields");
     });
 
     it("prompt text scope takes precedence over description", async () => {

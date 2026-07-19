@@ -211,12 +211,20 @@ function isBareKDPath(prompt) {
   return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(prompt.trim());
 }
 
+// Detects literal placeholder patterns like {scope} or {result_kd} that the
+// Overseer failed to fill in — these pass structural extraction but are meaningless.
+function containsPlaceholder(value) {
+  return /^\{[a-zA-Z_][a-zA-Z0-9_]*\}$/.test(value.trim());
+}
+
 function renderTemplate(template, fields) {
   let result = template;
   for (const [key, value] of Object.entries(fields)) {
     // Function replacement avoids $-special-character interpretation in replacement strings
     result = result.replace(new RegExp(`\\{${key}\\}`, "g"), () => value);
   }
+  // Strip unresolved placeholders (e.g. {scope} when scope wasn't provided)
+  result = result.replace(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, "");
   return result;
 }
 
@@ -284,10 +292,19 @@ export default {
       }
 
       const fields = extractFieldsFromPrompt(prompt, subagentType);
-      // scope and result_kd are optional — templates fill defaults, disk-based advancement handles verification
-      const requiredFields = ["agent", "mode", "intent_kd", "session_date"];
+      // scope is required — forces the Overseer to provide meaningful instructions
+      const requiredFields = ["agent", "mode", "intent_kd", "session_date", "scope"];
 
       debug(`Extracted fields: ${Object.keys(fields).join(", ")}`);
+
+      // Reject literal placeholder patterns (e.g. {scope}, {result_kd}) — these indicate
+      // the Overseer failed to substitute values into the delegation prompt.
+      for (const [key, value] of Object.entries(fields)) {
+        if (containsPlaceholder(value)) {
+          debug(`VALIDATION FAILED: field '${key}' contains unresolved placeholder '${value}'`);
+          throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, `Field '${key}' contains unresolved placeholder '${value}'`, `Provide actual values for all delegation fields`);
+        }
+      }
 
       for (const field of requiredFields) {
         if (fields[field] === undefined || fields[field] === null) {
