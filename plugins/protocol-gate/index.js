@@ -37,7 +37,7 @@ const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", 
 
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "read", "question"],
+  INTENT: ["todowrite", "write", "read", "question", "skill"],
   PREFLIGHT: ["task", "todowrite", "glob"],
   EXPLORE: ["task", "todowrite", "glob"],
   INVESTIGATE: ["task", "todowrite", "glob"],
@@ -49,6 +49,14 @@ const TOOL_ALLOWLIST = {
   EVOLVE: ["task", "todowrite", "glob"],
   COMMIT: ["task", "todowrite", "glob"],
   REPORT: ["todowrite", "write", "read"]
+};
+
+// Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
+// tool.definition appends these to the description so the LLM sees the restriction
+// instead of treating the tool as fully available.
+const TOOL_RESTRICTIONS = {
+  INTENT: { read: "templates and intent KDs only" },
+  REPORT: { read: "templates and knowledge KDs only" }
 };
 
 class ProtocolGateError extends Error {
@@ -544,7 +552,16 @@ export default {
       if (!phaseName) return;
       const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
       // task is always allowed (delegation mechanism) — never block it
-      if (toolID === "task" || allowedTools.includes(toolID)) return;
+      if (toolID === "task") return;
+      // Allowed tool — check if it has per-tool restrictions to display
+      if (allowedTools.includes(toolID)) {
+        const restriction = TOOL_RESTRICTIONS[phaseName]?.[toolID];
+        if (restriction) {
+          output.description = `[${phaseName} phase restriction: ${restriction}] ${output.description}`;
+          debug(`tool.definition: restricted tool=${toolID} in phase=${phaseName} — ${restriction}`);
+        }
+        return;
+      }
       // Prepend blocking notice — LLM sees this as the tool's availability status
       output.description = `⛔ NOT AVAILABLE in ${phaseName} phase. Allowed tools: ${allowedTools.join(", ")}. ${output.description}`;
       debug(`tool.definition: blocked tool=${toolID} in phase=${phaseName}`);
@@ -563,9 +580,12 @@ export default {
       const phaseName = getPhaseName(phase);
       if (!phaseName) return;
       const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
+      // Annotate tools that have per-tool restrictions so the LLM doesn't treat them as unrestricted
+      const restrictions = TOOL_RESTRICTIONS[phaseName] || {};
+      const annotatedTools = allowedTools.map(tool => restrictions[tool] ? `${tool} (${restrictions[tool]})` : tool);
       // Append constraint — the array is joined into the final system message
       output.system.push(
-        `[Protocol Gate] Current phase: ${phaseName}. You may ONLY use these tools: ${allowedTools.join(", ")}. All other tools are structurally blocked.`
+        `[Protocol Gate] Current phase: ${phaseName}. You may ONLY use these tools: ${annotatedTools.join(", ")}. All other tools are structurally blocked.`
       );
       debug(`systemTransform: injected phase constraint for phase=${phaseName}`);
     }
