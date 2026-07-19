@@ -313,7 +313,7 @@ export default {
         }
       }
 
-      // Validate scope only when provided — template fills defaults for missing scope
+      // Validate scope content — scope is a required field (required check above)
       if (fields.scope !== undefined && !validateScope(fields.scope)) {
         debug(`VALIDATION FAILED: scope validation failed (len=${fields.scope.length}, content='${fields.scope.substring(0, 50)}...')`);
         throw new DelegationGateError(ERRORS.INVALID_SCOPE.code, ERRORS.INVALID_SCOPE.message, ERRORS.INVALID_SCOPE.guidance);
