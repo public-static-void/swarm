@@ -37,8 +37,8 @@ const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", 
 
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "read", "question", "skill"],
-  PREFLIGHT: ["task", "todowrite", "glob"],
+  INTENT: ["todowrite", "write", "read", "question", "skill", "bash"],
+  PREFLIGHT: ["task", "todowrite", "glob", "bash"],
   EXPLORE: ["task", "todowrite", "glob"],
   INVESTIGATE: ["task", "todowrite", "glob"],
   ALIGN: ["task", "todowrite", "glob"],
@@ -47,7 +47,7 @@ const TOOL_ALLOWLIST = {
   VERIFY: ["task", "todowrite", "glob"],
   EXTRACT: ["task", "todowrite", "glob"],
   EVOLVE: ["task", "todowrite", "glob"],
-  COMMIT: ["task", "todowrite", "glob"],
+  COMMIT: ["task", "todowrite", "glob", "bash"],
   REPORT: ["todowrite", "write", "read"]
 };
 
@@ -55,8 +55,8 @@ const TOOL_ALLOWLIST = {
 // tool.definition appends these to the description so the LLM sees the restriction
 // instead of treating the tool as fully available.
 const TOOL_RESTRICTIONS = {
-  INTENT: { read: "templates and intent KDs only" },
-  REPORT: { read: "templates and knowledge KDs only" }
+  INTENT: { read: "ONLY templates and intent KDs — anything else is blocked" },
+  REPORT: { read: "ONLY templates and knowledge KDs — anything else is blocked" }
 };
 
 class ProtocolGateError extends Error {
@@ -521,7 +521,14 @@ export default {
           if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap)) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
             diskCheckFailures.set(sessionID, 0);
-            debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(currentPhase + 1)}`);
+            const newPhase = currentPhase + 1;
+            debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}`);
+            // When entering PREFLIGHT, skip the next disk check to give the Overseer
+            // time to dispatch the committer before advancement to EXPLORE.
+            if (newPhase === STATES.PREFLIGHT) {
+              skipDiskCheckAfterTodo.set(sessionID, true);
+              debug(`Disk advancement: skipping next disk check for PREFLIGHT`);
+            }
           } else {
             // REPORT and COMMIT don't use disk-based advancement — skip stuck detection.
             // REPORT writes the KD directly; COMMIT checks git tree cleanliness.

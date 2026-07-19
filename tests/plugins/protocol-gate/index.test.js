@@ -686,7 +686,7 @@ describe("Protocol-Gate Plugin", () => {
       // Should not throw
     });
 
-    it("blocks bash tool in INTENT phase (not in allowlist)", async () => {
+    it("allows bash tool in INTENT phase (in allowlist)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
       const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
@@ -696,13 +696,12 @@ describe("Protocol-Gate Plugin", () => {
       );
       hooks.sessionPhaseMap.set("test-1", 1); // INTENT
 
-      // bash is not in INTENT allowlist — should be blocked
-      await expect(
-        hooks["tool.execute.before"](
-          { tool: "bash", sessionID: "test-1", callID: "c2" },
-          { args: { command: "ls" } }
-        )
-      ).rejects.toThrow("not allowed in INTENT phase");
+      // bash is in INTENT allowlist — should be allowed
+      await hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "test-1", callID: "c2" },
+        { args: { command: "ls" } }
+      );
+      // Should not throw
     });
 
     it("triggers disk check on write tool (in DISK_CHECK_TOOLS)", async () => {
@@ -819,11 +818,11 @@ describe("Protocol-Gate Plugin", () => {
 
     it("preserves original description after blocking prefix", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT); // INTENT: todowrite, write, read, question, skill
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT); // INTENT: todowrite, write, read, question, skill, bash
       const original = "Search files by pattern";
       const output = { description: original, parameters: {} };
       await hooks["tool.definition"]({ toolID: "glob" }, output);
-      expect(output.description).toBe(`⛔ NOT AVAILABLE in INTENT phase. Allowed tools: todowrite, write, read, question, skill. ${original}`);
+      expect(output.description).toBe(`⛔ NOT AVAILABLE in INTENT phase. Allowed tools: todowrite, write, read, question, skill, bash. ${original}`);
     });
 
     it("appends restriction info for allowed tools with restrictions", async () => {
@@ -833,7 +832,7 @@ describe("Protocol-Gate Plugin", () => {
       const output = { description: original, parameters: {} };
       await hooks["tool.definition"]({ toolID: "read" }, output);
       // read is in INTENT allowlist but has restriction — should show it
-      expect(output.description).toContain("[INTENT phase restriction: templates and intent KDs only]");
+      expect(output.description).toContain("[INTENT phase restriction: ONLY templates and intent KDs — anything else is blocked]");
       expect(output.description).toContain(original);
     });
 
@@ -859,7 +858,7 @@ describe("Protocol-Gate Plugin", () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT);
 
-      const blocked = ["bash", "edit", "glob", "grep"];
+      const blocked = ["edit", "glob", "grep"];
       for (const toolID of blocked) {
         const output = { description: "original", parameters: {} };
         await hooks["tool.definition"]({ toolID }, output);
@@ -899,7 +898,7 @@ describe("Protocol-Gate Plugin", () => {
       await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
       expect(output.system[1]).toContain("INTENT");
       // read has a restriction — should be annotated in the system prompt
-      expect(output.system[1]).toContain("read (templates and intent KDs only)");
+      expect(output.system[1]).toContain("read (ONLY templates and intent KDs — anything else is blocked)");
       expect(output.system[1]).toContain("skill");
     });
 
