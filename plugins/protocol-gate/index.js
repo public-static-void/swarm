@@ -91,7 +91,8 @@ const ERROR_TEMPLATES = {
   BLOCKED_NO_LIFECYCLE: { code: "BLOCKED_NO_LIFECYCLE", message: "Missing lifecycle keywords", guidance: "Include all 12 lifecycle keywords in todowrite" },
   BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "Session not initialized", guidance: "Wait for chat.params to initialize" },
   WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
-  CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "Backward transition cycle limit exceeded", guidance: "Escalate to user" }
+  CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "Backward transition cycle limit exceeded", guidance: "Escalate to user" },
+  FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "Intent KD contains fabricated section", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" }
 };
 
 function getPhaseName(phaseId) {
@@ -448,6 +449,32 @@ export default {
         if (phase === STATES.REPORT && !isReportKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/report-)`);
           throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to report KDs", "Write to knowledge/report-*.md");
+        }
+
+        // Content validation — reject fabricated sections in intent KDs.
+        // The intent template defines exactly: Raw Request, Triage Notes, Next Steps, Process Friction.
+        // The LLM fabricates extra sections when it can't resolve a user instruction (e.g., reading a
+        // roadmap it's blocked from). This catches that at write time instead of letting it propagate downstream.
+        if (phase === STATES.INTENT && isIntentKD) {
+          const content = args?.content || "";
+          const ALLOWED_SECTIONS = [
+            /^##\s*Raw Request/i,
+            /^##\s*Triage Notes/i,
+            /^##\s*Next Steps/i,
+            /^##\s*Process Friction/i
+          ];
+          const sectionHeaders = content.match(/^##\s+.+$/gm) || [];
+          for (const header of sectionHeaders) {
+            const isAllowed = ALLOWED_SECTIONS.some(re => re.test(header));
+            if (!isAllowed) {
+              debug(`write: BLOCKED fabricated section in intent KD: ${header}`);
+              throw new ProtocolGateError(
+                ERROR_TEMPLATES.FABRICATED_SECTION.code,
+                `Intent KD contains unauthorized section: ${header}`,
+                ERROR_TEMPLATES.FABRICATED_SECTION.guidance
+              );
+            }
+          }
         }
       }
 
