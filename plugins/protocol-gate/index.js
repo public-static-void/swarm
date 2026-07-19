@@ -74,8 +74,8 @@ const TOOL_ALLOWLIST = {
 // tool.definition appends these to the description so the LLM sees the restriction
 // instead of treating the tool as fully available.
 const TOOL_RESTRICTIONS = {
-  INTENT: { read: "ONLY templates and intent KDs — anything else is blocked" },
-  REPORT: { read: "ONLY templates and knowledge KDs — anything else is blocked" }
+  INTENT: { read: "ONLY templates and intent KDs" },
+  REPORT: { read: "ONLY templates and knowledge KDs" }
 };
 
 class ProtocolGateError extends Error {
@@ -88,10 +88,10 @@ class ProtocolGateError extends Error {
 }
 
 const ERROR_TEMPLATES = {
-  BLOCKED_NOT_LOADED: { code: "BLOCKED_NOT_LOADED", message: "Protocol not loaded", guidance: "Call todowrite with lifecycle keywords first" },
-  BLOCKED_WRONG_PHASE: { code: "BLOCKED_WRONG_PHASE", message: "Tool not allowed in current phase", guidance: "Wait for the phase to advance" },
+  BLOCKED_NOT_LOADED: { code: "BLOCKED_NOT_LOADED", message: "Protocol loaded via todowrite", guidance: "Call todowrite with lifecycle keywords first" },
+  BLOCKED_WRONG_PHASE: { code: "BLOCKED_WRONG_PHASE", message: "Use [tools] in [phases]", guidance: "Wait for the phase to advance" },
   BLOCKED_NO_LIFECYCLE: { code: "BLOCKED_NO_LIFECYCLE", message: "Missing lifecycle keywords", guidance: "Include all 12 lifecycle keywords in todowrite" },
-  BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "Session not initialized", guidance: "Wait for chat.params to initialize" },
+  BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "Awaiting chat.params initialization", guidance: "Wait for chat.params to initialize" },
   WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
   CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "Backward transition cycle limit exceeded", guidance: "Escalate to user" },
   FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "Intent KD contains fabricated section", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" }
@@ -398,7 +398,7 @@ export default {
           debug(`tool.execute.before: BLOCKED tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
           throw new ProtocolGateError(
             ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
-            `Tool '${tool}' not allowed in ${phaseName} phase`,
+            `Available tools in ${phaseName}: ${allowedTools.join(", ")}`,
             `Allowed tools: ${allowedTools.join(", ")}`
           );
         }
@@ -446,11 +446,11 @@ export default {
 
         if (phase === STATES.INTENT && !isIntentKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/intent-)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to intent KDs", "Write to knowledge/intent-*.md");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Write to knowledge/intent-*.md", "Write to knowledge/intent-*.md");
         }
         if (phase === STATES.REPORT && !isReportKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/report-)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Writes restricted to report KDs", "Write to knowledge/report-*.md");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Write to knowledge/report-*.md", "Write to knowledge/report-*.md");
         }
 
         // Content validation — reject fabricated sections in intent KDs.
@@ -472,7 +472,7 @@ export default {
               debug(`write: BLOCKED fabricated section in intent KD: ${header}`);
               throw new ProtocolGateError(
                 ERROR_TEMPLATES.FABRICATED_SECTION.code,
-                `Intent KD contains unauthorized section: ${header}`,
+                `Intent KD valid sections: Raw Request, Triage Notes, Next Steps, Process Friction`,
                 ERROR_TEMPLATES.FABRICATED_SECTION.guidance
               );
             }
@@ -494,14 +494,14 @@ export default {
             const isIntentKD = /knowledge\/intent-/i.test(relPath);
             if (!isTemplate && !isIntentKD) {
               debug(`read: BLOCKED phase=${phaseName} path=${path} (INTENT reads restricted to templates and intent KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates and intent KDs", "Read from template or knowledge/intent-*.md only");
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Read from template or knowledge/intent-*.md", "Read from template or knowledge/intent-*.md only");
             }
           } else {
             // REPORT phase: allow templates and any knowledge KD (needed to compose report)
             const isKnowledge = relPath.startsWith("knowledge/") || relPath.includes("/knowledge/");
             if (!isTemplate && !isKnowledge) {
               debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to templates and knowledge KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Reads restricted to templates and knowledge KDs", "Read from template or knowledge directory only");
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Read from template or knowledge directory", "Read from template or knowledge directory only");
             }
           }
         }
@@ -511,7 +511,7 @@ export default {
       else if (tool === "task") {
         if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task not allowed in current phase", "Wait for delegation phase");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task available in PREFLIGHT through COMMIT phases", "Wait for delegation phase");
         }
 
         const prompt = args?.prompt || "";
@@ -616,7 +616,7 @@ export default {
         return;
       }
       // Prepend blocking notice — LLM sees this as the tool's availability status
-      output.description = `⛔ NOT AVAILABLE in ${phaseName} phase. Allowed tools: ${allowedTools.join(", ")}. ${output.description}`;
+      output.description = `⛔ Use only: ${allowedTools.join(", ")} in ${phaseName} phase. ${output.description}`;
       debug(`tool.definition: blocked tool=${toolID} in phase=${phaseName}`);
     }
 

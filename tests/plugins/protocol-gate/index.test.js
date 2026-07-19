@@ -111,7 +111,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "task", sessionID: "orphan-overseer", callID: "c1" },
           { args: { prompt: "AGENT: explorer\nMODE: explore\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-17\nSCOPE: Explore codebase\nRESULT KD: knowledge/exploration-foo.md" } }
         )
-      ).rejects.toThrow("Session not initialized");
+      ).rejects.toThrow("Awaiting chat.params initialization");
     });
 
     it("passes through non-overseer session calling task tool", async () => {
@@ -188,7 +188,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "write", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "knowledge/spec-foo.md" } }
         )
-      ).rejects.toThrow("Writes restricted to intent KDs");
+      ).rejects.toThrow("Write to knowledge/intent-*.md");
     });
 
     it("validates read path in INTENT phase", async () => {
@@ -209,7 +209,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "src/main.js" } }
         )
-      ).rejects.toThrow("Reads restricted to templates and intent KDs");
+      ).rejects.toThrow("Read from template or knowledge/intent-*.md");
     });
   });
 
@@ -355,7 +355,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "write", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "/home/user/project/knowledge/spec-foo.md" } }
         )
-      ).rejects.toThrow("Writes restricted to intent KDs");
+      ).rejects.toThrow("Write to knowledge/intent-*.md");
     });
 
     it("allows read from knowledge/ directory (F02)", async () => {
@@ -419,7 +419,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "src/main.js" } }
         )
-      ).rejects.toThrow("Reads restricted to templates and intent KDs");
+      ).rejects.toThrow("Read from template or knowledge/intent-*.md");
     });
 
     it("has INTENT pattern for disk advancement (F04)", async () => {
@@ -545,7 +545,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "knowledge/report-foo.md" } }
         )
-      ).rejects.toThrow("Reads restricted to templates and intent KDs");
+      ).rejects.toThrow("Read from template or knowledge/intent-*.md");
     });
 
     it("blocks reading analysis KDs in INTENT phase", async () => {
@@ -564,7 +564,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "knowledge/analysis-foo.md" } }
         )
-      ).rejects.toThrow("Reads restricted to templates and intent KDs");
+      ).rejects.toThrow("Read from template or knowledge/intent-*.md");
     });
 
     it("allows reading templates in INTENT phase", async () => {
@@ -684,7 +684,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "skill", sessionID: "test-1", callID: "c2" },
           { args: { name: "kd-system" } }
         )
-      ).rejects.toThrow("not allowed in INTENT phase");
+      ).rejects.toThrow("Available tools in INTENT:");
     });
 
     it("blocks bash tool in INTENT phase (removed from allowlist)", async () => {
@@ -703,7 +703,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "bash", sessionID: "test-1", callID: "c2" },
           { args: { command: "ls" } }
         )
-      ).rejects.toThrow("not allowed in INTENT phase");
+      ).rejects.toThrow("Available tools in INTENT:");
     });
 
     it("triggers disk check on write tool (in DISK_CHECK_TOOLS)", async () => {
@@ -813,8 +813,7 @@ describe("Protocol-Gate Plugin", () => {
       // PROTOCOL_NOT_LOADED only allows todowrite
       const output = { description: "Read a file", parameters: {} };
       await hooks["tool.definition"]({ toolID: "read" }, output);
-      expect(output.description).toContain("NOT AVAILABLE in PROTOCOL_NOT_LOADED phase");
-      expect(output.description).toContain("Allowed tools: todowrite");
+      expect(output.description).toContain("Use only: todowrite in PROTOCOL_NOT_LOADED phase");
       expect(output.description).toContain("Read a file");
     });
 
@@ -824,7 +823,7 @@ describe("Protocol-Gate Plugin", () => {
       const original = "Search files by pattern";
       const output = { description: original, parameters: {} };
       await hooks["tool.definition"]({ toolID: "glob" }, output);
-      expect(output.description).toBe(`⛔ NOT AVAILABLE in INTENT phase. Allowed tools: todowrite, write, read. ${original}`);
+      expect(output.description).toBe(`⛔ Use only: todowrite, write, read in INTENT phase. ${original}`);
     });
 
     it("appends restriction info for allowed tools with restrictions", async () => {
@@ -834,7 +833,7 @@ describe("Protocol-Gate Plugin", () => {
       const output = { description: original, parameters: {} };
       await hooks["tool.definition"]({ toolID: "read" }, output);
       // read is in INTENT allowlist but has restriction — should show it
-      expect(output.description).toContain("[INTENT phase restriction: ONLY templates and intent KDs — anything else is blocked]");
+      expect(output.description).toContain("[INTENT phase restriction: ONLY templates and intent KDs]");
       expect(output.description).toContain(original);
     });
 
@@ -864,7 +863,7 @@ describe("Protocol-Gate Plugin", () => {
       for (const toolID of blocked) {
         const output = { description: "original", parameters: {} };
         await hooks["tool.definition"]({ toolID }, output);
-        expect(output.description).toContain("NOT AVAILABLE in INTENT phase");
+        expect(output.description).toContain("Use only: todowrite, write, read in INTENT phase");
       }
     });
   });

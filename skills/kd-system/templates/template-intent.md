@@ -16,7 +16,7 @@ superseded_by: null
 
 ## Raw Request
 
-{{The user's original request, captured VERBATIM — do not modify, interpret, or add to this text}}
+{{The user's original request, captured VERBATIM — copy word for word}}
 
 ## Triage Notes
 
