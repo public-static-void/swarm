@@ -95,7 +95,14 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 
 1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `delegation-gate` plugin generates dispatch prompts from templates using your data fields and injects the required task tool fields.
 
-2. **Provide ONLY structured fields** — include these fields in every task call: `mode` (one of: explore, investigate, align, decompose, swarm, verify, extract, evolve, commit, report, checkpoint, preflight), `intent_kd` (path to the current INTENT KD), and `session_date` (YYYY-MM-DD). Optionally provide `scope` for domain context. Provide only: `mode`, `intent_kd`, `session_date`, `scope`. The plugin generates `prompt`, `description`, and `subagent_type` from the template.
+2. **Provide structured fields in the `prompt` parameter** — put these as `KEY: value` lines in the `prompt` parameter, one per line:
+   ```
+   MODE: <mode>
+   INTENT KD: knowledge/intent-<name>.md
+   SESSION DATE: <YYYY-MM-DD>
+   SCOPE: <optional context>
+   ```
+   Required: `mode`, `intent_kd`, `session_date`. Optional: `scope` (provides domain context). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
 
 3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 

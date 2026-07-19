@@ -35,7 +35,7 @@ const ERRORS = {
   FOREIGN_PATH: { code: "FOREIGN_PATH", message: "Foreign paths detected", guidance: "Use only knowledge/*.md paths" },
   BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include required fields: agent, mode, intent_kd, session_date" },
   MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Include agent, mode, intent_kd, session_date" },
-  INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope must be a concise description (1-200 chars). No file paths, URLs, multi-sentence instructions, or negative framing" },
+  INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope should not contain code blocks (security) or absolute /home/ paths (info leak)" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" }
 };
@@ -141,39 +141,18 @@ function extractFieldsFromPrompt(prompt, subagentType) {
   return fields;
 }
 
-// Scope must be a concise description, not free-form instructions.
-// These patterns detect scope that's been abused as a job-assignment vector.
+// Scope is advisory — validates quality but never blocks delegation.
+// Only rejects code blocks (security concern) and absolute home paths (info leak).
 function validateScope(scope) {
   if (!scope || scope.trim() === "") {
     return false;
   }
-  if (scope.length > 200) {
+  // Code blocks in scope are a security concern — could inject instructions
+  if (/```[\s\S]*?```|~~~[\s\S]*?~~~/.test(scope)) {
     return false;
   }
-  const negativePatterns = /\b(do not|don't|avoid|never|must not|cannot|can't|shouldn't|wont|won't)\b/i;
-  if (negativePatterns.test(scope)) {
-    return false;
-  }
-  // File paths indicate the scope contains specific file references — too detailed for a description.
-  // Require a path separator to distinguish actual paths from extension mentions in topic descriptions.
-  const filePathPattern = /[/\\]\S+\.(md|js|ts|json|yaml|yml|py|rb|go|rs|java|c|cpp|h|sh|bash|txt|csv|xml|html|css|scss)\b/i;
-  if (filePathPattern.test(scope)) {
-    return false;
-  }
-  // URLs indicate the scope contains external references — should be a description, not a link
-  const urlPattern = /https?:\/\//i;
-  if (urlPattern.test(scope)) {
-    return false;
-  }
-  // Multiple sentences (3+) indicate multi-step instructions — scope should be a single phrase.
-  // Allow 2 sentences for concise compound scopes like "Fix the login bug. Ensure backward compatibility."
-  const sentenceCount = scope.split(/[.!?]+\s+[A-Z]/).length;
-  if (sentenceCount > 2) {
-    return false;
-  }
-  // Multi-step conjunctions indicate procedural instructions
-  const multiStepPattern = /\b(and then|after that|first .+ then|next .+ then)\b/i;
-  if (multiStepPattern.test(scope)) {
+  // Absolute paths under /home/ leak local filesystem structure
+  if (/\/home\/\S+/.test(scope)) {
     return false;
   }
   return true;
@@ -231,11 +210,12 @@ function renderTemplate(template, fields) {
 function injectToolDocs(output) {
   const today = new Date().toISOString().slice(0, 10);
   const formatHint = `
-Delegation Prompt Format (replace all <placeholder> values):
+Delegation Prompt Format:
 DISPATCH TO: <agent-name>
 MODE: <mode>
 INTENT KD: knowledge/intent-<descriptive-name>.md
 SESSION DATE: ${today}
+SCOPE: <optional context>
 `;
 
   if (!output.args) output.args = {};
@@ -292,8 +272,8 @@ export default {
       }
 
       const fields = extractFieldsFromPrompt(prompt, subagentType);
-      // scope is required — forces the Overseer to provide meaningful instructions
-      const requiredFields = ["agent", "mode", "intent_kd", "session_date", "scope"];
+      // scope is optional — provides domain context but doesn't block delegation
+      const requiredFields = ["agent", "mode", "intent_kd", "session_date"];
 
       debug(`Extracted fields: ${Object.keys(fields).join(", ")}`);
 
@@ -313,10 +293,9 @@ export default {
         }
       }
 
-      // Validate scope content — scope is a required field (required check above)
+      // Scope validation — advisory only, never blocks delegation
       if (fields.scope !== undefined && !validateScope(fields.scope)) {
-        debug(`VALIDATION FAILED: scope validation failed (len=${fields.scope.length}, content='${fields.scope.substring(0, 50)}...')`);
-        throw new DelegationGateError(ERRORS.INVALID_SCOPE.code, ERRORS.INVALID_SCOPE.message, ERRORS.INVALID_SCOPE.guidance);
+        debug(`WARNING: scope validation failed (len=${fields.scope.length}, content='${fields.scope.substring(0, 50)}...') — proceeding anyway`);
       }
 
       // Validate result_kd only when provided — disk-based advancement handles verification

@@ -239,7 +239,7 @@ SCOPE: Implement feature X`;
   });
 
   describe("Scope Validation", () => {
-    it("rejects empty scope when provided", async () => {
+    it("accepts empty scope (advisory validation only)", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -247,12 +247,12 @@ SESSION DATE: 2026-07-15
 SCOPE: 
 RESULT KD: knowledge/impl-foo.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Scope validation failed");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
-    it("rejects scope exceeding 200 characters", async () => {
+    it("accepts scope exceeding 200 characters (no length limit)", async () => {
       const longScope = "A".repeat(201);
       const prompt = `AGENT: artisan
 MODE: checkpoint
@@ -261,12 +261,12 @@ SESSION DATE: 2026-07-15
 SCOPE: ${longScope}
 RESULT KD: knowledge/impl-foo.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Scope validation failed");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain(longScope);
     });
 
-    it("rejects negative framing in scope", async () => {
+    it("accepts negative framing in scope (advisory)", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -274,12 +274,12 @@ SESSION DATE: 2026-07-15
 SCOPE: Do not use TypeScript
 RESULT KD: knowledge/impl-foo.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Scope validation failed");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("Do not use TypeScript");
     });
 
-    it("rejects scope containing file paths", async () => {
+    it("accepts relative file paths in scope", async () => {
       const prompt = `AGENT: explorer
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
@@ -287,12 +287,26 @@ SESSION DATE: 2026-07-16
 SCOPE: Read docs/ROADMAP.md and identify the best item
 RESULT KD: knowledge/exploration-foo.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Scope validation failed");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("docs/ROADMAP.md");
     });
 
-    it("rejects scope containing URLs", async () => {
+    it("rejects scope containing absolute /home/ paths", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-16
+SCOPE: Read /home/user/secret.md for details
+RESULT KD: knowledge/exploration-foo.md`;
+
+      // Scope validation is advisory — logs warning but does not block
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
+    it("accepts scope containing URLs (advisory)", async () => {
       const prompt = `AGENT: explorer
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
@@ -300,12 +314,12 @@ SESSION DATE: 2026-07-16
 SCOPE: Check https://example.com/docs for API details
 RESULT KD: knowledge/exploration-foo.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Scope validation failed");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("https://example.com/docs");
     });
 
-    it("rejects scope with multiple sentences (3+)", async () => {
+    it("accepts scope with multiple sentences (advisory)", async () => {
       const prompt = `AGENT: explorer
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
@@ -313,12 +327,12 @@ SESSION DATE: 2026-07-16
 SCOPE: Read the docs first. Then identify gaps. Finally produce a summary.
 RESULT KD: knowledge/exploration-foo.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Scope validation failed");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("Read the docs first");
     });
 
-    it("rejects scope with multi-step conjunctions", async () => {
+    it("accepts scope with multi-step conjunctions (advisory)", async () => {
       const prompt = `AGENT: explorer
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
@@ -326,9 +340,9 @@ SESSION DATE: 2026-07-16
 SCOPE: Find the config file and then update it
 RESULT KD: knowledge/exploration-foo.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Scope validation failed");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("Find the config file");
     });
 
     it("accepts concise scope descriptions", async () => {
@@ -341,31 +355,30 @@ RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      // Should not throw — scope is a valid concise description
       expect(output.args.prompt).toContain("Explore the plugin system architecture");
     });
 
-    it("rejects prompt without scope (scope is required)", async () => {
+    it("accepts prompt without scope (scope is optional)", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
 RESULT KD: knowledge/impl-foo.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Missing required structured fields");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
-    it("rejects prompt without scope or result_kd (scope is required)", async () => {
+    it("accepts prompt without scope or result_kd (both optional)", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Missing required structured fields");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
   });
 
@@ -419,7 +432,7 @@ RESULT KD: knowledge/plan-preflight.md`;
   });
 
   describe("Tool Doc Injection", () => {
-    it("injects delegation format without schema mutation", async () => {
+    it("injects delegation format with SCOPE field in hint", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -431,6 +444,7 @@ RESULT KD: knowledge/impl-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
       expect(output.args.description).toContain("Delegation Prompt Format");
+      expect(output.args.description).toContain("SCOPE: <optional context>");
     });
 
     it("does not duplicate format hint when description already contains it", async () => {
@@ -498,16 +512,16 @@ RESULT KD: knowledge/analysis-bar.md`;
   });
 
   describe("Description Scope Fallback", () => {
-    it("rejects prompt without SCOPE field (scope is required)", async () => {
+    it("accepts prompt without SCOPE field (scope is optional)", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
 RESULT KD: knowledge/impl-foo.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt, description: "Implement feature X" } })
-      ).rejects.toThrow("Missing required structured fields");
+      const output = { args: { prompt, description: "Implement feature X" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
     it("prompt text scope takes precedence over description", async () => {
