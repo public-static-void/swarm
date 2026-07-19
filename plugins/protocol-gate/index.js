@@ -56,7 +56,7 @@ const PHASE_INSTRUCTIONS = {
 
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "read"],
+  INTENT: ["todowrite", "write", "read", "skill"],
   PREFLIGHT: ["task", "todowrite", "glob", "bash"],
   EXPLORE: ["task", "todowrite", "glob"],
   INVESTIGATE: ["task", "todowrite", "glob"],

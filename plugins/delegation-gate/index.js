@@ -316,7 +316,7 @@ export default {
 
       debug(`ALLOW delegation: agent=${fields.agent} mode=${fields.mode} intent_kd=${fields.intent_kd} result_kd=${fields.result_kd}`);
 
-      const template = templates[fields.mode];
+      const template = templates[fields.mode?.toLowerCase()];
       if (!template) {
         debug(`VALIDATION FAILED: no template found for mode '${fields.mode}'`);
         throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, `No template found for mode: ${fields.mode}`, "Check plugins/delegation-gate/templates directory");

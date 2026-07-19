@@ -678,13 +678,13 @@ describe("Protocol-Gate Plugin", () => {
       );
       hooks.sessionPhaseMap.set("test-1", 1); // INTENT
 
-      // skill removed from INTENT allowlist — prevents loading skills that enable fabrication
+      // skill is in INTENT allowlist — needed to load kd-system skill
       await expect(
         hooks["tool.execute.before"](
           { tool: "skill", sessionID: "test-1", callID: "c2" },
           { args: { name: "kd-system" } }
         )
-      ).rejects.toThrow("Available tools in INTENT:");
+      ).resolves.toBeUndefined();
     });
 
     it("blocks bash tool in INTENT phase (removed from allowlist)", async () => {
@@ -823,7 +823,7 @@ describe("Protocol-Gate Plugin", () => {
       const original = "Search files by pattern";
       const output = { description: original, parameters: {} };
       await hooks["tool.definition"]({ toolID: "glob" }, output);
-      expect(output.description).toBe(`⛔ Use only: todowrite, write, read in INTENT phase. ${original}`);
+      expect(output.description).toBe(`⛔ Use only: todowrite, write, read, skill in INTENT phase. ${original}`);
     });
 
     it("appends restriction info for allowed tools with restrictions", async () => {
@@ -837,12 +837,12 @@ describe("Protocol-Gate Plugin", () => {
       expect(output.description).toContain(original);
     });
 
-    it("allows all tools in INTENT phase (todowrite, write, read)", async () => {
+    it("allows all tools in INTENT phase (todowrite, write, read, skill)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT);
 
       // Tools without restrictions pass through unchanged
-      for (const toolID of ["todowrite", "write", "task"]) {
+      for (const toolID of ["todowrite", "write", "task", "skill"]) {
         const output = { description: "test", parameters: {} };
         await hooks["tool.definition"]({ toolID }, output);
         expect(output.description).toBe("test");
@@ -863,7 +863,7 @@ describe("Protocol-Gate Plugin", () => {
       for (const toolID of blocked) {
         const output = { description: "original", parameters: {} };
         await hooks["tool.definition"]({ toolID }, output);
-        expect(output.description).toContain("Use only: todowrite, write, read in INTENT phase");
+        expect(output.description).toContain("Use only: todowrite, write, read, skill in INTENT phase");
       }
     });
   });
