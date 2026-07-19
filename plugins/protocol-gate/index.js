@@ -38,7 +38,9 @@ const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", 
 // Behavioral constraints injected into the system prompt per phase.
 // The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
 const PHASE_INSTRUCTIONS = {
-  INTENT: "Write an intent KD capturing the user's exact request as the Raw Request. Use the user's words verbatim — agents resolve details after dispatch.",
+  // Absolute single-action directive: names the tool and content, no reasoning gap.
+  // Positive framing per AGENTS.md — no negative "do NOT" instructions.
+  INTENT: "Call write to create an intent KD with the user's exact words as the Raw Request. The Explorer handles all codebase details after dispatch.",
   PREFLIGHT: "Dispatch the Committer agent.",
   EXPLORE: "Dispatch the Explorer agent.",
   INVESTIGATE: "Dispatch the Analyzer agent.",
@@ -54,7 +56,7 @@ const PHASE_INSTRUCTIONS = {
 
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "read", "skill"],
+  INTENT: ["todowrite", "write", "read"],
   PREFLIGHT: ["task", "todowrite", "glob", "bash"],
   EXPLORE: ["task", "todowrite", "glob"],
   INVESTIGATE: ["task", "todowrite", "glob"],

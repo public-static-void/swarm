@@ -668,7 +668,7 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(1);
     });
 
-    it("allows skill tool in INTENT phase (loads instructions, safe)", async () => {
+    it("blocks skill tool in INTENT phase (removed from allowlist)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
       const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
@@ -678,12 +678,13 @@ describe("Protocol-Gate Plugin", () => {
       );
       hooks.sessionPhaseMap.set("test-1", 1); // INTENT
 
-      // skill is in INTENT allowlist — should pass through
-      await hooks["tool.execute.before"](
-        { tool: "skill", sessionID: "test-1", callID: "c2" },
-        { args: { name: "kd-system" } }
-      );
-      // Should not throw
+      // skill removed from INTENT allowlist — prevents loading skills that enable fabrication
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "skill", sessionID: "test-1", callID: "c2" },
+          { args: { name: "kd-system" } }
+        )
+      ).rejects.toThrow("not allowed in INTENT phase");
     });
 
     it("blocks bash tool in INTENT phase (removed from allowlist)", async () => {
@@ -819,11 +820,11 @@ describe("Protocol-Gate Plugin", () => {
 
     it("preserves original description after blocking prefix", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT); // INTENT: todowrite, write, read, skill
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT); // INTENT: todowrite, write, read
       const original = "Search files by pattern";
       const output = { description: original, parameters: {} };
       await hooks["tool.definition"]({ toolID: "glob" }, output);
-      expect(output.description).toBe(`⛔ NOT AVAILABLE in INTENT phase. Allowed tools: todowrite, write, read, skill. ${original}`);
+      expect(output.description).toBe(`⛔ NOT AVAILABLE in INTENT phase. Allowed tools: todowrite, write, read. ${original}`);
     });
 
     it("appends restriction info for allowed tools with restrictions", async () => {
@@ -837,12 +838,12 @@ describe("Protocol-Gate Plugin", () => {
       expect(output.description).toContain(original);
     });
 
-    it("allows all tools in INTENT phase (todowrite, write, read, skill)", async () => {
+    it("allows all tools in INTENT phase (todowrite, write, read)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT);
 
       // Tools without restrictions pass through unchanged
-      for (const toolID of ["todowrite", "write", "skill", "task"]) {
+      for (const toolID of ["todowrite", "write", "task"]) {
         const output = { description: "test", parameters: {} };
         await hooks["tool.definition"]({ toolID }, output);
         expect(output.description).toBe("test");
@@ -891,15 +892,15 @@ describe("Protocol-Gate Plugin", () => {
       expect(output.system[0]).toBe("base system");
     });
 
-    it("injects behavioral constraint for INTENT phase (positive framing)", async () => {
+    it("injects behavioral constraint for INTENT phase (absolute directive)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT);
       const output = { system: ["base"] };
       await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
       expect(output.system[1]).toContain("INTENT");
-      // INTENT has PHASE_INSTRUCTIONS — positive framing only
-      expect(output.system[1]).toContain("Write an intent KD capturing the user's exact request");
-      expect(output.system[1]).toContain("Use the user's words verbatim");
+      // INTENT has absolute single-action PHASE_INSTRUCTIONS — names tool and content
+      expect(output.system[1]).toContain("Call write to create an intent KD");
+      expect(output.system[1]).toContain("user's exact words as the Raw Request");
     });
 
     it("injects behavioral constraint for SWARM phase (dispatch instruction)", async () => {
@@ -921,9 +922,9 @@ describe("Protocol-Gate Plugin", () => {
       expect(output.system[0]).toBe("prompt-1");
       expect(output.system[1]).toBe("prompt-2");
       expect(output.system[2]).toBe("prompt-3");
-      // INTENT has PHASE_INSTRUCTIONS — positive framing
+      // INTENT has absolute single-action PHASE_INSTRUCTIONS
       expect(output.system[3]).toContain("[Protocol Gate]");
-      expect(output.system[3]).toContain("Write an intent KD");
+      expect(output.system[3]).toContain("Call write to create an intent KD");
     });
 
     it("does not inject when session is not tracked in overseerSessions", async () => {

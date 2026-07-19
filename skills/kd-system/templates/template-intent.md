@@ -9,29 +9,22 @@ superseded_by: null
 ---
 
 <!-- Filename: knowledge/intent-{{name}}-{{YYYY-MM-DD}}.md -->
+<!-- Template has no decision points — the Overseer writes Raw Request verbatim only. -->
+<!-- Triage Notes are pre-filled; the Explorer fills them after dispatch. -->
 
 # INTENT: {{title}}
 
 ## Raw Request
 
-{{The user's original request, captured verbatim}}
+{{The user's original request, captured VERBATIM — do not modify, interpret, or add to this text}}
 
 ## Triage Notes
 
-- **Domain familiarity**: {{familiar / unfamiliar / partially known}}
-- **Clarity**: {{clear / ambiguous / requires exploration}}
-- **Explorer needed?**: {{yes / no}}
-- **Estimated scope**: {{small / medium / large}}
+- **Domain familiarity**: TBD — Explorer will assess after dispatch.
+- **Clarity**: TBD — Explorer will assess after dispatch.
+- **Explorer needed?**: yes (always — the Explorer verifies the request is actionable)
+- **Estimated scope**: TBD — Explorer will assess after dispatch.
 
 ## Next Steps
 
-- [ ] Dispatch Explorer (if needed)
-- [ ] Dispatch Spec Weaver
-
-## Process Friction
-
-_This section is optional — include only if friction was encountered during work._
-
-| ID     | Issue                       | Severity            | Status                  | Fixed by            |
-| ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |
-| PF-001 | {{description of friction}} | {{low/medium/high}} | {{unresolved/resolved}} | {{agent or PR ref}} |
+- [ ] Dispatch Explorer to verify and explore
