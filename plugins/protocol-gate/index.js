@@ -10,7 +10,7 @@
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
 import { execFile } from "child_process";
-import { appendFileSync, mkdirSync, readdirSync, readFileSync } from "fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -38,6 +38,7 @@ const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", 
 // Behavioral constraints injected into the system prompt per phase.
 // The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
 const PHASE_INSTRUCTIONS = {
+  PROTOCOL_NOT_LOADED: "Call todowrite to load the 12-phase lifecycle protocol. Existing knowledge documents will be detected automatically.",
   // Absolute single-action directive: names the tool and content, no reasoning gap.
   // Positive framing per AGENTS.md — no negative "do NOT" instructions.
   INTENT: "Call write to create an intent KD with the user's exact words as the Raw Request. The Explorer handles all codebase details after dispatch.",
@@ -286,6 +287,41 @@ export default {
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
 
+    // --- State persistence ---
+    // Persists phase + date to disk so opencode --continue restores state.
+    // Without this, restarting the plugin server loses all in-memory state.
+    function getStatePath(sessionID) {
+      return join(process.cwd(), ".opencode", `.protocol-state-${sessionID}.json`);
+    }
+
+    function saveState(sessionID) {
+      const phase = sessionPhaseMap.get(sessionID);
+      const date = sessionPhaseMap.get(`${sessionID}:date`);
+      if (phase === undefined) return;
+      try {
+        const state = { phase, date: date || null, timestamp: Date.now() };
+        mkdirSync(join(process.cwd(), ".opencode"), { recursive: true });
+        writeFileSync(getStatePath(sessionID), JSON.stringify(state));
+      } catch (e) { debug(`saveState error: ${e.message}`); }
+    }
+
+    function loadState(sessionID) {
+      try {
+        const data = JSON.parse(readFileSync(getStatePath(sessionID), "utf8"));
+        if (data.phase !== undefined && data.phase > STATES.PROTOCOL_NOT_LOADED) {
+          sessionPhaseMap.set(sessionID, data.phase);
+          if (data.date) {
+            sessionPhaseMap.set(`${sessionID}:date`, data.date);
+          }
+          overseerSessions.add(sessionID);
+          lastSeenSession = sessionID;
+          debug(`loadState: restored phase=${getPhaseName(data.phase)} date=${data.date}`);
+          return true;
+        }
+      } catch (e) { /* no state file or corrupt — fresh session */ }
+      return false;
+    }
+
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
 
     debug("Plugin initializing…");
@@ -313,6 +349,7 @@ export default {
       const prevPhase = sessionPhaseMap.get(sessionID);
       sessionPhaseMap.set(sessionID, targetPhase);
       debug(`Backward transition complete: ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
+      saveState(sessionID);
       return true;
     }
 
@@ -326,8 +363,10 @@ export default {
         // Only initialize when session isn't already tracked (opencode calls
         // chat.params on every tool invocation cycle, not once per session).
         if (!sessionPhaseMap.has(sessionID)) {
-          debug(`chat.params: initializing overseer session ${sessionID}`);
-          sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+          if (!loadState(sessionID)) {
+            debug(`chat.params: initializing overseer session ${sessionID}`);
+            sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+          }
         }
       } else {
         // Non-overseer sessions pass through unaffected — don't touch the maps.
@@ -416,6 +455,7 @@ export default {
               sessionPhaseMap.set(sessionID, STATES.INTENT);
               debug("INTENT phase: write intent KD with raw user request. No file reading or exploration needed.");
               skipDiskCheckAfterTodo.set(sessionID, true);
+              saveState(sessionID);
             } else {
               debug(`todowrite: missing lifecycle keywords in PROTOCOL_NOT_LOADED`);
               throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.code, ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.message, ERROR_TEMPLATES.BLOCKED_NO_LIFECYCLE.guidance);
@@ -441,6 +481,7 @@ export default {
           if (dateMatch) {
             sessionPhaseMap.set(`${sessionID}:date`, dateMatch[1]);
             debug(`write: captured session date ${dateMatch[1]} for session ${sessionID}`);
+            saveState(sessionID);
           }
         }
 
@@ -569,6 +610,7 @@ export default {
             diskCheckFailures.set(sessionID, 0);
             const newPhase = currentPhase + 1;
             debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}`);
+            saveState(sessionID);
             // When entering PREFLIGHT, skip the next disk check to give the Overseer
             // time to dispatch the committer before advancement to EXPLORE.
             if (newPhase === STATES.PREFLIGHT) {

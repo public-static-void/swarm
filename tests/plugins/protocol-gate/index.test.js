@@ -1,10 +1,22 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 
 describe("Protocol-Gate Plugin", () => {
   let hooks;
 
   beforeEach(async () => {
+    // Clean up any state files from prior tests to prevent loadState leaking state
+    const stateDir = join(process.cwd(), ".opencode");
+    try {
+      const files = readdirSync(stateDir);
+      for (const f of files) {
+        if (f.startsWith(".protocol-state-") && f.endsWith(".json")) {
+          try { rmSync(join(stateDir, f)); } catch (_) {}
+        }
+      }
+    } catch (_) {} // .opencode dir may not exist
     hooks = await pluginModule.server({}, {});
   });
 
@@ -882,13 +894,14 @@ describe("Protocol-Gate Plugin", () => {
       expect(output.system).toEqual(["base"]);
     });
 
-    it("does not inject when phase has no PHASE_INSTRUCTIONS (PROTOCOL_NOT_LOADED)", async () => {
+    it("injects PROTOCOL_NOT_LOADED guidance when phase is not loaded", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-      // PROTOCOL_NOT_LOADED has no PHASE_INSTRUCTIONS entry — systemTransform does nothing
+      // PROTOCOL_NOT_LOADED now has PHASE_INSTRUCTIONS — systemTransform injects guidance
       const output = { system: ["base system"] };
       await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
-      expect(output.system).toHaveLength(1);
-      expect(output.system[0]).toBe("base system");
+      expect(output.system).toHaveLength(2);
+      expect(output.system[1]).toContain("PROTOCOL_NOT_LOADED");
+      expect(output.system[1]).toContain("Call todowrite to load the 12-phase lifecycle protocol");
     });
 
     it("injects behavioral constraint for INTENT phase (absolute directive)", async () => {
@@ -932,6 +945,178 @@ describe("Protocol-Gate Plugin", () => {
       const output = { system: ["base"] };
       await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
       expect(output.system).toEqual(["base"]);
+    });
+  });
+
+  describe("State Persistence", () => {
+    const stateDir = join(process.cwd(), ".opencode");
+
+    function getStatePath(sessionID) {
+      return join(stateDir, `.protocol-state-${sessionID}.json`);
+    }
+
+    function cleanupState(sessionID) {
+      try { rmSync(getStatePath(sessionID)); } catch (_) {}
+    }
+
+    afterEach(() => {
+      // Clean up any state files created during tests
+      for (const sid of ["persist-1", "persist-2", "persist-restart"]) {
+        cleanupState(sid);
+      }
+    });
+
+    it("saves state after todowrite advances to INTENT", async () => {
+      const hooks = await pluginModule.server({}, {});
+      const sessionID = "persist-1";
+
+      await hooks["chat.params"]({ sessionID, agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID, callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      // State file should exist with phase=INTENT(1)
+      const data = JSON.parse(readFileSync(getStatePath(sessionID), "utf8"));
+      expect(data.phase).toBe(1); // INTENT
+      expect(data.timestamp).toBeDefined();
+    });
+
+    it("saves state after session date capture", async () => {
+      const hooks = await pluginModule.server({}, {});
+      const sessionID = "persist-2";
+
+      await hooks["chat.params"]({ sessionID, agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID, callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      // Write intent KD with date to trigger session date capture
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID, callID: "c2" },
+        { args: { filePath: "knowledge/intent-feature-2026-07-19.md" } }
+      );
+
+      // State file should have the session date
+      const data = JSON.parse(readFileSync(getStatePath(sessionID), "utf8"));
+      expect(data.date).toBe("2026-07-19");
+    });
+
+    it("restores state on restart via loadState in chat.params", async () => {
+      const sessionID = "persist-restart";
+
+      // Phase 1: Create plugin, advance session to INTENT
+      const hooks1 = await pluginModule.server({}, {});
+      await hooks1["chat.params"]({ sessionID, agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks1["tool.execute.before"](
+        { tool: "todowrite", sessionID, callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      // Confirm state was saved
+      expect(hooks1.sessionPhaseMap.get(sessionID)).toBe(1); // INTENT
+
+      // Phase 2: Simulate restart — new plugin instance, same session ID
+      const hooks2 = await pluginModule.server({}, {});
+      await hooks2["chat.params"]({ sessionID, agent: "overseer" }, {});
+
+      // Phase should be restored to INTENT (not PROTOCOL_NOT_LOADED)
+      expect(hooks2.sessionPhaseMap.get(sessionID)).toBe(1); // INTENT
+      expect(hooks2.isOverseerSession(sessionID)).toBe(true);
+    });
+
+    it("restores session date on restart", async () => {
+      const sessionID = "persist-restart";
+
+      // Phase 1: Create plugin, advance to INTENT, capture session date
+      const hooks1 = await pluginModule.server({}, {});
+      await hooks1["chat.params"]({ sessionID, agent: "overseer" }, {});
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks1["tool.execute.before"](
+        { tool: "todowrite", sessionID, callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      await hooks1["tool.execute.before"](
+        { tool: "write", sessionID, callID: "c2" },
+        { args: { filePath: "knowledge/intent-feature-2026-07-19.md" } }
+      );
+
+      // Phase 2: Simulate restart
+      const hooks2 = await pluginModule.server({}, {});
+      await hooks2["chat.params"]({ sessionID, agent: "overseer" }, {});
+
+      // Session date should be restored
+      expect(hooks2.sessionPhaseMap.get(`${sessionID}:date`)).toBe("2026-07-19");
+    });
+
+    it("does not restore PROTOCOL_NOT_LOADED phase from state file", async () => {
+      const sessionID = "persist-restart";
+
+      // Manually write a state file with phase=0 (PROTOCOL_NOT_LOADED)
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(getStatePath(sessionID), JSON.stringify({ phase: 0, date: null, timestamp: Date.now() }));
+
+      // New plugin instance — loadState should reject phase=0
+      const hooks = await pluginModule.server({}, {});
+      await hooks["chat.params"]({ sessionID, agent: "overseer" }, {});
+
+      // Should fall through to default PROTOCOL_NOT_LOADED initialization
+      expect(hooks.sessionPhaseMap.get(sessionID)).toBe(0);
+    });
+
+    it("handles corrupt state file gracefully", async () => {
+      const sessionID = "persist-restart";
+
+      // Write corrupt JSON to state file
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(getStatePath(sessionID), "not valid json {{{");
+
+      // Should not throw — loadState catches parse errors
+      const hooks = await pluginModule.server({}, {});
+      await hooks["chat.params"]({ sessionID, agent: "overseer" }, {});
+
+      // Falls through to default initialization
+      expect(hooks.sessionPhaseMap.get(sessionID)).toBe(0);
+    });
+
+    it("handles missing state file gracefully", async () => {
+      const sessionID = "persist-restart";
+
+      // No state file exists — should not throw
+      const hooks = await pluginModule.server({}, {});
+      await hooks["chat.params"]({ sessionID, agent: "overseer" }, {});
+
+      expect(hooks.sessionPhaseMap.get(sessionID)).toBe(0);
+    });
+  });
+
+  describe("PROTOCOL_NOT_LOADED Instructions", () => {
+    it("injects guidance for PROTOCOL_NOT_LOADED phase", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      // Phase is already PROTOCOL_NOT_LOADED after initialization
+      const output = { system: ["base system"] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
+
+      // Should now inject instructions (previously had no PHASE_INSTRUCTIONS entry)
+      expect(output.system).toHaveLength(2);
+      expect(output.system[1]).toContain("PROTOCOL_NOT_LOADED");
+      expect(output.system[1]).toContain("Call todowrite to load the 12-phase lifecycle protocol");
+    });
+
+    it("allows todowrite in PROTOCOL_NOT_LOADED (tool definition not blocked)", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      const output = { description: "Write todos", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "todowrite" }, output);
+      // todowrite is in the PROTOCOL_NOT_LOADED allowlist — should pass through
+      expect(output.description).toBe("Write todos");
     });
   });
 });
