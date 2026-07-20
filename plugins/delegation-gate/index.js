@@ -209,11 +209,13 @@ function renderTemplate(template, fields) {
 
 function injectToolDocs(output) {
   const today = new Date().toISOString().slice(0, 10);
+  // Concrete examples prevent LLMs from copying placeholder syntax literally.
+  // <name> and <optional context> are genuine variables — angle brackets signal variability.
   const formatHint = `
 Delegation Prompt Format:
-DISPATCH TO: <agent-name>
-MODE: <mode>
-INTENT KD: knowledge/intent-<descriptive-name>.md
+DISPATCH TO: explorer
+MODE: explore
+INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
 SCOPE: <optional context>
 `;

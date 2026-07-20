@@ -432,7 +432,7 @@ RESULT KD: knowledge/plan-preflight.md`;
   });
 
   describe("Tool Doc Injection", () => {
-    it("injects delegation format with SCOPE field in hint", async () => {
+    it("injects delegation format with concrete examples and variable placeholders", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -444,7 +444,15 @@ RESULT KD: knowledge/impl-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
       expect(output.args.description).toContain("Delegation Prompt Format");
+      // Concrete examples — LLMs copy these as real values, not templates
+      expect(output.args.description).toContain("DISPATCH TO: explorer");
+      expect(output.args.description).toContain("MODE: explore");
+      // Variable placeholders — genuinely vary per dispatch
+      expect(output.args.description).toContain("INTENT KD: knowledge/intent-<name>.md");
       expect(output.args.description).toContain("SCOPE: <optional context>");
+      // No angle bracket placeholders for fixed fields
+      expect(output.args.description).not.toContain("<agent-name>");
+      expect(output.args.description).not.toContain("<descriptive-name>");
     });
 
     it("does not duplicate format hint when description already contains it", async () => {
