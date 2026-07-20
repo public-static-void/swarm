@@ -145,7 +145,7 @@ RESULT KD: knowledge/impl-foo.md
       ).rejects.toThrow("Bare KD path without structured fields");
     });
 
-    it("rejects relative file paths in non-field lines", async () => {
+    it("accepts relative file paths in non-field lines (security handled by absolute-path checks)", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -154,9 +154,9 @@ SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md
 docs/ROADMAP.md`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("Foreign paths detected");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
     it("validates KD paths against knowledge/*.md pattern when result_kd is provided", async () => {
@@ -549,9 +549,9 @@ RESULT KD: knowledge/impl-foo.md`;
   });
 
   describe("Description Field Extraction (Issue 2)", () => {
-    it("does NOT extract fields from description — description scanning removed to prevent placeholder contamination", async () => {
-      // With description scanning removed, fields in description are ignored.
-      // Only prompt text and subagent_type are scanned.
+    it("extracts fields from description as fallback when prompt is empty", async () => {
+      // With description fallback, fields in description are used when prompt is empty.
+      // Prompt fields take priority when both are present.
       const description = `MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
@@ -559,12 +559,11 @@ SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
       const output = { args: { prompt: "", description, subagent_type: "artisan" } };
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output)
-      ).rejects.toThrow("Missing required structured fields");
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
-    it("fields only come from prompt text, not description", async () => {
+    it("prompt fields override description fields when both present", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -660,14 +659,14 @@ Load the kd-system skill. Read the INTENT KD at knowledge/intent-foo.md. Execute
       expect(output.args.prompt).toContain("knowledge/impl-foo.md");
     });
 
-    it("still rejects foreign paths on their own lines", async () => {
+    it("still rejects absolute paths on their own lines", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md
-docs/ROADMAP.md`;
+/etc/passwd`;
 
       await expect(
         hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })

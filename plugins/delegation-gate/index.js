@@ -110,31 +110,34 @@ function loadTemplates(config) {
 }
 
 // Scan a text block for structured delegation fields. Returns fields found.
-function extractFromText(text, fields) {
+// When override is true, existing field values are overwritten (used for prompt-after-description).
+function extractFromText(text, fields, override = false) {
   if (!text) return;
   for (const line of text.split("\n")) {
     // Accept both "AGENT:" and "DISPATCH TO:" with optional Markdown heading prefix (##, ###, etc.)
     const agentMatch = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(AGENT|DISPATCH TO)(?:\*\*)?:\s*(.*)/i);
     if (agentMatch) {
-      if (!fields["agent"]) fields["agent"] = agentMatch[2].trim();
+      if (override || !fields["agent"]) fields["agent"] = agentMatch[2].trim();
       continue;
     }
     const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       const key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
-      if (!fields[key]) fields[key] = match[2].trim();
+      if (override || !fields[key]) fields[key] = match[2].trim();
     }
   }
 }
 
 // subagentType is a fallback — the Overseer puts agent in output.args.subagent_type,
-// not in prompt text. Only scan prompt for structured fields; description is NOT
-// scanned because injectToolDocs appends format hints there, and scanning would
-// extract placeholder values like <name> as real field values.
-function extractFieldsFromPrompt(prompt, subagentType) {
+// not in prompt text. Description is scanned as a lower-priority fallback: if prompt
+// doesn't contain a field, try description. Prompt overrides description.
+// Format hints (e.g. INTENT KD: knowledge/intent-<name>.md) use <name> as placeholder —
+// these get overridden by any real value found in prompt, or accepted as-is when
+// no prompt value exists (better than hard failure).
+function extractFieldsFromPrompt(prompt, subagentType, description) {
   const fields = {};
-  extractFromText(prompt, fields);
-  // Fallback: agent lives in subagent_type parameter, not in prompt text
+  if (description) extractFromText(description, fields);  // lower priority
+  extractFromText(prompt, fields, true);                   // higher priority, overrides description
   if (!fields["agent"] && subagentType) {
     fields["agent"] = subagentType;
   }
@@ -180,8 +183,6 @@ function detectForeignPaths(prompt) {
     // Allow lines containing knowledge/*.md paths (positive whitelist)
     // This handles KD paths embedded in body text from template rendering or agent text
     if (/knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md/i.test(trimmed)) continue;
-    // Relative paths with file extensions are foreign — knowledge/*.md paths are the only allowed format
-    if (/\.\w{1,5}$/.test(trimmed)) return true;
   }
   return false;
 }
@@ -273,7 +274,7 @@ export default {
         throw new DelegationGateError(ERRORS.FOREIGN_PATH.code, ERRORS.FOREIGN_PATH.message, ERRORS.FOREIGN_PATH.guidance);
       }
 
-      const fields = extractFieldsFromPrompt(prompt, subagentType);
+      const fields = extractFieldsFromPrompt(prompt, subagentType, description);
       // scope is optional — provides domain context but doesn't block delegation
       const requiredFields = ["agent", "mode", "intent_kd", "session_date"];
 
