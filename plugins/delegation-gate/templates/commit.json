@@ -1,4 +1,4 @@
 {
   "mode": "commit",
-  "template": "DISPATCH TO: {agent}\nMODE: commit\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Commit the changes per the scope above."
+  "template": "DISPATCH TO: {agent}\nMODE: commit\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Commit the changes per the scope above."
 }

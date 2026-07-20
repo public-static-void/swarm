@@ -219,6 +219,7 @@ MODE: explore
 INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
 SCOPE: <optional context>
+RESULT KD: knowledge/exploration-<name>.md (when subagent produces a KD)
 `;
 
   if (!output.args) output.args = {};
@@ -301,8 +302,8 @@ export default {
         debug(`WARNING: scope validation failed (len=${fields.scope.length}, content='${fields.scope.substring(0, 50)}...') — proceeding anyway`);
       }
 
-      // Validate result_kd only when provided — disk-based advancement handles verification
-      if (fields.result_kd !== undefined && !validateKDPath(fields.result_kd)) {
+      // Validate result_kd only when provided — falsy check treats "" same as omitted
+      if (fields.result_kd && !validateKDPath(fields.result_kd)) {
         debug(`VALIDATION FAILED: invalid result KD path '${fields.result_kd}'`);
         throw new DelegationGateError(ERRORS.INVALID_RESULT_KD.code, ERRORS.INVALID_RESULT_KD.message, ERRORS.INVALID_RESULT_KD.guidance);
       }

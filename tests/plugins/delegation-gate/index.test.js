@@ -184,6 +184,20 @@ SCOPE: Implement feature X`;
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
+    it("treats empty string result_kd as omitted (not invalid)", async () => {
+      // Overseer writes "RESULT KD:" with nothing after it — extracts as ""
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD:`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
     it("rejects literal placeholder {scope} in scope field", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
@@ -222,18 +236,18 @@ SCOPE: Implement feature X`;
     });
 
     it("strips unresolved placeholders from rendered template", async () => {
-      // When scope is required but result_kd is not provided,
-      // the template's {result_kd} placeholder should be stripped from output
-      const prompt = `AGENT: artisan
-MODE: checkpoint
+      // When scope is not provided but result_kd is,
+      // the template's {scope} placeholder should be stripped from output
+      const prompt = `AGENT: explorer
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
-SCOPE: Implement feature X`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      // result_kd not provided — {result_kd} placeholder should be stripped
-      expect(output.args.prompt).not.toContain("{result_kd}");
+      // scope not provided — {scope} placeholder should be stripped
+      expect(output.args.prompt).not.toContain("{scope}");
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
   });
@@ -565,11 +579,11 @@ RESULT KD: knowledge/impl-foo.md`;
 
     it("prompt fields override description fields when both present", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
       const description = `SESSION DATE: 2099-01-01
 SCOPE: From description
 RESULT KD: knowledge/wrong.md`;
@@ -580,7 +594,7 @@ RESULT KD: knowledge/wrong.md`;
       // Uses prompt's values, not description's
       expect(output.args.prompt).toContain("2026-07-17");
       expect(output.args.prompt).toContain("Implement feature X");
-      expect(output.args.prompt).toContain("knowledge/impl-foo.md");
+      expect(output.args.prompt).toContain("knowledge/exploration-foo.md");
     });
 
     it("prompt fields are used even when description has different values", async () => {
@@ -599,11 +613,11 @@ RESULT KD: knowledge/impl-foo.md`;
     });
 
     it("valid end-to-end: all fields in prompt, agent via subagent_type", async () => {
+      // Preflight template omits RESULT KD — committer modes don't produce KDs
       const prompt = `MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
-SCOPE: Setup workspace
-RESULT KD: knowledge/plan-preflight.md`;
+SCOPE: Setup workspace`;
 
       const output = { args: { prompt, subagent_type: "committer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -612,7 +626,6 @@ RESULT KD: knowledge/plan-preflight.md`;
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
       expect(output.args.prompt).toContain("2026-07-17");
       expect(output.args.prompt).toContain("Setup workspace");
-      expect(output.args.prompt).toContain("knowledge/plan-preflight.md");
     });
   });
 
@@ -643,20 +656,21 @@ Read the INTENT KD at knowledge/intent-foo.md for details.`;
     });
 
     it("accepts KD paths embedded in template-rendered text", async () => {
-      const prompt = `AGENT: artisan
-MODE: checkpoint
+      // Use explore mode — template includes RESULT KD so embedded path appears in output
+      const prompt = `AGENT: explorer
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md
+RESULT KD: knowledge/exploration-foo.md
 
-Load the kd-system skill. Read the INTENT KD at knowledge/intent-foo.md. Execute the swarm phase per the scope above. Produce an IMPLEMENTATION SUMMARY KD at knowledge/impl-foo.md.`;
+Load the kd-system skill. Read the INTENT KD at knowledge/intent-foo.md. Explore the codebase per the scope above. Produce an EXPLORATION KD at knowledge/exploration-foo.md.`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       // Should not throw — multiple embedded KD paths are valid
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
-      expect(output.args.prompt).toContain("knowledge/impl-foo.md");
+      expect(output.args.prompt).toContain("knowledge/exploration-foo.md");
     });
 
     it("still rejects absolute paths on their own lines", async () => {
