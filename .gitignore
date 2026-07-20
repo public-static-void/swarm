@@ -15,6 +15,9 @@ knowledge/
 # Build artifacts / dependencies
 node_modules/
 
+# Plugin state files
+plugins/protocol-gate/.state/
+
 # OS metadata
 .DS_Store
 

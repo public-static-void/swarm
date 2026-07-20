@@ -290,8 +290,10 @@ export default {
     // --- State persistence ---
     // Persists phase + date to disk so opencode --continue restores state.
     // Without this, restarting the plugin server loses all in-memory state.
+    // State files live in the plugin's .state/ directory, not .opencode/ which
+    // may have special purpose in opencode's config hierarchy.
     function getStatePath(sessionID) {
-      return join(process.cwd(), ".opencode", `.protocol-state-${sessionID}.json`);
+      return join(PLUGIN_DIR, ".state", `.protocol-state-${sessionID}.json`);
     }
 
     function saveState(sessionID) {
@@ -300,14 +302,17 @@ export default {
       if (phase === undefined) return;
       try {
         const state = { phase, date: date || null, timestamp: Date.now() };
-        mkdirSync(join(process.cwd(), ".opencode"), { recursive: true });
+        const stateDir = join(PLUGIN_DIR, ".state");
+        mkdirSync(stateDir, { recursive: true });
         writeFileSync(getStatePath(sessionID), JSON.stringify(state));
       } catch (e) { debug(`saveState error: ${e.message}`); }
     }
 
     function loadState(sessionID) {
+      const statePath = getStatePath(sessionID);
+      debug(`loadState: checking ${statePath}`);
       try {
-        const data = JSON.parse(readFileSync(getStatePath(sessionID), "utf8"));
+        const data = JSON.parse(readFileSync(statePath, "utf8"));
         if (data.phase !== undefined && data.phase > STATES.PROTOCOL_NOT_LOADED) {
           sessionPhaseMap.set(sessionID, data.phase);
           if (data.date) {
@@ -318,7 +323,7 @@ export default {
           debug(`loadState: restored phase=${getPhaseName(data.phase)} date=${data.date}`);
           return true;
         }
-      } catch (e) { /* no state file or corrupt — fresh session */ }
+      } catch (e) { debug(`loadState: failed for ${sessionID}: ${e.message}`); }
       return false;
     }
 

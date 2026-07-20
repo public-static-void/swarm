@@ -8,7 +8,7 @@ describe("Protocol-Gate Plugin", () => {
 
   beforeEach(async () => {
     // Clean up any state files from prior tests to prevent loadState leaking state
-    const stateDir = join(process.cwd(), ".opencode");
+    const stateDir = join(process.cwd(), "plugins", "protocol-gate", ".state");
     try {
       const files = readdirSync(stateDir);
       for (const f of files) {
@@ -16,7 +16,7 @@ describe("Protocol-Gate Plugin", () => {
           try { rmSync(join(stateDir, f)); } catch (_) {}
         }
       }
-    } catch (_) {} // .opencode dir may not exist
+    } catch (_) {} // .state dir may not exist
     hooks = await pluginModule.server({}, {});
   });
 
@@ -949,7 +949,7 @@ describe("Protocol-Gate Plugin", () => {
   });
 
   describe("State Persistence", () => {
-    const stateDir = join(process.cwd(), ".opencode");
+    const stateDir = join(process.cwd(), "plugins", "protocol-gate", ".state");
 
     function getStatePath(sessionID) {
       return join(stateDir, `.protocol-state-${sessionID}.json`);
