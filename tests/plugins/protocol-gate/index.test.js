@@ -1119,4 +1119,71 @@ describe("Protocol-Gate Plugin", () => {
       expect(output.description).toBe("Write todos");
     });
   });
+
+  describe("REPORT Dead-End Fix", () => {
+    it("resets to PROTOCOL_NOT_LOADED on lifecycle reload while in REPORT", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      // Should have reset through PROTOCOL_NOT_LOADED and advanced to INTENT
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
+    });
+
+    it("does not reset when in REPORT with incomplete keywords", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: [{ content: "REPORT" }, { content: "INTENT" }] } }
+      );
+
+      // Incomplete keywords — stays in REPORT
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.REPORT);
+    });
+
+    it("clears disk check failures on REPORT reset", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
+
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      // Phase advanced to INTENT — REPORT dead-end is resolved
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
+    });
+
+    it("allows second lifecycle after REPORT", async () => {
+      // First lifecycle: advance to REPORT
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
+
+      // Reload: triggers reset → INTENT
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
+
+      // Second lifecycle: can proceed normally through phases
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "test-1", callID: "c2" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
+    });
+  });
 });

@@ -425,7 +425,7 @@ export default {
         return;
       }
 
-      const phase = sessionPhaseMap.get(sessionID);
+      let phase = sessionPhaseMap.get(sessionID);
       if (phase === undefined) {
         // BUG 2 FIX: fail-closed — overseer session exists but phase is missing.
         // This is an error state; block rather than silently allow.
@@ -433,7 +433,7 @@ export default {
         throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.code, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.message, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.guidance);
       }
 
-      const phaseName = getPhaseName(phase);
+      let phaseName = getPhaseName(phase);
 
       // Enforce tool allowlist — safety net for tools not gated by permission.ask
       if (tool !== "task") {
@@ -450,6 +450,22 @@ export default {
 
       // --- todowrite handler ---
       if (tool === "todowrite") {
+        // REPORT dead-end fix: detect new lifecycle while stuck in REPORT.
+        // After completing all 12 phases, a todowrite with all keywords
+        // should reset to PROTOCOL_NOT_LOADED so a new lifecycle can begin.
+        if (phase === STATES.REPORT && args?.todos && Array.isArray(args.todos)) {
+          const presentKeywords = args.todos.map(t => t.content.toUpperCase());
+          const hasAll = ALL_KEYWORDS.every(k => presentKeywords.some(p => p.includes(k)));
+          if (hasAll) {
+            debug(`todowrite: lifecycle reload in REPORT → resetting to PROTOCOL_NOT_LOADED`);
+            sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+            diskCheckFailures.set(sessionID, 0);
+            saveState(sessionID);
+            phase = STATES.PROTOCOL_NOT_LOADED;
+            phaseName = getPhaseName(phase);
+          }
+        }
+
         if (phase === STATES.PROTOCOL_NOT_LOADED) {
           if (args && args.todos && Array.isArray(args.todos)) {
             const presentKeywords = args.todos.map(t => t.content.toUpperCase());
