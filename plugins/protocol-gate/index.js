@@ -177,12 +177,12 @@ function extractAgentFromPrompt(prompt) {
 // but our checks use relative patterns (e.g. knowledge/intent-).
 // Handles paths from different locations by checking if pattern exists anywhere.
 function toProjectRelative(filePath) {
-  const cwd = process.cwd();
-  if (filePath.startsWith(cwd + "/")) {
-    return filePath.slice(cwd.length + 1);
+  const normalized = filePath.replace(/\\/g, "/");
+  const cwd = process.cwd().replace(/\\/g, "/");
+  if (normalized.startsWith(cwd + "/")) {
+    return normalized.slice(cwd.length + 1);
   }
-  // Fallback: check if the pattern exists in the path (handles nested workspaces)
-  return filePath;
+  return normalized;
 }
 
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
@@ -257,7 +257,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
 function hasCleanTree() {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => resolve(false), 5000);
-    execFile("git", ["status", "--porcelain"], (error, stdout) => {
+    execFile("git", ["status", "--porcelain", "-uno"], (error, stdout) => {
       clearTimeout(timeout);
       if (error) return resolve(false);
       resolve(stdout.trim() === "");
@@ -569,8 +569,55 @@ export default {
         }
       }
 
+      // --- disk-based advancement for lifecycle tools (R009) ---
+      // Runs BEFORE the task handler so the phase is current when agent routing
+      // validates the dispatched agent. Without this, task calls in PREFLIGHT
+      // check against the stale pre-advancement phase and throw WRONG_AGENT.
+      const DISK_CHECK_TOOLS = ["write", "glob", "todowrite", "task"];
+      if (DISK_CHECK_TOOLS.includes(tool)) {
+        // Skip disk check when todowrite just advanced the phase in this call.
+        // Without this guard, todowrite advances to INTENT, then the disk check
+        // immediately finds a pre-existing intent KD and jumps to PREFLIGHT.
+        if (skipDiskCheckAfterTodo.get(sessionID)) {
+          skipDiskCheckAfterTodo.set(sessionID, false);
+          debug(`Disk advancement: skipped — phase just advanced by todowrite`);
+        } else {
+          const currentPhase = sessionPhaseMap.get(sessionID);
+          const currentPhaseName = getPhaseName(currentPhase);
+          if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap)) {
+            sessionPhaseMap.set(sessionID, currentPhase + 1);
+            diskCheckFailures.set(sessionID, 0);
+            const newPhase = currentPhase + 1;
+            debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}`);
+            saveState(sessionID);
+            // When entering PREFLIGHT, skip the next disk check to give the Overseer
+            // time to dispatch the committer before advancement to EXPLORE.
+            if (newPhase === STATES.PREFLIGHT) {
+              skipDiskCheckAfterTodo.set(sessionID, true);
+              debug(`Disk advancement: skipping next disk check for PREFLIGHT`);
+            }
+          } else {
+            // REPORT and COMMIT don't use disk-based advancement — skip stuck detection.
+            // REPORT writes the KD directly; COMMIT checks git tree cleanliness.
+            if (currentPhase !== STATES.REPORT && currentPhase !== STATES.COMMIT) {
+              const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
+              diskCheckFailures.set(sessionID, failures);
+              if (failures === 10) {
+                debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
+              }
+            }
+          }
+        }
+      }
+
+      // Re-read phase after disk check — it may have advanced via
+      // checkDiskAdvancement above. Without this, the task handler
+      // validates agent routing against the stale pre-advancement phase.
+      phase = sessionPhaseMap.get(sessionID) ?? phase;
+      phaseName = getPhaseName(phase);
+
       // --- task handler ---
-      else if (tool === "task") {
+      if (tool === "task") {
         if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
           throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task available in PREFLIGHT through COMMIT phases", "Wait for delegation phase");
@@ -606,47 +653,6 @@ export default {
               const expectedAgent = currentPhaseAgent || phaseName;
               debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
               throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
-            }
-          }
-        }
-      }
-
-      // --- disk-based advancement for lifecycle tools (R009) ---
-      // Only write (creates KDs), glob (verifies KDs exist), and todowrite
-      // (updates lifecycle state) should trigger disk advancement checks.
-      // Other tools (skill, bash, read) are not part of the delegation lifecycle.
-      const DISK_CHECK_TOOLS = ["write", "glob", "todowrite"];
-      if (DISK_CHECK_TOOLS.includes(tool)) {
-        // Skip disk check when todowrite just advanced the phase in this call.
-        // Without this guard, todowrite advances to INTENT, then the disk check
-        // immediately finds a pre-existing intent KD and jumps to PREFLIGHT.
-        if (skipDiskCheckAfterTodo.get(sessionID)) {
-          skipDiskCheckAfterTodo.set(sessionID, false);
-          debug(`Disk advancement: skipped — phase just advanced by todowrite`);
-        } else {
-          const currentPhase = sessionPhaseMap.get(sessionID);
-          const currentPhaseName = getPhaseName(currentPhase);
-          if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap)) {
-            sessionPhaseMap.set(sessionID, currentPhase + 1);
-            diskCheckFailures.set(sessionID, 0);
-            const newPhase = currentPhase + 1;
-            debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}`);
-            saveState(sessionID);
-            // When entering PREFLIGHT, skip the next disk check to give the Overseer
-            // time to dispatch the committer before advancement to EXPLORE.
-            if (newPhase === STATES.PREFLIGHT) {
-              skipDiskCheckAfterTodo.set(sessionID, true);
-              debug(`Disk advancement: skipping next disk check for PREFLIGHT`);
-            }
-          } else {
-            // REPORT and COMMIT don't use disk-based advancement — skip stuck detection.
-            // REPORT writes the KD directly; COMMIT checks git tree cleanliness.
-            if (currentPhase !== STATES.REPORT && currentPhase !== STATES.COMMIT) {
-              const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
-              diskCheckFailures.set(sessionID, failures);
-              if (failures === 10) {
-                debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
-              }
             }
           }
         }
