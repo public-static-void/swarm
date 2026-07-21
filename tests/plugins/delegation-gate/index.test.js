@@ -960,5 +960,231 @@ RESULT KD:`;
         hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
       ).rejects.toThrow("KD-producing mode requires result_kd");
     });
+
+    it("requires result_kd for align mode", async () => {
+      const prompt = `AGENT: spec-weaver
+MODE: align
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Align requirements`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
+    });
+
+    it("requires result_kd for verify mode", async () => {
+      const prompt = `AGENT: inspector
+MODE: verify
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Verify implementation`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
+    });
+
+    it("requires result_kd for extract mode", async () => {
+      const prompt = `AGENT: scribe
+MODE: extract
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Extract documentation`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
+    });
+
+    it("requires result_kd for evolve mode", async () => {
+      const prompt = `AGENT: habit-builder
+MODE: evolve
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Evolve process`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
+    });
+
+    it("does not require result_kd for commit mode", async () => {
+      const prompt = `AGENT: committer
+MODE: commit
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Commit changes`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("commit");
+    });
+  });
+
+  describe("Committer Template Body (Issue 2)", () => {
+    it("preflight template body does not contain 'Read the INTENT KD'", async () => {
+      const prompt = `AGENT: committer
+MODE: preflight
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Setup workspace`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      // Preflight template body should NOT instruct reading the INTENT KD
+      // (committer has read:deny, so this would fail)
+      expect(output.args.prompt).not.toMatch(/Read the INTENT KD at/);
+    });
+
+    it("checkpoint template body does not contain 'Read the INTENT KD'", async () => {
+      const prompt = `AGENT: committer
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Create checkpoint`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).not.toMatch(/Read the INTENT KD at/);
+    });
+
+    it("commit template body does not contain 'Read the INTENT KD'", async () => {
+      const prompt = `AGENT: committer
+MODE: commit
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Commit changes`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.prompt).not.toMatch(/Read the INTENT KD at/);
+    });
+
+    it("KD-producing templates still contain 'Read the INTENT KD'", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Explore codebase
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      // Explorer has read:allow, so reading INTENT KD is fine
+      expect(output.args.prompt).toMatch(/Read the INTENT KD at/);
+    });
+  });
+
+  describe("Mode Inference Edge Cases", () => {
+    it("infers first matching mode when prompt contains multiple mode keywords", async () => {
+      // Prompt contains both "explore" and "checkpoint" — should infer the first match
+      const prompt = `AGENT: artisan
+Run the explore phase then checkpoint.
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Test multiple modes
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt, subagent_type: "artisan" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      // KNOWN_MODES order: checkpoint, preflight, cleanup, commit, explore...
+      // "checkpoint" comes before "explore" in KNOWN_MODES
+      expect(output.args.prompt).toContain("checkpoint");
+    });
+
+    it("does not infer mode from partial word matches", async () => {
+      // "checkpoints" should NOT match "checkpoint" due to word boundary (\b).
+      // Without a valid mode, required field validation fails.
+      const prompt = `AGENT: artisan
+Run the checkpoints process.
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Test partial match`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt, subagent_type: "artisan" } })
+      ).rejects.toThrow("Missing required structured fields");
+    });
+
+    it("explicit MODE: field always takes precedence over natural language inference", async () => {
+      const prompt = `AGENT: artisan
+MODE: decompose
+This is an explore task that needs investigation.
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Test precedence
+RESULT KD: knowledge/plan-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      // Should use "decompose" from MODE:, not "explore" from body text
+      expect(output.args.prompt).toContain("decompose");
+      expect(output.args.prompt).not.toMatch(/^MODE:\s*explore/m);
+    });
+  });
+
+  describe("Cross-Plugin Integration", () => {
+    it("delegation-gate renders template that protocol-gate can validate agent routing", async () => {
+      // Simulate a full delegation flow: delegation-gate renders the prompt,
+      // then protocol-gate validates the agent routing
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Explore the codebase
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      // Verify delegation-gate rendered the template correctly
+      expect(output.args.prompt).toContain("DISPATCH TO: explorer");
+      expect(output.args.prompt).toContain("MODE: explore");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("knowledge/exploration-foo.md");
+
+      // The rendered prompt should be parseable by protocol-gate's extractAgentFromPrompt
+      // (which looks for "DISPATCH TO:" or "AGENT:" lines)
+      const agentMatch = output.args.prompt.match(/^DISPATCH TO:\s*(.*)/m);
+      expect(agentMatch).toBeTruthy();
+      expect(agentMatch[1].trim()).toBe("explorer");
+    });
+
+    it("all KD-producing modes render RESULT KD in template header", async () => {
+      const modes = [
+        { mode: "explore", agent: "explorer", kd: "knowledge/exploration-foo.md" },
+        { mode: "investigate", agent: "analyzer", kd: "knowledge/analysis-foo.md" },
+        { mode: "align", agent: "spec-weaver", kd: "knowledge/spec-foo.md" },
+        { mode: "decompose", agent: "pathfinder", kd: "knowledge/plan-foo.md" },
+        { mode: "swarm", agent: "artisan", kd: "knowledge/impl-foo.md" },
+        { mode: "verify", agent: "inspector", kd: "knowledge/review-foo.md" },
+        { mode: "extract", agent: "scribe", kd: "knowledge/composed-foo.md" },
+        { mode: "evolve", agent: "habit-builder", kd: "knowledge/process-foo.md" },
+      ];
+
+      for (const { mode, agent, kd } of modes) {
+        const prompt = `AGENT: ${agent}
+MODE: ${mode}
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Test ${mode}
+RESULT KD: ${kd}`;
+
+        const output = { args: { prompt } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+        // Template should include RESULT KD in the header
+        expect(output.args.prompt).toContain(`RESULT KD: ${kd}`);
+        // Template body should reference the result KD
+        expect(output.args.prompt).toContain(kd);
+      }
+    });
   });
 });
