@@ -27,3 +27,6 @@ plugins/protocol-gate/.state/
 
 # References
 references/
+
+# Package lock files
+bun.lock
