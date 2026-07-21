@@ -257,7 +257,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
 function hasCleanTree() {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => resolve(false), 5000);
-    execFile("git", ["status", "--porcelain"], (error, stdout) => {
+    execFile("git", ["status", "--porcelain", "-uno"], (error, stdout) => {
       clearTimeout(timeout);
       if (error) return resolve(false);
       resolve(stdout.trim() === "");
