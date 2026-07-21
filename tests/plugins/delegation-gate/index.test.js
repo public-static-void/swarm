@@ -715,4 +715,250 @@ RESULT KD: knowledge/impl-foo.md`;
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
   });
+
+  describe("Markdown Bold Stripping (Issue 7A)", () => {
+    it("strips ** from agent field value", async () => {
+      const prompt = `AGENT: **artisan**
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("artisan");
+      expect(output.args.prompt).not.toContain("**artisan**");
+    });
+
+    it("strips ** from mode field value", async () => {
+      const prompt = `AGENT: artisan
+**MODE:** **checkpoint**
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("checkpoint");
+      expect(output.args.prompt).not.toContain("**checkpoint**");
+    });
+
+    it("strips ** from intent_kd field value", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+**INTENT KD:** **knowledge/intent-foo.md**
+SESSION DATE: 2026-07-21
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
+    it("strips ** from all fields simultaneously", async () => {
+      const prompt = `**AGENT:** **artisan**
+**MODE:** **checkpoint**
+**INTENT KD:** **knowledge/intent-foo.md**
+**SESSION DATE:** **2026-07-21**
+**SCOPE:** **Implement feature X**
+**RESULT KD:** **knowledge/impl-foo.md**`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("artisan");
+      expect(output.args.prompt).toContain("checkpoint");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("2026-07-21");
+    });
+  });
+
+  describe("Mode Inference Fallback (Issue 7B)", () => {
+    it("infers mode from natural language 'in checkpoint mode'", async () => {
+      const prompt = `You are the Committer agent in checkpoint mode. 
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Setup workspace`;
+
+      const output = { args: { prompt, subagent_type: "committer" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("checkpoint");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
+    it("infers mode from natural language 'explore phase'", async () => {
+      const prompt = `Delegate to artisan for explore phase. 
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Analyze the codebase
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt, subagent_type: "artisan" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("explore");
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
+    it("explicit MODE: field takes precedence over natural language", async () => {
+      const prompt = `AGENT: artisan
+MODE: investigate
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: This is an explore task
+RESULT KD: knowledge/investigation-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      // Should use 'investigate' (from MODE:), not 'explore' (from body text)
+      expect(output.args.prompt).toContain("investigate");
+    });
+
+    it("infers all known modes from natural language", async () => {
+      const modes = ["checkpoint", "preflight", "commit", "explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve"];
+      const kdModes = ["explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve"];
+      for (const mode of modes) {
+        const needsResultKd = kdModes.includes(mode);
+        const prompt = `AGENT: artisan
+Run the ${mode} now.
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Test ${mode} mode
+${needsResultKd ? `RESULT KD: knowledge/${mode}-foo.md` : ""}`;
+
+        const output = { args: { prompt, subagent_type: "artisan" } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+        expect(output.args.prompt).toContain(mode);
+      }
+    });
+
+    it("does not infer mode when structured MODE: field is already present", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: This is a cleanup task
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("checkpoint");
+    });
+  });
+
+  describe("Result KD Enforcement for KD-Producing Modes (Issue 3)", () => {
+    it("requires result_kd for explore mode", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Explore the codebase`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
+    });
+
+    it("requires result_kd for investigate mode", async () => {
+      const prompt = `AGENT: artisan
+MODE: investigate
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Investigate the plugin system`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
+    });
+
+    it("requires result_kd for decompose mode", async () => {
+      const prompt = `AGENT: pathfinder
+MODE: decompose
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Decompose the project into tasks`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
+    });
+
+    it("requires result_kd for swarm mode", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Execute implementation`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
+    });
+
+    it("does not require result_kd for checkpoint mode", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Create a checkpoint commit`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("checkpoint");
+    });
+
+    it("does not require result_kd for preflight mode", async () => {
+      const prompt = `AGENT: committer
+MODE: preflight
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Setup workspace`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("preflight");
+    });
+
+    it("accepts swarm mode with result_kd", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Execute implementation
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("swarm");
+      expect(output.args.prompt).toContain("knowledge/impl-foo.md");
+    });
+
+    it("accepts explore mode with result_kd", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Explore the codebase
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("explore");
+      expect(output.args.prompt).toContain("knowledge/exploration-foo.md");
+    });
+
+    it("rejects empty string result_kd for KD-producing modes", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Explore
+RESULT KD:`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
+    });
+  });
 });
