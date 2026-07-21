@@ -1,4 +1,4 @@
 {
   "mode": "preflight",
-  "template": "DISPATCH TO: {agent}\nMODE: preflight\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Perform preflight checks per the scope above."
+  "template": "DISPATCH TO: {agent}\nMODE: preflight\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\n\n---\n\nLoad the kd-system skill. Perform preflight checks per the scope above."
 }
