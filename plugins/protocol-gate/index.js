@@ -177,12 +177,12 @@ function extractAgentFromPrompt(prompt) {
 // but our checks use relative patterns (e.g. knowledge/intent-).
 // Handles paths from different locations by checking if pattern exists anywhere.
 function toProjectRelative(filePath) {
-  const cwd = process.cwd();
-  if (filePath.startsWith(cwd + "/")) {
-    return filePath.slice(cwd.length + 1);
+  const normalized = filePath.replace(/\\/g, "/");
+  const cwd = process.cwd().replace(/\\/g, "/");
+  if (normalized.startsWith(cwd + "/")) {
+    return normalized.slice(cwd.length + 1);
   }
-  // Fallback: check if the pattern exists in the path (handles nested workspaces)
-  return filePath;
+  return normalized;
 }
 
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {

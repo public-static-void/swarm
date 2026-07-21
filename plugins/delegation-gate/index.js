@@ -164,7 +164,9 @@ function validateScope(scope) {
 function validateKDPath(path) {
   // Accept knowledge/<name>.md where name may contain letters, digits, hyphens,
   // underscores, and dots. Reject globs (*), absolute paths, and nested dirs.
-  return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(path);
+  // Normalize backslashes to forward slashes for cross-platform compatibility.
+  const normalized = path.replace(/\\/g, "/");
+  return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(normalized);
 }
 
 function detectCodeBlocks(prompt) {
@@ -174,7 +176,7 @@ function detectCodeBlocks(prompt) {
 function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
-    const trimmed = line.trim();
+    const trimmed = line.trim().replace(/\\/g, "/");
     if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
@@ -188,7 +190,9 @@ function detectForeignPaths(prompt) {
 }
 
 function isBareKDPath(prompt) {
-  return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(prompt.trim());
+  // Normalize backslashes to forward slashes for cross-platform compatibility.
+  const normalized = prompt.trim().replace(/\\/g, "/");
+  return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(normalized);
 }
 
 // Detects literal placeholder patterns like {scope} or {result_kd} that the
