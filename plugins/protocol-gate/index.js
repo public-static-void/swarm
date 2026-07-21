@@ -57,7 +57,7 @@ const PHASE_INSTRUCTIONS = {
 
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "read", "skill"],
+  INTENT: ["todowrite", "write", "read", "skill", "bash"],
   PREFLIGHT: ["task", "todowrite", "glob", "bash"],
   EXPLORE: ["task", "todowrite", "glob"],
   INVESTIGATE: ["task", "todowrite", "glob"],
@@ -75,7 +75,7 @@ const TOOL_ALLOWLIST = {
 // tool.definition appends these to the description so the LLM sees the restriction
 // instead of treating the tool as fully available.
 const TOOL_RESTRICTIONS = {
-  INTENT: { read: "ONLY templates and intent KDs" },
+  INTENT: { read: "ONLY templates and intent KDs", bash: "ONLY mkdir for knowledge directory creation" },
   REPORT: { read: "ONLY templates and knowledge KDs" }
 };
 

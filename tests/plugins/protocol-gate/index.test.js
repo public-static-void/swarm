@@ -709,13 +709,12 @@ describe("Protocol-Gate Plugin", () => {
       );
       hooks.sessionPhaseMap.set("test-1", 1); // INTENT
 
-      // bash removed from INTENT allowlist — overseer.md handles mkdir permissions
-      await expect(
-        hooks["tool.execute.before"](
-          { tool: "bash", sessionID: "test-1", callID: "c2" },
-          { args: { command: "ls" } }
-        )
-      ).rejects.toThrow("Available tools in INTENT:");
+      // bash IS in INTENT allowlist — tool.execute.before passes through (restriction is in tool.definition only)
+      await hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "test-1", callID: "c2" },
+        { args: { command: "ls" } }
+      );
+      // bash should NOT have thrown — it's allowed in INTENT
     });
 
     it("triggers disk check on write tool (in DISK_CHECK_TOOLS)", async () => {
@@ -835,7 +834,7 @@ describe("Protocol-Gate Plugin", () => {
       const original = "Search files by pattern";
       const output = { description: original, parameters: {} };
       await hooks["tool.definition"]({ toolID: "glob" }, output);
-      expect(output.description).toBe(`⛔ Use only: todowrite, write, read, skill in INTENT phase. ${original}`);
+      expect(output.description).toBe(`⛔ Use only: todowrite, write, read, skill, bash in INTENT phase. ${original}`);
     });
 
     it("appends restriction info for allowed tools with restrictions", async () => {
@@ -849,7 +848,7 @@ describe("Protocol-Gate Plugin", () => {
       expect(output.description).toContain(original);
     });
 
-    it("allows all tools in INTENT phase (todowrite, write, read, skill)", async () => {
+    it("allows all tools in INTENT phase (todowrite, write, read, skill, bash)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT);
 
@@ -875,7 +874,7 @@ describe("Protocol-Gate Plugin", () => {
       for (const toolID of blocked) {
         const output = { description: "original", parameters: {} };
         await hooks["tool.definition"]({ toolID }, output);
-        expect(output.description).toContain("Use only: todowrite, write, read, skill in INTENT phase");
+        expect(output.description).toContain("Use only: todowrite, write, read, skill, bash in INTENT phase");
       }
     });
   });
