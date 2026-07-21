@@ -232,10 +232,24 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   }
 
   // Preflight is a validation gate, not a KD-producing phase.
-  // Advance when git tree is clean — the committer confirmed workspace readiness.
+  // Advance when Committer writes the completion marker — explicit signal
+  // that workspace setup finished (branch created, gitignore configured).
+  // Replaced hasCleanTree() to fix Issue 4: phase advanced before Committer
+  // completed, causing redispatch blocks.
   if (phase === STATES.PREFLIGHT) {
-    debug(`Disk check PREFLIGHT: using hasCleanTree()`);
-    return hasCleanTree();
+    const markerFile = join(process.cwd(), "knowledge", `.preflight-complete-${sessionDate}`);
+    try {
+      readFileSync(markerFile);
+      debug(`Disk check PREFLIGHT: marker found → advancing`);
+      // Clean up marker to prevent stale triggers across sessions.
+      // The marker is consumed on first detection; re-creation by the same
+      // Committer session would be a no-op since PREFLIGHT already advanced.
+      try { require("fs").unlinkSync(markerFile); } catch (_) {}
+      return true;
+    } catch (_) {
+      debug(`Disk check PREFLIGHT: no marker at ${markerFile}`);
+      return false;
+    }
   }
 
   const pattern = patterns[phase];

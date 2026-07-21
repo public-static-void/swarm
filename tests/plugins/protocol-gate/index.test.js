@@ -1187,6 +1187,107 @@ describe("Protocol-Gate Plugin", () => {
     });
   });
 
+  describe("Preflight Completion Marker (Issue 4)", () => {
+    const PREFLIGHT_TEST_DATE = "2099-02-01";
+
+    it("does not advance PREFLIGHT without completion marker", async () => {
+      const sid = "preflight-1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+
+      // No marker file exists — trigger disk check
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "PREFLIGHT" }] } }
+      );
+
+      // Phase stays PREFLIGHT — no marker means no advancement
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+    });
+
+    it("advances PREFLIGHT when completion marker exists", async () => {
+      const sid = "preflight-2";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+
+      // Create marker file
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      mkdirSync(knowledgeDir, { recursive: true });
+      writeFileSync(join(knowledgeDir, `.preflight-complete-${PREFLIGHT_TEST_DATE}`), Date.now().toString());
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "PREFLIGHT" }] } }
+      );
+
+      // Phase should advance to EXPLORE (3)
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+    });
+
+    it("cleans up marker file after detection", async () => {
+      const sid = "preflight-3";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      mkdirSync(knowledgeDir, { recursive: true });
+      const markerPath = join(knowledgeDir, `.preflight-complete-${PREFLIGHT_TEST_DATE}`);
+      writeFileSync(markerPath, Date.now().toString());
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "PREFLIGHT" }] } }
+      );
+
+      // Marker should be cleaned up
+      let markerExists = false;
+      try { readFileSync(markerPath); markerExists = true; } catch (_) {}
+      expect(markerExists).toBe(false);
+    });
+
+    it("uses session date to find correct marker file", async () => {
+      const sid = "preflight-4";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      mkdirSync(knowledgeDir, { recursive: true });
+
+      // Create a marker for a DIFFERENT date — should not match
+      writeFileSync(join(knowledgeDir, `.preflight-complete-2099-03-01`), Date.now().toString());
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "PREFLIGHT" }] } }
+      );
+
+      // Phase stays PREFLIGHT — wrong date marker
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+
+      // Cleanup
+      try { require("fs").unlinkSync(join(knowledgeDir, `.preflight-complete-2099-03-01`)); } catch (_) {}
+    });
+
+    it("does not advance when no session date is set", async () => {
+      const sid = "preflight-5";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      // No date set
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "PREFLIGHT" }] } }
+      );
+
+      // Phase stays PREFLIGHT — no session date means marker path can't be constructed
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+    });
+  });
+
   describe("SWARM Dispatch Counter (Issue 6)", () => {
     // Use a session date that won't match any existing KD files on disk.
     const SWARM_TEST_DATE = "2099-01-01";

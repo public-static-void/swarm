@@ -10,6 +10,8 @@ permission:
     ".ignore": allow
     ".gitignore": allow
     ".gitkeep": allow
+  write:
+    "knowledge/.preflight-complete-*": allow
   edit:
     "*": deny
     ".ignore": allow

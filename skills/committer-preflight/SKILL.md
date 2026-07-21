@@ -41,4 +41,5 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 
 ## Exit
 
-Report branch name, clean/dirty state, and any stashed changes. Exit after workspace is ready.
+1. **Write completion marker** — Create `knowledge/.preflight-complete-{session_date}` using the `write` tool. The session date comes from the dispatch context. This signals to the protocol-gate plugin that workspace setup is complete and PREFLIGHT can advance to EXPLORE.
+2. Report branch name, clean/dirty state, and any stashed changes. Exit after workspace is ready.
