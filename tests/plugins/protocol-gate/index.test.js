@@ -1186,4 +1186,148 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
     });
   });
+
+  describe("SWARM Dispatch Counter (Issue 6)", () => {
+    // Use a session date that won't match any existing KD files on disk.
+    const SWARM_TEST_DATE = "2099-01-01";
+
+    it("increments dispatch count on artisan task in SWARM phase", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-1", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("swarm-1:date", SWARM_TEST_DATE);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-1", callID: "c1" },
+        { args: { subagent_type: "artisan" } }
+      );
+
+      expect(hooks.swarmDispatchCount.get("swarm-1")).toBe(1);
+    });
+
+    it("increments count for multiple artisan dispatches", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-2", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-2", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("swarm-2:date", SWARM_TEST_DATE);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-2", callID: "c1" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-2", callID: "c2" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-2", callID: "c3" },
+        { args: { subagent_type: "artisan" } }
+      );
+
+      expect(hooks.swarmDispatchCount.get("swarm-2")).toBe(3);
+    });
+
+    it("does not advance SWARM when 0 dispatches", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-3", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-3", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("swarm-3:date", SWARM_TEST_DATE);
+
+      // No dispatches — dispatchCount stays 0
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "swarm-3", callID: "c1" },
+        { args: { todos: [{ content: "SWARM" }] } }
+      );
+
+      // Phase should stay SWARM — no dispatches recorded means no advancement
+      expect(hooks.sessionPhaseMap.get("swarm-3")).toBe(hooks.STATES.SWARM);
+    });
+
+    it("does not advance when dispatches exceed impl files", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-4", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-4", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("swarm-4:date", SWARM_TEST_DATE);
+
+      // 3 dispatches, but no impl files exist for this date
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-4", callID: "c1" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-4", callID: "c2" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-4", callID: "c3" },
+        { args: { subagent_type: "artisan" } }
+      );
+
+      expect(hooks.swarmDispatchCount.get("swarm-4")).toBe(3);
+
+      // Trigger disk check — no impl files for SWARM_TEST_DATE
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "swarm-4", callID: "c4" },
+        { args: { todos: [{ content: "SWARM" }] } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("swarm-4")).toBe(hooks.STATES.SWARM);
+    });
+
+    it("advances only when dispatch count matches impl file count", async () => {
+      const sid = "swarm-5";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:date`, SWARM_TEST_DATE);
+
+      // 2 dispatches
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c2" },
+        { args: { subagent_type: "artisan" } }
+      );
+      expect(hooks.swarmDispatchCount.get(sid)).toBe(2);
+
+      // No impl files for SWARM_TEST_DATE → stays SWARM
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c3" },
+        { args: { todos: [{ content: "SWARM" }] } }
+      );
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
+
+      // Create 2 temp impl files matching the session date
+      const { writeFileSync: wf, mkdirSync: md, rmSync } = await import("fs");
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      md(knowledgeDir, { recursive: true });
+      wf(join(knowledgeDir, "impl-swarm-test-a-2099-01-01.md"), "test");
+      wf(join(knowledgeDir, "impl-swarm-test-b-2099-01-01.md"), "test");
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c4" },
+        { args: { todos: [{ content: "SWARM" }] } }
+      );
+      // 2 impl files >= 2 dispatches → should advance to VERIFY
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+
+      // Cleanup
+      try { rmSync(join(knowledgeDir, "impl-swarm-test-a-2099-01-01.md")); } catch (_) {}
+      try { rmSync(join(knowledgeDir, "impl-swarm-test-b-2099-01-01.md")); } catch (_) {}
+    });
+
+    it("does not increment count for backward-transitioned artisan dispatches", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-6", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-6", hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set("swarm-6:date", SWARM_TEST_DATE);
+
+      // Backward transition to SWARM via artisan dispatch
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-6", callID: "c1" },
+        { args: { prompt: "AGENT: artisan\nMODE: swarm" } }
+      );
+
+      // Phase should be SWARM after backward transition
+      expect(hooks.sessionPhaseMap.get("swarm-6")).toBe(hooks.STATES.SWARM);
+      // Backward transition dispatch should NOT increment the counter
+      expect(hooks.swarmDispatchCount.get("swarm-6") || 0).toBe(0);
+    });
+  });
 });
