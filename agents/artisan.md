@@ -5,7 +5,10 @@ temperature: 0.3
 top_p: 0.4
 steps: 100
 permission:
-  read: allow
+  read:
+    "*": deny
+    "**/skills/kd-system/templates/*.md": allow
+    "**/plugins/delegation-gate/templates/*.json": allow
   edit: allow
   glob: allow
   grep: allow
