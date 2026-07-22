@@ -173,8 +173,8 @@ RESULT KD: invalid-path.md`;
     });
 
     it("accepts prompt without result_kd (optional field)", async () => {
-      const prompt = `AGENT: artisan
-MODE: checkpoint
+      const prompt = `AGENT: committer
+MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X`;
@@ -186,8 +186,8 @@ SCOPE: Implement feature X`;
 
     it("treats empty string result_kd as omitted (not invalid)", async () => {
       // Overseer writes "RESULT KD:" with nothing after it — extracts as ""
-      const prompt = `AGENT: artisan
-MODE: checkpoint
+      const prompt = `AGENT: committer
+MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
@@ -373,11 +373,11 @@ RESULT KD: knowledge/exploration-foo.md`;
     });
 
     it("accepts prompt without scope (scope is optional)", async () => {
-      const prompt = `AGENT: artisan
-MODE: checkpoint
+      const prompt = `AGENT: committer
+MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/preflight-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -385,8 +385,8 @@ RESULT KD: knowledge/impl-foo.md`;
     });
 
     it("accepts prompt without scope or result_kd (both optional)", async () => {
-      const prompt = `AGENT: artisan
-MODE: checkpoint
+      const prompt = `AGENT: committer
+MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17`;
 
@@ -613,11 +613,11 @@ RESULT KD: knowledge/impl-foo.md`;
     });
 
     it("valid end-to-end: all fields in prompt, agent via subagent_type", async () => {
-      // Preflight template omits RESULT KD — committer modes don't produce KDs
       const prompt = `MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
-SCOPE: Setup workspace`;
+SCOPE: Setup workspace
+RESULT KD: knowledge/preflight-workspace.md`;
 
       const output = { args: { prompt, subagent_type: "committer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -780,7 +780,8 @@ RESULT KD: knowledge/impl-foo.md`;
       const prompt = `You are the Committer agent in checkpoint mode. 
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
-SCOPE: Setup workspace`;
+SCOPE: Setup workspace
+RESULT KD: knowledge/checkpoint-foo.md`;
 
       const output = { args: { prompt, subagent_type: "committer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -817,7 +818,7 @@ RESULT KD: knowledge/investigation-foo.md`;
 
     it("infers all known modes from natural language", async () => {
       const modes = ["checkpoint", "preflight", "commit", "explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve"];
-      const kdModes = ["explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve"];
+      const kdModes = ["preflight", "explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve", "checkpoint", "commit"];
       for (const mode of modes) {
         const needsResultKd = kdModes.includes(mode);
         const prompt = `AGENT: artisan
@@ -896,28 +897,28 @@ SCOPE: Execute implementation`;
       ).rejects.toThrow("KD-producing mode requires result_kd");
     });
 
-    it("does not require result_kd for checkpoint mode", async () => {
-      const prompt = `AGENT: artisan
+    it("requires result_kd for checkpoint mode", async () => {
+      const prompt = `AGENT: committer
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 SCOPE: Create a checkpoint commit`;
 
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("checkpoint");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
     });
 
-    it("does not require result_kd for preflight mode", async () => {
+    it("requires result_kd for preflight mode", async () => {
       const prompt = `AGENT: committer
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 SCOPE: Setup workspace`;
 
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("preflight");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
     });
 
     it("accepts swarm mode with result_kd", async () => {
@@ -1009,16 +1010,16 @@ SCOPE: Evolve process`;
       ).rejects.toThrow("KD-producing mode requires result_kd");
     });
 
-    it("does not require result_kd for commit mode", async () => {
+    it("requires result_kd for commit mode", async () => {
       const prompt = `AGENT: committer
 MODE: commit
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 SCOPE: Commit changes`;
 
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("commit");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
     });
   });
 
@@ -1028,40 +1029,42 @@ SCOPE: Commit changes`;
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
-SCOPE: Setup workspace`;
+SCOPE: Setup workspace
+RESULT KD: knowledge/preflight-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      // Preflight template body should NOT instruct reading the INTENT KD
-      // (committer has read:deny, so this would fail)
+      // Preflight template does NOT instruct reading the INTENT KD
       expect(output.args.prompt).not.toMatch(/Read the INTENT KD at/);
     });
 
-    it("checkpoint template body does not contain 'Read the INTENT KD'", async () => {
+    it("checkpoint template body contains 'Read the INTENT KD'", async () => {
       const prompt = `AGENT: committer
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
-SCOPE: Create checkpoint`;
+SCOPE: Create checkpoint
+RESULT KD: knowledge/checkpoint-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      expect(output.args.prompt).not.toMatch(/Read the INTENT KD at/);
+      expect(output.args.prompt).toMatch(/Read the INTENT KD at/);
     });
 
-    it("commit template body does not contain 'Read the INTENT KD'", async () => {
+    it("commit template body contains 'Read the INTENT KD'", async () => {
       const prompt = `AGENT: committer
 MODE: commit
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
-SCOPE: Commit changes`;
+SCOPE: Commit changes
+RESULT KD: knowledge/commit-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      expect(output.args.prompt).not.toMatch(/Read the INTENT KD at/);
+      expect(output.args.prompt).toMatch(/Read the INTENT KD at/);
     });
 
     it("KD-producing templates still contain 'Read the INTENT KD'", async () => {

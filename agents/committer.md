@@ -7,13 +7,18 @@ steps: 50
 permission:
   read:
     "*": deny
+    "knowledge/preflight-*.md": allow
+    "knowledge/checkpoint-*.md": allow
+    "knowledge/commit-*.md": allow
+    "**/skills/kd-system/templates/*.md": allow
     ".ignore": allow
     ".gitignore": allow
     ".gitkeep": allow
-  write:
-    "knowledge/.preflight-complete-*": allow
   edit:
     "*": deny
+    "knowledge/preflight-*.md": allow
+    "knowledge/checkpoint-*.md": allow
+    "knowledge/commit-*.md": allow
     ".ignore": allow
     ".gitignore": allow
     ".gitkeep": allow
@@ -25,7 +30,9 @@ permission:
   question: deny
   webfetch: deny
   websearch: deny
-  external_directory: deny
+  external_directory:
+    "*": deny
+    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:

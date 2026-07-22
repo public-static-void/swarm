@@ -41,5 +41,5 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 
 ## Exit
 
-1. **Write completion marker** — Create `knowledge/.preflight-complete-{session_date}` using the `write` tool. The session date comes from the dispatch context. This signals to the protocol-gate plugin that workspace setup is complete and PREFLIGHT can advance to EXPLORE.
+1. **Write PREFLIGHT KD** — Write a PREFLIGHT KD at the `RESULT KD` path specified in the dispatch context using the `template-preflight.md` template from the kd-system skill. The KD documents workspace setup results (branch, gitignore, etc.) and signals to the protocol-gate that PREFLIGHT is complete and can advance to EXPLORE.
 2. Report branch name, clean/dirty state, and any stashed changes. Exit after workspace is ready.

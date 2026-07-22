@@ -72,4 +72,5 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 ## Exit
 
-Report what was committed. Exit after all batches are committed.
+1. **Write CHECKPOINT KD** — Write a CHECKPOINT KD at the `RESULT KD` path specified in the dispatch context using the `template-checkpoint.md` template from the kd-system skill. The KD documents what was committed and signals to the protocol-gate that the checkpoint is complete.
+2. Report what was committed. Exit after all batches are committed.

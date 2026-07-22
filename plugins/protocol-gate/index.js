@@ -9,7 +9,6 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
-import { execFile } from "child_process";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -211,11 +210,11 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   const sessionFiles = files.filter(f => f.includes(sessionDate));
 
   // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
-  // PREFLIGHT uses hasCleanTree() — it's a validation gate, not a KD-producing phase.
+  // PREFLIGHT advances when a `preflight-` KD is written by the Committer.
   // The session-date filter prevents stale KDs from prior sessions from triggering advancement.
   const patterns = {
     [STATES.INTENT]: /^intent-/i,
-    [STATES.PREFLIGHT]: null,  // Preflight advances via hasCleanTree(), not KD artifacts
+    [STATES.PREFLIGHT]: /^preflight-/i,
     [STATES.EXPLORE]: /^exploration-/i,
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
@@ -224,33 +223,8 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
-    [STATES.COMMIT]: null
+    [STATES.COMMIT]: /^commit-/i
   };
-
-  if (phase === STATES.COMMIT) {
-    return hasCleanTree();
-  }
-
-  // Preflight is a validation gate, not a KD-producing phase.
-  // Advance when Committer writes the completion marker — explicit signal
-  // that workspace setup finished (branch created, gitignore configured).
-  // Replaced hasCleanTree() to fix Issue 4: phase advanced before Committer
-  // completed, causing redispatch blocks.
-  if (phase === STATES.PREFLIGHT) {
-    const markerFile = join(process.cwd(), "knowledge", `.preflight-complete-${sessionDate}`);
-    try {
-      readFileSync(markerFile);
-      debug(`Disk check PREFLIGHT: marker found → advancing`);
-      // Clean up marker to prevent stale triggers across sessions.
-      // The marker is consumed on first detection; re-creation by the same
-      // Committer session would be a no-op since PREFLIGHT already advanced.
-      try { require("fs").unlinkSync(markerFile); } catch (_) {}
-      return true;
-    } catch (_) {
-      debug(`Disk check PREFLIGHT: no marker at ${markerFile}`);
-      return false;
-    }
-  }
 
   const pattern = patterns[phase];
   if (!pattern) return false;
@@ -278,17 +252,6 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   const result = sessionFiles.some(f => pattern.test(f));
   debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, date=${sessionDate} → ${result}`);
   return result;
-}
-
-function hasCleanTree() {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(false), 5000);
-    execFile("git", ["status", "--porcelain", "-uno"], (error, stdout) => {
-      clearTimeout(timeout);
-      if (error) return resolve(false);
-      resolve(stdout.trim() === "");
-    });
-  });
 }
 
 export default {
@@ -628,9 +591,9 @@ export default {
               debug(`Disk advancement: skipping next disk check for PREFLIGHT`);
             }
           } else {
-            // REPORT and COMMIT don't use disk-based advancement — skip stuck detection.
-            // REPORT writes the KD directly; COMMIT checks git tree cleanliness.
-            if (currentPhase !== STATES.REPORT && currentPhase !== STATES.COMMIT) {
+            // REPORT doesn't use disk-based advancement — skip stuck detection.
+            // REPORT writes the KD directly; other phases rely on KD file existence.
+            if (currentPhase !== STATES.REPORT) {
               const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
               diskCheckFailures.set(sessionID, failures);
               if (failures === 10) {

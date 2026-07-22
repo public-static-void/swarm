@@ -738,7 +738,7 @@ describe("Protocol-Gate Plugin", () => {
     });
   });
 
-  describe("BUG 4: REPORT/COMMIT Stuck Detection Skip", () => {
+  describe("BUG 4: REPORT Stuck Detection Skip", () => {
     it("does not increment disk check failures in REPORT phase", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
@@ -1186,35 +1186,35 @@ describe("Protocol-Gate Plugin", () => {
     });
   });
 
-  describe("Preflight Completion Marker (Issue 4)", () => {
+  describe("Preflight KD Advancement (KD-based signaling)", () => {
     const PREFLIGHT_TEST_DATE = "2099-02-01";
 
-    it("does not advance PREFLIGHT without completion marker", async () => {
+    it("does not advance PREFLIGHT without preflight KD", async () => {
       const sid = "preflight-1";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
       hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
 
-      // No marker file exists — trigger disk check
+      // No preflight KD exists — trigger disk check
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
         { args: { todos: [{ content: "PREFLIGHT" }] } }
       );
 
-      // Phase stays PREFLIGHT — no marker means no advancement
+      // Phase stays PREFLIGHT — no KD means no advancement
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
     });
 
-    it("advances PREFLIGHT when completion marker exists", async () => {
+    it("advances PREFLIGHT when preflight KD exists", async () => {
       const sid = "preflight-2";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
       hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
 
-      // Create marker file
+      // Create preflight KD file
       const knowledgeDir = join(process.cwd(), "knowledge");
       mkdirSync(knowledgeDir, { recursive: true });
-      writeFileSync(join(knowledgeDir, `.preflight-complete-${PREFLIGHT_TEST_DATE}`), Date.now().toString());
+      writeFileSync(join(knowledgeDir, `preflight-workspace-${PREFLIGHT_TEST_DATE}.md`), "test");
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
@@ -1223,31 +1223,12 @@ describe("Protocol-Gate Plugin", () => {
 
       // Phase should advance to EXPLORE (3)
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+
+      // Cleanup
+      try { require("fs").unlinkSync(join(knowledgeDir, `preflight-workspace-${PREFLIGHT_TEST_DATE}.md`)); } catch (_) {}
     });
 
-    it("cleans up marker file after detection", async () => {
-      const sid = "preflight-3";
-      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
-      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
-
-      const knowledgeDir = join(process.cwd(), "knowledge");
-      mkdirSync(knowledgeDir, { recursive: true });
-      const markerPath = join(knowledgeDir, `.preflight-complete-${PREFLIGHT_TEST_DATE}`);
-      writeFileSync(markerPath, Date.now().toString());
-
-      await hooks["tool.execute.before"](
-        { tool: "todowrite", sessionID: sid, callID: "c1" },
-        { args: { todos: [{ content: "PREFLIGHT" }] } }
-      );
-
-      // Marker should be cleaned up
-      let markerExists = false;
-      try { readFileSync(markerPath); markerExists = true; } catch (_) {}
-      expect(markerExists).toBe(false);
-    });
-
-    it("uses session date to find correct marker file", async () => {
+    it("uses session date to find correct preflight KD", async () => {
       const sid = "preflight-4";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
@@ -1256,19 +1237,19 @@ describe("Protocol-Gate Plugin", () => {
       const knowledgeDir = join(process.cwd(), "knowledge");
       mkdirSync(knowledgeDir, { recursive: true });
 
-      // Create a marker for a DIFFERENT date — should not match
-      writeFileSync(join(knowledgeDir, `.preflight-complete-2099-03-01`), Date.now().toString());
+      // Create a preflight KD for a DIFFERENT date — should not match
+      writeFileSync(join(knowledgeDir, "preflight-workspace-2099-03-01.md"), "test");
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
         { args: { todos: [{ content: "PREFLIGHT" }] } }
       );
 
-      // Phase stays PREFLIGHT — wrong date marker
+      // Phase stays PREFLIGHT — wrong date KD
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
 
       // Cleanup
-      try { require("fs").unlinkSync(join(knowledgeDir, `.preflight-complete-2099-03-01`)); } catch (_) {}
+      try { require("fs").unlinkSync(join(knowledgeDir, "preflight-workspace-2099-03-01.md")); } catch (_) {}
     });
 
     it("does not advance when no session date is set", async () => {
@@ -1282,8 +1263,90 @@ describe("Protocol-Gate Plugin", () => {
         { args: { todos: [{ content: "PREFLIGHT" }] } }
       );
 
-      // Phase stays PREFLIGHT — no session date means marker path can't be constructed
+      // Phase stays PREFLIGHT — no session date means KD path can't match
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+    });
+  });
+
+  describe("Commit KD Advancement (KD-based signaling)", () => {
+    const COMMIT_TEST_DATE = "2099-03-01";
+
+    it("does not advance COMMIT without commit KD", async () => {
+      const sid = "commit-1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, COMMIT_TEST_DATE);
+
+      // No commit KD exists — trigger disk check
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "COMMIT" }] } }
+      );
+
+      // Phase stays COMMIT — no KD means no advancement
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
+    });
+
+    it("advances COMMIT when commit KD exists", async () => {
+      const sid = "commit-2";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, COMMIT_TEST_DATE);
+
+      // Create commit KD file
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      mkdirSync(knowledgeDir, { recursive: true });
+      writeFileSync(join(knowledgeDir, `commit-finalize-${COMMIT_TEST_DATE}.md`), "test");
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "COMMIT" }] } }
+      );
+
+      // Phase should advance to REPORT (12)
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.REPORT);
+
+      // Cleanup
+      try { require("fs").unlinkSync(join(knowledgeDir, `commit-finalize-${COMMIT_TEST_DATE}.md`)); } catch (_) {}
+    });
+
+    it("uses session date to find correct commit KD", async () => {
+      const sid = "commit-3";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, COMMIT_TEST_DATE);
+
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      mkdirSync(knowledgeDir, { recursive: true });
+
+      // Create a commit KD for a DIFFERENT date — should not match
+      writeFileSync(join(knowledgeDir, "commit-finalize-2099-04-01.md"), "test");
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "COMMIT" }] } }
+      );
+
+      // Phase stays COMMIT — wrong date KD
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
+
+      // Cleanup
+      try { require("fs").unlinkSync(join(knowledgeDir, "commit-finalize-2099-04-01.md")); } catch (_) {}
+    });
+
+    it("does not advance when no session date is set", async () => {
+      const sid = "commit-4";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      // No date set
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "COMMIT" }] } }
+      );
+
+      // Phase stays COMMIT — no session date means KD path can't match
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
     });
   });
 

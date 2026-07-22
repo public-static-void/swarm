@@ -89,4 +89,5 @@ After verification passes:
 
 ## Exit
 
-Report what was committed, merged, and pushed.
+1. **Write COMMIT KD** — Write a COMMIT KD at the `RESULT KD` path specified in the dispatch context using the `template-commit.md` template from the kd-system skill. The KD documents what was committed and pushed, and signals to the protocol-gate that the commit phase is complete.
+2. Report what was committed, merged, and pushed.

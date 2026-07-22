@@ -50,8 +50,10 @@ const KNOWN_MODES = [
 
 // Modes that produce Knowledge Documents — result_kd is mandatory for these.
 const KD_PRODUCING_MODES = [
+  "preflight",
   "explore", "investigate", "align", "decompose",
-  "swarm", "verify", "extract", "evolve"
+  "swarm", "verify", "extract", "evolve",
+  "checkpoint", "commit"
 ];
 
 let _logFile = null;
@@ -98,9 +100,10 @@ function loadTemplates(config) {
     verify: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Verify the implementation per the scope above. Produce REVIEW and AUDIT KDs at {result_kd}.",
     extract: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd}.",
     evolve: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Evolve the process per the scope above. Produce a PROCESS KD at {result_kd}.",
-    commit: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Commit the changes per the scope above.",
-    checkpoint: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Create a checkpoint commit per the scope above.",
-    preflight: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Perform preflight checks per the scope above. Produce a PLAN KD at {result_kd}."
+    commit: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Commit and push changes per the scope above. Write a COMMIT KD at {result_kd} using the template-commit.md template to signal completion.",
+    checkpoint: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Create a checkpoint commit per the scope above. Write a CHECKPOINT KD at {result_kd} using the template-checkpoint.md template to signal completion.",
+    cleanup: "Load the committer-cleanup skill. Read the INTENT KD at {intent_kd}. Commit and push remaining changes per the scope above.",
+    preflight: "Load the kd-system skill and the committer-preflight skill. Read the INTENT KD at {intent_kd}. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {

@@ -1,0 +1,42 @@
+---
+title: "COMMIT: {{description}}"
+version: 1.0.0
+status: draft
+type: commit
+created: "{{YYYY-MM-DD}}"
+author: Committer
+superseded_by: null
+---
+
+<!-- Filename: knowledge/commit-{{feature}}-{{YYYY-MM-DD}}.md -->
+
+# COMMIT: {{description}}
+
+## What Was Committed
+
+{{Summary of all changes committed in this final commit — list files, scopes, and commit types}}
+
+### Batch 1: {{module/scope}}
+
+- **Type**: {{feat/fix/refactor/docs/test/chore}}
+- **Files**: {{comma-separated list}}
+- **Message**: {{commit message}}
+
+### Batch 2: {{module/scope}}
+
+- **Type**: {{feat/fix/refactor/docs/test/chore}}
+- **Files**: {{comma-separated list}}
+- **Message**: {{commit message}}
+
+## Push Status
+
+- **Remote**: {{remote URL or "no remote configured"}}
+- **Push result**: {{success/failed/not attempted}}
+- **Branch divergence**: {{ahead count}} ahead, {{behind count}} behind
+
+## Verification
+
+- [ ] All changes committed with semantic messages
+- [ ] No knowledge/ files included in commits
+- [ ] Push succeeded (when remote configured)
+- [ ] Working tree is clean
