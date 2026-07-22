@@ -37,8 +37,24 @@ const ERRORS = {
   MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Include agent, mode, intent_kd, session_date" },
   INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope should not contain code blocks (security) or absolute /home/ paths (info leak)" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
-  MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" }
+  MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },
+  MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" }
 };
+
+// All recognized delegation modes — used for template lookup and natural-language inference.
+const KNOWN_MODES = [
+  "checkpoint", "preflight", "cleanup", "commit",
+  "explore", "investigate", "align", "decompose",
+  "swarm", "verify", "extract", "evolve"
+];
+
+// Modes that produce Knowledge Documents — result_kd is mandatory for these.
+const KD_PRODUCING_MODES = [
+  "preflight",
+  "explore", "investigate", "align", "decompose",
+  "swarm", "verify", "extract", "evolve",
+  "checkpoint", "commit"
+];
 
 let _logFile = null;
 
@@ -84,9 +100,10 @@ function loadTemplates(config) {
     verify: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Verify the implementation per the scope above. Produce REVIEW and AUDIT KDs at {result_kd}.",
     extract: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd}.",
     evolve: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Evolve the process per the scope above. Produce a PROCESS KD at {result_kd}.",
-    commit: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Commit the changes per the scope above.",
-    checkpoint: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Create a checkpoint commit per the scope above.",
-    preflight: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Perform preflight checks per the scope above. Produce a PLAN KD at {result_kd}."
+    commit: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Commit and push changes per the scope above. Write a COMMIT KD at {result_kd} using the template-commit.md template to signal completion.",
+    checkpoint: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Create a checkpoint commit per the scope above. Write a CHECKPOINT KD at {result_kd} using the template-checkpoint.md template to signal completion.",
+    cleanup: "Load the committer-cleanup skill. Read the INTENT KD at {intent_kd}. Commit and push remaining changes per the scope above.",
+    preflight: "Load the kd-system skill and the committer-preflight skill. Read the INTENT KD at {intent_kd}. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
@@ -117,13 +134,14 @@ function extractFromText(text, fields, override = false) {
     // Accept both "AGENT:" and "DISPATCH TO:" with optional Markdown heading prefix (##, ###, etc.)
     const agentMatch = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(AGENT|DISPATCH TO)(?:\*\*)?:\s*(.*)/i);
     if (agentMatch) {
-      if (override || !fields["agent"]) fields["agent"] = agentMatch[2].trim();
+      // Strip Markdown bold markers — agents sometimes write `**Mode:** **checkpoint**`
+      if (override || !fields["agent"]) fields["agent"] = agentMatch[2].trim().replace(/\*\*/g, "").trim();
       continue;
     }
     const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       const key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
-      if (override || !fields[key]) fields[key] = match[2].trim();
+      if (override || !fields[key]) fields[key] = match[2].trim().replace(/\*\*/g, "").trim();
     }
   }
 }
@@ -140,6 +158,18 @@ function extractFieldsFromPrompt(prompt, subagentType, description) {
   extractFromText(prompt, fields, true);                   // higher priority, overrides description
   if (!fields["agent"] && subagentType) {
     fields["agent"] = subagentType;
+  }
+  // Infer mode from natural language when no explicit MODE: field found —
+  // agents sometimes write "in checkpoint mode" instead of "MODE: checkpoint".
+  // Explicit MODE: always takes precedence because extractFromText runs first.
+  if (!fields["mode"] && prompt) {
+    for (const mode of KNOWN_MODES) {
+      const pattern = new RegExp(`\\b${mode}\\b`, "i");
+      if (pattern.test(prompt)) {
+        fields["mode"] = mode;
+        break;
+      }
+    }
   }
   return fields;
 }
@@ -328,6 +358,12 @@ export default {
       if (!template) {
         debug(`VALIDATION FAILED: no template found for mode '${fields.mode}'`);
         throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, `No template found for mode: ${fields.mode}`, "Check plugins/delegation-gate/templates directory");
+      }
+
+      // KD-producing modes must have result_kd — without it, templates render empty path "at ."
+      if (KD_PRODUCING_MODES.includes(fields.mode?.toLowerCase()) && !fields.result_kd) {
+        debug(`VALIDATION FAILED: KD-producing mode '${fields.mode}' requires result_kd`);
+        throw new DelegationGateError(ERRORS.MISSING_RESULT_KD.code, ERRORS.MISSING_RESULT_KD.message, ERRORS.MISSING_RESULT_KD.guidance);
       }
 
       debug(`Rendering template for mode='${fields.mode}', agent='${fields.agent}'`);

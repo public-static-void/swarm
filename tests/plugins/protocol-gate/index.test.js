@@ -709,13 +709,12 @@ describe("Protocol-Gate Plugin", () => {
       );
       hooks.sessionPhaseMap.set("test-1", 1); // INTENT
 
-      // bash removed from INTENT allowlist — overseer.md handles mkdir permissions
-      await expect(
-        hooks["tool.execute.before"](
-          { tool: "bash", sessionID: "test-1", callID: "c2" },
-          { args: { command: "ls" } }
-        )
-      ).rejects.toThrow("Available tools in INTENT:");
+      // bash IS in INTENT allowlist — tool.execute.before passes through (restriction is in tool.definition only)
+      await hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "test-1", callID: "c2" },
+        { args: { command: "ls" } }
+      );
+      // bash should NOT have thrown — it's allowed in INTENT
     });
 
     it("triggers disk check on write tool (in DISK_CHECK_TOOLS)", async () => {
@@ -739,7 +738,7 @@ describe("Protocol-Gate Plugin", () => {
     });
   });
 
-  describe("BUG 4: REPORT/COMMIT Stuck Detection Skip", () => {
+  describe("BUG 4: REPORT Stuck Detection Skip", () => {
     it("does not increment disk check failures in REPORT phase", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
@@ -835,7 +834,7 @@ describe("Protocol-Gate Plugin", () => {
       const original = "Search files by pattern";
       const output = { description: original, parameters: {} };
       await hooks["tool.definition"]({ toolID: "glob" }, output);
-      expect(output.description).toBe(`⛔ Use only: todowrite, write, read, skill in INTENT phase. ${original}`);
+      expect(output.description).toBe(`⛔ Use only: todowrite, write, read, skill, bash in INTENT phase. ${original}`);
     });
 
     it("appends restriction info for allowed tools with restrictions", async () => {
@@ -849,7 +848,7 @@ describe("Protocol-Gate Plugin", () => {
       expect(output.description).toContain(original);
     });
 
-    it("allows all tools in INTENT phase (todowrite, write, read, skill)", async () => {
+    it("allows all tools in INTENT phase (todowrite, write, read, skill, bash)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.INTENT);
 
@@ -875,7 +874,7 @@ describe("Protocol-Gate Plugin", () => {
       for (const toolID of blocked) {
         const output = { description: "original", parameters: {} };
         await hooks["tool.definition"]({ toolID }, output);
-        expect(output.description).toContain("Use only: todowrite, write, read, skill in INTENT phase");
+        expect(output.description).toContain("Use only: todowrite, write, read, skill, bash in INTENT phase");
       }
     });
   });
@@ -1184,6 +1183,314 @@ describe("Protocol-Gate Plugin", () => {
       );
 
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
+    });
+  });
+
+  describe("Preflight KD Advancement (KD-based signaling)", () => {
+    const PREFLIGHT_TEST_DATE = "2099-02-01";
+
+    it("does not advance PREFLIGHT without preflight KD", async () => {
+      const sid = "preflight-1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+
+      // No preflight KD exists — trigger disk check
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "PREFLIGHT" }] } }
+      );
+
+      // Phase stays PREFLIGHT — no KD means no advancement
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+    });
+
+    it("advances PREFLIGHT when preflight KD exists", async () => {
+      const sid = "preflight-2";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+
+      // Create preflight KD file
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      mkdirSync(knowledgeDir, { recursive: true });
+      writeFileSync(join(knowledgeDir, `preflight-workspace-${PREFLIGHT_TEST_DATE}.md`), "test");
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "PREFLIGHT" }] } }
+      );
+
+      // Phase should advance to EXPLORE (3)
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+
+      // Cleanup
+      try { require("fs").unlinkSync(join(knowledgeDir, `preflight-workspace-${PREFLIGHT_TEST_DATE}.md`)); } catch (_) {}
+    });
+
+    it("uses session date to find correct preflight KD", async () => {
+      const sid = "preflight-4";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      mkdirSync(knowledgeDir, { recursive: true });
+
+      // Create a preflight KD for a DIFFERENT date — should not match
+      writeFileSync(join(knowledgeDir, "preflight-workspace-2099-03-01.md"), "test");
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "PREFLIGHT" }] } }
+      );
+
+      // Phase stays PREFLIGHT — wrong date KD
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+
+      // Cleanup
+      try { require("fs").unlinkSync(join(knowledgeDir, "preflight-workspace-2099-03-01.md")); } catch (_) {}
+    });
+
+    it("does not advance when no session date is set", async () => {
+      const sid = "preflight-5";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      // No date set
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "PREFLIGHT" }] } }
+      );
+
+      // Phase stays PREFLIGHT — no session date means KD path can't match
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+    });
+  });
+
+  describe("Commit KD Advancement (KD-based signaling)", () => {
+    const COMMIT_TEST_DATE = "2099-03-01";
+
+    it("does not advance COMMIT without commit KD", async () => {
+      const sid = "commit-1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, COMMIT_TEST_DATE);
+
+      // No commit KD exists — trigger disk check
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "COMMIT" }] } }
+      );
+
+      // Phase stays COMMIT — no KD means no advancement
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
+    });
+
+    it("advances COMMIT when commit KD exists", async () => {
+      const sid = "commit-2";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, COMMIT_TEST_DATE);
+
+      // Create commit KD file
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      mkdirSync(knowledgeDir, { recursive: true });
+      writeFileSync(join(knowledgeDir, `commit-finalize-${COMMIT_TEST_DATE}.md`), "test");
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "COMMIT" }] } }
+      );
+
+      // Phase should advance to REPORT (12)
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.REPORT);
+
+      // Cleanup
+      try { require("fs").unlinkSync(join(knowledgeDir, `commit-finalize-${COMMIT_TEST_DATE}.md`)); } catch (_) {}
+    });
+
+    it("uses session date to find correct commit KD", async () => {
+      const sid = "commit-3";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(`${sid}:date`, COMMIT_TEST_DATE);
+
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      mkdirSync(knowledgeDir, { recursive: true });
+
+      // Create a commit KD for a DIFFERENT date — should not match
+      writeFileSync(join(knowledgeDir, "commit-finalize-2099-04-01.md"), "test");
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "COMMIT" }] } }
+      );
+
+      // Phase stays COMMIT — wrong date KD
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
+
+      // Cleanup
+      try { require("fs").unlinkSync(join(knowledgeDir, "commit-finalize-2099-04-01.md")); } catch (_) {}
+    });
+
+    it("does not advance when no session date is set", async () => {
+      const sid = "commit-4";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      // No date set
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: [{ content: "COMMIT" }] } }
+      );
+
+      // Phase stays COMMIT — no session date means KD path can't match
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
+    });
+  });
+
+  describe("SWARM Dispatch Counter (Issue 6)", () => {
+    // Use a session date that won't match any existing KD files on disk.
+    const SWARM_TEST_DATE = "2099-01-01";
+
+    it("increments dispatch count on artisan task in SWARM phase", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-1", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("swarm-1:date", SWARM_TEST_DATE);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-1", callID: "c1" },
+        { args: { subagent_type: "artisan" } }
+      );
+
+      expect(hooks.swarmDispatchCount.get("swarm-1")).toBe(1);
+    });
+
+    it("increments count for multiple artisan dispatches", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-2", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-2", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("swarm-2:date", SWARM_TEST_DATE);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-2", callID: "c1" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-2", callID: "c2" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-2", callID: "c3" },
+        { args: { subagent_type: "artisan" } }
+      );
+
+      expect(hooks.swarmDispatchCount.get("swarm-2")).toBe(3);
+    });
+
+    it("does not advance SWARM when 0 dispatches", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-3", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-3", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("swarm-3:date", SWARM_TEST_DATE);
+
+      // No dispatches — dispatchCount stays 0
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "swarm-3", callID: "c1" },
+        { args: { todos: [{ content: "SWARM" }] } }
+      );
+
+      // Phase should stay SWARM — no dispatches recorded means no advancement
+      expect(hooks.sessionPhaseMap.get("swarm-3")).toBe(hooks.STATES.SWARM);
+    });
+
+    it("does not advance when dispatches exceed impl files", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-4", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-4", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("swarm-4:date", SWARM_TEST_DATE);
+
+      // 3 dispatches, but no impl files exist for this date
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-4", callID: "c1" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-4", callID: "c2" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-4", callID: "c3" },
+        { args: { subagent_type: "artisan" } }
+      );
+
+      expect(hooks.swarmDispatchCount.get("swarm-4")).toBe(3);
+
+      // Trigger disk check — no impl files for SWARM_TEST_DATE
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: "swarm-4", callID: "c4" },
+        { args: { todos: [{ content: "SWARM" }] } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("swarm-4")).toBe(hooks.STATES.SWARM);
+    });
+
+    it("advances only when dispatch count matches impl file count", async () => {
+      const sid = "swarm-5";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:date`, SWARM_TEST_DATE);
+
+      // 2 dispatches
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { subagent_type: "artisan" } }
+      );
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c2" },
+        { args: { subagent_type: "artisan" } }
+      );
+      expect(hooks.swarmDispatchCount.get(sid)).toBe(2);
+
+      // No impl files for SWARM_TEST_DATE → stays SWARM
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c3" },
+        { args: { todos: [{ content: "SWARM" }] } }
+      );
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
+
+      // Create 2 temp impl files matching the session date
+      const { writeFileSync: wf, mkdirSync: md, rmSync } = await import("fs");
+      const knowledgeDir = join(process.cwd(), "knowledge");
+      md(knowledgeDir, { recursive: true });
+      wf(join(knowledgeDir, "impl-swarm-test-a-2099-01-01.md"), "test");
+      wf(join(knowledgeDir, "impl-swarm-test-b-2099-01-01.md"), "test");
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c4" },
+        { args: { todos: [{ content: "SWARM" }] } }
+      );
+      // 2 impl files >= 2 dispatches → should advance to VERIFY
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+
+      // Cleanup
+      try { rmSync(join(knowledgeDir, "impl-swarm-test-a-2099-01-01.md")); } catch (_) {}
+      try { rmSync(join(knowledgeDir, "impl-swarm-test-b-2099-01-01.md")); } catch (_) {}
+    });
+
+    it("does not increment count for backward-transitioned artisan dispatches", async () => {
+      await hooks["chat.params"]({ sessionID: "swarm-6", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("swarm-6", hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set("swarm-6:date", SWARM_TEST_DATE);
+
+      // Backward transition to SWARM via artisan dispatch
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "swarm-6", callID: "c1" },
+        { args: { prompt: "AGENT: artisan\nMODE: swarm" } }
+      );
+
+      // Phase should be SWARM after backward transition
+      expect(hooks.sessionPhaseMap.get("swarm-6")).toBe(hooks.STATES.SWARM);
+      // Backward transition dispatch should NOT increment the counter
+      expect(hooks.swarmDispatchCount.get("swarm-6") || 0).toBe(0);
     });
   });
 });

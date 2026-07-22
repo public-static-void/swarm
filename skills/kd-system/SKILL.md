@@ -1,6 +1,6 @@
 ---
 name: kd-system
-description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, review, audit, analysis, report, process, or implementation summary documents."
+description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, review, audit, analysis, report, process, implementation summary, checkpoint, or commit documents."
 ---
 
 # KD System — Agentic Swarm
@@ -14,6 +14,7 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 | Type                   | Prefix         | Producer      | Consumer                       | Template File                                  |
 | ---------------------- | -------------- | ------------- | ------------------------------ | ---------------------------------------------- |
 | INTENT                 | `intent-`      | Overseer      | Spec Weaver, Pathfinder        | `templates/template-intent.md`                 |
+| PREFLIGHT              | `preflight-`   | Committer     | Protocol Gate                  | `templates/template-preflight.md`              |
 | SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector | `templates/template-spec.md`                   |
 | PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector             | `templates/template-plan.md`                   |
 | IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe              | `templates/template-implementation-summary.md` |
@@ -24,6 +25,8 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 | PROCESS                | `process-`     | Habit Builder | All agents                     | `templates/template-process.md`                |
 | COMPOSED               | `composed-`    | Scribe        | Assigned agent                 | `templates/template-composed.md`               |
 | EXPLORATION            | `exploration-` | Explorer      | Spec Weaver, Pathfinder        | `templates/template-exploration.md`            |
+| CHECKPOINT             | `checkpoint-`  | Committer     | Protocol Gate                  | `templates/template-checkpoint.md`             |
+| COMMIT                 | `commit-`      | Committer     | Protocol Gate                  | `templates/template-commit.md`                 |
 
 ## KD Structure
 
@@ -79,7 +82,7 @@ Before creating any KD, verify each of these:
 - [ ] `title` — `"TYPE: Descriptive Title"` format
 - [ ] `version` — Semantic version MAJOR.MINOR.PATCH
 - [ ] `status` — `draft` | `review` | `approved` | `superseded`
-- [ ] `type` — Matches one of the 11 KD types from the table above
+- [ ] `type` — Matches one of the KD types defined in the table above
 - [ ] `created` — ISO 8601 date (YYYY-MM-DD)
 - [ ] `author` — Your agent name
 - [ ] `superseded_by` — `null` for new KDs, path string for superseded

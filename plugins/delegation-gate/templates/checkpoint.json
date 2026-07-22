@@ -1,4 +1,4 @@
 {
   "mode": "checkpoint",
-  "template": "DISPATCH TO: {agent}\nMODE: checkpoint\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Create a checkpoint commit per the scope above."
+  "template": "DISPATCH TO: {agent}\nMODE: checkpoint\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the committer-checkpoint skill. Read the INTENT KD at {intent_kd}. Create a checkpoint commit per the scope above. Write a CHECKPOINT KD at {result_kd} using the template-checkpoint.md template to signal completion."
 }

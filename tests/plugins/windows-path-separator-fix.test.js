@@ -67,7 +67,7 @@ describe("Windows Path Separator Fix", () => {
       
       // Test the validateKDPath function indirectly via tool.execute.before
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: cleanup
 INTENT KD: knowledge\\intent-1.md
 SESSION DATE: 2026-07-21
 SCOPE: Test backslash path`;
@@ -85,7 +85,7 @@ SCOPE: Test backslash path`;
       
       // Test the validateKDPath function indirectly via tool.execute.before
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: cleanup
 INTENT KD: knowledge/intent-1.md
 SESSION DATE: 2026-07-21
 SCOPE: Test forward slash path`;
@@ -116,7 +116,7 @@ SCOPE: Test forward slash path`;
       
       // Test detectForeignPaths with backslash KD path in non-field line
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: cleanup
 INTENT KD: knowledge/intent-1.md
 SESSION DATE: 2026-07-21
 SCOPE: Test foreign detection
@@ -135,7 +135,7 @@ knowledge\\intent-1.md`;
       
       // Test detectForeignPaths with absolute Unix path
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: cleanup
 INTENT KD: knowledge/intent-1.md
 SESSION DATE: 2026-07-21
 SCOPE: Test foreign detection
@@ -153,7 +153,7 @@ SCOPE: Test foreign detection
       
       // Test with all forward slashes (Linux behavior)
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: cleanup
 INTENT KD: knowledge/intent-1.md
 SESSION DATE: 2026-07-21
 SCOPE: Test Linux behavior`;
@@ -171,7 +171,7 @@ SCOPE: Test Linux behavior`;
       
       // Test with mixed separators
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: cleanup
 INTENT KD: knowledge\\foo/intent-1.md
 SESSION DATE: 2026-07-21
 SCOPE: Test mixed separators`;

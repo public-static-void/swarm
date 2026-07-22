@@ -9,7 +9,6 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
-import { execFile } from "child_process";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -57,7 +56,7 @@ const PHASE_INSTRUCTIONS = {
 
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "read", "skill"],
+  INTENT: ["todowrite", "write", "read", "skill", "bash"],
   PREFLIGHT: ["task", "todowrite", "glob", "bash"],
   EXPLORE: ["task", "todowrite", "glob"],
   INVESTIGATE: ["task", "todowrite", "glob"],
@@ -75,7 +74,7 @@ const TOOL_ALLOWLIST = {
 // tool.definition appends these to the description so the LLM sees the restriction
 // instead of treating the tool as fully available.
 const TOOL_RESTRICTIONS = {
-  INTENT: { read: "ONLY templates and intent KDs" },
+  INTENT: { read: "ONLY templates and intent KDs", bash: "ONLY mkdir for knowledge directory creation" },
   REPORT: { read: "ONLY templates and knowledge KDs" }
 };
 
@@ -185,7 +184,7 @@ function toProjectRelative(filePath) {
   return normalized;
 }
 
-function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
+function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCount) {
   if (phase === undefined) return false;
 
   // Session date is required to filter out stale KDs from prior sessions.
@@ -211,11 +210,11 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
   const sessionFiles = files.filter(f => f.includes(sessionDate));
 
   // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
-  // PREFLIGHT uses hasCleanTree() — it's a validation gate, not a KD-producing phase.
+  // PREFLIGHT advances when a `preflight-` KD is written by the Committer.
   // The session-date filter prevents stale KDs from prior sessions from triggering advancement.
   const patterns = {
     [STATES.INTENT]: /^intent-/i,
-    [STATES.PREFLIGHT]: null,  // Preflight advances via hasCleanTree(), not KD artifacts
+    [STATES.PREFLIGHT]: /^preflight-/i,
     [STATES.EXPLORE]: /^exploration-/i,
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
@@ -224,19 +223,8 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
-    [STATES.COMMIT]: null
+    [STATES.COMMIT]: /^commit-/i
   };
-
-  if (phase === STATES.COMMIT) {
-    return hasCleanTree();
-  }
-
-  // Preflight is a validation gate, not a KD-producing phase.
-  // Advance when git tree is clean — the committer confirmed workspace readiness.
-  if (phase === STATES.PREFLIGHT) {
-    debug(`Disk check PREFLIGHT: using hasCleanTree()`);
-    return hasCleanTree();
-  }
 
   const pattern = patterns[phase];
   if (!pattern) return false;
@@ -249,20 +237,21 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap) {
     return result;
   }
 
+  // SWARM advancement requires dispatch-count tracking (Issue 6).
+  // When the Overseer dispatches multiple artisans, each must produce an `impl-` KD
+  // before advancing to VERIFY. Without this, the first artisan's KD triggers
+  // premature advancement while others are still working.
+  if (phase === STATES.SWARM) {
+    const implFiles = sessionFiles.filter(f => pattern.test(f));
+    const dispatchCount = swarmDispatchCount.get(sessionID) || 0;
+    const result = dispatchCount > 0 && implFiles.length >= dispatchCount;
+    debug(`Disk check SWARM: impl=${implFiles.length}, dispatched=${dispatchCount} → ${result}`);
+    return result;
+  }
+
   const result = sessionFiles.some(f => pattern.test(f));
   debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, date=${sessionDate} → ${result}`);
   return result;
-}
-
-function hasCleanTree() {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => resolve(false), 5000);
-    execFile("git", ["status", "--porcelain", "-uno"], (error, stdout) => {
-      clearTimeout(timeout);
-      if (error) return resolve(false);
-      resolve(stdout.trim() === "");
-    });
-  });
 }
 
 export default {
@@ -275,6 +264,11 @@ export default {
     const sessionPhaseMap = new Map();
     const overseerSessions = new Set();
     const cycleMap = new Map();
+    // SWARM completion counter: tracks how many artisan dispatches the Overseer
+    // has initiated in SWARM phase. checkDiskAdvancement() compares this against
+    // the number of `impl-` KDs on disk — only advances to VERIFY when all
+    // dispatched artisans have produced their implementation KDs.
+    const swarmDispatchCount = new Map();
     // Prevents instant phase jump: when todowrite advances the phase,
     // skip the disk check in the same call. Without this, todowrite
     // advances PROTOCOL_NOT_LOADED → INTENT, then the disk check
@@ -584,7 +578,7 @@ export default {
         } else {
           const currentPhase = sessionPhaseMap.get(sessionID);
           const currentPhaseName = getPhaseName(currentPhase);
-          if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap)) {
+          if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount)) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
             diskCheckFailures.set(sessionID, 0);
             const newPhase = currentPhase + 1;
@@ -597,9 +591,9 @@ export default {
               debug(`Disk advancement: skipping next disk check for PREFLIGHT`);
             }
           } else {
-            // REPORT and COMMIT don't use disk-based advancement — skip stuck detection.
-            // REPORT writes the KD directly; COMMIT checks git tree cleanliness.
-            if (currentPhase !== STATES.REPORT && currentPhase !== STATES.COMMIT) {
+            // REPORT doesn't use disk-based advancement — skip stuck detection.
+            // REPORT writes the KD directly; other phases rely on KD file existence.
+            if (currentPhase !== STATES.REPORT) {
               const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
               diskCheckFailures.set(sessionID, failures);
               if (failures === 10) {
@@ -639,6 +633,13 @@ export default {
           // Check if agent matches current phase → normal delegation
           if (agentName === currentPhaseAgent) {
             debug(`task: ALLOW agent=${agentName} for phase=${phaseName}`);
+            // Track SWARM dispatches to prevent premature VERIFY advancement.
+            // Each dispatched artisan must produce an `impl-` KD before all are considered complete.
+            if (phase === STATES.SWARM) {
+              const count = (swarmDispatchCount.get(sessionID) || 0) + 1;
+              swarmDispatchCount.set(sessionID, count);
+              debug(`SWARM dispatch count for ${sessionID}: ${count}`);
+            }
           }
           // Check if agent matches a backward target → backward transition
           else {
@@ -720,6 +721,7 @@ export default {
       overseerSessions,
       isOverseerSession,
       cycleMap,
+      swarmDispatchCount,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
       get lastSeenSession() { return lastSeenSession; }
