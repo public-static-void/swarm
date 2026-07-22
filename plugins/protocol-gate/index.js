@@ -456,6 +456,9 @@ export default {
             debug(`todowrite: lifecycle reload in REPORT → resetting to PROTOCOL_NOT_LOADED`);
             sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
             diskCheckFailures.set(sessionID, 0);
+            sessionPhaseMap.delete(`${sessionID}:date`);
+            swarmDispatchCount.delete(sessionID);
+            cycleMap.delete(sessionID);
             saveState(sessionID);
             phase = STATES.PROTOCOL_NOT_LOADED;
             phaseName = getPhaseName(phase);
