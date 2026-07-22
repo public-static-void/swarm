@@ -219,7 +219,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
     [STATES.DECOMPOSE]: /^plan-/i,
-    [STATES.SWARM]: /^impl-/i,
+    [STATES.SWARM]: /^impl-|^implementation-/i,
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
@@ -277,6 +277,8 @@ export default {
     // Tracks consecutive disk check failures per session to detect stuck phases.
     // After 10 failed checks, logs a diagnostic suggesting the delegation is blocked.
     const diskCheckFailures = new Map();
+    // Tracks re-dispatch attempts per session-phase pair to cap retries at 5.
+    const phaseRedispatchCount = new Map();
     // tool.definition doesn't receive sessionID — track the most recent session
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
@@ -581,6 +583,8 @@ export default {
           if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount)) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
             diskCheckFailures.set(sessionID, 0);
+            // Reset re-dispatch counter for the phase we just advanced from
+            phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
             const newPhase = currentPhase + 1;
             debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}`);
             saveState(sessionID);
@@ -597,7 +601,30 @@ export default {
               const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
               diskCheckFailures.set(sessionID, failures);
               if (failures === 10) {
-                debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
+                // Diagnostic output: list files found so user knows what's missing
+                const knowledgeDir = join(process.cwd(), "knowledge");
+                const diagDate = sessionPhaseMap.get(`${sessionID}:date`);
+                let foundFiles = [];
+                try { foundFiles = readdirSync(knowledgeDir).filter(f => diagDate && f.includes(diagDate)); } catch (_) {}
+                debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Expected prefix: ${currentPhaseName.toLowerCase()}-*. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
+              }
+              // Force-advance to VERIFY after 15 stuck cycles to unblock the lifecycle
+              if (failures >= 15) {
+                debug(`FORCE ADVANCE: ${currentPhaseName} → VERIFY after ${failures} stuck cycles`);
+                sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                diskCheckFailures.set(sessionID, 0);
+                phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                saveState(sessionID);
+              }
+              // Cap re-dispatches per phase at 5
+              const redispatchKey = `${sessionID}:${currentPhase}`;
+              const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
+              if (redispatches >= 5 && tool === "task") {
+                debug(`REDISPATCH CAP: ${currentPhaseName} phase — ${redispatches} re-dispatches already used. Advancing to VERIFY.`);
+                sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                diskCheckFailures.set(sessionID, 0);
+                phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                saveState(sessionID);
               }
             }
           }
@@ -640,6 +667,9 @@ export default {
               swarmDispatchCount.set(sessionID, count);
               debug(`SWARM dispatch count for ${sessionID}: ${count}`);
             }
+            // Track re-dispatches per phase to cap retries
+            const redispatchKey = `${sessionID}:${phase}`;
+            phaseRedispatchCount.set(redispatchKey, (phaseRedispatchCount.get(redispatchKey) || 0) + 1);
           }
           // Check if agent matches a backward target → backward transition
           else {
@@ -650,10 +680,15 @@ export default {
               debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
               handleBackwardTransition(sessionID, phase, targetPhaseId);
             } else {
-              // Wrong agent — not current phase, not a valid backward target
-              const expectedAgent = currentPhaseAgent || phaseName;
-              debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+              // Committer is dispatched by artisan for checkpoint commits during SWARM phase
+              if (agentName === 'committer' && phase === STATES.SWARM) {
+                debug(`task: ALLOW committer dispatch in SWARM phase (checkpoint commit)`);
+              } else {
+                // Wrong agent — not current phase, not a valid backward target
+                const expectedAgent = currentPhaseAgent || phaseName;
+                debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
+                throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+              }
             }
           }
         }
@@ -722,6 +757,7 @@ export default {
       isOverseerSession,
       cycleMap,
       swarmDispatchCount,
+      phaseRedispatchCount,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
       get lastSeenSession() { return lastSeenSession; }
