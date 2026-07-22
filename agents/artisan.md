@@ -5,10 +5,7 @@ temperature: 0.3
 top_p: 0.4
 steps: 100
 permission:
-  read:
-    "*": deny
-    "**/skills/kd-system/templates/*.md": allow
-    "**/plugins/delegation-gate/templates/*.json": allow
+  read: allow
   edit: allow
   glob: allow
   grep: allow
@@ -92,13 +89,13 @@ Read the specification and plan, implement each step, write tests, produce an im
 5. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The delegation-gate plugin generates the dispatch prompt from the checkpoint template.
 
    ### Dispatching Committer
-   
+
    Use structured dispatch when delegating to Committer:
    - `mode`: "checkpoint", "cleanup", or "preflight"
    - `intent_kd`: path to the INTENT KD
    - `session_date`: YYYY-MM-DD
    - `scope`: description of what to commit/setup
-   
+
    For example:
    ```
    task({
@@ -111,7 +108,7 @@ Read the specification and plan, implement each step, write tests, produce an im
      prompt: "placeholder"
    })
    ```
-   
+
    The `description` and `prompt` are placeholders required for schema validation; the delegation-gate plugin overrides them from the template.
 
 6. Write tests first (TDD: red → green → refactor)
