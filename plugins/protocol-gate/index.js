@@ -210,7 +210,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   }
 
   // Filter to only files created in the current session (date in filename).
-  const sessionFiles = files.filter(f => f.includes(sessionDate));
+  const sessionFiles = files.filter(f => new RegExp(`-${sessionDate}\\.md$`).test(f));
 
   // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
   // PREFLIGHT advances when a `preflight-` KD is written by the Committer.
