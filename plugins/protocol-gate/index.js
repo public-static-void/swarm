@@ -29,7 +29,8 @@ const STATES = {
   EXTRACT: 9,
   EVOLVE: 10,
   COMMIT: 11,
-  REPORT: 12
+  REPORT: 12,
+  IDLE: 13
 };
 
 const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
@@ -51,7 +52,8 @@ const PHASE_INSTRUCTIONS = {
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
   COMMIT: "Dispatch the Committer agent.",
-  REPORT: "Write a report KD summarizing lifecycle results."
+  REPORT: "Write a report KD summarizing lifecycle results.",
+  IDLE: "Lifecycle complete. Use any tool freely. Call todowrite with lifecycle keywords to begin a new lifecycle."
 };
 
 const TOOL_ALLOWLIST = {
@@ -67,7 +69,8 @@ const TOOL_ALLOWLIST = {
   EXTRACT: ["task", "todowrite", "glob"],
   EVOLVE: ["task", "todowrite", "glob"],
   COMMIT: ["task", "todowrite", "glob", "bash"],
-  REPORT: ["todowrite", "write", "read"]
+  REPORT: ["todowrite", "write", "read"],
+  IDLE: ["todowrite", "write", "read", "task", "glob", "bash", "skill"]
 };
 
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
@@ -446,21 +449,22 @@ export default {
 
       // --- todowrite handler ---
       if (tool === "todowrite") {
-        // REPORT dead-end fix: detect new lifecycle while stuck in REPORT.
-        // After completing all 12 phases, a todowrite with all keywords
-        // should reset to PROTOCOL_NOT_LOADED so a new lifecycle can begin.
-        if (phase === STATES.REPORT && args?.todos && Array.isArray(args.todos)) {
+        // IDLE lifecycle restart: detect new lifecycle keywords in IDLE state.
+        // After REPORT → IDLE transition, a todowrite with all keywords
+        // starts a new lifecycle by transitioning to INTENT.
+        if (phase === STATES.IDLE && args?.todos && Array.isArray(args.todos)) {
           const presentKeywords = args.todos.map(t => t.content.toUpperCase());
           const hasAll = ALL_KEYWORDS.every(k => presentKeywords.some(p => p.includes(k)));
           if (hasAll) {
-            debug(`todowrite: lifecycle reload in REPORT → resetting to PROTOCOL_NOT_LOADED`);
-            sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+            debug(`todowrite: lifecycle restart in IDLE → advancing to INTENT`);
+            sessionPhaseMap.set(sessionID, STATES.INTENT);
             diskCheckFailures.set(sessionID, 0);
             sessionPhaseMap.delete(`${sessionID}:date`);
             swarmDispatchCount.delete(sessionID);
             cycleMap.delete(sessionID);
+            skipDiskCheckAfterTodo.set(sessionID, true);
             saveState(sessionID);
-            phase = STATES.PROTOCOL_NOT_LOADED;
+            phase = STATES.INTENT;
             phaseName = getPhaseName(phase);
           }
         }
@@ -512,6 +516,17 @@ export default {
         if (phase === STATES.REPORT && !isReportKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/report-)`);
           throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Write to knowledge/report-*.md", "Write to knowledge/report-*.md");
+        }
+
+        // REPORT → IDLE: report KD written means lifecycle is complete.
+        // IDLE restores full tool access so the Overseer can investigate new issues.
+        if (phase === STATES.REPORT && isReportKD) {
+          debug(`write: report KD written → transitioning to IDLE`);
+          sessionPhaseMap.set(sessionID, STATES.IDLE);
+          diskCheckFailures.set(sessionID, 0);
+          saveState(sessionID);
+          phase = STATES.IDLE;
+          phaseName = getPhaseName(phase);
         }
 
         // Content validation — reject fabricated sections in intent KDs.
@@ -642,9 +657,10 @@ export default {
 
       // --- task handler ---
       if (tool === "task") {
-        if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
+        // IDLE allows task (all tools available post-lifecycle)
+        if (phase !== STATES.IDLE && (phase < STATES.PREFLIGHT || phase > STATES.COMMIT)) {
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task available in PREFLIGHT through COMMIT phases", "Wait for delegation phase");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task available in PREFLIGHT through COMMIT phases or IDLE", "Wait for delegation phase");
         }
 
         const prompt = args?.prompt || "";

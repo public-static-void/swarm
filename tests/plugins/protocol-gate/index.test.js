@@ -226,9 +226,9 @@ describe("Protocol-Gate Plugin", () => {
   });
 
   describe("State Transitions", () => {
-    it("has 13 states (PROTOCOL_NOT_LOADED through REPORT)", () => {
+    it("has 14 states (PROTOCOL_NOT_LOADED through IDLE)", () => {
       expect(hooks.STATES).toBeDefined();
-      expect(Object.keys(hooks.STATES)).toHaveLength(13);
+      expect(Object.keys(hooks.STATES)).toHaveLength(14);
     });
 
     it("allows write to intent KD in INTENT phase", async () => {
@@ -1119,10 +1119,34 @@ describe("Protocol-Gate Plugin", () => {
     });
   });
 
-  describe("REPORT Dead-End Fix", () => {
-    it("resets to PROTOCOL_NOT_LOADED on lifecycle reload while in REPORT", async () => {
+  describe("REPORT Dead-End Fix → IDLE Transition", () => {
+    it("transitions REPORT → IDLE when report KD is written", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
+
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: "test-1", callID: "c1" },
+        { args: { filePath: "knowledge/report-lifecycle-2026-07-23.md", content: "# Report" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.IDLE);
+    });
+
+    it("stays in REPORT when non-report KD is written", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
+
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: "test-1", callID: "c1" },
+        { args: { filePath: "knowledge/other-file.md", content: "# Other" } }
+      ).catch(() => {}); // write blocked for non-report KD in REPORT
+
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.REPORT);
+    });
+
+    it("transitions IDLE → INTENT on lifecycle restart via todowrite", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.IDLE);
 
       const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
       await hooks["tool.execute.before"](
@@ -1130,59 +1154,54 @@ describe("Protocol-Gate Plugin", () => {
         { args: { todos: keywords.map(k => ({ content: k })) } }
       );
 
-      // Should have reset through PROTOCOL_NOT_LOADED and advanced to INTENT
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
     });
 
-    it("does not reset when in REPORT with incomplete keywords", async () => {
+    it("stays in IDLE with incomplete keywords", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.IDLE);
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: [{ content: "REPORT" }, { content: "INTENT" }] } }
       );
 
-      // Incomplete keywords — stays in REPORT
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.REPORT);
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.IDLE);
     });
 
-    it("clears disk check failures on REPORT reset", async () => {
+    it("allows full lifecycle after REPORT → IDLE → INTENT", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+
+      // Advance to REPORT
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      // Write report KD → transitions to IDLE
       await hooks["tool.execute.before"](
-        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
-        { args: { todos: keywords.map(k => ({ content: k })) } }
+        { tool: "write", sessionID: "test-1", callID: "c1" },
+        { args: { filePath: "knowledge/report-lifecycle-2026-07-23.md", content: "# Report" } }
       );
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.IDLE);
 
-      // Phase advanced to INTENT — REPORT dead-end is resolved
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
-    });
-
-    it("allows second lifecycle after REPORT", async () => {
-      // First lifecycle: advance to REPORT
-      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
-
-      // Reload: triggers reset → INTENT
+      // Start new lifecycle from IDLE
       const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
-      await hooks["tool.execute.before"](
-        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
-        { args: { todos: keywords.map(k => ({ content: k })) } }
-      );
-
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
-
-      // Second lifecycle: can proceed normally through phases
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c2" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
       );
-
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
+    });
+
+    it("allows all tools in IDLE state", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.IDLE);
+
+      const tools = ["read", "write", "glob", "bash", "skill", "task"];
+      for (const tool of tools) {
+        const output = { description: `Test ${tool}`, parameters: {} };
+        await hooks["tool.definition"]({ toolID: tool }, output);
+        // Tool should NOT be blocked in IDLE
+        expect(output.description).not.toContain("⛔");
+      }
     });
   });
 
