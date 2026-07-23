@@ -629,6 +629,75 @@ RESULT KD: knowledge/preflight-workspace.md`;
     });
   });
 
+  describe("Prose-Format Intent KD Extraction (Bug 2)", () => {
+    it("extracts intent_kd from 'Read the INTENT KD at <path>' prose", async () => {
+      const prompt = `You are the Committer agent in checkpoint mode.
+Read the INTENT KD at knowledge/intent-foo.md for context.
+SESSION DATE: 2026-07-23
+SCOPE: Create checkpoint
+RESULT KD: knowledge/checkpoint-foo.md`;
+
+      const output = { args: { prompt, subagent_type: "committer" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
+    it("extracts intent_kd from 'intent_kd: <path>' inline format", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+intent_kd: knowledge/intent-bar.md
+SESSION DATE: 2026-07-23
+SCOPE: Fix bug
+RESULT KD: knowledge/checkpoint-bar.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-bar.md");
+    });
+
+    it("structured INTENT KD: still takes precedence over prose fallback", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-structured.md
+SESSION DATE: 2026-07-23
+SCOPE: Fix bug
+RESULT KD: knowledge/checkpoint-foo.md
+
+Also reference knowledge/intent-prose.md in context.`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      // Structured field wins over prose pattern
+      expect(output.args.prompt).toContain("knowledge/intent-structured.md");
+    });
+
+    it("extracts intent_kd from mixed prose and structured fields", async () => {
+      const prompt = `MODE: checkpoint
+SESSION DATE: 2026-07-23
+SCOPE: Checkpoint the session
+RESULT KD: knowledge/checkpoint-mixed.md
+
+Load the kd-system skill. Read the INTENT KD at knowledge/intent-mixed.md for context.`;
+
+      const output = { args: { prompt, subagent_type: "committer" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-mixed.md");
+    });
+
+    it("does not extract intent_kd from unrelated text mentioning 'intent'", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-real.md
+SESSION DATE: 2026-07-23
+SCOPE: Fix the intent detection bug
+RESULT KD: knowledge/checkpoint-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-real.md");
+    });
+  });
+
   describe("Non-Task Tools", () => {
     it("passes through non-task tools without validation", async () => {
       const output = { args: { filePath: "some-file.md" } };
