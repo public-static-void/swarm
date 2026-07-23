@@ -174,6 +174,16 @@ function extractFieldsFromPrompt(prompt, subagentType, description) {
   } else if (!fields["agent"] && !promptHasExplicitAgent) {
     // No subagentType and no explicit agent in prompt — already undefined, will fail validation
   }
+  // Fallback: extract intent_kd from prose-format prompts when structured
+  // extraction missed it. Searches the full text for knowledge/intent-*.md
+  // patterns associated with intent_kd keywords (not just at line starts).
+  if (!fields["intent_kd"] && prompt) {
+    const intentMatch = prompt.match(/(?:intent[_ ]kd|INTENT[ _]KD)\s+(?:at\s+)?(knowledge\/intent-[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md)/i);
+    if (intentMatch) {
+      fields["intent_kd"] = intentMatch[1];
+    }
+  }
+
   // Infer mode from natural language when no explicit MODE: field found —
   // agents sometimes write "in checkpoint mode" instead of "MODE: checkpoint".
   // Explicit MODE: always takes precedence because extractFromText runs first.
