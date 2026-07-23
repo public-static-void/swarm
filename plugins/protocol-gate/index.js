@@ -219,7 +219,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
     [STATES.DECOMPOSE]: /^plan-/i,
-    [STATES.SWARM]: /^impl-|^implementation-/i,
+    [STATES.SWARM]: /^swarm-|^impl-|^implementation-/i,
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
