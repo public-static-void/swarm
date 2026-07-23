@@ -112,14 +112,14 @@ function loadTemplates(config) {
       const templateData = JSON.parse(readFileSync(templatePath, "utf8"));
       if (!templateData.template || typeof templateData.template !== "string") {
         debug(`Template ${mode}: disk file missing 'template' field — using fallback`);
-        templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
+        templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
       } else {
         debug(`Template ${mode}: loaded from disk`);
         templates[mode] = templateData.template;
       }
     } catch (e) {
       debug(`Template ${mode}: not found on disk — using fallback`);
-      templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
+      templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
     }
   }
 
@@ -138,7 +138,7 @@ function extractFromText(text, fields, override = false) {
       if (override || !fields["agent"]) fields["agent"] = agentMatch[2].trim().replace(/\*\*/g, "").trim();
       continue;
     }
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       const key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       if (override || !fields[key]) fields[key] = match[2].trim().replace(/\*\*/g, "").trim();
@@ -232,7 +232,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim().replace(/\\/g, "/");
-    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
@@ -277,6 +277,7 @@ DISPATCH TO: explorer
 MODE: explore
 INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
+SESSION ID: <session-id>
 SCOPE: <optional context>
 RESULT KD: knowledge/<type>-<name>.md (when subagent produces a KD)
 
@@ -348,6 +349,12 @@ export default {
       }
 
       const fields = extractFieldsFromPrompt(prompt, subagentType, description);
+
+      // session_id from opencode hook input — fills {session_id} when prompt omits SESSION ID:
+      if (!fields["session_id"] && sessionID) {
+        fields["session_id"] = sessionID;
+      }
+
       // scope is optional — provides domain context but doesn't block delegation
       const requiredFields = ["agent", "mode", "intent_kd", "session_date"];
 

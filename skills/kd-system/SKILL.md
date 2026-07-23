@@ -63,10 +63,10 @@ by agent for rev.  review      by new KD
 ## Naming Convention
 
 ```
-{type}-{descriptive-name}-{YYYY-MM-DD}.md
+{type}-{descriptive-name}-{session_id}.md
 ```
 
-Example: `spec-auth-flow-2026-05-22.md`
+Example: `spec-auth-flow-ses_0711b9644ffe.md`
 
 ## Storage
 
@@ -96,7 +96,7 @@ Before creating any KD, verify each of these:
 
 ### Step 3: Naming
 
-- [ ] File name: `{prefix}-{descriptive-name}-{YYYY-MM-DD}.md`
+- [ ] File name: `{prefix}-{descriptive-name}-{session_id}.md`
 - [ ] Prefix matches the KD type from the table above
 
 ### Step 4: Storage
@@ -131,6 +131,6 @@ When creating a KD:
 2. Read the corresponding template file from `templates/`
 3. Run the Pre-Creation Compliance Checklist above
 4. Copy the template structure and fill in the placeholders
-5. Save to `knowledge/{prefix}-{name}-{date}.md`
+5. Save to `knowledge/{prefix}-{name}-{session_id}.md`
 6. Run Post-Creation Verification
 7. Set `status: draft` initially, advance through states as it moves through gates
