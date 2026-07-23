@@ -146,18 +146,33 @@ function extractFromText(text, fields, override = false) {
   }
 }
 
-// subagentType is a fallback — the Overseer puts agent in output.args.subagent_type,
-// not in prompt text. Description is scanned as a lower-priority fallback: if prompt
-// doesn't contain a field, try description. Prompt overrides description.
-// Format hints (e.g. INTENT KD: knowledge/intent-<name>.md) use <name> as placeholder —
-// these get overridden by any real value found in prompt, or accepted as-is when
-// no prompt value exists (better than hard failure).
+// subagentType is the primary agent source — the Overseer puts agent in
+// output.args.subagent_type, not in prompt text. Description is scanned as
+// a lower-priority fallback: if prompt doesn't contain a field, try description.
+// Prompt overrides description.
+// Format hints (e.g. INTENT KD: knowledge/intent-<name>.md) use <name> as
+// placeholder — these get overridden by any real value found in prompt, or
+// accepted as-is when no prompt value exists (better than hard failure).
+//
+// Agent resolution: subagentType always wins when available, because it comes
+// from the structured task() call args, not from free-form prompt text. This
+// prevents incorrect agent values from prompt hallucinations or template
+// leftovers from overriding the caller's explicit subagent_type.
 function extractFieldsFromPrompt(prompt, subagentType, description) {
   const fields = {};
   if (description) extractFromText(description, fields);  // lower priority
   extractFromText(prompt, fields, true);                   // higher priority, overrides description
-  if (!fields["agent"] && subagentType) {
+
+  // Track whether prompt explicitly contains an agent directive (DISPATCH TO: or AGENT:).
+  // If not, subagent_type is the only source. If yes, subagent_type still wins when
+  // available — it reflects the caller's intent, whereas prompt-extracted agent may
+  // be stale text from a template or hallucination.
+  const promptHasExplicitAgent = prompt && /(?:#{1,6}\s*)?(?:\*\*)?(?:AGENT|DISPATCH TO)(?:\*\*)?:/i.test(prompt);
+
+  if (subagentType) {
     fields["agent"] = subagentType;
+  } else if (!fields["agent"] && !promptHasExplicitAgent) {
+    // No subagentType and no explicit agent in prompt — already undefined, will fail validation
   }
   // Infer mode from natural language when no explicit MODE: field found —
   // agents sometimes write "in checkpoint mode" instead of "MODE: checkpoint".
