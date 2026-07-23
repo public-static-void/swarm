@@ -3,12 +3,12 @@ title: "SPEC: {{feature name}}"
 version: 1.0.0
 status: draft
 type: spec
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Spec Weaver
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/spec-{{feature}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/spec-{{feature}}-{{session_id}}.md -->
 
 # SPEC: {{feature name}}
 

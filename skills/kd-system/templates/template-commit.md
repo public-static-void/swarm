@@ -3,12 +3,12 @@ title: "COMMIT: {{description}}"
 version: 1.0.0
 status: draft
 type: commit
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Committer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/commit-{{feature}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/commit-{{feature}}-{{session_id}}.md -->
 
 # COMMIT: {{description}}
 

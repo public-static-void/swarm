@@ -3,12 +3,12 @@ title: "PLAN: {{feature name}}"
 version: 1.0.0
 status: draft
 type: plan
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Pathfinder
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/plan-{{feature}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/plan-{{feature}}-{{session_id}}.md -->
 
 # PLAN: {{feature name}}
 

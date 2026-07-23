@@ -3,12 +3,12 @@ title: "CHECKPOINT: {{description}}"
 version: 1.0.0
 status: draft
 type: checkpoint
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Committer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/checkpoint-{{feature}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/checkpoint-{{feature}}-{{session_id}}.md -->
 
 # CHECKPOINT: {{description}}
 

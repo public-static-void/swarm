@@ -3,12 +3,12 @@ title: "AUDIT: {{artifact audited}}"
 version: 1.0.0
 status: draft
 type: audit
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Inspector
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/audit-{{artifact}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/audit-{{artifact}}-{{session_id}}.md -->
 
 # AUDIT: {{artifact}}
 

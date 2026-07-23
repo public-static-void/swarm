@@ -3,12 +3,12 @@ title: "ANALYSIS: {{topic investigated}}"
 version: 1.0.0
 status: draft
 type: analysis
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Explorer/Analyzer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/analysis-{{topic}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/analysis-{{topic}}-{{session_id}}.md -->
 
 # ANALYSIS: {{topic}}
 

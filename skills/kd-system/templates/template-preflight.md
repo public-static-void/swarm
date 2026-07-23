@@ -3,12 +3,12 @@ title: "PREFLIGHT: {{workspace setup}}"
 version: 1.0.0
 status: draft
 type: preflight
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Committer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/preflight-{{feature}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/preflight-{{feature}}-{{session_id}}.md -->
 
 # PREFLIGHT: {{workspace setup}}
 
