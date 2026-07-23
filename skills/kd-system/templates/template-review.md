@@ -3,12 +3,12 @@ title: "REVIEW: {{artifact reviewed}}"
 version: 1.0.0
 status: draft
 type: review
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Inspector
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/review-{{artifact}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/review-{{artifact}}-{{session_id}}.md -->
 
 # REVIEW: {{artifact}}
 

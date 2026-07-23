@@ -3,12 +3,12 @@ title: "INTENT: {{title of the request}}"
 version: 1.0.0
 status: draft
 type: intent
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Overseer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/intent-{{name}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/intent-{{name}}-{{session_id}}.md -->
 <!-- Template has no decision points — the Overseer writes Raw Request verbatim only. -->
 <!-- Triage Notes are pre-filled; the Explorer fills them after dispatch. -->
 

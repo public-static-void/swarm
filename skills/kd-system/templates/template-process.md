@@ -3,12 +3,12 @@ title: "PROCESS: {{process name}}"
 version: 1.0.0
 status: draft
 type: process
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Habit Builder
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/process-{{pattern}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/process-{{pattern}}-{{session_id}}.md -->
 
 # PROCESS: {{process name}}
 

@@ -8,7 +8,7 @@ author: Artisan
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/impl-{{step}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/impl-{{step}}-{{session_id}}.md -->
 
 # IMPLEMENTATION SUMMARY: {{feature}}
 

@@ -1,4 +1,4 @@
 {
   "mode": "verify",
-  "template": "DISPATCH TO: {agent}\nMODE: verify\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Verify the implementation per the scope above. Produce REVIEW and AUDIT KDs at {result_kd}."
+  "template": "DISPATCH TO: {agent}\nMODE: verify\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Verify the implementation per the scope above. Produce REVIEW and AUDIT KDs at {result_kd} using the naming convention: knowledge/review-<name>.md and knowledge/audit-<name>.md"
 }

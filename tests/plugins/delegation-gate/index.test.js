@@ -463,6 +463,7 @@ RESULT KD: knowledge/impl-foo.md`;
       expect(output.args.description).toContain("MODE: explore");
       // Variable placeholders — genuinely vary per dispatch
       expect(output.args.description).toContain("INTENT KD: knowledge/intent-<name>.md");
+      expect(output.args.description).toContain("SESSION ID: <session-id>");
       expect(output.args.description).toContain("SCOPE: <optional context>");
       // No angle bracket placeholders for fixed fields
       expect(output.args.description).not.toContain("<agent-name>");
@@ -695,6 +696,77 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("knowledge/intent-real.md");
+    });
+  });
+
+  describe("Session ID Injection", () => {
+    it("extracts session_id from SESSION ID: field in prompt", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SESSION ID: abc-123-def
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("abc-123-def");
+    });
+
+    it("injects session_id from hookInput.sessionID when prompt omits SESSION ID:", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "hook-session-42", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("hook-session-42");
+    });
+
+    it("prompt SESSION ID: takes precedence over hookInput.sessionID", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SESSION ID: prompt-session-99
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "hook-session-42", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("prompt-session-99");
+      expect(output.args.prompt).not.toContain("hook-session-42");
+    });
+
+    it("SESSION ID: line is not flagged by foreign path detection", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SESSION ID: some-session-id
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("some-session-id");
+    });
+
+    it("strips unresolved {session_id} placeholder from rendered template", async () => {
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: null, callID: "c1" }, output);
+      expect(output.args.prompt).not.toContain("{session_id}");
     });
   });
 

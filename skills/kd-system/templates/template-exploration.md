@@ -3,12 +3,12 @@ title: "EXPLORATION: {{topic explored}}"
 version: 1.0.0
 status: draft
 type: exploration
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Explorer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/exploration-{{topic}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/exploration-{{topic}}-{{session_id}}.md -->
 
 # EXPLORATION: {{topic}}
 

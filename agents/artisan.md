@@ -86,13 +86,14 @@ Read the specification and plan, implement each step, write tests, produce an im
 2. Scan project for existing conventions — detect tech stack, file structure, coding patterns
 3. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
 4. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
-5. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The delegation-gate plugin generates the dispatch prompt from the checkpoint template.
+5. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `result_kd` (expected CHECKPOINT KD path), `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification).
 
    ### Dispatching Committer
 
    Use structured dispatch when delegating to Committer:
    - `mode`: "checkpoint", "cleanup", or "preflight"
    - `intent_kd`: path to the INTENT KD
+   - `result_kd`: expected path for the CHECKPOINT KD (used for verification)
    - `session_date`: YYYY-MM-DD
    - `scope`: description of what to commit/setup
 
@@ -101,6 +102,7 @@ Read the specification and plan, implement each step, write tests, produce an im
    task({
      mode: "checkpoint",
      intent_kd: "knowledge/intent-foo-2026-07-07.md",
+     result_kd: "knowledge/checkpoint-2026-07-07-step1.md",
      session_date: "2026-07-07",
      scope: "Implement feature X",
      description: "placeholder",
@@ -110,6 +112,27 @@ Read the specification and plan, implement each step, write tests, produce an im
    ```
 
    The `description` and `prompt` are placeholders required for schema validation; the delegation-gate plugin overrides them from the template.
+
+   ### Checkpoint Verification
+
+   After dispatching the Committer for checkpoint commits, verify the checkpoint was persisted before proceeding:
+
+   1. **Define expected path** — Before dispatch, set `result_kd` in the structured fields (e.g., `knowledge/checkpoint-<session_date>-<step>.md`).
+   2. **Wait for completion** — The Committer dispatch is synchronous. When it returns, proceed to verification.
+   3. **Verify CHECKPOINT KD** — Use `glob` to check that the file at the `result_kd` path exists. Use `read` to confirm it is a valid KD (non-empty, contains expected fields).
+   4. **If CHECKPOINT KD exists and valid**: Continue to the next plan step.
+   5. **If CHECKPOINT KD is missing or invalid**: Retry the Committer dispatch **once** with the same structured fields.
+   6. **If retry fails**: Escalate to user. Load the `escalation-protocol` skill and report:
+
+   ```
+   ESCALATION:
+   Agent: Artisan
+   Task: Checkpoint commit after plan step <N>
+   Failed action: CHECKPOINT KD not created at expected path <path>
+   Attempted: Dispatched Committer twice — both failed to produce CHECKPOINT KD
+   Needed: Manual intervention or permission adjustment
+   Proposed resolution: Review Committer logs, fix workspace state, or adjust permissions
+   ```
 
 6. Write tests first (TDD: red → green → refactor)
 7. Check off completed items in the TODO list as you go

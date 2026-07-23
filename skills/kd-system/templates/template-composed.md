@@ -3,12 +3,12 @@ title: "COMPOSED: Context for {{target agent}} — {{task}}"
 version: 1.0.0
 status: draft
 type: composed
-created: "{{YYYY-MM-DD}}"
+created: "{{session_id}}"
 author: Scribe
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/composed-{{agent}}-{{task}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/composed-{{agent}}-{{task}}-{{session_id}}.md -->
 
 # COMPOSED: Context for {{target agent}}
 
