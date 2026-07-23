@@ -190,11 +190,11 @@ function toProjectRelative(filePath) {
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCount) {
   if (phase === undefined) return false;
 
-  // Session date is required to filter out stale KDs from prior sessions.
-  // Without this, a plan-*.md from last Tuesday instantly advances PREFLIGHT.
-  const sessionDate = sessionPhaseMap.get(`${sessionID}:date`);
-  if (!sessionDate) {
-    debug(`Disk check: no session date set for ${sessionID} — skipping`);
+  // Session ID is required to filter out stale KDs from prior sessions.
+  // Without this, a plan-*.md from a different session instantly advances PREFLIGHT.
+  const storedSessionID = sessionPhaseMap.get(`${sessionID}:sid`);
+  if (!storedSessionID) {
+    debug(`Disk check: no session ID set for ${sessionID} — skipping`);
     return false;
   }
 
@@ -209,12 +209,12 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     return false;
   }
 
-  // Filter to only files created in the current session (date in filename).
-  const sessionFiles = files.filter(f => new RegExp(`-${sessionDate}\\.md$`).test(f));
+  // Filter to only files created in the current session (session ID in filename).
+  const sessionFiles = files.filter(f => new RegExp(`-${sessionID}\\.md$`).test(f));
 
   // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
   // PREFLIGHT advances when a `preflight-` KD is written by the Committer.
-  // The session-date filter prevents stale KDs from prior sessions from triggering advancement.
+  // The session-ID filter prevents stale KDs from prior sessions from triggering advancement.
   const patterns = {
     [STATES.INTENT]: /^intent-/i,
     [STATES.PREFLIGHT]: /^preflight-/i,
@@ -253,7 +253,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   }
 
   const result = sessionFiles.some(f => pattern.test(f));
-  debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, date=${sessionDate} → ${result}`);
+  debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID} → ${result}`);
   return result;
 }
 
@@ -287,7 +287,7 @@ export default {
     let lastSeenSession = null;
 
     // --- State persistence ---
-    // Persists phase + date to disk so opencode --continue restores state.
+    // Persists phase + session ID to disk so opencode --continue restores state.
     // Without this, restarting the plugin server loses all in-memory state.
     // State files live in the plugin's .state/ directory, not .opencode/ which
     // may have special purpose in opencode's config hierarchy.
@@ -297,10 +297,10 @@ export default {
 
     function saveState(sessionID) {
       const phase = sessionPhaseMap.get(sessionID);
-      const date = sessionPhaseMap.get(`${sessionID}:date`);
+      const sid = sessionPhaseMap.get(`${sessionID}:sid`);
       if (phase === undefined) return;
       try {
-        const state = { phase, date: date || null, timestamp: Date.now() };
+        const state = { phase, sid: sid || null, timestamp: Date.now() };
         const stateDir = join(PLUGIN_DIR, ".state");
         mkdirSync(stateDir, { recursive: true });
         writeFileSync(getStatePath(sessionID), JSON.stringify(state));
@@ -314,12 +314,12 @@ export default {
         const data = JSON.parse(readFileSync(statePath, "utf8"));
         if (data.phase !== undefined && data.phase > STATES.PROTOCOL_NOT_LOADED) {
           sessionPhaseMap.set(sessionID, data.phase);
-          if (data.date) {
-            sessionPhaseMap.set(`${sessionID}:date`, data.date);
+          if (data.sid) {
+            sessionPhaseMap.set(`${sessionID}:sid`, data.sid);
           }
           overseerSessions.add(sessionID);
           lastSeenSession = sessionID;
-          debug(`loadState: restored phase=${getPhaseName(data.phase)} date=${data.date}`);
+          debug(`loadState: restored phase=${getPhaseName(data.phase)} sid=${data.sid}`);
           return true;
         }
       } catch (e) { debug(`loadState: failed for ${sessionID}: ${e.message}`); }
@@ -459,7 +459,7 @@ export default {
             debug(`todowrite: lifecycle restart in IDLE → advancing to INTENT`);
             sessionPhaseMap.set(sessionID, STATES.INTENT);
             diskCheckFailures.set(sessionID, 0);
-            sessionPhaseMap.delete(`${sessionID}:date`);
+            sessionPhaseMap.delete(`${sessionID}:sid`);
             swarmDispatchCount.delete(sessionID);
             cycleMap.delete(sessionID);
             skipDiskCheckAfterTodo.set(sessionID, true);
@@ -498,15 +498,12 @@ export default {
         const isIntentKD = relPath.startsWith("knowledge/intent-") || relPath.includes("/knowledge/intent-");
         const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
 
-        // Capture session date from the intent KD filename (YYYY-MM-DD suffix).
-        // This date is used by checkDiskAdvancement to filter out stale KDs.
+        // Capture session ID from intent KD write.
+        // This ID is used by checkDiskAdvancement to filter out stale KDs.
         if (isIntentKD && phase === STATES.INTENT) {
-          const dateMatch = relPath.match(/(\d{4}-\d{2}-\d{2})\.md$/);
-          if (dateMatch) {
-            sessionPhaseMap.set(`${sessionID}:date`, dateMatch[1]);
-            debug(`write: captured session date ${dateMatch[1]} for session ${sessionID}`);
-            saveState(sessionID);
-          }
+          sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+          debug(`write: captured session ID ${sessionID}`);
+          saveState(sessionID);
         }
 
         if (phase === STATES.INTENT && !isIntentKD) {
@@ -621,9 +618,8 @@ export default {
               if (failures === 10) {
                 // Diagnostic output: list files found so user knows what's missing
                 const knowledgeDir = join(process.cwd(), "knowledge");
-                const diagDate = sessionPhaseMap.get(`${sessionID}:date`);
                 let foundFiles = [];
-                try { foundFiles = readdirSync(knowledgeDir).filter(f => diagDate && f.includes(diagDate)); } catch (_) {}
+                try { foundFiles = readdirSync(knowledgeDir).filter(f => f.includes(sessionID)); } catch (_) {}
                 debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Expected prefix: ${currentPhaseName.toLowerCase()}-*. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
               }
               // Force-advance to VERIFY after 15 stuck cycles to unblock the lifecycle
