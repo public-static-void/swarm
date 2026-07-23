@@ -53,7 +53,7 @@ const PHASE_INSTRUCTIONS = {
   EVOLVE: "Dispatch the Habit Builder agent.",
   COMMIT: "Dispatch the Committer agent.",
   REPORT: "Write a report KD summarizing lifecycle results.",
-  IDLE: "Lifecycle complete. Use any tool freely. Call todowrite with lifecycle keywords to begin a new lifecycle."
+  IDLE: "Lifecycle complete. Call todowrite with lifecycle keywords to begin a new lifecycle."
 };
 
 const TOOL_ALLOWLIST = {
@@ -70,7 +70,7 @@ const TOOL_ALLOWLIST = {
   EVOLVE: ["task", "todowrite", "glob"],
   COMMIT: ["task", "todowrite", "glob", "bash"],
   REPORT: ["todowrite", "write", "read"],
-  IDLE: ["todowrite", "write", "read", "task", "glob", "bash", "skill"]
+  IDLE: ["todowrite"]
 };
 
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
@@ -222,7 +222,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
     [STATES.DECOMPOSE]: /^plan-/i,
-    [STATES.SWARM]: /^swarm-|^impl-|^implementation-/i,
+    [STATES.SWARM]: /^impl-/i,
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
@@ -658,9 +658,9 @@ export default {
       // --- task handler ---
       if (tool === "task") {
         // IDLE allows task (all tools available post-lifecycle)
-        if (phase !== STATES.IDLE && (phase < STATES.PREFLIGHT || phase > STATES.COMMIT)) {
+        if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task available in PREFLIGHT through COMMIT phases or IDLE", "Wait for delegation phase");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task available in PREFLIGHT through COMMIT phases", "Wait for delegation phase");
         }
 
         const prompt = args?.prompt || "";

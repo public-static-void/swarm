@@ -1191,16 +1191,26 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
     });
 
-    it("allows all tools in IDLE state", async () => {
+    it("restricts tools in IDLE state to todowrite only", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.IDLE);
 
-      const tools = ["read", "write", "glob", "bash", "skill", "task"];
-      for (const tool of tools) {
+      // todowrite should NOT be blocked
+      const outputTodo = { description: "Test todowrite", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "todowrite" }, outputTodo);
+      expect(outputTodo.description).not.toContain("⛔");
+
+      // task is always allowed via universal bypass — never blocked in tool.definition
+      const outputTask = { description: "Test task", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "task" }, outputTask);
+      expect(outputTask.description).not.toContain("⛔");
+
+      // Other tools should be blocked in IDLE
+      const blockedTools = ["read", "write", "glob", "bash", "skill"];
+      for (const tool of blockedTools) {
         const output = { description: `Test ${tool}`, parameters: {} };
         await hooks["tool.definition"]({ toolID: tool }, output);
-        // Tool should NOT be blocked in IDLE
-        expect(output.description).not.toContain("⛔");
+        expect(output.description).toContain("⛔");
       }
     });
   });
