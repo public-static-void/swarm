@@ -278,7 +278,20 @@ MODE: explore
 INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
 SCOPE: <optional context>
-RESULT KD: knowledge/exploration-<name>.md (when subagent produces a KD)
+RESULT KD: knowledge/<type>-<name>.md (when subagent produces a KD)
+
+RESULT KD Naming Conventions:
+- explore:     knowledge/exploration-<name>.md
+- investigate: knowledge/analysis-<name>.md
+- align:       knowledge/spec-<name>.md
+- decompose:   knowledge/plan-<name>.md
+- swarm:       knowledge/impl-<name>.md
+- verify:      knowledge/review-<name>.md, knowledge/audit-<name>.md
+- extract:     knowledge/composed-<name>.md
+- evolve:      knowledge/process-<name>.md
+- checkpoint:  knowledge/checkpoint-<name>.md
+- preflight:   knowledge/preflight-<name>.md
+- commit:      knowledge/commit-<name>.md
 `;
 
   if (!output.args) output.args = {};
