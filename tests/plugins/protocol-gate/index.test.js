@@ -221,14 +221,14 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "src/main.js" } }
         )
-      ).rejects.toThrow("Read from template or knowledge/intent-*.md");
+      ).rejects.toThrow("Read from template, skill, or knowledge/intent-*.md");
     });
   });
 
   describe("State Transitions", () => {
-    it("has 14 states (PROTOCOL_NOT_LOADED through IDLE)", () => {
+    it("has 13 states (PROTOCOL_NOT_LOADED through REPORT)", () => {
       expect(hooks.STATES).toBeDefined();
-      expect(Object.keys(hooks.STATES)).toHaveLength(14);
+      expect(Object.keys(hooks.STATES)).toHaveLength(13);
     });
 
     it("allows write to intent KD in INTENT phase", async () => {
@@ -431,7 +431,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "src/main.js" } }
         )
-      ).rejects.toThrow("Read from template or knowledge/intent-*.md");
+      ).rejects.toThrow("Read from template, skill, or knowledge/intent-*.md");
     });
 
     it("has INTENT pattern for disk advancement (F04)", async () => {
@@ -557,7 +557,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "knowledge/report-foo.md" } }
         )
-      ).rejects.toThrow("Read from template or knowledge/intent-*.md");
+      ).rejects.toThrow("Read from template, skill, or knowledge/intent-*.md");
     });
 
     it("blocks reading analysis KDs in INTENT phase", async () => {
@@ -576,7 +576,7 @@ describe("Protocol-Gate Plugin", () => {
           { tool: "read", sessionID: "test-1", callID: "c2" },
           { args: { filePath: "knowledge/analysis-foo.md" } }
         )
-      ).rejects.toThrow("Read from template or knowledge/intent-*.md");
+      ).rejects.toThrow("Read from template, skill, or knowledge/intent-*.md");
     });
 
     it("allows reading templates in INTENT phase", async () => {
@@ -630,14 +630,14 @@ describe("Protocol-Gate Plugin", () => {
       );
       hooks.sessionPhaseMap.set("test-1", 1); // INTENT
 
-      // Write intent KD with date in filename
+      // Write intent KD with session ID in filename
       await hooks["tool.execute.before"](
         { tool: "write", sessionID: "test-1", callID: "c2" },
-        { args: { filePath: "knowledge/intent-my-feature-2026-07-17.md" } }
+        { args: { filePath: "knowledge/intent-my-feature-test-1.md" } }
       );
 
-      // Session date should be captured
-      expect(hooks.sessionPhaseMap.get("test-1:date")).toBe("2026-07-17");
+      // Session ID should be captured
+      expect(hooks.sessionPhaseMap.get("test-1:sid")).toBe("test-1");
     });
 
     it("captures session date from absolute path intent KD", async () => {
@@ -652,10 +652,10 @@ describe("Protocol-Gate Plugin", () => {
 
       await hooks["tool.execute.before"](
         { tool: "write", sessionID: "test-1", callID: "c2" },
-        { args: { filePath: "/home/user/project/knowledge/intent-my-feature-2026-07-17.md" } }
+        { args: { filePath: "/home/user/project/knowledge/intent-my-feature-test-1.md" } }
       );
 
-      expect(hooks.sessionPhaseMap.get("test-1:date")).toBe("2026-07-17");
+      expect(hooks.sessionPhaseMap.get("test-1:sid")).toBe("test-1");
     });
   });
 
@@ -995,15 +995,15 @@ describe("Protocol-Gate Plugin", () => {
         { args: { todos: keywords.map(k => ({ content: k })) } }
       );
 
-      // Write intent KD with date to trigger session date capture
+      // Write intent KD with session ID to trigger session ID capture
       await hooks["tool.execute.before"](
         { tool: "write", sessionID, callID: "c2" },
-        { args: { filePath: "knowledge/intent-feature-2026-07-19.md" } }
+        { args: { filePath: "knowledge/intent-feature-persist-2.md" } }
       );
 
-      // State file should have the session date
+      // State file should have the session ID
       const data = JSON.parse(readFileSync(getStatePath(sessionID), "utf8"));
-      expect(data.date).toBe("2026-07-19");
+      expect(data.sid).toBe("persist-2");
     });
 
     it("restores state on restart via loadState in chat.params", async () => {
@@ -1045,15 +1045,15 @@ describe("Protocol-Gate Plugin", () => {
       );
       await hooks1["tool.execute.before"](
         { tool: "write", sessionID, callID: "c2" },
-        { args: { filePath: "knowledge/intent-feature-2026-07-19.md" } }
+        { args: { filePath: "knowledge/intent-feature-persist-restart.md" } }
       );
 
       // Phase 2: Simulate restart
       const hooks2 = await pluginModule.server({}, {});
       await hooks2["chat.params"]({ sessionID, agent: "overseer" }, {});
 
-      // Session date should be restored
-      expect(hooks2.sessionPhaseMap.get(`${sessionID}:date`)).toBe("2026-07-19");
+      // Session ID should be restored
+      expect(hooks2.sessionPhaseMap.get(`${sessionID}:sid`)).toBe("persist-restart");
     });
 
     it("does not restore PROTOCOL_NOT_LOADED phase from state file", async () => {
@@ -1061,7 +1061,7 @@ describe("Protocol-Gate Plugin", () => {
 
       // Manually write a state file with phase=0 (PROTOCOL_NOT_LOADED)
       mkdirSync(stateDir, { recursive: true });
-      writeFileSync(getStatePath(sessionID), JSON.stringify({ phase: 0, date: null, timestamp: Date.now() }));
+      writeFileSync(getStatePath(sessionID), JSON.stringify({ phase: 0, sid: null, timestamp: Date.now() }));
 
       // New plugin instance — loadState should reject phase=0
       const hooks = await pluginModule.server({}, {});
@@ -1119,17 +1119,17 @@ describe("Protocol-Gate Plugin", () => {
     });
   });
 
-  describe("REPORT Dead-End Fix → IDLE Transition", () => {
-    it("transitions REPORT → IDLE when report KD is written", async () => {
+  describe("REPORT Dead-End Fix → PROTOCOL_NOT_LOADED Transition", () => {
+    it("transitions REPORT → PROTOCOL_NOT_LOADED when report KD is written", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
 
       await hooks["tool.execute.before"](
-        { tool: "write", sessionID: "test-1", callID: "c1" },
-        { args: { filePath: "knowledge/report-lifecycle-2026-07-23.md", content: "# Report" } }
+        { tool: "edit", sessionID: "test-1", callID: "c1" },
+        { args: { filePath: "knowledge/report-lifecycle-test-1.md", content: "# Report" } }
       );
 
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.IDLE);
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
     });
 
     it("stays in REPORT when non-report KD is written", async () => {
@@ -1137,16 +1137,16 @@ describe("Protocol-Gate Plugin", () => {
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
 
       await hooks["tool.execute.before"](
-        { tool: "write", sessionID: "test-1", callID: "c1" },
+        { tool: "edit", sessionID: "test-1", callID: "c1" },
         { args: { filePath: "knowledge/other-file.md", content: "# Other" } }
       ).catch(() => {}); // write blocked for non-report KD in REPORT
 
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.REPORT);
     });
 
-    it("transitions IDLE → INTENT on lifecycle restart via todowrite", async () => {
+    it("transitions PROTOCOL_NOT_LOADED → INTENT on lifecycle restart via todowrite", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.IDLE);
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.PROTOCOL_NOT_LOADED);
 
       const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
       await hooks["tool.execute.before"](
@@ -1157,32 +1157,32 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
     });
 
-    it("stays in IDLE with incomplete keywords", async () => {
+    it("throws error with incomplete keywords in PROTOCOL_NOT_LOADED", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.IDLE);
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.PROTOCOL_NOT_LOADED);
 
-      await hooks["tool.execute.before"](
-        { tool: "todowrite", sessionID: "test-1", callID: "c1" },
-        { args: { todos: [{ content: "REPORT" }, { content: "INTENT" }] } }
-      );
-
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.IDLE);
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "todowrite", sessionID: "test-1", callID: "c1" },
+          { args: { todos: [{ content: "REPORT" }, { content: "INTENT" }] } }
+        )
+      ).rejects.toThrow("Missing lifecycle keywords");
     });
 
-    it("allows full lifecycle after REPORT → IDLE → INTENT", async () => {
+    it("allows full lifecycle after REPORT → PROTOCOL_NOT_LOADED → INTENT", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
       // Advance to REPORT
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
 
-      // Write report KD → transitions to IDLE
+      // Write report KD → transitions to PROTOCOL_NOT_LOADED
       await hooks["tool.execute.before"](
-        { tool: "write", sessionID: "test-1", callID: "c1" },
-        { args: { filePath: "knowledge/report-lifecycle-2026-07-23.md", content: "# Report" } }
+        { tool: "edit", sessionID: "test-1", callID: "c1" },
+        { args: { filePath: "knowledge/report-lifecycle-test-1.md", content: "# Report" } }
       );
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.IDLE);
+      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
 
-      // Start new lifecycle from IDLE
+      // Start new lifecycle from PROTOCOL_NOT_LOADED
       const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c2" },
@@ -1191,9 +1191,9 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.INTENT);
     });
 
-    it("restricts tools in IDLE state to todowrite only", async () => {
+    it("restricts tools in PROTOCOL_NOT_LOADED state to todowrite only", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set("test-1", hooks.STATES.IDLE);
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.PROTOCOL_NOT_LOADED);
 
       // todowrite should NOT be blocked
       const outputTodo = { description: "Test todowrite", parameters: {} };
@@ -1205,7 +1205,7 @@ describe("Protocol-Gate Plugin", () => {
       await hooks["tool.definition"]({ toolID: "task" }, outputTask);
       expect(outputTask.description).not.toContain("⛔");
 
-      // Other tools should be blocked in IDLE
+      // Other tools should be blocked in PROTOCOL_NOT_LOADED
       const blockedTools = ["read", "write", "glob", "bash", "skill"];
       for (const tool of blockedTools) {
         const output = { description: `Test ${tool}`, parameters: {} };
@@ -1216,13 +1216,12 @@ describe("Protocol-Gate Plugin", () => {
   });
 
   describe("Preflight KD Advancement (KD-based signaling)", () => {
-    const PREFLIGHT_TEST_DATE = "2099-02-01";
 
     it("does not advance PREFLIGHT without preflight KD", async () => {
       const sid = "preflight-1";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
-      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
       // No preflight KD exists — trigger disk check
       await hooks["tool.execute.before"](
@@ -1238,12 +1237,12 @@ describe("Protocol-Gate Plugin", () => {
       const sid = "preflight-2";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
-      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
       // Create preflight KD file
       const knowledgeDir = join(process.cwd(), "knowledge");
       mkdirSync(knowledgeDir, { recursive: true });
-      writeFileSync(join(knowledgeDir, `preflight-workspace-${PREFLIGHT_TEST_DATE}.md`), "test");
+      writeFileSync(join(knowledgeDir, `preflight-workspace-${sid}.md`), "test");
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
@@ -1254,57 +1253,55 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
 
       // Cleanup
-      try { require("fs").unlinkSync(join(knowledgeDir, `preflight-workspace-${PREFLIGHT_TEST_DATE}.md`)); } catch (_) {}
+      try { require("fs").unlinkSync(join(knowledgeDir, `preflight-workspace-${sid}.md`)); } catch (_) {}
     });
 
     it("uses session date to find correct preflight KD", async () => {
       const sid = "preflight-4";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
-      hooks.sessionPhaseMap.set(`${sid}:date`, PREFLIGHT_TEST_DATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
       const knowledgeDir = join(process.cwd(), "knowledge");
       mkdirSync(knowledgeDir, { recursive: true });
 
-      // Create a preflight KD for a DIFFERENT date — should not match
-      writeFileSync(join(knowledgeDir, "preflight-workspace-2099-03-01.md"), "test");
+      // Create a preflight KD for a DIFFERENT session — should not match
+      writeFileSync(join(knowledgeDir, "preflight-workspace-other-session.md"), "test");
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
         { args: { todos: [{ content: "PREFLIGHT" }] } }
       );
 
-      // Phase stays PREFLIGHT — wrong date KD
+      // Phase stays PREFLIGHT — wrong session ID KD
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
 
       // Cleanup
-      try { require("fs").unlinkSync(join(knowledgeDir, "preflight-workspace-2099-03-01.md")); } catch (_) {}
+      try { require("fs").unlinkSync(join(knowledgeDir, "preflight-workspace-other-session.md")); } catch (_) {}
     });
 
-    it("does not advance when no session date is set", async () => {
+    it("does not advance when no session ID is set", async () => {
       const sid = "preflight-5";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
-      // No date set
+      // No session ID set
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
         { args: { todos: [{ content: "PREFLIGHT" }] } }
       );
 
-      // Phase stays PREFLIGHT — no session date means KD path can't match
+      // Phase stays PREFLIGHT — no session ID means KD path can't match
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
     });
   });
 
   describe("Commit KD Advancement (KD-based signaling)", () => {
-    const COMMIT_TEST_DATE = "2099-03-01";
-
     it("does not advance COMMIT without commit KD", async () => {
       const sid = "commit-1";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
-      hooks.sessionPhaseMap.set(`${sid}:date`, COMMIT_TEST_DATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
       // No commit KD exists — trigger disk check
       await hooks["tool.execute.before"](
@@ -1320,12 +1317,12 @@ describe("Protocol-Gate Plugin", () => {
       const sid = "commit-2";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
-      hooks.sessionPhaseMap.set(`${sid}:date`, COMMIT_TEST_DATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
       // Create commit KD file
       const knowledgeDir = join(process.cwd(), "knowledge");
       mkdirSync(knowledgeDir, { recursive: true });
-      writeFileSync(join(knowledgeDir, `commit-finalize-${COMMIT_TEST_DATE}.md`), "test");
+      writeFileSync(join(knowledgeDir, `commit-finalize-${sid}.md`), "test");
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
@@ -1336,57 +1333,54 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.REPORT);
 
       // Cleanup
-      try { require("fs").unlinkSync(join(knowledgeDir, `commit-finalize-${COMMIT_TEST_DATE}.md`)); } catch (_) {}
+      try { require("fs").unlinkSync(join(knowledgeDir, `commit-finalize-${sid}.md`)); } catch (_) {}
     });
 
-    it("uses session date to find correct commit KD", async () => {
+    it("uses session ID to find correct commit KD", async () => {
       const sid = "commit-3";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
-      hooks.sessionPhaseMap.set(`${sid}:date`, COMMIT_TEST_DATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
       const knowledgeDir = join(process.cwd(), "knowledge");
       mkdirSync(knowledgeDir, { recursive: true });
 
-      // Create a commit KD for a DIFFERENT date — should not match
-      writeFileSync(join(knowledgeDir, "commit-finalize-2099-04-01.md"), "test");
+      // Create a commit KD for a DIFFERENT session — should not match
+      writeFileSync(join(knowledgeDir, "commit-finalize-other-session.md"), "test");
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
         { args: { todos: [{ content: "COMMIT" }] } }
       );
 
-      // Phase stays COMMIT — wrong date KD
+      // Phase stays COMMIT — wrong session ID KD
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
 
       // Cleanup
-      try { require("fs").unlinkSync(join(knowledgeDir, "commit-finalize-2099-04-01.md")); } catch (_) {}
+      try { require("fs").unlinkSync(join(knowledgeDir, "commit-finalize-other-session.md")); } catch (_) {}
     });
 
-    it("does not advance when no session date is set", async () => {
+    it("does not advance when no session ID is set", async () => {
       const sid = "commit-4";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
-      // No date set
+      // No session ID set
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
         { args: { todos: [{ content: "COMMIT" }] } }
       );
 
-      // Phase stays COMMIT — no session date means KD path can't match
+      // Phase stays COMMIT — no session ID means KD path can't match
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
     });
   });
 
   describe("SWARM Dispatch Counter (Issue 6)", () => {
-    // Use a session date that won't match any existing KD files on disk.
-    const SWARM_TEST_DATE = "2099-01-01";
-
     it("increments dispatch count on artisan task in SWARM phase", async () => {
       await hooks["chat.params"]({ sessionID: "swarm-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("swarm-1", hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set("swarm-1:date", SWARM_TEST_DATE);
+      hooks.sessionPhaseMap.set("swarm-1:sid", "swarm-1");
 
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "swarm-1", callID: "c1" },
@@ -1399,7 +1393,7 @@ describe("Protocol-Gate Plugin", () => {
     it("increments count for multiple artisan dispatches", async () => {
       await hooks["chat.params"]({ sessionID: "swarm-2", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("swarm-2", hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set("swarm-2:date", SWARM_TEST_DATE);
+      hooks.sessionPhaseMap.set("swarm-2:sid", "swarm-2");
 
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "swarm-2", callID: "c1" },
@@ -1420,7 +1414,7 @@ describe("Protocol-Gate Plugin", () => {
     it("does not advance SWARM when 0 dispatches", async () => {
       await hooks["chat.params"]({ sessionID: "swarm-3", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("swarm-3", hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set("swarm-3:date", SWARM_TEST_DATE);
+      hooks.sessionPhaseMap.set("swarm-3:sid", "swarm-3");
 
       // No dispatches — dispatchCount stays 0
       await hooks["tool.execute.before"](
@@ -1435,9 +1429,9 @@ describe("Protocol-Gate Plugin", () => {
     it("does not advance when dispatches exceed impl files", async () => {
       await hooks["chat.params"]({ sessionID: "swarm-4", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("swarm-4", hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set("swarm-4:date", SWARM_TEST_DATE);
+      hooks.sessionPhaseMap.set("swarm-4:sid", "swarm-4");
 
-      // 3 dispatches, but no impl files exist for this date
+      // 3 dispatches, but no impl files exist for this session
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "swarm-4", callID: "c1" },
         { args: { subagent_type: "artisan" } }
@@ -1453,7 +1447,7 @@ describe("Protocol-Gate Plugin", () => {
 
       expect(hooks.swarmDispatchCount.get("swarm-4")).toBe(3);
 
-      // Trigger disk check — no impl files for SWARM_TEST_DATE
+      // Trigger disk check — no impl files for swarm-4 session
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "swarm-4", callID: "c4" },
         { args: { todos: [{ content: "SWARM" }] } }
@@ -1466,7 +1460,7 @@ describe("Protocol-Gate Plugin", () => {
       const sid = "swarm-5";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set(`${sid}:date`, SWARM_TEST_DATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
       // 2 dispatches
       await hooks["tool.execute.before"](
@@ -1479,19 +1473,19 @@ describe("Protocol-Gate Plugin", () => {
       );
       expect(hooks.swarmDispatchCount.get(sid)).toBe(2);
 
-      // No impl files for SWARM_TEST_DATE → stays SWARM
+      // No impl files for swarm-5 session → stays SWARM
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c3" },
         { args: { todos: [{ content: "SWARM" }] } }
       );
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
 
-      // Create 2 temp impl files matching the session date
+      // Create 2 temp impl files matching the session ID
       const { writeFileSync: wf, mkdirSync: md, rmSync } = await import("fs");
       const knowledgeDir = join(process.cwd(), "knowledge");
       md(knowledgeDir, { recursive: true });
-      wf(join(knowledgeDir, "impl-swarm-test-a-2099-01-01.md"), "test");
-      wf(join(knowledgeDir, "impl-swarm-test-b-2099-01-01.md"), "test");
+      wf(join(knowledgeDir, `impl-swarm-test-a-${sid}.md`), "test");
+      wf(join(knowledgeDir, `impl-swarm-test-b-${sid}.md`), "test");
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c4" },
@@ -1501,14 +1495,14 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
 
       // Cleanup
-      try { rmSync(join(knowledgeDir, "impl-swarm-test-a-2099-01-01.md")); } catch (_) {}
-      try { rmSync(join(knowledgeDir, "impl-swarm-test-b-2099-01-01.md")); } catch (_) {}
+      try { rmSync(join(knowledgeDir, `impl-swarm-test-a-${sid}.md`)); } catch (_) {}
+      try { rmSync(join(knowledgeDir, `impl-swarm-test-b-${sid}.md`)); } catch (_) {}
     });
 
     it("does not increment count for backward-transitioned artisan dispatches", async () => {
       await hooks["chat.params"]({ sessionID: "swarm-6", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("swarm-6", hooks.STATES.VERIFY);
-      hooks.sessionPhaseMap.set("swarm-6:date", SWARM_TEST_DATE);
+      hooks.sessionPhaseMap.set("swarm-6:sid", "swarm-6");
 
       // Backward transition to SWARM via artisan dispatch
       await hooks["tool.execute.before"](

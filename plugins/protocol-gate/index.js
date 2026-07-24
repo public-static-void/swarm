@@ -29,8 +29,7 @@ const STATES = {
   EXTRACT: 9,
   EVOLVE: 10,
   COMMIT: 11,
-  REPORT: 12,
-  IDLE: 13
+  REPORT: 12
 };
 
 const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
@@ -52,8 +51,7 @@ const PHASE_INSTRUCTIONS = {
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
   COMMIT: "Dispatch the Committer agent.",
-  REPORT: "Write a report KD summarizing lifecycle results.",
-  IDLE: "Lifecycle complete. Call todowrite with lifecycle keywords to begin a new lifecycle."
+  REPORT: "Write a report KD summarizing lifecycle results."
 };
 
 const TOOL_ALLOWLIST = {
@@ -69,8 +67,7 @@ const TOOL_ALLOWLIST = {
   EXTRACT: ["task", "todowrite", "glob"],
   EVOLVE: ["task", "todowrite", "glob"],
   COMMIT: ["task", "todowrite", "glob", "bash"],
-  REPORT: ["todowrite", "write", "read"],
-  IDLE: ["todowrite"]
+  REPORT: ["todowrite", "edit", "read", "write"]
 };
 
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
@@ -91,13 +88,13 @@ class ProtocolGateError extends Error {
 }
 
 const ERROR_TEMPLATES = {
-  BLOCKED_NOT_LOADED: { code: "BLOCKED_NOT_LOADED", message: "Protocol loaded via todowrite", guidance: "Call todowrite with lifecycle keywords first" },
-  BLOCKED_WRONG_PHASE: { code: "BLOCKED_WRONG_PHASE", message: "Use [tools] in [phases]", guidance: "Wait for the phase to advance" },
-  BLOCKED_NO_LIFECYCLE: { code: "BLOCKED_NO_LIFECYCLE", message: "Missing lifecycle keywords", guidance: "Include all 12 lifecycle keywords in todowrite" },
-  BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "Awaiting chat.params initialization", guidance: "Wait for chat.params to initialize" },
-  WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
-  CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "Backward transition cycle limit exceeded", guidance: "Escalate to user" },
-  FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "Intent KD contains fabricated section", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" }
+  BLOCKED_NOT_LOADED: { code: "BLOCKED_NOT_LOADED", message: "❌ BLOCKED: Protocol not loaded. Call todowrite with lifecycle keywords first", guidance: "Call todowrite with lifecycle keywords first" },
+  BLOCKED_WRONG_PHASE: { code: "BLOCKED_WRONG_PHASE", message: "❌ BLOCKED: Wrong phase. Use [tools] in [phases]", guidance: "Wait for the phase to advance" },
+  BLOCKED_NO_LIFECYCLE: { code: "BLOCKED_NO_LIFECYCLE", message: "❌ ERROR: Missing lifecycle keywords. Include all 12 lifecycle keywords in todowrite", guidance: "Include all 12 lifecycle keywords in todowrite" },
+  BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "⏳ WAIT: Awaiting chat.params initialization", guidance: "Wait for chat.params to initialize" },
+  WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `❌ WRONG AGENT: Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
+  CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "❌ ERROR: Backward transition cycle limit exceeded. Escalate to user", guidance: "Escalate to user" },
+  FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" }
 };
 
 function getPhaseName(phaseId) {
@@ -191,9 +188,10 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   if (phase === undefined) return false;
 
   // Session ID is required to filter out stale KDs from prior sessions.
+  // KD filenames embed the session ID (e.g. intent-foo-ses_abc123.md).
   // Without this, a plan-*.md from a different session instantly advances PREFLIGHT.
-  const storedSessionID = sessionPhaseMap.get(`${sessionID}:sid`);
-  if (!storedSessionID) {
+  const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
+  if (!storedSID) {
     debug(`Disk check: no session ID set for ${sessionID} — skipping`);
     return false;
   }
@@ -209,8 +207,9 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     return false;
   }
 
-  // Filter to only files created in the current session (session ID in filename).
-  const sessionFiles = files.filter(f => new RegExp(`-${sessionID}\\.md$`).test(f));
+  // Filter to only files matching the current session ID.
+  // KD filenames embed the session ID (e.g. preflight-workspace-ses_abc123.md).
+  const sessionFiles = files.filter(f => f.includes(sessionID));
 
   // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
   // PREFLIGHT advances when a `preflight-` KD is written by the Committer.
@@ -441,7 +440,7 @@ export default {
           debug(`tool.execute.before: BLOCKED tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
           throw new ProtocolGateError(
             ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
-            `Available tools in ${phaseName}: ${allowedTools.join(", ")}`,
+            `❌ BLOCKED: Wrong phase. Available tools in ${phaseName}: ${allowedTools.join(", ")}`,
             `Allowed tools: ${allowedTools.join(", ")}`
           );
         }
@@ -449,26 +448,6 @@ export default {
 
       // --- todowrite handler ---
       if (tool === "todowrite") {
-        // IDLE lifecycle restart: detect new lifecycle keywords in IDLE state.
-        // After REPORT → IDLE transition, a todowrite with all keywords
-        // starts a new lifecycle by transitioning to INTENT.
-        if (phase === STATES.IDLE && args?.todos && Array.isArray(args.todos)) {
-          const presentKeywords = args.todos.map(t => t.content.toUpperCase());
-          const hasAll = ALL_KEYWORDS.every(k => presentKeywords.some(p => p.includes(k)));
-          if (hasAll) {
-            debug(`todowrite: lifecycle restart in IDLE → advancing to INTENT`);
-            sessionPhaseMap.set(sessionID, STATES.INTENT);
-            diskCheckFailures.set(sessionID, 0);
-            sessionPhaseMap.delete(`${sessionID}:sid`);
-            swarmDispatchCount.delete(sessionID);
-            cycleMap.delete(sessionID);
-            skipDiskCheckAfterTodo.set(sessionID, true);
-            saveState(sessionID);
-            phase = STATES.INTENT;
-            phaseName = getPhaseName(phase);
-          }
-        }
-
         if (phase === STATES.PROTOCOL_NOT_LOADED) {
           if (args && args.todos && Array.isArray(args.todos)) {
             const presentKeywords = args.todos.map(t => t.content.toUpperCase());
@@ -498,31 +477,26 @@ export default {
         const isIntentKD = relPath.startsWith("knowledge/intent-") || relPath.includes("/knowledge/intent-");
         const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
 
-        // Capture session ID from intent KD write.
-        // This ID is used by checkDiskAdvancement to filter out stale KDs.
-        if (isIntentKD && phase === STATES.INTENT) {
-          sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
-          debug(`write: captured session ID ${sessionID}`);
-          saveState(sessionID);
-        }
-
         if (phase === STATES.INTENT && !isIntentKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/intent-)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Write to knowledge/intent-*.md", "Write to knowledge/intent-*.md");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Write to knowledge/intent-*.md", "Write to knowledge/intent-*.md");
         }
         if (phase === STATES.REPORT && !isReportKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/report-)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Write to knowledge/report-*.md", "Write to knowledge/report-*.md");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Write to knowledge/report-*.md", "Write to knowledge/report-*.md");
         }
 
-        // REPORT → IDLE: report KD written means lifecycle is complete.
-        // IDLE restores full tool access so the Overseer can investigate new issues.
+        // REPORT → PROTOCOL_NOT_LOADED: report KD written means lifecycle is complete.
+        // Reset to phase 0 so the Overseer can start a new lifecycle with todowrite.
         if (phase === STATES.REPORT && isReportKD) {
-          debug(`write: report KD written → transitioning to IDLE`);
-          sessionPhaseMap.set(sessionID, STATES.IDLE);
+          debug(`write: report KD written → transitioning to PROTOCOL_NOT_LOADED`);
+          sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
           diskCheckFailures.set(sessionID, 0);
+          sessionPhaseMap.delete(`${sessionID}:sid`);
+          swarmDispatchCount.delete(sessionID);
+          cycleMap.delete(sessionID);
           saveState(sessionID);
-          phase = STATES.IDLE;
+          phase = STATES.PROTOCOL_NOT_LOADED;
           phaseName = getPhaseName(phase);
         }
 
@@ -545,11 +519,21 @@ export default {
               debug(`write: BLOCKED fabricated section in intent KD: ${header}`);
               throw new ProtocolGateError(
                 ERROR_TEMPLATES.FABRICATED_SECTION.code,
-                `Intent KD valid sections: Raw Request, Triage Notes, Next Steps, Process Friction`,
+                `❌ FABRICATED: Intent KD valid sections: Raw Request, Triage Notes, Next Steps, Process Friction`,
                 ERROR_TEMPLATES.FABRICATED_SECTION.guidance
               );
             }
           }
+        }
+
+        // Capture session ID from intent KD write.
+        // The session ID is stored as :sid and used by checkDiskAdvancement
+        // to filter KD files by session.
+        // Placed AFTER content validation so we don't capture data for writes that are rejected.
+        if (isIntentKD && phase === STATES.INTENT) {
+          sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+          debug(`write: captured session ID ${sessionID}`);
+          saveState(sessionID);
         }
       }
 
@@ -559,24 +543,50 @@ export default {
         if (phase === STATES.INTENT || phase === STATES.REPORT) {
           const relPath = toProjectRelative(path);
           const isTemplate = relPath.includes("templates");
+          const isSkillFile = relPath.endsWith("/SKILL.md") || relPath.includes("/skills/");
 
           if (phase === STATES.INTENT) {
-            // INTENT phase: only allow templates and the current session's intent KDs.
+            // INTENT phase: only allow templates, skill files, and the current session's intent KDs.
             // Restricting to intent KDs prevents the Overseer from reading prior-session
             // reports or other KDs and falling back to self-execution.
             const isIntentKD = /knowledge\/intent-/i.test(relPath);
-            if (!isTemplate && !isIntentKD) {
-              debug(`read: BLOCKED phase=${phaseName} path=${path} (INTENT reads restricted to templates and intent KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Read from template or knowledge/intent-*.md", "Read from template or knowledge/intent-*.md only");
+            if (!isTemplate && !isSkillFile && !isIntentKD) {
+              debug(`read: BLOCKED phase=${phaseName} path=${path} (INTENT reads restricted to templates, skills, and intent KDs)`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from template, skill, or knowledge/intent-*.md", "Read from template, skill, or knowledge/intent-*.md only");
             }
           } else {
             // REPORT phase: allow templates and any knowledge KD (needed to compose report)
             const isKnowledge = relPath.startsWith("knowledge/") || relPath.includes("/knowledge/");
             if (!isTemplate && !isKnowledge) {
               debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to templates and knowledge KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Read from template or knowledge directory", "Read from template or knowledge directory only");
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from template or knowledge directory", "Read from template or knowledge directory only");
             }
           }
+        }
+      }
+
+      // --- edit handler ---
+      // Handles REPORT → PROTOCOL_NOT_LOADED transition when report KD is edited.
+      // The write handler already covers this for `write` tool; `edit` is also
+      // allowed in REPORT phase and needs the same lifecycle reset.
+      else if (tool === "edit") {
+        const path = args?.filePath || "";
+        const relPath = toProjectRelative(path);
+        const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
+
+        if (phase === STATES.REPORT && isReportKD) {
+          debug(`edit: report KD edited → transitioning to PROTOCOL_NOT_LOADED`);
+          sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+          diskCheckFailures.set(sessionID, 0);
+          sessionPhaseMap.delete(`${sessionID}:sid`);
+          swarmDispatchCount.delete(sessionID);
+          cycleMap.delete(sessionID);
+          saveState(sessionID);
+          phase = STATES.PROTOCOL_NOT_LOADED;
+          phaseName = getPhaseName(phase);
+        } else if (phase === STATES.REPORT && !isReportKD) {
+          debug(`edit: BLOCKED phase=${phaseName} path=${path} (must edit knowledge/report-*.md)`);
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Edit knowledge/report-*.md", "Edit knowledge/report-*.md");
         }
       }
 
@@ -653,10 +663,10 @@ export default {
 
       // --- task handler ---
       if (tool === "task") {
-        // IDLE allows task (all tools available post-lifecycle)
+        // Task is only allowed during delegation phases (PREFLIGHT through COMMIT)
         if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "Task available in PREFLIGHT through COMMIT phases", "Wait for delegation phase");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Task dispatch not allowed in INTENT phase. Task is only available in PREFLIGHT through COMMIT phases", "Wait for delegation phase");
         }
 
         const prompt = args?.prompt || "";
@@ -754,7 +764,15 @@ export default {
       if (!phaseName) return;
       const instructions = PHASE_INSTRUCTIONS[phaseName];
       if (instructions) {
-        output.system.push(`[Protocol Gate] Phase ${phaseName}: ${instructions}`);
+        let systemMsg = `[Protocol Gate] Phase ${phaseName}: ${instructions}`;
+
+        // During INTENT phase, inject session ID so Overseer can use it in filename
+        if (phase === STATES.INTENT && sessionID) {
+          systemMsg += `\n\nYour session ID is: ${sessionID}`;
+          systemMsg += `\nUse this session ID in the intent KD filename: knowledge/intent-{name}-${sessionID}.md`;
+        }
+
+        output.system.push(systemMsg);
       }
       debug(`systemTransform: injected phase constraint for phase=${phaseName}`);
     }
