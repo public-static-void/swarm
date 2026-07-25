@@ -208,8 +208,9 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   }
 
   // Filter to only files matching the current session ID.
-  // KD filenames embed the session ID (e.g. preflight-workspace-ses_abc123.md).
-  const sessionFiles = files.filter(f => f.includes(sessionID));
+  // KD filenames embed the session ID as a suffix (e.g. preflight-workspace-ses_abc123.md).
+  // Uses suffix matching to prevent substring collisions (ses_abc1 matching ses_abc123).
+  const sessionFiles = files.filter(f => f.endsWith(`-${sessionID}.md`));
 
   // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
   // PREFLIGHT advances when a `preflight-` KD is written by the Committer.
@@ -254,6 +255,104 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   const result = sessionFiles.some(f => pattern.test(f));
   debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID} → ${result}`);
   return result;
+}
+
+// Detects when the current phase's prerequisite KD is missing from knowledge/.
+// When undo deletes KDs, in-memory phase state diverges from disk reality.
+// This function resets phase to the highest phase whose KD still exists on disk
+// for the current session. Returns true if phase was regressed.
+function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount) {
+  if (currentPhase === undefined || currentPhase <= STATES.PROTOCOL_NOT_LOADED) return false;
+
+  const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
+  if (!storedSID) return false;
+
+  const knowledgeDir = join(process.cwd(), "knowledge");
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return false; }
+
+  const sessionFiles = files.filter(f => f.endsWith(`-${sessionID}.md`));
+
+  const patterns = {
+    [STATES.INTENT]: /^intent-/i,
+    [STATES.PREFLIGHT]: /^preflight-/i,
+    [STATES.EXPLORE]: /^exploration-/i,
+    [STATES.INVESTIGATE]: /^analysis-/i,
+    [STATES.ALIGN]: /^spec-/i,
+    [STATES.DECOMPOSE]: /^plan-/i,
+    [STATES.SWARM]: /^impl-/i,
+    [STATES.VERIFY]: /^review-|^audit-/i,
+    [STATES.EXTRACT]: /^composed-/i,
+    [STATES.EVOLVE]: /^process-/i,
+    [STATES.COMMIT]: /^commit-/i
+  };
+
+  const currentPattern = patterns[currentPhase];
+  if (!currentPattern) return false;
+
+  // Check if current phase's KD is still present on disk
+  if (currentPhase === STATES.VERIFY) {
+    const hasReview = sessionFiles.some(f => /^review-/i.test(f));
+    const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
+    if (hasReview && hasAudit) return false; // current phase is fine
+  } else {
+    if (sessionFiles.some(f => currentPattern.test(f))) return false; // current phase is fine
+  }
+
+  // Current phase's KD is missing — walk backward to find highest surviving phase
+  debug(`Consistency check: ${getPhaseName(currentPhase)} KD missing for session ${sessionID}`);
+
+  // Only regress if an earlier phase's KD exists — this indicates the lifecycle
+  // was progressing and the current phase's KD was deleted (e.g., by undo).
+  // If no KDs exist at all, the phase was set directly (not via lifecycle)
+  // and regression would be incorrect.
+  let foundEarlierKD = false;
+  let regressedPhase = currentPhase; // default: no regression
+
+  for (let phase = currentPhase - 1; phase >= STATES.PREFLIGHT; phase--) {
+    const pattern = patterns[phase];
+    if (!pattern) continue;
+
+    if (phase === STATES.VERIFY) {
+      const hasReview = sessionFiles.some(f => /^review-/i.test(f));
+      const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
+      if (hasReview && hasAudit) {
+        regressedPhase = phase;
+        foundEarlierKD = true;
+        break;
+      }
+    } else {
+      if (sessionFiles.some(f => pattern.test(f))) {
+        regressedPhase = phase;
+        foundEarlierKD = true;
+        break;
+      }
+    }
+  }
+
+  // Also handle INTENT phase: if intent KD is missing but session ID was captured
+  // (meaning the lifecycle started), regress to PROTOCOL_NOT_LOADED
+  if (!foundEarlierKD && currentPhase === STATES.INTENT) {
+    regressedPhase = STATES.PROTOCOL_NOT_LOADED;
+    foundEarlierKD = true; // intent phase with captured SID counts as lifecycle evidence
+  }
+
+  if (!foundEarlierKD) return false; // no regression — phase set directly, not via lifecycle
+
+  debug(`Consistency regression: ${getPhaseName(currentPhase)} → ${getPhaseName(regressedPhase)}`);
+  sessionPhaseMap.set(sessionID, regressedPhase);
+
+  // R003: Clear associated counters after regression
+  diskCheckFailures.set(sessionID, 0);
+  phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+  // Clear dispatch count if regressing past SWARM phase
+  if (regressedPhase < STATES.SWARM) {
+    swarmDispatchCount.delete(sessionID);
+  }
+
+  // R004: Persist regressed phase
+  saveState(sessionID);
+  return true;
 }
 
 export default {
@@ -623,32 +722,65 @@ export default {
             // REPORT doesn't use disk-based advancement — skip stuck detection.
             // REPORT writes the KD directly; other phases rely on KD file existence.
             if (currentPhase !== STATES.REPORT) {
-              const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
-              diskCheckFailures.set(sessionID, failures);
-              if (failures === 10) {
-                // Diagnostic output: list files found so user knows what's missing
-                const knowledgeDir = join(process.cwd(), "knowledge");
-                let foundFiles = [];
-                try { foundFiles = readdirSync(knowledgeDir).filter(f => f.includes(sessionID)); } catch (_) {}
-                debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Expected prefix: ${currentPhaseName.toLowerCase()}-*. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
-              }
-              // Force-advance to VERIFY after 15 stuck cycles to unblock the lifecycle
-              if (failures >= 15) {
-                debug(`FORCE ADVANCE: ${currentPhaseName} → VERIFY after ${failures} stuck cycles`);
-                sessionPhaseMap.set(sessionID, STATES.VERIFY);
-                diskCheckFailures.set(sessionID, 0);
-                phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
-                saveState(sessionID);
-              }
-              // Cap re-dispatches per phase at 5
-              const redispatchKey = `${sessionID}:${currentPhase}`;
-              const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
-              if (redispatches >= 5 && tool === "task") {
-                debug(`REDISPATCH CAP: ${currentPhaseName} phase — ${redispatches} re-dispatches already used. Advancing to VERIFY.`);
-                sessionPhaseMap.set(sessionID, STATES.VERIFY);
-                diskCheckFailures.set(sessionID, 0);
-                phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
-                saveState(sessionID);
+              // P005: Run phase-state consistency check before stuck detection.
+              // When undo deletes KDs, phase state diverges from disk reality.
+              // The consistency check detects this and regresses to the highest
+              // surviving phase, resetting stuck counters along the way.
+              //
+              // Gate: only run when the current tool call is NOT creating the
+              // expected KD. During a write call, the KD file doesn't exist on
+              // disk yet (tool.execute.before runs before the write persists).
+              // Running the consistency check here would cause false regression.
+              const currentPhasePrefix = currentPhaseName.toLowerCase();
+              const isCreatingExpectedKD = tool === "write" && (
+                (args?.filePath || "").includes(`${currentPhasePrefix}-`) ||
+                (args?.content || "").includes(`${currentPhasePrefix}-`)
+              );
+
+              if (!isCreatingExpectedKD) {
+                const didRegress = checkPhaseStateConsistency(
+                  sessionID, currentPhase, sessionPhaseMap,
+                  saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount
+                );
+
+                if (didRegress) {
+                  // P008: Regression detected — phase was reset by consistency check.
+                  // Stuck counter already cleared inside checkPhaseStateConsistency.
+                  // Re-read phase since it was updated by the consistency check.
+                  phase = sessionPhaseMap.get(sessionID) ?? phase;
+                  phaseName = getPhaseName(phase);
+                } else {
+                  // Normal stuck detection — no regression, just no advancement yet
+                  const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
+                  diskCheckFailures.set(sessionID, failures);
+                  if (failures === 10) {
+                    // Diagnostic output: list files found so user knows what's missing
+                    const knowledgeDir = join(process.cwd(), "knowledge");
+                    let foundFiles = [];
+                    try { foundFiles = readdirSync(knowledgeDir).filter(f => f.endsWith(`-${sessionID}.md`)); } catch (_) {}
+                    debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Expected prefix: ${currentPhasePrefix}-*. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
+                  }
+                  // Force-advance to VERIFY after 15 stuck cycles to unblock the lifecycle
+                  if (failures >= 15) {
+                    debug(`FORCE ADVANCE: ${currentPhaseName} → VERIFY after ${failures} stuck cycles`);
+                    sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                    diskCheckFailures.set(sessionID, 0);
+                    phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                    saveState(sessionID);
+                  }
+                  // Cap re-dispatches per phase at 5
+                  const redispatchKey = `${sessionID}:${currentPhase}`;
+                  const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
+                  if (redispatches >= 5 && tool === "task") {
+                    debug(`REDISPATCH CAP: ${currentPhaseName} phase — ${redispatches} re-dispatches already used. Advancing to VERIFY.`);
+                    sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                    diskCheckFailures.set(sessionID, 0);
+                    phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                    saveState(sessionID);
+                  }
+                }
+              } else {
+                debug(`Consistency check: skipped — write creating current phase KD (${currentPhasePrefix}-)`);
               }
             }
           }
@@ -791,6 +923,8 @@ export default {
       cycleMap,
       swarmDispatchCount,
       phaseRedispatchCount,
+      diskCheckFailures,
+      checkPhaseStateConsistency,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
       get lastSeenSession() { return lastSeenSession; }

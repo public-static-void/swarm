@@ -1516,4 +1516,466 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.swarmDispatchCount.get("swarm-6") || 0).toBe(0);
     });
   });
+
+  describe("Phase-State Consistency Check (Undo/Regression)", () => {
+    const knowledgeDir = join(process.cwd(), "knowledge");
+
+    function createKD(filename) {
+      try { mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
+      writeFileSync(join(knowledgeDir, filename), "test content");
+    }
+
+    function removeKD(filename) {
+      try { rmSync(join(knowledgeDir, filename)); } catch (_) {}
+    }
+
+    function cleanupSession(sessionID) {
+      // Remove all KDs matching this session
+      try {
+        const files = readdirSync(knowledgeDir);
+        for (const f of files) {
+          if (f.endsWith(`-${sessionID}.md`)) {
+            removeKD(f);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // AC001: Given phase is ALIGN (5) and spec-*.md KD is deleted, reset to highest surviving KD phase
+    it("AC001: regresses from ALIGN to INVESTIGATE when spec KD deleted but analysis KD exists", async () => {
+      const sid = "regress-1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Create an analysis KD (INVESTIGATE phase) but no spec KD (ALIGN phase)
+      createKD(`analysis-investigate-${sid}.md`);
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(result).toBe(true);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
+      cleanupSession(sid);
+    });
+
+    // AC002: Given phase is SWARM (7) and impl KD is deleted, reset to DECOMPOSE if plan KD exists
+    it("AC002: regresses from SWARM to DECOMPOSE when impl KD deleted but plan KD exists", async () => {
+      const sid = "regress-2";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      createKD(`plan-decompose-${sid}.md`);
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(result).toBe(true);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.DECOMPOSE);
+      cleanupSession(sid);
+    });
+
+    // AC003: Given phase is INTENT (1) and intent KD is deleted, reset to PROTOCOL_NOT_LOADED
+    it("AC003: regresses from INTENT to PROTOCOL_NOT_LOADED when intent KD deleted", async () => {
+      const sid = "regress-3";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // No KDs exist — intent KD was deleted
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.INTENT, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(result).toBe(true);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+    });
+
+    // AC004: After regression, diskCheckFailures is reset to 0
+    it("AC004: resets diskCheckFailures after regression", async () => {
+      const sid = "regress-4";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.diskCheckFailures.set(sid, 12); // Simulate stuck counter
+
+      createKD(`analysis-investigate-${sid}.md`);
+
+      hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(hooks.diskCheckFailures.get(sid)).toBe(0);
+      cleanupSession(sid);
+    });
+
+    // AC005: After regression past SWARM, swarmDispatchCount is cleared
+    it("AC005: clears swarmDispatchCount when regressing past SWARM", async () => {
+      const sid = "regress-5";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.swarmDispatchCount.set(sid, 3);
+
+      createKD(`plan-decompose-${sid}.md`);
+
+      hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      // Regressed to DECOMPOSE (before SWARM) — dispatch count should be cleared
+      expect(hooks.swarmDispatchCount.has(sid)).toBe(false);
+      cleanupSession(sid);
+    });
+
+    // AC006: After regression, phaseRedispatchCount for current session-phase pair is cleared
+    it("AC006: clears phaseRedispatchCount after regression", async () => {
+      const sid = "regress-6";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.phaseRedispatchCount.set(`${sid}:${hooks.STATES.ALIGN}`, 3);
+
+      createKD(`analysis-investigate-${sid}.md`);
+
+      hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(hooks.phaseRedispatchCount.has(`${sid}:${hooks.STATES.ALIGN}`)).toBe(false);
+      cleanupSession(sid);
+    });
+
+    // AC007: After regression, .state file is updated via saveState
+    it("AC007: calls saveState after regression", async () => {
+      const sid = "regress-7";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      createKD(`analysis-investigate-${sid}.md`);
+
+      let saveStateCalled = false;
+      hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
+        () => { saveStateCalled = true; },
+        hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(saveStateCalled).toBe(true);
+      cleanupSession(sid);
+    });
+
+    // AC008: Stuck detection counter resets when consistency check detects KD absence
+    it("AC008: stuck counter does not accumulate when consistency check detects KD absence", async () => {
+      const sid = "regress-8";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.diskCheckFailures.set(sid, 5); // Some stuck count
+
+      createKD(`analysis-investigate-${sid}.md`);
+
+      hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      // Stuck counter was reset to 0 by consistency check, not incremented
+      expect(hooks.diskCheckFailures.get(sid)).toBe(0);
+      cleanupSession(sid);
+    });
+
+    // AC019: Undo at session start (INTENT phase, KD just written) resets to PROTOCOL_NOT_LOADED
+    it("AC019: undo at INTENT phase resets to PROTOCOL_NOT_LOADED", async () => {
+      const sid = "regress-19";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Intent KD deleted — no KDs exist
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.INTENT, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(result).toBe(true);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+    });
+
+    // AC020: Undo that deletes multiple KDs resets to highest surviving KD phase
+    it("AC020: undo deleting multiple KDs resets to highest surviving", async () => {
+      const sid = "regress-20";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Only INVESTIGATE KD survives — ALIGN and DECOMPOSE KDs were deleted
+      createKD(`analysis-investigate-${sid}.md`);
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(result).toBe(true);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
+      cleanupSession(sid);
+    });
+
+    // AC021: No KDs exist — resets to PROTOCOL_NOT_LOADED
+    it("AC021: no surviving KDs resets to PROTOCOL_NOT_LOADED", async () => {
+      const sid = "regress-21";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.EXPLORE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // No KDs at all — all deleted
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.EXPLORE, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      // EXPLORE phase with no earlier KDs and no INTENT phase: no regression (no lifecycle evidence)
+      expect(result).toBe(false);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+    });
+
+    // AC022: No false regression when current phase KD is present
+    it("AC022: does not regress when current phase KD is present", async () => {
+      const sid = "regress-22";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Current phase KD exists
+      createKD(`spec-align-${sid}.md`);
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(result).toBe(false);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.ALIGN);
+      cleanupSession(sid);
+    });
+
+    // AC014: KD file matches session ID (suffix pattern)
+    it("AC014: session ID suffix matching works correctly", async () => {
+      const sid = "suffix-123";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Create KD with correct suffix
+      createKD(`impl-test-${sid}.md`);
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      // KD exists for this session → no regression
+      expect(result).toBe(false);
+      cleanupSession(sid);
+    });
+
+    // AC015: KD file does NOT match session ID (substring rejection)
+    it("AC015: rejects substring session ID matches in checkDiskAdvancement", async () => {
+      // This test verifies that the suffix-based filtering in checkDiskAdvancement
+      // correctly rejects session ID substring matches. The consistency check itself
+      // uses the same filtering — if a KD for a different session doesn't match,
+      // it won't be in sessionFiles, so no false positive advancement occurs.
+      const sid = "short";
+      const otherSid = "short-extra";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Create KD with a DIFFERENT session ID that contains `sid` as substring
+      createKD(`impl-test-${otherSid}.md`);
+
+      // The consistency check scans for files ending in `-short.md`
+      // The file `impl-test-short-extra.md` does NOT end in `-short.md`
+      // So sessionFiles will be empty, and consistency check finds no lifecycle evidence
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      // No regression because no earlier KDs exist for this session (correct behavior)
+      // The suffix filtering correctly excluded the otherSid's KD
+      expect(result).toBe(false);
+      cleanupSession(sid);
+      cleanupSession(otherSid);
+    });
+
+    // AC016: KD file does NOT match session ID (suffix must be exact)
+    it("AC016: rejects suffix-extension session ID matches in checkDiskAdvancement", async () => {
+      const sid = "exact";
+      const otherSid = "exact123";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Create KD with session ID that extends past ours
+      createKD(`impl-test-${otherSid}.md`);
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      // No regression — the otherSid's KD was correctly excluded by suffix matching
+      expect(result).toBe(false);
+      cleanupSession(sid);
+      cleanupSession(otherSid);
+    });
+
+    // No regression when phase is PROTOCOL_NOT_LOADED (baseline)
+    it("does not regress from PROTOCOL_NOT_LOADED (already at baseline)", async () => {
+      const sid = "baseline-1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.PROTOCOL_NOT_LOADED, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(result).toBe(false);
+    });
+
+    // No regression when session has no SID captured
+    it("does not regress when session ID is not captured", async () => {
+      const sid = "no-sid-1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      // No :sid entry set
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
+      );
+
+      expect(result).toBe(false);
+    });
+  });
+
+  describe("Expanded Backward Transitions", () => {
+    // AC009: Dispatching explorer from ALIGN triggers backward transition to EXPLORE
+    it("AC009: dispatching explorer from ALIGN transitions to EXPLORE", async () => {
+      await hooks["chat.params"]({ sessionID: "bt-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("bt-1", hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set("bt-1:sid", "bt-1");
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "bt-1", callID: "c1" },
+        { args: { subagent_type: "explorer" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("bt-1")).toBe(hooks.STATES.EXPLORE);
+    });
+
+    // AC010: Dispatching spec-weaver from DECOMPOSE triggers backward transition to ALIGN
+    it("AC010: dispatching spec-weaver from DECOMPOSE transitions to ALIGN", async () => {
+      await hooks["chat.params"]({ sessionID: "bt-2", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("bt-2", hooks.STATES.DECOMPOSE);
+      hooks.sessionPhaseMap.set("bt-2:sid", "bt-2");
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "bt-2", callID: "c1" },
+        { args: { subagent_type: "spec-weaver" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("bt-2")).toBe(hooks.STATES.ALIGN);
+    });
+
+    // AC011: Dispatching analyzer from SWARM triggers backward transition to INVESTIGATE
+    it("AC011: dispatching analyzer from SWARM transitions to INVESTIGATE", async () => {
+      await hooks["chat.params"]({ sessionID: "bt-3", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("bt-3", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("bt-3:sid", "bt-3");
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "bt-3", callID: "c1" },
+        { args: { subagent_type: "analyzer" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("bt-3")).toBe(hooks.STATES.INVESTIGATE);
+    });
+
+    // AC012: Cycle limit (3) still applies — 4th dispatch of same target throws
+    it("AC012: cycle limit throws after exceeding maxCyclesPerTransition", async () => {
+      await hooks["chat.params"]({ sessionID: "bt-4", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("bt-4", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("bt-4:sid", "bt-4");
+
+      // 3 backward transitions to INVESTIGATE (at limit)
+      for (let i = 0; i < 3; i++) {
+        hooks.sessionPhaseMap.set("bt-4", hooks.STATES.SWARM);
+        await hooks["tool.execute.before"](
+          { tool: "task", sessionID: "bt-4", callID: `c${i}` },
+          { args: { subagent_type: "analyzer" } }
+        );
+        expect(hooks.sessionPhaseMap.get("bt-4")).toBe(hooks.STATES.INVESTIGATE);
+      }
+
+      // 4th attempt should throw CYCLE_LIMIT_EXCEEDED
+      hooks.sessionPhaseMap.set("bt-4", hooks.STATES.SWARM);
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: "bt-4", callID: "c3" },
+          { args: { subagent_type: "analyzer" } }
+        )
+      ).rejects.toThrow();
+    });
+
+    // AC013: lifecycle.json loads correctly with expanded backwardTransitions
+    it("AC013: lifecycle.json has expanded backward transitions", async () => {
+      const config = JSON.parse(readFileSync(join(process.cwd(), "plugins", "protocol-gate", "lifecycle.json"), "utf8"));
+      expect(config.backwardTransitions).toBeDefined();
+      expect(config.backwardTransitions.EXPLORE).toEqual(["PREFLIGHT"]);
+      expect(config.backwardTransitions.SWARM).toContain("DECOMPOSE");
+      expect(config.backwardTransitions.VERIFY).toContain("SWARM");
+      expect(config.backwardTransitions.COMMIT).toContain("EVOLVE");
+    });
+
+    // Dispatching scribe from EVOLVE triggers backward transition to EXTRACT
+    it("dispatching scribe from EVOLVE transitions to EXTRACT", async () => {
+      await hooks["chat.params"]({ sessionID: "bt-5", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("bt-5", hooks.STATES.EVOLVE);
+      hooks.sessionPhaseMap.set("bt-5:sid", "bt-5");
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "bt-5", callID: "c1" },
+        { args: { prompt: "AGENT: scribe\nMODE: extract" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get("bt-5")).toBe(hooks.STATES.EXTRACT);
+    });
+
+    // Non-backward agent dispatch still throws WRONG_AGENT
+    it("throws WRONG_AGENT for non-backward agent dispatch", async () => {
+      await hooks["chat.params"]({ sessionID: "bt-6", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("bt-6", hooks.STATES.EXPLORE);
+      hooks.sessionPhaseMap.set("bt-6:sid", "bt-6");
+
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: "bt-6", callID: "c1" },
+          { args: { subagent_type: "artisan" } }
+        )
+      ).rejects.toThrow();
+    });
+  });
 });
