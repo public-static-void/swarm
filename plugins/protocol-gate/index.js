@@ -154,7 +154,9 @@ function buildAgentToPhaseMap(PHASE_AGENT_MAP) {
   for (const [phaseName, agentName] of Object.entries(PHASE_AGENT_MAP)) {
     const phaseId = STATES[phaseName];
     if (phaseId !== undefined) {
-      map[agentName.toLowerCase()] = phaseId;
+      const key = agentName.toLowerCase();
+      if (!map[key]) map[key] = [];
+      map[key].push(phaseId);
     }
   }
   return map;
@@ -830,10 +832,11 @@ export default {
           }
           // Check if agent matches a backward target → backward transition
           else {
-            const targetPhaseId = agentToPhaseMap[agentName];
+            const agentPhases = agentToPhaseMap[agentName] || [];
             const validTargets = BACKWARD_TRANSITIONS[phase] || [];
+            const targetPhaseId = agentPhases.find(pid => validTargets.includes(pid));
 
-            if (targetPhaseId !== undefined && validTargets.includes(targetPhaseId)) {
+            if (targetPhaseId !== undefined) {
               debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
               handleBackwardTransition(sessionID, phase, targetPhaseId);
             } else {
