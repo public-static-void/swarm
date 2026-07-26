@@ -1,4 +1,4 @@
 {
   "mode": "commit",
-  "template": "DISPATCH TO: {agent}\nMODE: commit\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the committer-cleanup skill. Read the INTENT KD at {intent_kd}. Commit and push changes per the scope above. Write a COMMIT KD at {result_kd} using the template-commit.md template to signal completion."
+  "template": "DISPATCH TO: {agent}\nMODE: commit\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the committer-cleanup skill. Commit and push remaining changes per the scope above. Write a COMMIT KD at {result_kd} using the template-commit.md template to signal completion."
 }
