@@ -13,7 +13,7 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 
 | Type                   | Prefix         | Producer      | Consumer                       | Template File                                  |
 | ---------------------- | -------------- | ------------- | ------------------------------ | ---------------------------------------------- |
-| INTENT                 | `intent-`      | Overseer      | Spec Weaver, Pathfinder        | `templates/template-intent.md`                 |
+| INTENT                 | `intent-`      | Overseer      | Spec Weaver, Pathfinder, Analyzer | `templates/template-intent.md`                 |
 | PREFLIGHT              | `preflight-`   | Committer     | Protocol Gate (plugin)         | `templates/template-preflight.md`              |
 | SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector | `templates/template-spec.md`                   |
 | PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector             | `templates/template-plan.md`                   |
@@ -23,7 +23,7 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 | ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Pathfinder        | `templates/template-analysis.md`               |
 | REPORT                 | `report-`      | Overseer      | User                           | `templates/template-report.md`                 |
 | PROCESS                | `process-`     | Habit Builder | All agents                     | `templates/template-process.md`                |
-| COMPOSED               | `composed-`    | Scribe        | Memory DB (storage), Knowledge Gate (plugin), assigned agent | `templates/template-composed.md`               |
+| COMPOSED               | `composed-`    | Scribe        | Memory DB (storage), Knowledge Gate (plugin), dispatched agent | `templates/template-composed.md`               |
 | EXPLORATION            | `exploration-` | Explorer      | Spec Weaver, Pathfinder        | `templates/template-exploration.md`            |
 | CHECKPOINT             | `checkpoint-`  | Committer     | Protocol Gate (plugin)         | `templates/template-checkpoint.md`             |
 | COMMIT                 | `commit-`      | Committer     | Protocol Gate (plugin)         | `templates/template-commit.md`                 |
