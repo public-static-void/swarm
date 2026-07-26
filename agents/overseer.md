@@ -59,7 +59,7 @@ Your first mandatory action at the very start of every new user interaction is i
 - **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD / AUDIT KD.
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
-- **Phase 11 (COMMIT)**: Dispatch Committer (MODE: CLEANUP).
+- **Phase 11 (CLEANUP)**: Dispatch Committer (MODE: CLEANUP).
 - **Phase 12 (REPORT)**: Deliver REPORT KD.
 
 ### Phase Transition Rules
@@ -89,7 +89,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 | VERIFY      | Inspector       | inspector     | verify      |
 | EXTRACT     | Scribe          | scribe        | extract     |
 | EVOLVE      | Habit Builder   | habit-builder | evolve      |
-| COMMIT      | Committer       | committer     | commit      |
+| CLEANUP     | Committer       | committer     | cleanup     |
 | REPORT      | self (Overseer) | —             | —           |
 
 ### Delegation Steps

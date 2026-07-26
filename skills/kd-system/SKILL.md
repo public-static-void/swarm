@@ -1,6 +1,6 @@
 ---
 name: kd-system
-description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, review, audit, analysis, report, process, implementation summary, checkpoint, or commit documents."
+description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, review, audit, analysis, report, process, implementation summary, checkpoint, or cleanup documents."
 ---
 
 # KD System — Agentic Swarm

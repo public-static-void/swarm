@@ -28,11 +28,11 @@ const STATES = {
   VERIFY: 8,
   EXTRACT: 9,
   EVOLVE: 10,
-  COMMIT: 11,
+  CLEANUP: 11,
   REPORT: 12
 };
 
-const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
 
 // Behavioral constraints injected into the system prompt per phase.
 // The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
@@ -50,7 +50,7 @@ const PHASE_INSTRUCTIONS = {
   VERIFY: "Dispatch the Inspector agent.",
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
-  COMMIT: "Dispatch the Committer agent.",
+  CLEANUP: "Dispatch the Committer agent.",
   REPORT: "Write a report KD summarizing lifecycle results."
 };
 
@@ -66,7 +66,7 @@ const TOOL_ALLOWLIST = {
   VERIFY: ["task", "todowrite", "glob"],
   EXTRACT: ["task", "todowrite", "glob"],
   EVOLVE: ["task", "todowrite", "glob"],
-  COMMIT: ["task", "todowrite", "glob", "bash"],
+  CLEANUP: ["task", "todowrite", "glob", "bash"],
   REPORT: ["todowrite", "edit", "read", "write"]
 };
 
@@ -129,8 +129,8 @@ function loadConfig() {
   } catch (e) {
     debug("Config load failed, using defaults");
     return {
-      phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"],
-      agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", COMMIT: "committer" },
+      phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"],
+      agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", CLEANUP: "committer" },
       backwardTransitions: { VERIFY: ["SWARM"] },
       maxCyclesPerTransition: 3
     };
@@ -228,7 +228,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
-    [STATES.COMMIT]: /^commit-/i
+    [STATES.CLEANUP]: /^cleanup-/i
   };
 
   const pattern = patterns[phase];
@@ -286,7 +286,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
-    [STATES.COMMIT]: /^commit-/i
+    [STATES.CLEANUP]: /^cleanup-/i
   };
 
   const currentPattern = patterns[currentPhase];
@@ -861,10 +861,10 @@ export default {
 
       // --- task handler ---
       if (tool === "task") {
-        // Task is only allowed during delegation phases (PREFLIGHT through COMMIT)
-        if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
+        // Task is only allowed during delegation phases (PREFLIGHT through CLEANUP)
+        if (phase < STATES.PREFLIGHT || phase > STATES.CLEANUP) {
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Task dispatch not allowed in INTENT phase. Task is only available in PREFLIGHT through COMMIT phases", "Wait for delegation phase");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Task dispatch not allowed in INTENT phase. Task is only available in PREFLIGHT through CLEANUP phases", "Wait for delegation phase");
         }
 
         const prompt = args?.prompt || "";

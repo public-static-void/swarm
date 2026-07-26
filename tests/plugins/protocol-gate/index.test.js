@@ -136,7 +136,7 @@ describe("Protocol-Gate Plugin", () => {
     it("transitions to INTENT on todowrite with all keywords", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       const todos = keywords.map(k => ({ content: k }));
 
       await hooks["tool.execute.before"](
@@ -162,7 +162,7 @@ describe("Protocol-Gate Plugin", () => {
       // Transition to INTENT first
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -188,7 +188,7 @@ describe("Protocol-Gate Plugin", () => {
       // Set up session and transition to INTENT
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -207,7 +207,7 @@ describe("Protocol-Gate Plugin", () => {
       // Set up session and transition to INTENT
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -234,7 +234,7 @@ describe("Protocol-Gate Plugin", () => {
     it("allows write to intent KD in INTENT phase", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -333,7 +333,7 @@ describe("Protocol-Gate Plugin", () => {
     it("allows write with absolute path to intent KD (F01)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -353,7 +353,7 @@ describe("Protocol-Gate Plugin", () => {
     it("rejects write with absolute path to non-intent KD (F01)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -373,7 +373,7 @@ describe("Protocol-Gate Plugin", () => {
     it("allows read from knowledge/ directory (F02)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -395,7 +395,7 @@ describe("Protocol-Gate Plugin", () => {
     it("allows read from knowledge/ with absolute path (F02)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -417,7 +417,7 @@ describe("Protocol-Gate Plugin", () => {
     it("rejects read from non-template, non-knowledge path (F02)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -437,7 +437,7 @@ describe("Protocol-Gate Plugin", () => {
     it("has INTENT pattern for disk advancement (F04)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -460,7 +460,7 @@ describe("Protocol-Gate Plugin", () => {
       // then the disk check should NOT fire in the same call and jump to PREFLIGHT
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -475,7 +475,7 @@ describe("Protocol-Gate Plugin", () => {
       // After the todowrite skip, the next tool call should allow disk advancement
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -498,7 +498,7 @@ describe("Protocol-Gate Plugin", () => {
     it("skips disk check flag resets after use", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
 
       // First todowrite: advances to INTENT, sets skip flag
       await hooks["tool.execute.before"](
@@ -526,7 +526,7 @@ describe("Protocol-Gate Plugin", () => {
     it("allows reading intent KDs in INTENT phase", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -544,7 +544,7 @@ describe("Protocol-Gate Plugin", () => {
     it("blocks reading report KDs in INTENT phase (Issue 5)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -563,7 +563,7 @@ describe("Protocol-Gate Plugin", () => {
     it("blocks reading analysis KDs in INTENT phase", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -582,7 +582,7 @@ describe("Protocol-Gate Plugin", () => {
     it("allows reading templates in INTENT phase", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -602,7 +602,7 @@ describe("Protocol-Gate Plugin", () => {
     it("does not advance phase when no session date is set", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -623,7 +623,7 @@ describe("Protocol-Gate Plugin", () => {
     it("captures session date from intent KD filename on write", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -643,7 +643,7 @@ describe("Protocol-Gate Plugin", () => {
     it("captures session date from absolute path intent KD", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -663,7 +663,7 @@ describe("Protocol-Gate Plugin", () => {
     it("does not trigger disk check on read tool", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -683,7 +683,7 @@ describe("Protocol-Gate Plugin", () => {
     it("blocks skill tool in INTENT phase (removed from allowlist)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -702,7 +702,7 @@ describe("Protocol-Gate Plugin", () => {
     it("blocks bash tool in INTENT phase (removed from allowlist)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -720,7 +720,7 @@ describe("Protocol-Gate Plugin", () => {
     it("triggers disk check on write tool (in DISK_CHECK_TOOLS)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -971,7 +971,7 @@ describe("Protocol-Gate Plugin", () => {
 
       await hooks["chat.params"]({ sessionID, agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID, callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -989,7 +989,7 @@ describe("Protocol-Gate Plugin", () => {
 
       await hooks["chat.params"]({ sessionID, agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID, callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -1013,7 +1013,7 @@ describe("Protocol-Gate Plugin", () => {
       const hooks1 = await pluginModule.server({}, {});
       await hooks1["chat.params"]({ sessionID, agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks1["tool.execute.before"](
         { tool: "todowrite", sessionID, callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -1038,7 +1038,7 @@ describe("Protocol-Gate Plugin", () => {
       const hooks1 = await pluginModule.server({}, {});
       await hooks1["chat.params"]({ sessionID, agent: "overseer" }, {});
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks1["tool.execute.before"](
         { tool: "todowrite", sessionID, callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -1148,7 +1148,7 @@ describe("Protocol-Gate Plugin", () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.PROTOCOL_NOT_LOADED);
 
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c1" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -1183,7 +1183,7 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
 
       // Start new lifecycle from PROTOCOL_NOT_LOADED
-      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+      const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: "test-1", callID: "c2" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
@@ -1296,83 +1296,83 @@ describe("Protocol-Gate Plugin", () => {
     });
   });
 
-  describe("Commit KD Advancement (KD-based signaling)", () => {
-    it("does not advance COMMIT without commit KD", async () => {
-      const sid = "commit-1";
+  describe("Cleanup KD Advancement (KD-based signaling)", () => {
+    it("does not advance CLEANUP without cleanup KD", async () => {
+      const sid = "cleanup-1";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.CLEANUP);
       hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
-      // No commit KD exists — trigger disk check
+      // No cleanup KD exists — trigger disk check
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
-        { args: { todos: [{ content: "COMMIT" }] } }
+        { args: { todos: [{ content: "CLEANUP" }] } }
       );
 
-      // Phase stays COMMIT — no KD means no advancement
-      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
+      // Phase stays CLEANUP — no KD means no advancement
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.CLEANUP);
     });
 
-    it("advances COMMIT when commit KD exists", async () => {
-      const sid = "commit-2";
+    it("advances CLEANUP when cleanup KD exists", async () => {
+      const sid = "cleanup-2";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.CLEANUP);
       hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
-      // Create commit KD file
+      // Create cleanup KD file
       const knowledgeDir = join(process.cwd(), "knowledge");
       mkdirSync(knowledgeDir, { recursive: true });
-      writeFileSync(join(knowledgeDir, `commit-finalize-${sid}.md`), "test");
+      writeFileSync(join(knowledgeDir, `cleanup-finalize-${sid}.md`), "test");
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
-        { args: { todos: [{ content: "COMMIT" }] } }
+        { args: { todos: [{ content: "CLEANUP" }] } }
       );
 
       // Phase should advance to REPORT (12)
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.REPORT);
 
       // Cleanup
-      try { require("fs").unlinkSync(join(knowledgeDir, `commit-finalize-${sid}.md`)); } catch (_) {}
+      try { require("fs").unlinkSync(join(knowledgeDir, `cleanup-finalize-${sid}.md`)); } catch (_) {}
     });
 
-    it("uses session ID to find correct commit KD", async () => {
-      const sid = "commit-3";
+    it("uses session ID to find correct cleanup KD", async () => {
+      const sid = "cleanup-3";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.CLEANUP);
       hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
       const knowledgeDir = join(process.cwd(), "knowledge");
       mkdirSync(knowledgeDir, { recursive: true });
 
-      // Create a commit KD for a DIFFERENT session — should not match
-      writeFileSync(join(knowledgeDir, "commit-finalize-other-session.md"), "test");
+      // Create a cleanup KD for a DIFFERENT session — should not match
+      writeFileSync(join(knowledgeDir, "cleanup-finalize-other-session.md"), "test");
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
-        { args: { todos: [{ content: "COMMIT" }] } }
+        { args: { todos: [{ content: "CLEANUP" }] } }
       );
 
-      // Phase stays COMMIT — wrong session ID KD
-      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
+      // Phase stays CLEANUP — wrong session ID KD
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.CLEANUP);
 
       // Cleanup
-      try { require("fs").unlinkSync(join(knowledgeDir, "commit-finalize-other-session.md")); } catch (_) {}
+      try { require("fs").unlinkSync(join(knowledgeDir, "cleanup-finalize-other-session.md")); } catch (_) {}
     });
 
     it("does not advance when no session ID is set", async () => {
-      const sid = "commit-4";
+      const sid = "cleanup-4";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set(sid, hooks.STATES.COMMIT);
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.CLEANUP);
       // No session ID set
 
       await hooks["tool.execute.before"](
         { tool: "todowrite", sessionID: sid, callID: "c1" },
-        { args: { todos: [{ content: "COMMIT" }] } }
+        { args: { todos: [{ content: "CLEANUP" }] } }
       );
 
-      // Phase stays COMMIT — no session ID means KD path can't match
-      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.COMMIT);
+      // Phase stays CLEANUP — no session ID means KD path can't match
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.CLEANUP);
     });
   });
 
@@ -1949,7 +1949,7 @@ describe("Protocol-Gate Plugin", () => {
       expect(config.backwardTransitions.EXPLORE).toEqual(["PREFLIGHT"]);
       expect(config.backwardTransitions.SWARM).toContain("DECOMPOSE");
       expect(config.backwardTransitions.VERIFY).toContain("SWARM");
-      expect(config.backwardTransitions.COMMIT).toContain("EVOLVE");
+      expect(config.backwardTransitions.CLEANUP).toContain("EVOLVE");
     });
 
     // Dispatching scribe from EVOLVE triggers backward transition to EXTRACT

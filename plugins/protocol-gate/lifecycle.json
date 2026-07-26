@@ -10,7 +10,7 @@
     "VERIFY",
     "EXTRACT",
     "EVOLVE",
-    "COMMIT",
+    "CLEANUP",
     "REPORT"
   ],
   "agents": {
@@ -23,7 +23,7 @@
     "VERIFY": "inspector",
     "EXTRACT": "scribe",
     "EVOLVE": "habit-builder",
-    "COMMIT": "committer"
+    "CLEANUP": "committer"
   },
   "backwardTransitions": {
     "EXPLORE": ["PREFLIGHT"],
@@ -34,7 +34,7 @@
     "VERIFY": ["PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM"],
     "EXTRACT": ["PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY"],
     "EVOLVE": ["PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT"],
-    "COMMIT": ["PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE"]
+    "CLEANUP": ["PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE"]
   },
   "maxRetriesPerPhase": 5,
   "maxCyclesPerTransition": 3
