@@ -13,7 +13,7 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 
 | Type                   | Prefix         | Producer      | Consumer                       | Template File                                  |
 | ---------------------- | -------------- | ------------- | ------------------------------ | ---------------------------------------------- |
-| INTENT                 | `intent-`      | Overseer      | Spec Weaver, Pathfinder, Analyzer | `templates/template-intent.md`                 |
+| INTENT                 | `intent-`      | Overseer      | Spec Weaver, Pathfinder, Analyzer, Scribe, Habit Builder | `templates/template-intent.md`                 |
 | PREFLIGHT              | `preflight-`   | Committer     | Protocol Gate (plugin)         | `templates/template-preflight.md`              |
 | SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector | `templates/template-spec.md`                   |
 | PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector             | `templates/template-plan.md`                   |
@@ -22,8 +22,8 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 | AUDIT                  | `audit-`       | Inspector     | Artisan (for fixes)            | `templates/template-audit.md`                  |
 | ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Pathfinder        | `templates/template-analysis.md`               |
 | REPORT                 | `report-`      | Overseer      | User                           | `templates/template-report.md`                 |
-| PROCESS                | `process-`     | Habit Builder | User                           | `templates/template-process.md`                |
-| COMPOSED               | `composed-`    | Scribe        | Memory DB (storage), Knowledge Gate (plugin), dispatched agent | `templates/template-composed.md`               |
+| PROCESS                | `process-`     | Habit Builder | All KDs                        | `templates/template-process.md`                |
+| COMPOSED               | `composed-`    | Scribe        | Memory DB (storage), Knowledge Gate (plugin), All KDs | `templates/template-composed.md`               |
 | EXPLORATION            | `exploration-` | Explorer      | Spec Weaver, Pathfinder        | `templates/template-exploration.md`            |
 | CHECKPOINT             | `checkpoint-`  | Committer     | Protocol Gate (plugin)         | `templates/template-checkpoint.md`             |
 | COMMIT                 | `commit-`      | Committer     | Protocol Gate (plugin)         | `templates/template-commit.md`                 |
