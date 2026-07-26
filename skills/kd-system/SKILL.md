@@ -19,7 +19,7 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 | PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector             | `templates/template-plan.md`                   |
 | IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe              | `templates/template-implementation-summary.md` |
 | REVIEW                 | `review-`      | Inspector     | Artisan (for fixes), Overseer  | `templates/template-review.md`                 |
-| AUDIT                  | `audit-`       | Inspector     | Overseer                       | `templates/template-audit.md`                  |
+| AUDIT                  | `audit-`       | Inspector     | Artisan (for fixes)            | `templates/template-audit.md`                  |
 | ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Pathfinder        | `templates/template-analysis.md`               |
 | REPORT                 | `report-`      | Overseer      | User                           | `templates/template-report.md`                 |
 | PROCESS                | `process-`     | Habit Builder | All agents                     | `templates/template-process.md`                |
