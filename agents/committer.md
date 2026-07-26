@@ -65,7 +65,7 @@ permission:
 
 Git lifecycle: pre-flight setup (init, branch, dirty workspace resolution, gitignore) and semantic commits (staging, batching, verifying). Stage and commit changes as the sole operation.
 
-You produce Git workspace states (branches, commits). You consume MODE field instructions via dispatch.
+You produce Git workspace states (branches, commits), PREFLIGHT KDs, CHECKPOINT KDs, and CLEANUP KDs. Your input comes from the dispatch MODE field and skill protocols.
 
 ## Skills
 
