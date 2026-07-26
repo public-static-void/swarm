@@ -78,31 +78,33 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 Every phase dispatches one specific agent. The protocol-gate plugin enforces this structurally. Use this table to select the correct `subagent_type` for each `task` call:
 
-| Phase | Agent | subagent_type | Mode |
-|-------|-------|--------------|------|
-| PREFLIGHT | Committer | committer | preflight |
-| EXPLORE | Explorer | explorer | explore |
-| INVESTIGATE | Analyzer | analyzer | investigate |
-| ALIGN | Spec Weaver | spec-weaver | align |
-| DECOMPOSE | Pathfinder | pathfinder | decompose |
-| SWARM | Artisan | artisan | swarm |
-| VERIFY | Inspector | inspector | verify |
-| EXTRACT | Scribe | scribe | extract |
-| EVOLVE | Habit Builder | habit-builder | evolve |
-| COMMIT | Committer | committer | commit |
-| REPORT | self (Overseer) | — | — |
+| Phase       | Agent           | subagent_type | Mode        |
+| ----------- | --------------- | ------------- | ----------- |
+| PREFLIGHT   | Committer       | committer     | preflight   |
+| EXPLORE     | Explorer        | explorer      | explore     |
+| INVESTIGATE | Analyzer        | analyzer      | investigate |
+| ALIGN       | Spec Weaver     | spec-weaver   | align       |
+| DECOMPOSE   | Pathfinder      | pathfinder    | decompose   |
+| SWARM       | Artisan         | artisan       | swarm       |
+| VERIFY      | Inspector       | inspector     | verify      |
+| EXTRACT     | Scribe          | scribe        | extract     |
+| EVOLVE      | Habit Builder   | habit-builder | evolve      |
+| COMMIT      | Committer       | committer     | commit      |
+| REPORT      | self (Overseer) | —             | —           |
 
 ### Delegation Steps
 
 1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `delegation-gate` plugin generates dispatch prompts from templates using your data fields and injects the required task tool fields.
 
 2. **Provide structured fields in the `prompt` parameter** — put these as `KEY: value` lines in the `prompt` parameter, one per line:
+
    ```
    MODE: <mode>
    INTENT KD: knowledge/intent-<name>.md
    SESSION DATE: <YYYY-MM-DD>
    SCOPE: <optional context>
    ```
+
    Required: `mode`, `intent_kd`, `session_date`. Optional: `scope` (provides domain context). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
 
 3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
