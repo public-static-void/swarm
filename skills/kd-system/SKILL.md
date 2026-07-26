@@ -14,7 +14,7 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 | Type                   | Prefix         | Producer      | Consumer                       | Template File                                  |
 | ---------------------- | -------------- | ------------- | ------------------------------ | ---------------------------------------------- |
 | INTENT                 | `intent-`      | Overseer      | Spec Weaver, Pathfinder        | `templates/template-intent.md`                 |
-| PREFLIGHT              | `preflight-`   | Committer     | Protocol Gate                  | `templates/template-preflight.md`              |
+| PREFLIGHT              | `preflight-`   | Committer     | Protocol Gate (plugin)         | `templates/template-preflight.md`              |
 | SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector | `templates/template-spec.md`                   |
 | PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector             | `templates/template-plan.md`                   |
 | IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe              | `templates/template-implementation-summary.md` |
@@ -23,10 +23,15 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 | ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Pathfinder        | `templates/template-analysis.md`               |
 | REPORT                 | `report-`      | Overseer      | User                           | `templates/template-report.md`                 |
 | PROCESS                | `process-`     | Habit Builder | All agents                     | `templates/template-process.md`                |
-| COMPOSED               | `composed-`    | Scribe        | Assigned agent                 | `templates/template-composed.md`               |
+| COMPOSED               | `composed-`    | Scribe        | Memory DB (storage), Knowledge Gate (plugin), assigned agent | `templates/template-composed.md`               |
 | EXPLORATION            | `exploration-` | Explorer      | Spec Weaver, Pathfinder        | `templates/template-exploration.md`            |
-| CHECKPOINT             | `checkpoint-`  | Committer     | Protocol Gate                  | `templates/template-checkpoint.md`             |
-| COMMIT                 | `commit-`      | Committer     | Protocol Gate                  | `templates/template-commit.md`                 |
+| CHECKPOINT             | `checkpoint-`  | Committer     | Protocol Gate (plugin)         | `templates/template-checkpoint.md`             |
+| COMMIT                 | `commit-`      | Committer     | Protocol Gate (plugin)         | `templates/template-commit.md`                 |
+
+**Consumer legend:**
+- Agents: Spec Weaver, Pathfinder, Artisan, Inspector, Overseer, Scribe, Analyzer, Habit Builder, Explorer, User
+- Plugins: Protocol Gate (plugin), Knowledge Gate (plugin) — consume KDs to enforce protocol and knowledge rules
+- Storage: Memory DB (storage) — persists distilled insights at `knowledge/memory/`
 
 ## KD Structure
 
