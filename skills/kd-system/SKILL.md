@@ -11,22 +11,22 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 
 ## KD Types
 
-| Type                   | Prefix         | Producer      | Consumer                       | Template File                                  |
-| ---------------------- | -------------- | ------------- | ------------------------------ | ---------------------------------------------- |
-| INTENT                 | `intent-`      | Overseer      | Spec Weaver, Pathfinder, Analyzer, Scribe, Habit Builder | `templates/template-intent.md`                 |
-| PREFLIGHT              | `preflight-`   | Committer     | Protocol Gate (plugin)         | `templates/template-preflight.md`              |
-| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector | `templates/template-spec.md`                   |
-| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector             | `templates/template-plan.md`                   |
-| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe              | `templates/template-implementation-summary.md` |
-| REVIEW                 | `review-`      | Inspector     | Artisan (for fixes), Overseer  | `templates/template-review.md`                 |
-| AUDIT                  | `audit-`       | Inspector     | Artisan (for fixes)            | `templates/template-audit.md`                  |
-| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Pathfinder        | `templates/template-analysis.md`               |
-| REPORT                 | `report-`      | Overseer      | User                           | `templates/template-report.md`                 |
-| PROCESS                | `process-`     | Habit Builder | All KDs                        | `templates/template-process.md`                |
-| COMPOSED               | `composed-`    | Scribe        | Memory DB (storage), Knowledge Gate (plugin), All KDs | `templates/template-composed.md`               |
-| EXPLORATION            | `exploration-` | Explorer      | Spec Weaver, Pathfinder        | `templates/template-exploration.md`            |
-| CHECKPOINT             | `checkpoint-`  | Committer     | Protocol Gate (plugin)         | `templates/template-checkpoint.md`             |
-| COMMIT                 | `commit-`      | Committer     | Protocol Gate (plugin)         | `templates/template-commit.md`                 |
+| Type                   | Prefix         | Producer      | Consumer                                                  | Template File                                  |
+| ---------------------- | -------------- | ------------- | --------------------------------------------------------- | ---------------------------------------------- |
+| INTENT                 | `intent-`      | Overseer      | All agents, Protocol Gate (plugin), Knowledge Gate (plugin) | `templates/template-intent.md`                |
+| PREFLIGHT              | `preflight-`   | Committer     | Protocol Gate (plugin)                                    | `templates/template-preflight.md`              |
+| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector                            | `templates/template-spec.md`                   |
+| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector                                        | `templates/template-plan.md`                   |
+| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe, Protocol Gate (plugin)                 | `templates/template-implementation-summary.md` |
+| REVIEW                 | `review-`      | Inspector     | Artisan (for fixes), Overseer, Protocol Gate (plugin)     | `templates/template-review.md`                 |
+| AUDIT                  | `audit-`       | Inspector     | Overseer, Protocol Gate (plugin)                          | `templates/template-audit.md`                  |
+| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Pathfinder, Protocol Gate (plugin)           | `templates/template-analysis.md`               |
+| REPORT                 | `report-`      | Overseer      | User, Analyzer                                            | `templates/template-report.md`                 |
+| PROCESS                | `process-`     | Habit Builder | All agents, Protocol Gate (plugin)                        | `templates/template-process.md`                |
+| COMPOSED               | `composed-`    | Scribe        | Memory DB (storage), Knowledge Gate (plugin), All agents, Protocol Gate (plugin) | `templates/template-composed.md` |
+| EXPLORATION            | `exploration-` | Explorer      | Spec Weaver, Pathfinder, Protocol Gate (plugin)           | `templates/template-exploration.md`            |
+| CHECKPOINT             | `checkpoint-`  | Committer     | Protocol Gate (plugin), Artisan                           | `templates/template-checkpoint.md`             |
+| COMMIT                 | `commit-`      | Committer     | Protocol Gate (plugin)                                    | `templates/template-commit.md`                 |
 
 **Consumer legend:**
 - Agents: Spec Weaver, Pathfinder, Artisan, Inspector, Overseer, Scribe, Analyzer, Habit Builder, Explorer, User
