@@ -1,4 +1,0 @@
-{
-  "mode": "commit",
-  "template": "DISPATCH TO: {agent}\nMODE: commit\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the committer-cleanup skill. Commit and push remaining changes per the scope above. Write a COMMIT KD at {result_kd} using the template-commit.md template to signal completion."
-}
