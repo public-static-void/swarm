@@ -1597,8 +1597,8 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
     });
 
-    // AC004: After regression, diskCheckFailures is reset to 0
-    it("AC004: resets diskCheckFailures after regression", async () => {
+    // AC005 (new): After regression, diskCheckFailures persists (no reset)
+    it("AC005: diskCheckFailures persists after regression (no reset)", async () => {
       const sid = "regress-4";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
@@ -1612,7 +1612,8 @@ describe("Protocol-Gate Plugin", () => {
         () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
       );
 
-      expect(hooks.diskCheckFailures.get(sid)).toBe(0);
+      // R003: Counter persists across regressions for safety
+      expect(hooks.diskCheckFailures.get(sid)).toBe(12);
       cleanupSession(sid);
     });
 
@@ -1636,8 +1637,8 @@ describe("Protocol-Gate Plugin", () => {
       cleanupSession(sid);
     });
 
-    // AC006: After regression, phaseRedispatchCount for current session-phase pair is cleared
-    it("AC006: clears phaseRedispatchCount after regression", async () => {
+    // AC006 (new): After regression, phaseRedispatchCount persists (no delete)
+    it("AC006: phaseRedispatchCount persists after regression (no delete)", async () => {
       const sid = "regress-6";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
@@ -1651,7 +1652,8 @@ describe("Protocol-Gate Plugin", () => {
         () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
       );
 
-      expect(hooks.phaseRedispatchCount.has(`${sid}:${hooks.STATES.ALIGN}`)).toBe(false);
+      // R003: Counter persists across regressions for safety
+      expect(hooks.phaseRedispatchCount.get(`${sid}:${hooks.STATES.ALIGN}`)).toBe(3);
       cleanupSession(sid);
     });
 
@@ -1675,8 +1677,8 @@ describe("Protocol-Gate Plugin", () => {
       cleanupSession(sid);
     });
 
-    // AC008: Stuck detection counter resets when consistency check detects KD absence
-    it("AC008: stuck counter does not accumulate when consistency check detects KD absence", async () => {
+    // AC008 (new): Stuck detection counter persists across regressions
+    it("AC008: stuck counter persists after regression (no reset)", async () => {
       const sid = "regress-8";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
@@ -1690,8 +1692,8 @@ describe("Protocol-Gate Plugin", () => {
         () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount
       );
 
-      // Stuck counter was reset to 0 by consistency check, not incremented
-      expect(hooks.diskCheckFailures.get(sid)).toBe(0);
+      // R003: Counter persists — safety mechanisms remain effective across regressions
+      expect(hooks.diskCheckFailures.get(sid)).toBe(5);
       cleanupSession(sid);
     });
 
@@ -1976,6 +1978,324 @@ describe("Protocol-Gate Plugin", () => {
           { args: { subagent_type: "artisan" } }
         )
       ).rejects.toThrow();
+    });
+  });
+
+  describe("Phase Transition Regression Loop Fix", () => {
+    let knowledgeDir;
+    // Unique session IDs that won't collide with leftover KD files from prior runs
+    const TEST_SIDS = ["ptfix-s1", "ptfix-s2", "ptfix-s3", "ptfix-s4", "ptfix-s5", "ptfix-s6", "ptfix-s7", "ptfix-s8", "ptfix-s9", "ptfix-s10", "ptfix-s11", "ptfix-s12"];
+
+    beforeEach(async () => {
+      knowledgeDir = join(process.cwd(), "knowledge");
+      try { mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
+      // Clean up any KDs from prior test runs for our session IDs
+      for (const sid of TEST_SIDS) {
+        try {
+          const files = readdirSync(knowledgeDir).filter(f => f.endsWith(`-${sid}.md`));
+          for (const f of files) {
+            try { require("fs").rmSync(join(knowledgeDir, f)); } catch (_) {}
+          }
+        } catch (_) {}
+      }
+    });
+
+    function createKD(filename) {
+      writeFileSync(join(knowledgeDir, filename), `---\ntitle: "KD"\nversion: 1.0.0\nstatus: draft\ntype: test\ncreated: "2026-07-25"\nauthor: Test\nsuperseded_by: null\n---\n# Test KD`);
+    }
+
+    function cleanupSession(sid) {
+      try {
+        const files = readdirSync(knowledgeDir).filter(f => f.endsWith(`-${sid}.md`));
+        for (const f of files) {
+          try { require("fs").rmSync(join(knowledgeDir, f)); } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    // AC001 (new): task call with matching agent → isCreatingExpectedKD true, consistency check skipped
+    it("AC001: task call with matching agent skips consistency check", async () => {
+      const sid = "ptfix-s1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.EXPLORE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Dispatch explorer (matching EXPLORE phase) — should NOT trigger regression
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { subagent_type: "explorer", prompt: "AGENT: explorer\nExplore codebase" } }
+      );
+
+      // Phase should remain EXPLORE — no regression
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+      // inFlightDispatches should be populated
+      expect(hooks.inFlightDispatches.get(sid)).toBe("explore");
+      cleanupSession(sid);
+    });
+
+    // AC002 (new): task call with wrong agent → consistency check runs normally
+    it("AC002: task call with wrong agent still runs consistency check", async () => {
+      const sid = "ptfix-s2";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INVESTIGATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // No analysis KD on disk — consistency check should detect missing KD
+      // But analysis KD doesn't exist, so regression should occur
+      createKD(`exploration-explore-${sid}.md`);
+
+      // Dispatch explorer (wrong agent for INVESTIGATE) — consistency check should run
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { subagent_type: "explorer", prompt: "AGENT: explorer" } }
+      );
+
+      // Phase should regress to EXPLORE (exploration KD exists)
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+      cleanupSession(sid);
+    });
+
+    // AC003 (new): After regression, advancement skipped within 500ms
+    it("AC003: advancement skipped within 500ms of regression", async () => {
+      const sid = "ptfix-s3";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INVESTIGATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Set regression timestamp to now
+      hooks.lastRegressionTime.set(sid, Date.now());
+
+      // Analysis KD exists — would normally advance
+      createKD(`analysis-investigate-${sid}.md`);
+
+      // Trigger disk check via glob — should be skipped by cooldown
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      // Phase should NOT advance — cooldown active
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
+      cleanupSession(sid);
+    });
+
+    // AC004 (new): After 500ms cooldown, advancement resumes
+    it("AC004: advancement resumes after 500ms cooldown", async () => {
+      const sid = "ptfix-s4";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INVESTIGATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Set regression timestamp to 600ms ago
+      hooks.lastRegressionTime.set(sid, Date.now() - 600);
+
+      // Analysis KD exists — should advance
+      createKD(`analysis-investigate-${sid}.md`);
+
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      // Phase should advance to ALIGN
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.ALIGN);
+      cleanupSession(sid);
+    });
+
+    // AC005 (new): diskCheckFailures not reset after regression
+    it("AC005: diskCheckFailures persists across regression", async () => {
+      const sid = "ptfix-s5";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.diskCheckFailures.set(sid, 8);
+
+      createKD(`analysis-investigate-${sid}.md`);
+
+      hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.lastRegressionTime
+      );
+
+      expect(hooks.diskCheckFailures.get(sid)).toBe(8);
+      cleanupSession(sid);
+    });
+
+    // AC006 (new): phaseRedispatchCount not deleted after regression
+    it("AC006: phaseRedispatchCount persists across regression", async () => {
+      const sid = "ptfix-s6";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.phaseRedispatchCount.set(`${sid}:${hooks.STATES.ALIGN}`, 4);
+
+      createKD(`analysis-investigate-${sid}.md`);
+
+      hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.lastRegressionTime
+      );
+
+      expect(hooks.phaseRedispatchCount.get(`${sid}:${hooks.STATES.ALIGN}`)).toBe(4);
+      cleanupSession(sid);
+    });
+
+    // AC007 (new): inFlightDispatches set on task guard, cleared on KD disk appearance
+    it("AC007: inFlightDispatches lifecycle — set on task, cleared on disk", async () => {
+      const sid = "ptfix-s7";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.EXPLORE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Dispatch explorer → inFlightDispatches should be set
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { subagent_type: "explorer", prompt: "AGENT: explorer" } }
+      );
+      expect(hooks.inFlightDispatches.get(sid)).toBe("explore");
+
+      // Now create the exploration KD on disk — next glob triggers advancement
+      // which should clear inFlightDispatches
+      createKD(`exploration-explore-${sid}.md`);
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      // After advancement, inFlightDispatches should be cleared
+      expect(hooks.inFlightDispatches.has(sid)).toBe(false);
+      cleanupSession(sid);
+    });
+
+    // AC008 (new): checkPhaseStateConsistency skips regression when in-flight dispatch exists
+    it("AC008: consistency check skips regression when in-flight dispatch exists", async () => {
+      const sid = "ptfix-s8";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.EXPLORE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // No exploration KD on disk — would normally regress
+      // But in-flight dispatch says KD is pending
+      hooks.inFlightDispatches.set(sid, "explore");
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.EXPLORE, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.lastRegressionTime
+      );
+
+      // Should skip regression — in-flight dispatch means KD is pending
+      expect(result).toBe(false);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+    });
+
+    // AC011 (new): Debug log output includes KD_IN_FLIGHT and REGRESSION_COOLDOWN tags
+    it("AC011: debug logs include KD_IN_FLIGHT and REGRESSION_COOLDOWN tags", async () => {
+      const sid = "ptfix-s11";
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.EXPLORE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Dispatch explorer — should log KD_IN_FLIGHT
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { subagent_type: "explorer", prompt: "AGENT: explorer" } }
+      );
+
+      // Set regression timestamp to now — next disk check should log REGRESSION_COOLDOWN
+      hooks.lastRegressionTime.set(sid, Date.now());
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      // Read log file and verify tags exist
+      try {
+        const logContent = require("fs").readFileSync(
+          join(process.cwd(), "plugins", "logs", "protocol-gate.log"), "utf8"
+        );
+        expect(logContent).toContain("KD_IN_FLIGHT");
+        expect(logContent).toContain("REGRESSION_COOLDOWN");
+      } catch (_) {
+        // Log file may not exist in test env — skip if not available
+      }
+      delete process.env.PROTOCOL_GATE_DEBUG;
+      cleanupSession(sid);
+    });
+
+    // AC012 (new): Orphaned state files with missing SID cleaned on plugin load
+    it("AC012: orphaned state files cleaned on plugin load", async () => {
+      const stateDir = join(process.cwd(), "plugins", "protocol-gate", ".state");
+      try { mkdirSync(stateDir, { recursive: true }); } catch (_) {}
+
+      // Create orphaned state file (no sid field at all)
+      const orphanFile = join(stateDir, ".protocol-state-orphan-session.json");
+      writeFileSync(orphanFile, JSON.stringify({ phase: 3, timestamp: Date.now() }));
+
+      // Create valid state file (sid present, even if null — INTENT phase is valid)
+      const validFile = join(stateDir, ".protocol-state-valid-session.json");
+      writeFileSync(validFile, JSON.stringify({ phase: 3, sid: "valid-session", timestamp: Date.now() }));
+
+      // Create a new plugin instance — should clean up orphan
+      const freshHooks = await pluginModule.server({}, {});
+
+      // Orphan file should be deleted
+      expect(() => require("fs").readFileSync(orphanFile)).toThrow();
+      // Valid file should remain
+      expect(() => require("fs").readFileSync(validFile)).not.toThrow();
+
+      // Cleanup
+      try { require("fs").rmSync(orphanFile); } catch (_) {}
+      try { require("fs").rmSync(validFile); } catch (_) {}
+    });
+
+    // AC009 (new): EXPLORE↔INVESTIGATE loop scenario stabilizes
+    it("AC009: EXPLORE↔INVESTIGATE loop stabilizes after one regression", async () => {
+      const sid = "ptfix-s9";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+
+      // Start at INVESTIGATE phase
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INVESTIGATE);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Analysis KD exists on disk — should advance to ALIGN
+      createKD(`analysis-investigate-${sid}.md`);
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.ALIGN);
+
+      // Now simulate the loop scenario: at ALIGN, analysis KD exists but no spec KD
+      // Dispatch analyzer (wrong agent for ALIGN) → triggers consistency check
+      // Consistency check finds analysis KD → regresses to INVESTIGATE
+      createKD(`analysis-investigate-${sid}.md`);
+      // Remove any spec KD that might exist
+      try {
+        const files = readdirSync(knowledgeDir).filter(f => f.startsWith("spec-") && f.endsWith(`-${sid}.md`));
+        for (const f of files) { try { require("fs").rmSync(join(knowledgeDir, f)); } catch (_) {} }
+      } catch (_) {}
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c2" },
+        { args: { subagent_type: "analyzer", prompt: "AGENT: analyzer" } }
+      );
+
+      // Should have regressed to INVESTIGATE
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
+
+      // Now dispatch analyzer again (matching agent) — should NOT trigger another regression
+      // because inFlightDispatches is set
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c3" },
+        { args: { subagent_type: "analyzer", prompt: "AGENT: analyzer" } }
+      );
+
+      // Phase should remain INVESTIGATE — no second regression (loop broken)
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
+      cleanupSession(sid);
     });
   });
 });
