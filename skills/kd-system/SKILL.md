@@ -13,25 +13,26 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 
 | Type                   | Prefix         | Producer      | Consumer                                                  | Template File                                  |
 | ---------------------- | -------------- | ------------- | --------------------------------------------------------- | ---------------------------------------------- |
-| INTENT                 | `intent-`      | Overseer      | All agents, Protocol Gate (plugin), Knowledge Gate (plugin) | `templates/template-intent.md`                |
-| PREFLIGHT              | `preflight-`   | Committer     | Protocol Gate (plugin)                                    | `templates/template-preflight.md`              |
-| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector                            | `templates/template-spec.md`                   |
-| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector                                        | `templates/template-plan.md`                   |
-| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe, Protocol Gate (plugin)                 | `templates/template-implementation-summary.md` |
-| REVIEW                 | `review-`      | Inspector     | Artisan (for fixes), Overseer, Protocol Gate (plugin)     | `templates/template-review.md`                 |
-| AUDIT                  | `audit-`       | Inspector     | Overseer, Protocol Gate (plugin)                          | `templates/template-audit.md`                  |
-| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Pathfinder, Protocol Gate (plugin)           | `templates/template-analysis.md`               |
-| REPORT                 | `report-`      | Overseer      | User, Analyzer                                            | `templates/template-report.md`                 |
-| PROCESS                | `process-`     | Habit Builder | All agents, Protocol Gate (plugin)                        | `templates/template-process.md`                |
-| COMPOSED               | `composed-`    | Scribe        | Memory DB (storage), Knowledge Gate (plugin), All agents, Protocol Gate (plugin) | `templates/template-composed.md` |
-| EXPLORATION            | `exploration-` | Explorer      | Spec Weaver, Pathfinder, Protocol Gate (plugin)           | `templates/template-exploration.md`            |
-| CHECKPOINT             | `checkpoint-`  | Committer     | Protocol Gate (plugin), Artisan                           | `templates/template-checkpoint.md`             |
-| COMMIT                 | `commit-`      | Committer     | Protocol Gate (plugin)                                    | `templates/template-commit.md`                 |
+| INTENT                 | `intent-`      | Overseer      | Explorer, Analyzer, Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Habit Builder | `templates/template-intent.md` |
+| PREFLIGHT              | `preflight-`   | Committer     | Scribe, Habit Builder                                     | `templates/template-preflight.md`              |
+| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector, Scribe, Habit Builder     | `templates/template-spec.md`                   |
+| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector, Scribe, Habit Builder                 | `templates/template-plan.md`                   |
+| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe, Habit Builder                          | `templates/template-implementation-summary.md` |
+| REVIEW                 | `review-`      | Inspector     | Artisan, Scribe, Habit Builder                            | `templates/template-review.md`                 |
+| AUDIT                  | `audit-`       | Inspector     | Artisan, Scribe, Habit Builder                            | `templates/template-audit.md`                  |
+| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Scribe, Habit Builder                        | `templates/template-analysis.md`              |
+| REPORT                 | `report-`      | Overseer      | User                                                       | `templates/template-report.md`                 |
+| PROCESS                | `process-`     | Habit Builder | User                                                       | `templates/template-process.md`                |
+| COMPOSED               | `composed-`    | Scribe        | Habit Builder                                              | `templates/template-composed.md`              |
+| EXPLORATION            | `exploration-` | Explorer      | Analyzer, Spec Weaver, Scribe, Habit Builder               | `templates/template-exploration.md`    |
+| CHECKPOINT             | `checkpoint-`  | Committer     | Scribe, Habit Builder                                      | `templates/template-checkpoint.md`             |
+| CLEANUP                | `cleanup-`     | Committer     |                                                           | `templates/template-cleanup.md`                |
 
 **Consumer legend:**
-- Agents: Spec Weaver, Pathfinder, Artisan, Inspector, Overseer, Scribe, Analyzer, Habit Builder, Explorer, User
-- Plugins: Protocol Gate (plugin), Knowledge Gate (plugin) — consume KDs to enforce protocol and knowledge rules
-- Storage: Memory DB (storage) — persists distilled insights at `knowledge/memory/`
+- Agents: Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Analyzer, Habit Builder, Explorer, User
+- Plugins read all KDs for disk checks — not listed as consumers
+- Overseer writes INTENT/REPORT. Input comes from the user and from issue files surfaced by the Knowledge Gate plugin
+- Committer writes PREFLIGHT/CHECKPOINT/CLEANUP. Input comes from the dispatch MODE field and skill protocols
 
 ## KD Structure
 
