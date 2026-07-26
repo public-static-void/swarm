@@ -1,16 +1,16 @@
 ---
-title: "COMMIT: {{description}}"
+title: "CLEANUP: {{description}}"
 version: 1.0.0
 status: draft
-type: commit
+type: cleanup
 created: "{{session_id}}"
 author: Committer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/commit-{{feature}}-{{session_id}}.md -->
+<!-- Filename: knowledge/cleanup-{{feature}}-{{session_id}}.md -->
 
-# COMMIT: {{description}}
+# CLEANUP: {{description}}
 
 ## What Was Committed
 

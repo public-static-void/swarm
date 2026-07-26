@@ -9,7 +9,7 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -28,11 +28,11 @@ const STATES = {
   VERIFY: 8,
   EXTRACT: 9,
   EVOLVE: 10,
-  COMMIT: 11,
+  CLEANUP: 11,
   REPORT: 12
 };
 
-const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"];
+const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
 
 // Behavioral constraints injected into the system prompt per phase.
 // The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
@@ -50,7 +50,7 @@ const PHASE_INSTRUCTIONS = {
   VERIFY: "Dispatch the Inspector agent.",
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
-  COMMIT: "Dispatch the Committer agent.",
+  CLEANUP: "Dispatch the Committer agent.",
   REPORT: "Write a report KD summarizing lifecycle results."
 };
 
@@ -66,7 +66,7 @@ const TOOL_ALLOWLIST = {
   VERIFY: ["task", "todowrite", "glob"],
   EXTRACT: ["task", "todowrite", "glob"],
   EVOLVE: ["task", "todowrite", "glob"],
-  COMMIT: ["task", "todowrite", "glob", "bash"],
+  CLEANUP: ["task", "todowrite", "glob", "bash"],
   REPORT: ["todowrite", "edit", "read", "write"]
 };
 
@@ -129,8 +129,8 @@ function loadConfig() {
   } catch (e) {
     debug("Config load failed, using defaults");
     return {
-      phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "COMMIT", "REPORT"],
-      agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", COMMIT: "committer" },
+      phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"],
+      agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", CLEANUP: "committer" },
       backwardTransitions: { VERIFY: ["SWARM"] },
       maxCyclesPerTransition: 3
     };
@@ -228,7 +228,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
-    [STATES.COMMIT]: /^commit-/i
+    [STATES.CLEANUP]: /^cleanup-/i
   };
 
   const pattern = patterns[phase];
@@ -263,7 +263,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 // When undo deletes KDs, in-memory phase state diverges from disk reality.
 // This function resets phase to the highest phase whose KD still exists on disk
 // for the current session. Returns true if phase was regressed.
-function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount) {
+function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount, inFlightDispatches, lastRegressionTime) {
   if (currentPhase === undefined || currentPhase <= STATES.PROTOCOL_NOT_LOADED) return false;
 
   const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
@@ -286,11 +286,19 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
-    [STATES.COMMIT]: /^commit-/i
+    [STATES.CLEANUP]: /^cleanup-/i
   };
 
   const currentPattern = patterns[currentPhase];
   if (!currentPattern) return false;
+
+  // R004: Skip regression when a subagent dispatch is in-flight for this phase.
+  // The KD is pending creation, not deleted — false regression would loop.
+  const inFlightKD = inFlightDispatches?.get(sessionID);
+  if (inFlightKD && currentPattern.test(`${inFlightKD}-`)) {
+    debug(`Consistency check: skipped — in-flight dispatch for ${getPhaseName(currentPhase)} KD (${inFlightKD}-)`);
+    return false;
+  }
 
   // Check if current phase's KD is still present on disk
   if (currentPhase === STATES.VERIFY) {
@@ -344,9 +352,12 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   debug(`Consistency regression: ${getPhaseName(currentPhase)} → ${getPhaseName(regressedPhase)}`);
   sessionPhaseMap.set(sessionID, regressedPhase);
 
-  // R003: Clear associated counters after regression
-  diskCheckFailures.set(sessionID, 0);
-  phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+  // R002: Record regression timestamp for cooldown mechanism
+  if (lastRegressionTime) lastRegressionTime.set(sessionID, Date.now());
+
+  // R003: Counters persist across regressions — safety mechanisms (force-advance,
+  // re-dispatch cap) must remain effective. Only clear swarmDispatchCount when
+  // regressing past SWARM, as that is phase-dependent cleanup, not counter reset.
   // Clear dispatch count if regressing past SWARM phase
   if (regressedPhase < STATES.SWARM) {
     swarmDispatchCount.delete(sessionID);
@@ -382,6 +393,18 @@ export default {
     const diskCheckFailures = new Map();
     // Tracks re-dispatch attempts per session-phase pair to cap retries at 5.
     const phaseRedispatchCount = new Map();
+    // R002: Timestamp of last consistency regression per session.
+    // Disk advancement is suppressed within REGRESSION_COOLDOWN_MS of the last
+    // regression to prevent the self-reinforcing EXPLORE↔INVESTIGATE loop.
+    const lastRegressionTime = new Map();
+    // R004/R005: Tracks active subagent dispatches per session.
+    // When a task call dispatches the current phase's expected agent, the
+    // expected KD prefix is stored here. checkPhaseStateConsistency skips
+    // regression when an in-flight dispatch exists — the KD is pending, not deleted.
+    const inFlightDispatches = new Map();
+    // R002: Cooldown threshold in ms — advancement is skipped if a regression
+    // occurred within this window. Named constant for easy tuning (NFR003).
+    const REGRESSION_COOLDOWN_MS = 500;
     // tool.definition doesn't receive sessionID — track the most recent session
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
@@ -432,6 +455,24 @@ export default {
     debug(`Loaded config: ${Object.keys(STATES).length} states, maxCycles=${config.maxCyclesPerTransition || 3}`);
     debug(`Backward transitions: ${JSON.stringify(BACKWARD_TRANSITIONS)}`);
     debug(`Phase→agent map: ${JSON.stringify(PHASE_AGENT_MAP)}`);
+
+    // AC012: Clean up orphaned state files with missing SID on plugin load.
+    // These accumulate when sessions are interrupted mid-lifecycle.
+    // Only delete files where sid is missing from the JSON, not where sid is null
+    // (null sid is valid for INTENT-phase state before intent KD is written).
+    try {
+      const stateDir = join(PLUGIN_DIR, ".state");
+      const stateFiles = readdirSync(stateDir).filter(f => f.startsWith(".protocol-state-") && f.endsWith(".json"));
+      for (const sf of stateFiles) {
+        try {
+          const data = JSON.parse(readFileSync(join(stateDir, sf), "utf8"));
+          if (data.sid === undefined) {
+            rmSync(join(stateDir, sf));
+            debug(`Plugin init: cleaned orphaned state file ${sf} (no SID)`);
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
 
     function handleBackwardTransition(sessionID, currentPhase, targetPhase) {
       const validTargets = BACKWARD_TRANSITIONS[currentPhase] || [];
@@ -706,9 +747,15 @@ export default {
         } else {
           const currentPhase = sessionPhaseMap.get(sessionID);
           const currentPhaseName = getPhaseName(currentPhase);
-          if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount)) {
+          // R002: Cooldown — suppress advancement if regression occurred within threshold
+          const sinceLastRegression = Date.now() - (lastRegressionTime.get(sessionID) || 0);
+          if (sinceLastRegression < REGRESSION_COOLDOWN_MS) {
+            debug(`REGRESSION_COOLDOWN: Disk advancement skipped for ${sessionID} — cooldown active (${sinceLastRegression}ms < ${REGRESSION_COOLDOWN_MS}ms)`);
+          } else if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount)) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
             diskCheckFailures.set(sessionID, 0);
+            // R005: Clear in-flight tracking — KD appeared on disk, dispatch is complete
+            inFlightDispatches.delete(sessionID);
             // Reset re-dispatch counter for the phase we just advanced from
             phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
             const newPhase = currentPhase + 1;
@@ -734,15 +781,32 @@ export default {
               // disk yet (tool.execute.before runs before the write persists).
               // Running the consistency check here would cause false regression.
               const currentPhasePrefix = currentPhaseName.toLowerCase();
-              const isCreatingExpectedKD = tool === "write" && (
+              // R001: Guard must also cover task calls dispatching the current phase's
+              // expected agent. Without this, a task call in EXPLORE (dispatching explorer)
+              // triggers false regression because the exploration KD doesn't exist on disk yet.
+              let isCreatingExpectedKD = tool === "write" && (
                 (args?.filePath || "").includes(`${currentPhasePrefix}-`) ||
                 (args?.content || "").includes(`${currentPhasePrefix}-`)
               );
+              if (!isCreatingExpectedKD && tool === "task") {
+                const taskPrompt = args?.prompt || "";
+                let taskAgent = extractAgentFromPrompt(taskPrompt);
+                if (!taskAgent && args?.subagent_type) {
+                  taskAgent = args.subagent_type.toLowerCase();
+                }
+                const expectedAgent = PHASE_AGENT_MAP[currentPhaseName]?.toLowerCase();
+                if (taskAgent && expectedAgent && taskAgent === expectedAgent) {
+                  isCreatingExpectedKD = true;
+                  inFlightDispatches.set(sessionID, currentPhasePrefix);
+                  debug(`KD_IN_FLIGHT: task dispatching ${taskAgent} for phase ${currentPhaseName} — consistency check skipped`);
+                }
+              }
 
               if (!isCreatingExpectedKD) {
                 const didRegress = checkPhaseStateConsistency(
                   sessionID, currentPhase, sessionPhaseMap,
-                  saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount
+                  saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount,
+                  inFlightDispatches, lastRegressionTime
                 );
 
                 if (didRegress) {
@@ -797,10 +861,10 @@ export default {
 
       // --- task handler ---
       if (tool === "task") {
-        // Task is only allowed during delegation phases (PREFLIGHT through COMMIT)
-        if (phase < STATES.PREFLIGHT || phase > STATES.COMMIT) {
+        // Task is only allowed during delegation phases (PREFLIGHT through CLEANUP)
+        if (phase < STATES.PREFLIGHT || phase > STATES.CLEANUP) {
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Task dispatch not allowed in INTENT phase. Task is only available in PREFLIGHT through COMMIT phases", "Wait for delegation phase");
+          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Task dispatch not allowed in INTENT phase. Task is only available in PREFLIGHT through CLEANUP phases", "Wait for delegation phase");
         }
 
         const prompt = args?.prompt || "";
@@ -840,15 +904,16 @@ export default {
               debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
               handleBackwardTransition(sessionID, phase, targetPhaseId);
             } else {
-              // Committer is dispatched by artisan for checkpoint commits during SWARM phase
-              if (agentName === 'committer' && phase === STATES.SWARM) {
-                debug(`task: ALLOW committer dispatch in SWARM phase (checkpoint commit)`);
-              } else {
-                // Wrong agent — not current phase, not a valid backward target
-                const expectedAgent = currentPhaseAgent || phaseName;
-                debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
-                throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
-              }
+              // Wrong agent — not current phase, not a valid backward target
+              // NOTE: Checkpoint commits during SWARM (artisan → committer) are handled
+              // by the subagent bypass above — artisan sessions are not in overseerSessions,
+              // so committer dispatches from artisan pass through protocol-gate untouched.
+              // The Overseer dispatching committer during SWARM triggers a backward
+              // transition to PREFLIGHT (committer maps to PREFLIGHT in agentToPhaseMap,
+              // and PREFLIGHT is a valid backward target for SWARM) — which is correct.
+              const expectedAgent = currentPhaseAgent || phaseName;
+              debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
             }
           }
         }
@@ -927,6 +992,9 @@ export default {
       swarmDispatchCount,
       phaseRedispatchCount,
       diskCheckFailures,
+      lastRegressionTime,
+      inFlightDispatches,
+      REGRESSION_COOLDOWN_MS,
       checkPhaseStateConsistency,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,

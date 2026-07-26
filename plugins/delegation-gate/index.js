@@ -43,7 +43,7 @@ const ERRORS = {
 
 // All recognized delegation modes — used for template lookup and natural-language inference.
 const KNOWN_MODES = [
-  "checkpoint", "preflight", "cleanup", "commit",
+  "checkpoint", "preflight", "cleanup",
   "explore", "investigate", "align", "decompose",
   "swarm", "verify", "extract", "evolve"
 ];
@@ -53,7 +53,7 @@ const KD_PRODUCING_MODES = [
   "preflight",
   "explore", "investigate", "align", "decompose",
   "swarm", "verify", "extract", "evolve",
-  "checkpoint", "commit"
+  "checkpoint", "cleanup"
 ];
 
 let _logFile = null;
@@ -100,9 +100,8 @@ function loadTemplates(config) {
     verify: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Verify the implementation per the scope above. Produce REVIEW and AUDIT KDs at {result_kd}.",
     extract: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd}.",
     evolve: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Evolve the process per the scope above. Produce a PROCESS KD at {result_kd}.",
-    commit: "Load the kd-system skill. Load the committer-cleanup skill. Create the final commit per the scope above. Write a COMMIT KD at the RESULT KD path.",
     checkpoint: "Load the kd-system skill. Load the committer-checkpoint skill. Create a checkpoint commit per the scope above. Write a CHECKPOINT KD at the RESULT KD path.",
-    cleanup: "Load the committer-cleanup skill. Read the INTENT KD at {intent_kd}. Commit and push remaining changes per the scope above.",
+    cleanup: "Load the kd-system skill. Load the committer-cleanup skill. Read the INTENT KD at {intent_kd}. Commit and push remaining changes per the scope above. Write a CLEANUP KD at {result_kd} using the template-cleanup.md template to signal completion.",
     preflight: "Load the kd-system skill and the committer-preflight skill. Read the INTENT KD at {intent_kd}. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
   };
 
@@ -292,7 +291,7 @@ RESULT KD Naming Conventions:
 - evolve:      knowledge/process-<name>.md
 - checkpoint:  knowledge/checkpoint-<name>.md
 - preflight:   knowledge/preflight-<name>.md
-- commit:      knowledge/commit-<name>.md
+- cleanup:     knowledge/cleanup-<name>.md
 `;
 
   if (!output.args) output.args = {};

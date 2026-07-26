@@ -172,19 +172,19 @@ RESULT KD: invalid-path.md`;
       ).rejects.toThrow("Invalid result KD path");
     });
 
-    it("accepts prompt without result_kd (optional field)", async () => {
+    it("rejects prompt without result_kd for cleanup mode (KD-producing)", async () => {
       const prompt = `AGENT: committer
 MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X`;
 
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
     });
 
-    it("treats empty string result_kd as omitted (not invalid)", async () => {
+    it("treats empty string result_kd as missing for cleanup mode", async () => {
       // Overseer writes "RESULT KD:" with nothing after it — extracts as ""
       const prompt = `AGENT: committer
 MODE: cleanup
@@ -193,9 +193,9 @@ SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
 RESULT KD:`;
 
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
     });
 
     it("rejects literal placeholder {scope} in scope field", async () => {
@@ -384,15 +384,15 @@ RESULT KD: knowledge/preflight-foo.md`;
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
-    it("accepts prompt without scope or result_kd (both optional)", async () => {
+    it("rejects prompt without scope or result_kd for cleanup mode (KD-producing)", async () => {
       const prompt = `AGENT: committer
 MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17`;
 
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("KD-producing mode requires result_kd");
     });
   });
 
@@ -958,8 +958,8 @@ RESULT KD: knowledge/investigation-foo.md`;
     });
 
     it("infers all known modes from natural language", async () => {
-      const modes = ["checkpoint", "preflight", "commit", "explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve"];
-      const kdModes = ["preflight", "explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve", "checkpoint", "commit"];
+      const modes = ["checkpoint", "preflight", "cleanup", "explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve"];
+      const kdModes = ["preflight", "explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve", "checkpoint", "cleanup"];
       for (const mode of modes) {
         const needsResultKd = kdModes.includes(mode);
         const prompt = `AGENT: artisan
@@ -1151,9 +1151,9 @@ SCOPE: Evolve process`;
       ).rejects.toThrow("KD-producing mode requires result_kd");
     });
 
-    it("requires result_kd for commit mode", async () => {
+    it("requires result_kd for cleanup mode", async () => {
       const prompt = `AGENT: committer
-MODE: commit
+MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 SCOPE: Commit changes`;
@@ -1194,13 +1194,13 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       expect(output.args.prompt).toMatch(/Read the INTENT KD at/);
     });
 
-    it("commit template body contains 'Read the INTENT KD'", async () => {
+    it("cleanup template body contains 'Read the INTENT KD'", async () => {
       const prompt = `AGENT: committer
-MODE: commit
+MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 SCOPE: Commit changes
-RESULT KD: knowledge/commit-foo.md`;
+RESULT KD: knowledge/cleanup-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);

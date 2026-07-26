@@ -1,6 +1,6 @@
 ---
 name: kd-system
-description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, review, audit, analysis, report, process, implementation summary, checkpoint, or commit documents."
+description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, review, audit, analysis, report, process, implementation summary, checkpoint, or cleanup documents."
 ---
 
 # KD System — Agentic Swarm
@@ -11,22 +11,28 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 
 ## KD Types
 
-| Type                   | Prefix         | Producer      | Consumer                       | Template File                                  |
-| ---------------------- | -------------- | ------------- | ------------------------------ | ---------------------------------------------- |
-| INTENT                 | `intent-`      | Overseer      | Spec Weaver, Pathfinder        | `templates/template-intent.md`                 |
-| PREFLIGHT              | `preflight-`   | Committer     | Protocol Gate                  | `templates/template-preflight.md`              |
-| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector | `templates/template-spec.md`                   |
-| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector             | `templates/template-plan.md`                   |
-| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe              | `templates/template-implementation-summary.md` |
-| REVIEW                 | `review-`      | Inspector     | Artisan (for fixes), Overseer  | `templates/template-review.md`                 |
-| AUDIT                  | `audit-`       | Inspector     | Overseer                       | `templates/template-audit.md`                  |
-| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Pathfinder        | `templates/template-analysis.md`               |
-| REPORT                 | `report-`      | Overseer      | User                           | `templates/template-report.md`                 |
-| PROCESS                | `process-`     | Habit Builder | All agents                     | `templates/template-process.md`                |
-| COMPOSED               | `composed-`    | Scribe        | Assigned agent                 | `templates/template-composed.md`               |
-| EXPLORATION            | `exploration-` | Explorer      | Spec Weaver, Pathfinder        | `templates/template-exploration.md`            |
-| CHECKPOINT             | `checkpoint-`  | Committer     | Protocol Gate                  | `templates/template-checkpoint.md`             |
-| COMMIT                 | `commit-`      | Committer     | Protocol Gate                  | `templates/template-commit.md`                 |
+| Type                   | Prefix         | Producer      | Consumer                                                  | Template File                                  |
+| ---------------------- | -------------- | ------------- | --------------------------------------------------------- | ---------------------------------------------- |
+| INTENT                 | `intent-`      | Overseer      | Explorer, Analyzer, Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Habit Builder | `templates/template-intent.md` |
+| PREFLIGHT              | `preflight-`   | Committer     | Scribe, Habit Builder                                     | `templates/template-preflight.md`              |
+| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector, Scribe, Habit Builder     | `templates/template-spec.md`                   |
+| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector, Scribe, Habit Builder                 | `templates/template-plan.md`                   |
+| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe, Habit Builder                          | `templates/template-implementation-summary.md` |
+| REVIEW                 | `review-`      | Inspector     | Artisan, Scribe, Habit Builder                            | `templates/template-review.md`                 |
+| AUDIT                  | `audit-`       | Inspector     | Artisan, Scribe, Habit Builder                            | `templates/template-audit.md`                  |
+| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Scribe, Habit Builder                        | `templates/template-analysis.md`              |
+| REPORT                 | `report-`      | Overseer      | User                                                       | `templates/template-report.md`                 |
+| PROCESS                | `process-`     | Habit Builder | User                                                       | `templates/template-process.md`                |
+| COMPOSED               | `composed-`    | Scribe        | Habit Builder                                              | `templates/template-composed.md`              |
+| EXPLORATION            | `exploration-` | Explorer      | Analyzer, Spec Weaver, Scribe, Habit Builder               | `templates/template-exploration.md`    |
+| CHECKPOINT             | `checkpoint-`  | Committer     | Scribe, Habit Builder                                      | `templates/template-checkpoint.md`             |
+| CLEANUP                | `cleanup-`     | Committer     |                                                           | `templates/template-cleanup.md`                |
+
+**Consumer legend:**
+- Agents: Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Analyzer, Habit Builder, Explorer, User
+- Plugins read all KDs for disk checks — not listed as consumers
+- Overseer writes INTENT/REPORT. Input comes from the user and from issue files surfaced by the Knowledge Gate plugin
+- Committer writes PREFLIGHT/CHECKPOINT/CLEANUP. Input comes from the dispatch MODE field and skill protocols
 
 ## KD Structure
 

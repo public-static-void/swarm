@@ -75,9 +75,8 @@ Phase Output ──► Gate ──► Next Phase
 | ---------------------------- | ------------------------------ | ---------------- | -------------------------------------------------- |
 | Spec Weaver                  | SPEC KD                        | Inspector (Spec) | REVIEW — requirements quality                      |
 | Pathfinder                   | PLAN KD                        | Inspector (Plan) | REVIEW — plan feasibility                          |
-| Artisan                      | Code + IMPL SUMMARY            | Inspector (Code) | REVIEW — implementation quality                    |
+| Artisan                      | Code + IMPL KD                 | Inspector (Code) | REVIEW — implementation quality                    |
 | Artisan (security-sensitive) | Code                           | Inspector        | AUDIT — vulnerability scan                         |
-| Scribe                       | Documentation + KD composition | Overseer         | REVIEW — cross-ref integrity + composition quality |
 | ---                          | ---                            | ---              | ---                                                |
 
 ## Gate Checklist
