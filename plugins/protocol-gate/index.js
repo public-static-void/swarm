@@ -34,6 +34,35 @@ const STATES = {
 
 const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
 
+// KD type prefixes — maps phase constants to the prefix used in KD filenames.
+// Must match the regex patterns in checkDiskAdvancement() (lines 220-232).
+// Used by in-flight dispatch tracking so the R001 guard can correctly match
+// pending KDs against the disk pattern. (BUG-001/BUG-002 fix)
+// VERIFY phase produces TWO KDs (review + audit); stored as array. All other
+// phases use a single string for backward compatibility.
+const KD_TYPE_PREFIXES = {
+  [STATES.INTENT]: "intent",
+  [STATES.PREFLIGHT]: "preflight",
+  [STATES.EXPLORE]: "exploration",
+  [STATES.INVESTIGATE]: "analysis",
+  [STATES.ALIGN]: "spec",
+  [STATES.DECOMPOSE]: "plan",
+  [STATES.SWARM]: "impl",
+  [STATES.VERIFY]: ["review", "audit"],
+  [STATES.EXTRACT]: "composed",
+  [STATES.EVOLVE]: "process",
+  [STATES.CLEANUP]: "cleanup"
+};
+
+// Normalize a prefix value from KD_TYPE_PREFIXES to always return an array.
+// VERIFY phase stores ["review", "audit"]; all others store a single string.
+// Consumers use this to uniformly iterate over expected prefixes.
+function getPrefixes(phase) {
+  const val = KD_TYPE_PREFIXES[phase];
+  if (!val) return [];
+  return Array.isArray(val) ? val : [val];
+}
+
 // Behavioral constraints injected into the system prompt per phase.
 // The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
 const PHASE_INSTRUCTIONS = {
@@ -263,7 +292,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 // When undo deletes KDs, in-memory phase state diverges from disk reality.
 // This function resets phase to the highest phase whose KD still exists on disk
 // for the current session. Returns true if phase was regressed.
-function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount, inFlightDispatches, lastRegressionTime) {
+function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount, inFlightDispatches) {
   if (currentPhase === undefined || currentPhase <= STATES.PROTOCOL_NOT_LOADED) return false;
 
   const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
@@ -294,9 +323,10 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
 
   // R004: Skip regression when a subagent dispatch is in-flight for this phase.
   // The KD is pending creation, not deleted — false regression would loop.
-  const inFlightKD = inFlightDispatches?.get(sessionID);
-  if (inFlightKD && currentPattern.test(`${inFlightKD}-`)) {
-    debug(`Consistency check: skipped — in-flight dispatch for ${getPhaseName(currentPhase)} KD (${inFlightKD}-)`);
+  // inFlightDispatches stores an array of prefixes (e.g., ["review", "audit"] for VERIFY).
+  const inFlightPrefixes = inFlightDispatches?.get(sessionID);
+  if (inFlightPrefixes && Array.isArray(inFlightPrefixes) && inFlightPrefixes.some(p => currentPattern.test(`${p}-`))) {
+    debug(`Consistency check: skipped — in-flight dispatch for ${getPhaseName(currentPhase)} KD (prefixes=${JSON.stringify(inFlightPrefixes)})`);
     return false;
   }
 
@@ -352,9 +382,6 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   debug(`Consistency regression: ${getPhaseName(currentPhase)} → ${getPhaseName(regressedPhase)}`);
   sessionPhaseMap.set(sessionID, regressedPhase);
 
-  // R002: Record regression timestamp for cooldown mechanism
-  if (lastRegressionTime) lastRegressionTime.set(sessionID, Date.now());
-
   // R003: Counters persist across regressions — safety mechanisms (force-advance,
   // re-dispatch cap) must remain effective. Only clear swarmDispatchCount when
   // regressing past SWARM, as that is phase-dependent cleanup, not counter reset.
@@ -393,18 +420,21 @@ export default {
     const diskCheckFailures = new Map();
     // Tracks re-dispatch attempts per session-phase pair to cap retries at 5.
     const phaseRedispatchCount = new Map();
-    // R002: Timestamp of last consistency regression per session.
-    // Disk advancement is suppressed within REGRESSION_COOLDOWN_MS of the last
-    // regression to prevent the self-reinforcing EXPLORE↔INVESTIGATE loop.
-    const lastRegressionTime = new Map();
     // R004/R005: Tracks active subagent dispatches per session.
     // When a task call dispatches the current phase's expected agent, the
     // expected KD prefix is stored here. checkPhaseStateConsistency skips
     // regression when an in-flight dispatch exists — the KD is pending, not deleted.
     const inFlightDispatches = new Map();
-    // R002: Cooldown threshold in ms — advancement is skipped if a regression
-    // occurred within this window. Named constant for easy tuning (NFR003).
-    const REGRESSION_COOLDOWN_MS = 500;
+    // BUG-003 fix: Event-driven phase advancement verification.
+    // When a task dispatch or write triggers a phase advancement, pendingVerification
+    // is set. While active, checkPhaseStateConsistency is skipped (preventing false
+    // regression) and diskCheckFailures is not incremented (preventing premature stuck
+    // detection). Cleared when KD appears on disk, session ends, or safety timeout fires.
+    // Replaces the time-based REGRESSION_COOLDOWN_MS mechanism.
+    const pendingVerification = new Map();
+    // Tracks tool calls made while pendingVerification is active per session.
+    // Used by R007 safety timeout: warning at 10, force-advance at 15.
+    const pendingVerificationToolCount = new Map();
     // tool.definition doesn't receive sessionID — track the most recent session
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
@@ -495,6 +525,9 @@ export default {
       sessionPhaseMap.set(sessionID, targetPhase);
       debug(`Backward transition complete: ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
       saveState(sessionID);
+      pendingVerification.delete(sessionID);
+      pendingVerificationToolCount.delete(sessionID);
+      debug(`pendingVerification: CLEARED (backward transition) for session ${sessionID}`);
       return true;
     }
 
@@ -511,6 +544,10 @@ export default {
           if (!loadState(sessionID)) {
             debug(`chat.params: initializing overseer session ${sessionID}`);
             sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+            // BUG-004: Capture session ID at initialization, not at intent KD write.
+            // checkDiskAdvancement requires :sid to filter KD files by session.
+            sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+            saveState(sessionID);
           }
         }
       } else {
@@ -637,6 +674,8 @@ export default {
           sessionPhaseMap.delete(`${sessionID}:sid`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
+          pendingVerification.delete(sessionID);
+          pendingVerificationToolCount.delete(sessionID);
           saveState(sessionID);
           phase = STATES.PROTOCOL_NOT_LOADED;
           phaseName = getPhaseName(phase);
@@ -668,14 +707,22 @@ export default {
           }
         }
 
-        // Capture session ID from intent KD write.
-        // The session ID is stored as :sid and used by checkDiskAdvancement
-        // to filter KD files by session.
-        // Placed AFTER content validation so we don't capture data for writes that are rejected.
-        if (isIntentKD && phase === STATES.INTENT) {
-          sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
-          debug(`write: captured session ID ${sessionID}`);
-          saveState(sessionID);
+        // BUG-003: Trigger pendingVerification when write creates a KD matching
+        // the current phase's expected prefix. This prevents false regression
+        // while the KD is being finalized and written to disk.
+        if (phase > STATES.INTENT && phase <= STATES.CLEANUP) {
+          const prefixes = getPrefixes(phase);
+          const matchedPrefix = prefixes.find(p => relPath.includes(`${p}-`));
+          if (matchedPrefix) {
+            pendingVerification.set(sessionID, {
+              expectedPrefixes: prefixes,
+              toolType: 'write',
+              timestamp: Date.now(),
+              toolCalls: 0
+            });
+            pendingVerificationToolCount.set(sessionID, 0);
+            debug(`pendingVerification: SET (write) for session ${sessionID} — matchedPrefix=${matchedPrefix}, expectedPrefixes=${JSON.stringify(prefixes)}`);
+          }
         }
       }
 
@@ -723,6 +770,8 @@ export default {
           sessionPhaseMap.delete(`${sessionID}:sid`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
+          pendingVerification.delete(sessionID);
+          pendingVerificationToolCount.delete(sessionID);
           saveState(sessionID);
           phase = STATES.PROTOCOL_NOT_LOADED;
           phaseName = getPhaseName(phase);
@@ -747,15 +796,14 @@ export default {
         } else {
           const currentPhase = sessionPhaseMap.get(sessionID);
           const currentPhaseName = getPhaseName(currentPhase);
-          // R002: Cooldown — suppress advancement if regression occurred within threshold
-          const sinceLastRegression = Date.now() - (lastRegressionTime.get(sessionID) || 0);
-          if (sinceLastRegression < REGRESSION_COOLDOWN_MS) {
-            debug(`REGRESSION_COOLDOWN: Disk advancement skipped for ${sessionID} — cooldown active (${sinceLastRegression}ms < ${REGRESSION_COOLDOWN_MS}ms)`);
-          } else if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount)) {
+          if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount)) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
             diskCheckFailures.set(sessionID, 0);
             // R005: Clear in-flight tracking — KD appeared on disk, dispatch is complete
             inFlightDispatches.delete(sessionID);
+            pendingVerification.delete(sessionID);
+            pendingVerificationToolCount.delete(sessionID);
+            debug(`pendingVerification: CLEARED (disk advancement) for session ${sessionID}`);
             // Reset re-dispatch counter for the phase we just advanced from
             phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
             const newPhase = currentPhase + 1;
@@ -771,22 +819,15 @@ export default {
             // REPORT doesn't use disk-based advancement — skip stuck detection.
             // REPORT writes the KD directly; other phases rely on KD file existence.
             if (currentPhase !== STATES.REPORT) {
-              // P005: Run phase-state consistency check before stuck detection.
-              // When undo deletes KDs, phase state diverges from disk reality.
-              // The consistency check detects this and regresses to the highest
-              // surviving phase, resetting stuck counters along the way.
-              //
-              // Gate: only run when the current tool call is NOT creating the
-              // expected KD. During a write call, the KD file doesn't exist on
-              // disk yet (tool.execute.before runs before the write persists).
-              // Running the consistency check here would cause false regression.
-              const currentPhasePrefix = currentPhaseName.toLowerCase();
-              // R001: Guard must also cover task calls dispatching the current phase's
-              // expected agent. Without this, a task call in EXPLORE (dispatching explorer)
-              // triggers false regression because the exploration KD doesn't exist on disk yet.
-              let isCreatingExpectedKD = tool === "write" && (
-                (args?.filePath || "").includes(`${currentPhasePrefix}-`) ||
-                (args?.content || "").includes(`${currentPhasePrefix}-`)
+              const currentPhasePrefixes = getPrefixes(currentPhase);
+              if (currentPhasePrefixes.length === 0) {
+                currentPhasePrefixes.push(currentPhaseName.toLowerCase());
+              }
+
+              // R001 guard: skip consistency check when write/task is creating expected KD.
+              // For VERIFY phase, match against ANY prefix in the array (review OR audit).
+              let isCreatingExpectedKD = tool === "write" && currentPhasePrefixes.some(p =>
+                (args?.filePath || "").includes(`${p}-`) || (args?.content || "").includes(`${p}-`)
               );
               if (!isCreatingExpectedKD && tool === "task") {
                 const taskPrompt = args?.prompt || "";
@@ -797,36 +838,58 @@ export default {
                 const expectedAgent = PHASE_AGENT_MAP[currentPhaseName]?.toLowerCase();
                 if (taskAgent && expectedAgent && taskAgent === expectedAgent) {
                   isCreatingExpectedKD = true;
-                  inFlightDispatches.set(sessionID, currentPhasePrefix);
-                  debug(`KD_IN_FLIGHT: task dispatching ${taskAgent} for phase ${currentPhaseName} — consistency check skipped`);
+                  // Store all expected prefixes for this phase (array for VERIFY, single for others)
+                  inFlightDispatches.set(sessionID, currentPhasePrefixes);
+                  debug(`KD_IN_FLIGHT: task dispatching ${taskAgent} for phase ${currentPhaseName} — prefixes=${JSON.stringify(currentPhasePrefixes)}`);
                 }
               }
 
-              if (!isCreatingExpectedKD) {
+              // BUG-003: pendingVerification — skip consistency check and stuck counter
+              // when a phase advancement is pending (subagent actively producing KD).
+              const pvState = pendingVerification.get(sessionID);
+              if (pvState) {
+                // Increment tool call counter for safety timeout (R007)
+                const toolCalls = (pendingVerificationToolCount.get(sessionID) || 0) + 1;
+                pendingVerificationToolCount.set(sessionID, toolCalls);
+
+                // Safety timeout: warn at 10, force-advance at 15
+                if (toolCalls >= 15) {
+                  debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
+                  pendingVerification.delete(sessionID);
+                  pendingVerificationToolCount.delete(sessionID);
+                  sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                  diskCheckFailures.set(sessionID, 0);
+                  inFlightDispatches.delete(sessionID);
+                  saveState(sessionID);
+                } else if (toolCalls >= 10) {
+                  debug(`pendingVerification WARNING: ${toolCalls} tool calls without expected KD — clearing pendingVerification (expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
+                  pendingVerification.delete(sessionID);
+                  pendingVerificationToolCount.delete(sessionID);
+                } else {
+                  // While pending: skip consistency check and stuck counter
+                  debug(`pendingVerification: active for ${sessionID} — skipping consistency check and stuck counter (toolCalls=${toolCalls}, expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
+                }
+              } else if (!isCreatingExpectedKD) {
+                // No pendingVerification: run normal consistency check + stuck detection
                 const didRegress = checkPhaseStateConsistency(
                   sessionID, currentPhase, sessionPhaseMap,
                   saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount,
-                  inFlightDispatches, lastRegressionTime
+                  inFlightDispatches
                 );
 
                 if (didRegress) {
-                  // P008: Regression detected — phase was reset by consistency check.
-                  // Stuck counter already cleared inside checkPhaseStateConsistency.
-                  // Re-read phase since it was updated by the consistency check.
                   phase = sessionPhaseMap.get(sessionID) ?? phase;
                   phaseName = getPhaseName(phase);
                 } else {
-                  // Normal stuck detection — no regression, just no advancement yet
+                  // Normal stuck detection
                   const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
                   diskCheckFailures.set(sessionID, failures);
                   if (failures === 10) {
-                    // Diagnostic output: list files found so user knows what's missing
                     const knowledgeDir = join(process.cwd(), "knowledge");
                     let foundFiles = [];
                     try { foundFiles = readdirSync(knowledgeDir).filter(f => f.endsWith(`-${sessionID}.md`)); } catch (_) {}
-                    debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Expected prefix: ${currentPhasePrefix}-*. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
+                    debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Expected prefixes: ${JSON.stringify(currentPhasePrefixes)}. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
                   }
-                  // Force-advance to VERIFY after 15 stuck cycles to unblock the lifecycle
                   if (failures >= 15) {
                     debug(`FORCE ADVANCE: ${currentPhaseName} → VERIFY after ${failures} stuck cycles`);
                     sessionPhaseMap.set(sessionID, STATES.VERIFY);
@@ -834,7 +897,6 @@ export default {
                     phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
                     saveState(sessionID);
                   }
-                  // Cap re-dispatches per phase at 5
                   const redispatchKey = `${sessionID}:${currentPhase}`;
                   const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
                   if (redispatches >= 5 && tool === "task") {
@@ -846,7 +908,7 @@ export default {
                   }
                 }
               } else {
-                debug(`Consistency check: skipped — write creating current phase KD (${currentPhasePrefix}-)`);
+                debug(`Consistency check: skipped — write creating current phase KD (prefixes=${JSON.stringify(currentPhasePrefixes)})`);
               }
             }
           }
@@ -893,6 +955,19 @@ export default {
             // Track re-dispatches per phase to cap retries
             const redispatchKey = `${sessionID}:${phase}`;
             phaseRedispatchCount.set(redispatchKey, (phaseRedispatchCount.get(redispatchKey) || 0) + 1);
+            // BUG-003: Trigger pendingVerification when task dispatches the current phase's
+            // expected agent. The expected KD will be produced by the subagent.
+            const prefixes = getPrefixes(phase);
+            if (prefixes.length > 0) {
+              pendingVerification.set(sessionID, {
+                expectedPrefixes: prefixes,
+                toolType: 'task',
+                timestamp: Date.now(),
+                toolCalls: 0
+              });
+              pendingVerificationToolCount.set(sessionID, 0);
+              debug(`pendingVerification: SET (task dispatch) for session ${sessionID} — agent=${agentName}, expectedPrefixes=${JSON.stringify(prefixes)}`);
+            }
           }
           // Check if agent matches a backward target → backward transition
           else {
@@ -992,9 +1067,10 @@ export default {
       swarmDispatchCount,
       phaseRedispatchCount,
       diskCheckFailures,
-      lastRegressionTime,
       inFlightDispatches,
-      REGRESSION_COOLDOWN_MS,
+      pendingVerification,
+      pendingVerificationToolCount,
+      KD_TYPE_PREFIXES,
       checkPhaseStateConsistency,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
