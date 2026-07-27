@@ -3,7 +3,7 @@ description: "Performs deep-dive investigations and root cause analysis."
 mode: subagent
 temperature: 0.1
 top_p: 0.4
-steps: 50
+steps: 100
 permission:
   read: allow
   edit:

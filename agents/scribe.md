@@ -3,7 +3,7 @@ description: "Captures and organizes knowledge across swarm lifecycle. Synthesiz
 mode: subagent
 temperature: 0.2
 top_p: 0.6
-steps: 50
+steps: 100
 permission:
   read:
     "*": deny

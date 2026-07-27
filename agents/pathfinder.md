@@ -3,7 +3,7 @@ description: "Translates specs into dependency-aware task plans. Defines milesto
 mode: subagent
 temperature: 0.1
 top_p: 0.7
-steps: 50
+steps: 100
 permission:
   read: allow
   edit:

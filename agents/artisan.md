@@ -3,7 +3,7 @@ description: "Executes technical implementations per SPEC and PLAN. Writes produ
 mode: subagent
 temperature: 0.3
 top_p: 0.4
-steps: 100
+steps: 200
 permission:
   read: allow
   edit: allow

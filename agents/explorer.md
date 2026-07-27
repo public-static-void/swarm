@@ -3,7 +3,7 @@ description: "Explores codebases to map structure, technologies, and key compone
 mode: subagent
 temperature: 0.4
 top_p: 0.6
-steps: 50
+steps: 100
 permission:
   read: allow
   edit:
