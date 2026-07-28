@@ -8,7 +8,6 @@ permission:
   read:
     "*": deny
     "knowledge/*.md": allow
-    "**/skills/kd-system/templates/*.md": allow
   edit:
     "*": deny
     "knowledge/process-*.md": allow
@@ -22,7 +21,6 @@ permission:
   websearch: allow
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:

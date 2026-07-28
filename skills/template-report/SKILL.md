@@ -1,4 +1,9 @@
 ---
+name: template-report
+description: "KD template for creating REPORT documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "REPORT: {{feature name}}"
 version: 1.0.0
 status: draft

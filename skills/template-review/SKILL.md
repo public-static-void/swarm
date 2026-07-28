@@ -1,4 +1,9 @@
 ---
+name: template-review
+description: "KD template for creating REVIEW documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "REVIEW: {{artifact reviewed}}"
 version: 1.0.0
 status: draft

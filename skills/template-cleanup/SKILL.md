@@ -1,4 +1,9 @@
 ---
+name: template-cleanup
+description: "KD template for creating CLEANUP documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "CLEANUP: {{description}}"
 version: 1.0.0
 status: draft

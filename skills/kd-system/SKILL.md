@@ -11,22 +11,22 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 
 ## KD Types
 
-| Type                   | Prefix         | Producer      | Consumer                                                  | Template File                                  |
+| Type                   | Prefix         | Producer      | Consumer                                                  | Template Skill                                  |
 | ---------------------- | -------------- | ------------- | --------------------------------------------------------- | ---------------------------------------------- |
-| INTENT                 | `intent-`      | Overseer      | Explorer, Analyzer, Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Habit Builder | `templates/template-intent.md` |
-| PREFLIGHT              | `preflight-`   | Committer     | Scribe, Habit Builder                                     | `templates/template-preflight.md`              |
-| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector, Scribe, Habit Builder     | `templates/template-spec.md`                   |
-| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector, Scribe, Habit Builder                 | `templates/template-plan.md`                   |
-| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe, Habit Builder                          | `templates/template-implementation-summary.md` |
-| REVIEW                 | `review-`      | Inspector     | Artisan, Scribe, Habit Builder                            | `templates/template-review.md`                 |
-| AUDIT                  | `audit-`       | Inspector     | Artisan, Scribe, Habit Builder                            | `templates/template-audit.md`                  |
-| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Scribe, Habit Builder                        | `templates/template-analysis.md`              |
-| REPORT                 | `report-`      | Overseer      | User                                                       | `templates/template-report.md`                 |
-| PROCESS                | `process-`     | Habit Builder | User                                                       | `templates/template-process.md`                |
-| COMPOSED               | `composed-`    | Scribe        | Habit Builder                                              | `templates/template-composed.md`              |
-| EXPLORATION            | `exploration-` | Explorer      | Analyzer, Spec Weaver, Scribe, Habit Builder               | `templates/template-exploration.md`    |
-| CHECKPOINT             | `checkpoint-`  | Committer     | Scribe, Habit Builder                                      | `templates/template-checkpoint.md`             |
-| CLEANUP                | `cleanup-`     | Committer     |                                                           | `templates/template-cleanup.md`                |
+| INTENT                 | `intent-`      | Overseer      | Explorer, Analyzer, Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Habit Builder | `template-intent` |
+| PREFLIGHT              | `preflight-`   | Committer     | Scribe, Habit Builder                                     | `template-preflight`              |
+| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector, Scribe, Habit Builder     | `template-spec`                   |
+| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector, Scribe, Habit Builder                 | `template-plan`                   |
+| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe, Habit Builder                          | `template-impl` |
+| REVIEW                 | `review-`      | Inspector     | Artisan, Scribe, Habit Builder                            | `template-review`                 |
+| AUDIT                  | `audit-`       | Inspector     | Artisan, Scribe, Habit Builder                            | `template-audit`                  |
+| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Scribe, Habit Builder                        | `template-analysis`              |
+| REPORT                 | `report-`      | Overseer      | User                                                       | `template-report`                 |
+| PROCESS                | `process-`     | Habit Builder | User                                                       | `template-process`                |
+| COMPOSED               | `composed-`    | Scribe        | Habit Builder                                              | `template-composed`              |
+| EXPLORATION            | `exploration-` | Explorer      | Analyzer, Spec Weaver, Scribe, Habit Builder               | `template-exploration`    |
+| CHECKPOINT             | `checkpoint-`  | Committer     | Scribe, Habit Builder                                      | `template-checkpoint`             |
+| CLEANUP                | `cleanup-`     | Committer     |                                                           | `template-cleanup`                |
 
 **Consumer legend:**
 - Agents: Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Analyzer, Habit Builder, Explorer, User
@@ -77,7 +77,6 @@ Example: `spec-auth-flow-ses_0711b9644ffe.md`
 ## Storage
 
 - Runtime KDs live under project-relative `knowledge/` directory
-- Templates are bundled with this skill at `templates/*.md` (relative to SKILL.md location)
 
 ## Pre-Creation Compliance Checklist
 
@@ -95,7 +94,7 @@ Before creating any KD, verify each of these:
 
 ### Step 2: Body Structure
 
-- [ ] Body follows the structure defined in the corresponding template file
+- [ ] Body follows the structure defined in the corresponding template skill
 - [ ] All template placeholders (`{{...}}`) replaced with actual content
 - [ ] (optional) Process Friction section present if issues encountered
 - [ ] Friction table has correct columns: ID, Issue, Severity, Status, Fixed by
@@ -134,7 +133,7 @@ After writing the KD file:
 When creating a KD:
 
 1. Load this skill to access the template reference
-2. Read the corresponding template file from `templates/`
+2. Load the corresponding template skill using the `skill` tool: `skill("template-{type}")`
 3. Run the Pre-Creation Compliance Checklist above
 4. Copy the template structure and fill in the placeholders
 5. Save to `knowledge/{prefix}-{name}-{session_id}.md`

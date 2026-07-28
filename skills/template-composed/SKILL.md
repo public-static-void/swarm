@@ -1,4 +1,9 @@
 ---
+name: template-composed
+description: "KD template for creating COMPOSED documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "COMPOSED: Context for {{target agent}} — {{task}}"
 version: 1.0.0
 status: draft

@@ -1,4 +1,9 @@
 ---
+name: template-analysis
+description: "KD template for creating ANALYSIS documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "ANALYSIS: {{topic investigated}}"
 version: 1.0.0
 status: draft

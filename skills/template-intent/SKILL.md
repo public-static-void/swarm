@@ -1,4 +1,9 @@
 ---
+name: template-intent
+description: "KD template for creating INTENT documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "INTENT: {{title of the request}}"
 version: 1.0.0
 status: draft

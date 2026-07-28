@@ -10,10 +10,10 @@ permission:
     "knowledge/*.md": allow
     "README.md": allow
     "AGENTS.md": allow
-    "**/skills/kd-system/templates/*.md": allow
   edit:
     "*": deny
     "knowledge/*.md": allow
+    "knowledge/memory/*.json": allow
     "README.md": allow
     "AGENTS.md": allow
   glob: allow
@@ -26,7 +26,6 @@ permission:
   websearch: allow
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:

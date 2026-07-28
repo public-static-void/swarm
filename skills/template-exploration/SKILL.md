@@ -1,4 +1,9 @@
 ---
+name: template-exploration
+description: "KD template for creating EXPLORATION documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "EXPLORATION: {{topic explored}}"
 version: 1.0.0
 status: draft

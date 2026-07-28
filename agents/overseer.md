@@ -9,7 +9,6 @@ permission:
     "*": deny
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
-    "**/skills/kd-system/templates/*.md": allow
   grep: deny
   edit:
     "*": deny
@@ -22,13 +21,14 @@ permission:
   skill:
     "*": deny
     "kd-system": allow
+    "template-intent": allow
+    "template-report": allow
   lsp: deny
   question: allow
   webfetch: deny
   websearch: deny
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:

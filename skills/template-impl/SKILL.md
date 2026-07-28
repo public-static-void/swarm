@@ -1,4 +1,9 @@
 ---
+name: template-impl
+description: "KD template for creating IMPLEMENTATION SUMMARY documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "IMPLEMENTATION SUMMARY: {{feature name}} — {{step reference}}"
 version: 1.0.0
 status: draft

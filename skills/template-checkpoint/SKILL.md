@@ -1,4 +1,9 @@
 ---
+name: template-checkpoint
+description: "KD template for creating CHECKPOINT documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "CHECKPOINT: {{description}}"
 version: 1.0.0
 status: draft

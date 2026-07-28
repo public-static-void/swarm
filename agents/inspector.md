@@ -20,7 +20,6 @@ permission:
   websearch: allow
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:
