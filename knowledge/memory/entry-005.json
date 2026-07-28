@@ -1,0 +1,10 @@
+{
+  "id": "MEM-005",
+  "source_kd": "knowledge/composed-overseer-behavioral-fixes-2026-06-28.md",
+  "tags": ["overseer", "behavioral", "protocol", "positive-framing", "structural", "dispatch-validation"],
+  "topic": "Overseer behavioral fixes — structural enforcement over behavioral rules",
+  "insight": "Replace behavioral rules with structural constraints. 6 Core Principles (CP1-CP6) with typed field enums, Dispatch Acceptance Gate (5 checks) embedded in all 9 agent definitions, positive framing mandate. Key insight: structural enforcement beats behavioral rules because typed enums physically prevent undesired content. Protocol-embedded validation (co-located with fields) is superior to script validation.",
+  "created": "2026-07-28T00:00:00.000Z",
+  "session": "ses_05616a6d7ffeoaAAGkDEIvHEC8",
+  "version": "1.0.0"
+}

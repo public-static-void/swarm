@@ -301,14 +301,19 @@ export default {
       const sessionID = input.sessionID;
       const agent = sessionAgentMap.get(sessionID);
 
-      // Scribe and agents with memory access get the memory_search instruction
+      // All agents get memory_search read access to query prior session insights
+      output.system.push(
+        `[Knowledge Gate] You have access to the memory_search tool. ` +
+        `Call it with tags (array), topic (string), or limit (integer) to query ` +
+        `prior session insights from knowledge/memory/.`
+      );
+
+      // Scribe additionally gets write instructions for composing memory entries
       if (agent === "scribe") {
         output.system.push(
-          `[Knowledge Gate] You have access to the memory_search tool. ` +
-          `Use it to query prior session insights before composing new COMPOSED KDs. ` +
-          `Call memory_search with tags (array), topic (string), or limit (integer). ` +
-          `After composing a COMPOSED KD, write distilled insights to knowledge/memory/ as JSON files. ` +
-          `Each file: entry-{sequential-id}.json with fields: id, source_kd, tags, topic, insight, created, session, version.`
+          `[Knowledge Gate] After composing a COMPOSED KD, write distilled insights ` +
+          `to knowledge/memory/ as JSON files. Each file: entry-{sequential-id}.json ` +
+          `with fields: id, source_kd, tags, topic, insight, created, session, version.`
         );
       }
 
@@ -356,3 +361,6 @@ export default {
     };
   }
 };
+
+// Named export for cross-plugin access by protocol-gate
+export { searchMemory, scanHighSeverityIssues, scanOpenIssues };

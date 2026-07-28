@@ -991,6 +991,32 @@ export default {
         }
 
         const prompt = args?.prompt || "";
+
+        // --- Memory injection: query prior insights for dispatch context ---
+        // Injects top-3 relevant memory entries into the dispatch prompt so the
+        // subagent receives relevant cross-session context at dispatch time.
+        try {
+          const memoryModule = await import('../knowledge-gate/index.js');
+          if (typeof memoryModule.searchMemory === 'function') {
+            // Extract topic from SCOPE, MODE, or fall back to phase name
+            const scopeMatch = prompt.match(/SCOPE:\s*(.+)/i);
+            const modeMatch = prompt.match(/MODE:\s*(\S+)/i);
+            const topic = scopeMatch?.[1]?.trim() || modeMatch?.[1] || phaseName;
+
+            const memoryResults = memoryModule.searchMemory({ tags: [], topic, limit: 3 });
+            if (memoryResults && memoryResults.length > 0) {
+              const memoryBlock = memoryResults.map(m =>
+                `- [${m.id}] ${m.topic}: ${m.insight} (source: ${m.source_kd})`
+              ).join('\n');
+              output.args.prompt = prompt + `\n\n## Relevant Prior Insights\n${memoryBlock}`;
+              debug(`Memory injection: added ${memoryResults.length} results for topic="${topic.substring(0, 50)}"`);
+            }
+          }
+        } catch (e) {
+          // Non-blocking: dispatch proceeds without memory if injection fails
+          debug(`Memory injection skipped (non-blocking): ${e.message}`);
+        }
+
         // Try prompt text first; fall back to subagent_type parameter.
         // When protocol-gate runs before delegation-gate, the raw prompt
         // has no structured fields — subagent_type is the reliable source.

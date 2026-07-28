@@ -1,0 +1,10 @@
+{
+  "id": "MEM-002",
+  "source_kd": "knowledge/composed-plugin-fix-journey-2026-07-21.md",
+  "tags": ["plugins", "protocol-gate", "delegation-gate", "lifecycle", "bugs", "testing"],
+  "topic": "Cross-cutting plugin systemic issues — markdown stripping, mode inference, completion markers",
+  "insight": "7 bugs fixed across protocol-gate and delegation-gate. Key fix patterns: (1) Strip `**` from regex-captured values when agents write markdown-formatted structured data; (2) When structured fields are missing, scan text for known keywords with word-boundary regex; (3) Replace implicit signals (git status) with explicit completion markers (sentinel files); (4) Track dispatch counts to gate parallel work phase advancement.",
+  "created": "2026-07-28T00:00:00.000Z",
+  "session": "ses_05616a6d7ffeoaAAGkDEIvHEC8",
+  "version": "1.0.0"
+}
