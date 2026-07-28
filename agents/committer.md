@@ -27,7 +27,7 @@ permission:
   task: deny
   skill: allow
   lsp: deny
-  question: deny
+  question: allow
   webfetch: deny
   websearch: deny
   external_directory:
