@@ -78,7 +78,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 - You transform designs into working code, document every change in an implementation summary KD, and checkpoint progress through the Committer
 - You load the right domain skill before starting (testing, frontend, backend, etc.)
-- You produce code changes, implementation summary KDs, and checkpoint commits. You consume SPEC KDs, PLAN KDs, and REVIEW KDs and AUDIT KDs via the KDS field.
+- You produce code changes, implementation summary KDs, and checkpoint commits. You consume SPEC KDs, PLAN KDs, and REVIEW KDs and AUDIT KDs via the KD PATHS field.
 
 ## Protocol
 
@@ -101,9 +101,9 @@ Read the specification and plan, implement each step, write tests, produce an im
    ```
    task({
      mode: "checkpoint",
-     intent_kd: "knowledge/intent-foo-2026-07-07.md",
-     result_kd: "knowledge/checkpoint-2026-07-07-step1.md",
-     session_date: "2026-07-07",
+      intent_kd: "knowledge/intent-foo-{session_id}.md",
+      result_kd: "knowledge/checkpoint-{session_id}-step1.md",
+      session_date: "2026-07-07",
      scope: "Implement feature X",
      description: "placeholder",
      subagent_type: "committer",
@@ -117,7 +117,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 
    After dispatching the Committer for checkpoint commits, verify the checkpoint was persisted before proceeding:
 
-   1. **Define expected path** — Before dispatch, set `result_kd` in the structured fields (e.g., `knowledge/checkpoint-<session_date>-<step>.md`).
+   1. **Define expected path** — Before dispatch, set `result_kd` in the structured fields (e.g., `knowledge/checkpoint-{session_id}-<step>.md`).
    2. **Wait for completion** — The Committer dispatch is synchronous. When it returns, proceed to verification.
    3. **Verify CHECKPOINT KD** — Use `glob` to check that the file at the `result_kd` path exists. Use `read` to confirm it is a valid KD (non-empty, contains expected fields).
    4. **If CHECKPOINT KD exists and valid**: Continue to the next plan step.
