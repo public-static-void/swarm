@@ -3,7 +3,7 @@ title: "SPEC: {{feature name}}"
 version: 1.0.0
 status: draft
 type: spec
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Spec Weaver
 superseded_by: null
 ---

@@ -3,7 +3,7 @@ title: "PREFLIGHT: {{workspace setup}}"
 version: 1.0.0
 status: draft
 type: preflight
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Committer
 superseded_by: null
 ---

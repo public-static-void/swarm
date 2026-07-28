@@ -3,12 +3,12 @@ title: "REPORT: {{feature name}}"
 version: 1.0.0
 status: draft
 type: report
-created: "{{YYYY-MM-DD}}"
+session_id: "{{session_id}}"
 author: Overseer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/report-{{session}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/report-{{session}}-{{session_id}}.md -->
 
 # REPORT: {{feature}}
 

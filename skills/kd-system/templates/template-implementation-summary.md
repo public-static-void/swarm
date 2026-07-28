@@ -3,7 +3,7 @@ title: "IMPLEMENTATION SUMMARY: {{feature name}} — {{step reference}}"
 version: 1.0.0
 status: draft
 type: impl
-created: "{{YYYY-MM-DD}}"
+session_id: "{{session_id}}"
 author: Artisan
 superseded_by: null
 ---

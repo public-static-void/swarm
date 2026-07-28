@@ -3,7 +3,7 @@ title: "EXPLORATION: {{topic explored}}"
 version: 1.0.0
 status: draft
 type: exploration
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Explorer
 superseded_by: null
 ---

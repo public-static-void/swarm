@@ -3,7 +3,7 @@ title: "REVIEW: {{artifact reviewed}}"
 version: 1.0.0
 status: draft
 type: review
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Inspector
 superseded_by: null
 ---

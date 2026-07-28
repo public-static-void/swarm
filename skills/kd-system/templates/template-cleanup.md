@@ -3,7 +3,7 @@ title: "CLEANUP: {{description}}"
 version: 1.0.0
 status: draft
 type: cleanup
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Committer
 superseded_by: null
 ---

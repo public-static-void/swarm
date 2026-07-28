@@ -3,7 +3,7 @@ title: "AUDIT: {{artifact audited}}"
 version: 1.0.0
 status: draft
 type: audit
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Inspector
 superseded_by: null
 ---

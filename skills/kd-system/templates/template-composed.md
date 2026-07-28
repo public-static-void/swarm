@@ -3,7 +3,7 @@ title: "COMPOSED: Context for {{target agent}} — {{task}}"
 version: 1.0.0
 status: draft
 type: composed
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Scribe
 superseded_by: null
 ---

@@ -38,7 +38,7 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 
 Every KD must have:
 
-1. **YAML frontmatter** with: `title`, `version`, `status`, `type`, `created`, `author`, `superseded_by`
+1. **YAML frontmatter** with: `title`, `version`, `status`, `type`, `session_id`, `author`, `superseded_by`
 2. **Body** with sections appropriate to its type — see the Pre-Creation Compliance Checklist below and the corresponding template for the expected structure.
 
 ## Frontmatter Fields
@@ -49,7 +49,7 @@ title: "TYPE: Descriptive Title"
 version: 1.0.0
 status: draft
 type: spec
-created: YYYY-MM-DD
+session_id: "{{session_id}}"
 author: Agent Name
 superseded_by: null
 ---
@@ -89,7 +89,7 @@ Before creating any KD, verify each of these:
 - [ ] `version` — Semantic version MAJOR.MINOR.PATCH
 - [ ] `status` — `draft` | `review` | `approved` | `superseded`
 - [ ] `type` — Matches one of the KD types defined in the table above
-- [ ] `created` — ISO 8601 date (YYYY-MM-DD)
+- [ ] `session_id` — `"{{session_id}}"`
 - [ ] `author` — Your agent name
 - [ ] `superseded_by` — `null` for new KDs, path string for superseded
 

@@ -3,7 +3,7 @@ title: "PROCESS: {{process name}}"
 version: 1.0.0
 status: draft
 type: process
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Habit Builder
 superseded_by: null
 ---

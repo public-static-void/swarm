@@ -3,7 +3,7 @@ title: "INTENT: {{title of the request}}"
 version: 1.0.0
 status: draft
 type: intent
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Overseer
 superseded_by: null
 ---

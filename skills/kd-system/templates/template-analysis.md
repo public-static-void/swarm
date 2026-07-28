@@ -3,7 +3,7 @@ title: "ANALYSIS: {{topic investigated}}"
 version: 1.0.0
 status: draft
 type: analysis
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Explorer/Analyzer
 superseded_by: null
 ---
