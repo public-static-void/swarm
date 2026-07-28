@@ -435,6 +435,9 @@ export default {
     // Tracks tool calls made while pendingVerification is active per session.
     // Used by R007 safety timeout: warning at 10, force-advance at 15.
     const pendingVerificationToolCount = new Map();
+    // R100: Track agent type for ALL sessions (including subagents) to enforce
+    // checkpoint KD restrictions. Populated in chatParams for every session.
+    const sessionAgentMap = new Map();
     // tool.definition doesn't receive sessionID — track the most recent session
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
@@ -536,6 +539,10 @@ export default {
       const { sessionID, agent } = input;
       lastSeenSession = sessionID;
 
+      // R100: Track agent for ALL sessions (overseer and subagents).
+      // Used by checkpoint KD enforcement to verify the writing agent.
+      if (agent) sessionAgentMap.set(sessionID, agent);
+
       if (agent === "overseer") {
         overseerSessions.add(sessionID);
         // Only initialize when session isn't already tracked (opencode calls
@@ -596,6 +603,48 @@ export default {
       const args = output.args || {};
 
       if (!isOverseerSession(sessionID)) {
+        // R100: Checkpoint KD enforcement for subagent writes/edits.
+        // Only the committer should write checkpoint KDs during SWARM phase.
+        // If a non-committer subagent (e.g. artisan) writes or edits a
+        // checkpoint KD directly, flag it. Check ALL overseer sessions for
+        // SWARM phase to find the parent lifecycle context.
+        if (tool === "write" || tool === "edit") {
+          const path = args?.filePath || "";
+          const relPath = toProjectRelative(path);
+          const isCheckpointKD = /^knowledge\/checkpoint-/i.test(relPath) || /\/knowledge\/checkpoint-/i.test(relPath);
+          if (isCheckpointKD) {
+            const writingAgent = sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown";
+            if (writingAgent !== "committer") {
+              // Check if any overseer session is in SWARM phase
+              let isInSwarm = false;
+              for (const sid of overseerSessions) {
+                if (sessionPhaseMap.get(sid) === STATES.SWARM) {
+                  isInSwarm = true;
+                  break;
+                }
+              }
+              if (writingAgent !== "unknown") {
+                if (isInSwarm) {
+                  // Known non-committer agent wrote checkpoint KD during SWARM — block
+                  debug(`CHECKPOINT VIOLATION: agent=${writingAgent} ${tool} checkpoint KD during SWARM (path=${relPath})`);
+                  throw new ProtocolGateError(
+                    ERROR_TEMPLATES.WRONG_AGENT("committer").code,
+                    `❌ CHECKPOINT VIOLATION: Only committer may write checkpoint KDs during SWARM. Agent "${writingAgent}" attempted to ${tool} checkpoint KD. Dispatch the committer agent for checkpoint commits.`,
+                    "Dispatch the committer agent for checkpoint commits"
+                  );
+                } else {
+                  // Non-committer wrote checkpoint KD but not during SWARM — warn only
+                  debug(`CHECKPOINT WARNING: agent=${writingAgent} ${tool} checkpoint KD outside SWARM phase — allowed but unusual`);
+                }
+              } else {
+                // Cannot determine writing agent — emit warning and defer to review
+                if (isInSwarm) {
+                  debug(`CHECKPOINT WARNING: unknown agent ${tool} checkpoint KD during SWARM (path=${relPath}) — deferring to manual review`);
+                }
+              }
+            }
+          }
+        }
         // Session never identified as overseer via chat.params — pass through.
         // Subagent sessions are never in overseerSessions.
         debug(`tool.execute.before: non-overseer session ${sessionID} tool=${tool} — passing through`);
@@ -655,6 +704,18 @@ export default {
         // Check if path matches the required pattern (handles both relative and absolute paths)
         const isIntentKD = relPath.startsWith("knowledge/intent-") || relPath.includes("/knowledge/intent-");
         const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
+        // R100: Checkpoint KD enforcement — Overseer should not write checkpoint KDs.
+        // Check BEFORE phase-specific restrictions (INTENT, REPORT) to provide the
+        // more specific error: checkpoint KDs are only for committers.
+        const isCheckpointKD = relPath.startsWith("knowledge/checkpoint-") || relPath.includes("/knowledge/checkpoint-");
+        if (isCheckpointKD) {
+          debug(`CHECKPOINT VIOLATION: overseer session ${sessionID} wrote checkpoint KD during ${phaseName} phase`);
+          throw new ProtocolGateError(
+            ERROR_TEMPLATES.WRONG_AGENT("committer").code,
+            `❌ CHECKPOINT VIOLATION: Only committer may write checkpoint KDs. Overseer attempted to write checkpoint KD during ${phaseName} phase.`,
+            "Dispatch the committer agent for checkpoint commits"
+          );
+        }
 
         if (phase === STATES.INTENT && !isIntentKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/intent-)`);
@@ -976,16 +1037,28 @@ export default {
             const targetPhaseId = agentPhases.find(pid => validTargets.includes(pid));
 
             if (targetPhaseId !== undefined) {
-              debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
-              handleBackwardTransition(sessionID, phase, targetPhaseId);
+              // R011: Require explicit BACKWARD: true flag for backward transitions
+              // Without the flag, dispatching a non-current-phase agent is a wrong-agent
+              // error even if the agent could theoretically trigger a backward transition.
+              const hasBackwardFlag = /\bBACKWARD:\s*true\b/i.test(prompt);
+              if (hasBackwardFlag) {
+                debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
+                handleBackwardTransition(sessionID, phase, targetPhaseId);
+              } else {
+                // Agent matches a backward target but BACKWARD: true flag is missing.
+                // Treat as wrong agent — prevents accidental phase regression.
+                const expectedAgent = currentPhaseAgent || phaseName;
+                debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent}) — BACKWARD: true required for backward transition`);
+                throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+              }
             } else {
               // Wrong agent — not current phase, not a valid backward target
               // NOTE: Checkpoint commits during SWARM (artisan → committer) are handled
-              // by the subagent bypass above — artisan sessions are not in overseerSessions,
+              // by the subagent bypass — artisan sessions are not in overseerSessions,
               // so committer dispatches from artisan pass through protocol-gate untouched.
-              // The Overseer dispatching committer during SWARM triggers a backward
-              // transition to PREFLIGHT (committer maps to PREFLIGHT in agentToPhaseMap,
-              // and PREFLIGHT is a valid backward target for SWARM) — which is correct.
+              // The Overseer dispatching committer during SWARM without BACKWARD: true
+              // is now blocked (R011) — which is correct because checkpoint commits are
+              // the artisan's responsibility, not the overseer's.
               const expectedAgent = currentPhaseAgent || phaseName;
               debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
               throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);

@@ -259,10 +259,10 @@ describe("Protocol-Gate Plugin", () => {
 
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.VERIFY);
 
-      // Delegate to artisan (SWARM's agent) — should trigger backward transition
+      // Delegate to artisan (SWARM's agent) with BACKWARD: true flag
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "test-1", callID: "c1" },
-        { args: { prompt: "AGENT: artisan\nMODE: swarm\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Fix issues\nRESULT KD: knowledge/impl-foo.md" } }
+        { args: { prompt: "AGENT: artisan\nBACKWARD: true\nMODE: swarm\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Fix issues\nRESULT KD: knowledge/impl-foo.md" } }
       );
       // Should have transitioned to SWARM (7)
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.SWARM);
@@ -274,10 +274,25 @@ describe("Protocol-Gate Plugin", () => {
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.PREFLIGHT);
 
       // Delegate to explorer (not committer, not a backward target from PREFLIGHT)
+      // No BACKWARD: true flag — should throw WRONG_AGENT regardless
       await expect(
         hooks["tool.execute.before"](
           { tool: "task", sessionID: "test-1", callID: "c1" },
           { args: { prompt: "AGENT: explorer\nMODE: explore\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Explore codebase\nRESULT KD: knowledge/exploration-foo.md" } }
+        )
+      ).rejects.toThrow("Incorrect agent dispatched");
+    });
+
+    // R011: Backward transition WITHOUT BACKWARD: true flag should throw WRONG_AGENT
+    it("rejects backward transition without BACKWARD: true flag", async () => {
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("test-1", hooks.STATES.VERIFY);
+
+      // Delegate to artisan without BACKWARD: true — should throw WRONG_AGENT
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: "test-1", callID: "c1" },
+          { args: { prompt: "AGENT: artisan\nMODE: swarm\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-07-16\nSCOPE: Fix issues\nRESULT KD: knowledge/impl-foo.md" } }
         )
       ).rejects.toThrow("Incorrect agent dispatched");
     });
@@ -1504,10 +1519,10 @@ describe("Protocol-Gate Plugin", () => {
       hooks.sessionPhaseMap.set("swarm-6", hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set("swarm-6:sid", "swarm-6");
 
-      // Backward transition to SWARM via artisan dispatch
+      // Backward transition to SWARM via artisan dispatch with BACKWARD: true
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "swarm-6", callID: "c1" },
-        { args: { prompt: "AGENT: artisan\nMODE: swarm" } }
+        { args: { prompt: "AGENT: artisan\nBACKWARD: true\nMODE: swarm" } }
       );
 
       // Phase should be SWARM after backward transition
@@ -1882,7 +1897,7 @@ describe("Protocol-Gate Plugin", () => {
 
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "bt-1", callID: "c1" },
-        { args: { subagent_type: "explorer" } }
+        { args: { prompt: "AGENT: explorer\nBACKWARD: true", subagent_type: "explorer" } }
       );
 
       expect(hooks.sessionPhaseMap.get("bt-1")).toBe(hooks.STATES.EXPLORE);
@@ -1896,7 +1911,7 @@ describe("Protocol-Gate Plugin", () => {
 
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "bt-2", callID: "c1" },
-        { args: { subagent_type: "spec-weaver" } }
+        { args: { prompt: "AGENT: spec-weaver\nBACKWARD: true", subagent_type: "spec-weaver" } }
       );
 
       expect(hooks.sessionPhaseMap.get("bt-2")).toBe(hooks.STATES.ALIGN);
@@ -1910,7 +1925,7 @@ describe("Protocol-Gate Plugin", () => {
 
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "bt-3", callID: "c1" },
-        { args: { subagent_type: "analyzer" } }
+        { args: { prompt: "AGENT: analyzer\nBACKWARD: true", subagent_type: "analyzer" } }
       );
 
       expect(hooks.sessionPhaseMap.get("bt-3")).toBe(hooks.STATES.INVESTIGATE);
@@ -1927,7 +1942,7 @@ describe("Protocol-Gate Plugin", () => {
         hooks.sessionPhaseMap.set("bt-4", hooks.STATES.SWARM);
         await hooks["tool.execute.before"](
           { tool: "task", sessionID: "bt-4", callID: `c${i}` },
-          { args: { subagent_type: "analyzer" } }
+          { args: { prompt: "AGENT: analyzer\nBACKWARD: true", subagent_type: "analyzer" } }
         );
         expect(hooks.sessionPhaseMap.get("bt-4")).toBe(hooks.STATES.INVESTIGATE);
       }
@@ -1937,7 +1952,7 @@ describe("Protocol-Gate Plugin", () => {
       await expect(
         hooks["tool.execute.before"](
           { tool: "task", sessionID: "bt-4", callID: "c3" },
-          { args: { subagent_type: "analyzer" } }
+          { args: { prompt: "AGENT: analyzer\nBACKWARD: true", subagent_type: "analyzer" } }
         )
       ).rejects.toThrow();
     });
@@ -1960,7 +1975,7 @@ describe("Protocol-Gate Plugin", () => {
 
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "bt-5", callID: "c1" },
-        { args: { prompt: "AGENT: scribe\nMODE: extract" } }
+        { args: { prompt: "AGENT: scribe\nBACKWARD: true\nMODE: extract" } }
       );
 
       expect(hooks.sessionPhaseMap.get("bt-5")).toBe(hooks.STATES.EXTRACT);
@@ -1978,6 +1993,64 @@ describe("Protocol-Gate Plugin", () => {
           { args: { subagent_type: "artisan" } }
         )
       ).rejects.toThrow();
+    });
+  });
+
+  describe("Checkpoint KD Enforcement (R100)", () => {
+    // AC012: Checkpoint KD enforcement detects artisan writes during SWARM
+    it("AC012: blocks artisan from writing checkpoint KD during SWARM", async () => {
+      await hooks["chat.params"]({ sessionID: "ck-test-1", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("ck-test-1", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("ck-test-1:sid", "ck-test-1");
+
+      // Simulate an artisan session writing a checkpoint KD
+      // First register the artisan session in sessionAgentMap via chat.params
+      await hooks["chat.params"]({ sessionID: "artisan-ses-1", agent: "artisan" }, {});
+
+      // Artisan writes a checkpoint KD — should be blocked
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "write", sessionID: "artisan-ses-1", callID: "c1" },
+          { args: { filePath: "knowledge/checkpoint-test-ck-test-1.md", content: "# Checkpoint" } }
+        )
+      ).rejects.toThrow("CHECKPOINT VIOLATION");
+    });
+
+    // AC015: Committer writing checkpoint KD is allowed
+    it("AC015: committer writing checkpoint KD passes through", async () => {
+      await hooks["chat.params"]({ sessionID: "ck-test-2", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("ck-test-2", hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set("ck-test-2:sid", "ck-test-2");
+
+      // Register committer session
+      await hooks["chat.params"]({ sessionID: "committer-ses-1", agent: "committer" }, {});
+
+      // Committer writes a checkpoint KD — should pass through
+      let error = null;
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "write", sessionID: "committer-ses-1", callID: "c1" },
+          { args: { filePath: "knowledge/checkpoint-test-ck-test-2.md", content: "# Checkpoint" } }
+        );
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeNull();
+    });
+
+    // R100: Block overseer from writing checkpoint KD directly
+    it("blocks overseer from writing checkpoint KD", async () => {
+      await hooks["chat.params"]({ sessionID: "ck-test-3", agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set("ck-test-3", hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set("ck-test-3:sid", "ck-test-3");
+
+      // Overseer writes a checkpoint KD — should be blocked
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "write", sessionID: "ck-test-3", callID: "c1" },
+          { args: { filePath: "knowledge/checkpoint-test-ck-test-3.md", content: "# Checkpoint" } }
+        )
+      ).rejects.toThrow("CHECKPOINT VIOLATION");
     });
   });
 
@@ -2280,21 +2353,22 @@ describe("Protocol-Gate Plugin", () => {
 
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: sid, callID: "c2" },
-        { args: { subagent_type: "analyzer", prompt: "AGENT: analyzer" } }
+        { args: { subagent_type: "analyzer", prompt: "AGENT: analyzer\nBACKWARD: true" } }
       );
 
-      // Should have regressed to INVESTIGATE
+      // Should have transitioned backward to INVESTIGATE
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
 
-      // Now dispatch analyzer again (matching agent) — should NOT trigger another regression
-      // because inFlightDispatches is set
-      await hooks["tool.execute.before"](
-        { tool: "task", sessionID: sid, callID: "c3" },
-        { args: { subagent_type: "analyzer", prompt: "AGENT: analyzer" } }
-      );
-
-      // Phase should remain INVESTIGATE — no second regression (loop broken)
-      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
+      // R011: Second dispatch without BACKWARD: true should throw WRONG_AGENT
+      // because disk advancement will move to ALIGN first (analysis KD exists),
+      // and analyzer without BACKWARD: true in ALIGN phase is a wrong agent.
+      // The loop-stabilization mechanism is now controlled by the explicit flag.
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: sid, callID: "c3" },
+          { args: { subagent_type: "analyzer", prompt: "AGENT: analyzer" } }
+        )
+      ).rejects.toThrow("Incorrect agent dispatched");
       cleanupSession(sid);
     });
   });
