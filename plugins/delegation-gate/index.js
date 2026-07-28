@@ -266,13 +266,14 @@ function renderTemplate(template, fields) {
   return result;
 }
 
-function injectToolDocs(output) {
+function injectToolDocs(output, agentName) {
   const today = new Date().toISOString().slice(0, 10);
+  const displayAgent = agentName || "explorer";
   // Concrete examples prevent LLMs from copying placeholder syntax literally.
   // <name> and <optional context> are genuine variables — angle brackets signal variability.
   const formatHint = `
 Delegation Prompt Format:
-DISPATCH TO: explorer
+DISPATCH TO: ${displayAgent}
 MODE: explore
 INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
@@ -281,17 +282,17 @@ SCOPE: <optional context>
 RESULT KD: knowledge/<type>-<name>.md (when subagent produces a KD)
 
 RESULT KD Naming Conventions:
-- explore:     knowledge/exploration-<name>.md
-- investigate: knowledge/analysis-<name>.md
-- align:       knowledge/spec-<name>.md
-- decompose:   knowledge/plan-<name>.md
-- swarm:       knowledge/impl-<name>.md
-- verify:      knowledge/review-<name>.md, knowledge/audit-<name>.md
-- extract:     knowledge/composed-<name>.md
-- evolve:      knowledge/process-<name>.md
-- checkpoint:  knowledge/checkpoint-<name>.md
-- preflight:   knowledge/preflight-<name>.md
-- cleanup:     knowledge/cleanup-<name>.md
+- explore:     knowledge/exploration-<name>-<session_id>.md
+- investigate: knowledge/analysis-<name>-<session_id>.md
+- align:       knowledge/spec-<name>-<session_id>.md
+- decompose:   knowledge/plan-<name>-<session_id>.md
+- swarm:       knowledge/impl-<name>-<session_id>.md
+- verify:      knowledge/review-<name>-<session_id>.md, knowledge/audit-<name>-<session_id>.md
+- extract:     knowledge/composed-<name>-<session_id>.md
+- evolve:      knowledge/process-<name>-<session_id>.md
+- checkpoint:  knowledge/checkpoint-<name>-<session_id>.md
+- preflight:   knowledge/preflight-<name>-<session_id>.md
+- cleanup:     knowledge/cleanup-<name>-<session_id>.md
 `;
 
   if (!output.args) output.args = {};
@@ -330,7 +331,7 @@ export default {
       debug(`RAW DESCRIPTION (${description.length} chars): ${description.substring(0, 500)}`);
       debug(`RAW SUBAGENT_TYPE: ${subagentType}`);
 
-      injectToolDocs(output);
+      injectToolDocs(output, subagentType);
 
       if (isBareKDPath(prompt)) {
         debug(`VALIDATION FAILED: bare KD path without structured fields`);

@@ -1,4 +1,4 @@
 {
   "mode": "explore",
-  "template": "DISPATCH TO: {agent}\nMODE: explore\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Explore the codebase per the scope above. Produce an EXPLORATION KD at {result_kd} using the naming convention: knowledge/exploration-<name>.md"
+  "template": "DISPATCH TO: {agent}\nMODE: explore\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Explore the codebase per the scope above. Produce an EXPLORATION KD at {result_kd} using the naming convention: knowledge/exploration-<name>-<session_id>.md"
 }
