@@ -101,15 +101,17 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    ```
    MODE: <mode>
    INTENT KD: knowledge/intent-<name>.md
+   RESULT KD: knowledge/<type>-<name>.md
+   KD PATHS: <upstream KD paths for align/decompose/swarm/verify/extract/evolve modes>
    SESSION DATE: <YYYY-MM-DD>
    SCOPE: <optional context>
    ```
 
-   Required: `mode`, `intent_kd`, `session_date`. Optional: `scope` (provides domain context). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
+   Required: `mode`, `intent_kd`, `result_kd`, `session_date`. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/verify/extract/evolve modes). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
 
 3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 
-4. **Refer to KDs by path** — use path references following the pattern `knowledge/{type}-{name}-{date}.md` for any KD references.
+4. **Refer to KDs by path** — use path references following the pattern `knowledge/{type}-{name}-{session_id}.md` for any KD references.
 
 5. **Describe the artifact, objective, and acceptance criteria. Agents determine their own approach.**
 
