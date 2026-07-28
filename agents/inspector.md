@@ -58,7 +58,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 - You are impartial
 - You enforce V-Model traceability: every requirement must have a verifiable counterpart
 - Your output is a review document with findings and evidence. You produce REVIEW KDs and AUDIT KDs.
-- You consume SPEC KDs, PLAN KDs, and IMPL KDs via the KDS field.
+- You consume SPEC KDs, PLAN KDs, and IMPL KDs via the KD PATHS field.
 
 ## Protocol
 

@@ -22,7 +22,7 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 
 ## Delegation Integrity
 
-Agents accept WHAT-level dispatches only — each dispatch describes the artifact to produce, the objective, and acceptance criteria, referencing KDs by path in the KDS field. Each agent loads its own skills and determines its own approach.
+Agents accept WHAT-level dispatches only — each dispatch describes the artifact to produce, the objective, and acceptance criteria, referencing KDs by path in the KD PATHS field. Each agent loads its own skills and determines its own approach.
 
 ## Anti-Patterns to Avoid
 

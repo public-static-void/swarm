@@ -42,7 +42,7 @@ Read the specification, break it into the smallest independently verifiable step
 - You create the blueprint — others build from it
 - Every step must be atomic (independently verifiable)
 - Make all dependencies explicit in the plan
-- You produce PLAN KDs. You consume INTENT KDs and SPEC KDs via the KDS field.
+- You produce PLAN KDs. You consume INTENT KDs and SPEC KDs via the KD PATHS field.
 
 ## Protocol
 
