@@ -356,7 +356,13 @@ export default {
       }
 
       // scope is optional — provides domain context but doesn't block delegation
-      const requiredFields = ["agent", "mode", "intent_kd", "session_date"];
+      // R009: intent_kd is not required for checkpoint mode — the checkpoint
+      // template doesn't render intent_kd, so requiring it serves no purpose.
+      // Only non-checkpoint modes need intent_kd to identify the upstream KD.
+      const requiredFields = ["agent", "mode", "session_date"];
+      if (fields.mode?.toLowerCase() !== "checkpoint") {
+        requiredFields.push("intent_kd");
+      }
 
       debug(`Extracted fields: ${Object.keys(fields).join(", ")}`);
 
@@ -379,6 +385,15 @@ export default {
       // Scope validation — advisory only, never blocks delegation
       if (fields.scope !== undefined && !validateScope(fields.scope)) {
         debug(`WARNING: scope validation failed (len=${fields.scope.length}, content='${fields.scope.substring(0, 50)}...') — proceeding anyway`);
+      }
+
+      // R008: SWARM mode multi-milestone scope warning — large plans overload artisan context.
+      // Advisory only: warns but does not block delegation. The structural fix (one artisan
+      // per milestone) requires Pathfinder to produce milestone-scoped plans.
+      if (fields.mode?.toLowerCase() === "swarm" && fields.scope) {
+        if (/M\d+.*M\d+|milestones?\s*\d[\s,]*\d/i.test(fields.scope)) {
+          debug(`WARNING: SWARM mode scope references multiple milestones — artisan overload risk. Consider one artisan per milestone.`);
+        }
       }
 
       // Validate result_kd only when provided — falsy check treats "" same as omitted
