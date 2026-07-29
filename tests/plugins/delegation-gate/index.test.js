@@ -30,11 +30,11 @@ describe("Delegation-Gate Plugin", () => {
   describe("Field Extraction", () => {
     it("extracts all required fields from structured prompt", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -44,11 +44,11 @@ RESULT KD: knowledge/impl-foo.md`;
 
     it("extracts agent from DISPATCH TO: format (template-rendered)", async () => {
       const prompt = `DISPATCH TO: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -58,11 +58,11 @@ RESULT KD: knowledge/impl-foo.md`;
 
     it("extracts agent from AGENT: format (raw prompt)", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -72,11 +72,11 @@ RESULT KD: knowledge/impl-foo.md`;
 
     it("extracts fields with underscore variants (intent_kd, session_date, result_kd)", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 intent_kd: knowledge/intent-foo.md
 session_date: 2026-07-15
 SCOPE: Implement feature X
-result_kd: knowledge/impl-foo.md`;
+result_kd: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -147,11 +147,11 @@ RESULT KD: knowledge/impl-foo.md
 
     it("accepts relative file paths in non-field lines (security handled by absolute-path checks)", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md
+RESULT KD: knowledge/exploration-foo.md
 docs/ROADMAP.md`;
 
       const output = { args: { prompt } };
@@ -255,11 +255,11 @@ RESULT KD: knowledge/exploration-foo.md`;
   describe("Scope Validation", () => {
     it("accepts empty scope (advisory validation only)", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: 
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -399,11 +399,11 @@ SESSION DATE: 2026-07-17`;
   describe("Template Injection", () => {
     it("renders prompt from template for valid structured prompt", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -415,11 +415,11 @@ RESULT KD: knowledge/impl-foo.md`;
 
     it("replaces output.args.prompt with rendered template", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -490,11 +490,11 @@ RESULT KD: knowledge/impl-foo.md`;
   describe("Subagent Type Fallback", () => {
     it("extracts agent from subagent_type when not in prompt text", async () => {
       // Overseer puts agent in output.args.subagent_type, not in prompt
-      const prompt = `MODE: checkpoint
+      const prompt = `MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt, subagent_type: "artisan" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -503,19 +503,19 @@ RESULT KD: knowledge/impl-foo.md`;
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
-    it("prompt text agent takes precedence over subagent_type", async () => {
+    it("subagent_type takes precedence over prompt text agent", async () => {
       const prompt = `AGENT: committer
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt, subagent_type: "artisan" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      // Template renders with committer (from prompt), not artisan (from subagent_type)
-      expect(output.args.prompt).toContain("committer");
+      // subagent_type wins over prompt-extracted agent (structured task args vs free-form text)
+      expect(output.args.prompt).toContain("artisan");
     });
 
     it("full end-to-end: subagent_type provides agent field", async () => {
@@ -537,10 +537,10 @@ RESULT KD: knowledge/analysis-bar.md`;
   describe("Description Scope Fallback", () => {
     it("accepts prompt without SCOPE field (scope is optional)", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt, description: "Implement feature X" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -567,11 +567,11 @@ RESULT KD: knowledge/impl-foo.md`;
     it("extracts fields from description as fallback when prompt is empty", async () => {
       // With description fallback, fields in description are used when prompt is empty.
       // Prompt fields take priority when both are present.
-      const description = `MODE: checkpoint
+      const description = `MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt: "", description, subagent_type: "artisan" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -632,24 +632,24 @@ RESULT KD: knowledge/preflight-workspace.md`;
 
   describe("Prose-Format Intent KD Extraction (Bug 2)", () => {
     it("extracts intent_kd from 'Read the INTENT KD at <path>' prose", async () => {
-      const prompt = `You are the Committer agent in checkpoint mode.
+      const prompt = `You are the Explorer agent in explore mode.
 Read the INTENT KD at knowledge/intent-foo.md for context.
 SESSION DATE: 2026-07-23
-SCOPE: Create checkpoint
-RESULT KD: knowledge/checkpoint-foo.md`;
+SCOPE: Explore the memory system
+RESULT KD: knowledge/exploration-foo.md`;
 
-      const output = { args: { prompt, subagent_type: "committer" } };
+      const output = { args: { prompt, subagent_type: "explorer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
     it("extracts intent_kd from 'intent_kd: <path>' inline format", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 intent_kd: knowledge/intent-bar.md
 SESSION DATE: 2026-07-23
 SCOPE: Fix bug
-RESULT KD: knowledge/checkpoint-bar.md`;
+RESULT KD: knowledge/exploration-bar.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -658,11 +658,11 @@ RESULT KD: knowledge/checkpoint-bar.md`;
 
     it("structured INTENT KD: still takes precedence over prose fallback", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-structured.md
 SESSION DATE: 2026-07-23
 SCOPE: Fix bug
-RESULT KD: knowledge/checkpoint-foo.md
+RESULT KD: knowledge/exploration-foo.md
 
 Also reference knowledge/intent-prose.md in context.`;
 
@@ -673,25 +673,25 @@ Also reference knowledge/intent-prose.md in context.`;
     });
 
     it("extracts intent_kd from mixed prose and structured fields", async () => {
-      const prompt = `MODE: checkpoint
+      const prompt = `MODE: explore
 SESSION DATE: 2026-07-23
-SCOPE: Checkpoint the session
-RESULT KD: knowledge/checkpoint-mixed.md
+SCOPE: Explore the codebase
+RESULT KD: knowledge/exploration-mixed.md
 
 Load the kd-system skill. Read the INTENT KD at knowledge/intent-mixed.md for context.`;
 
-      const output = { args: { prompt, subagent_type: "committer" } };
+      const output = { args: { prompt, subagent_type: "explorer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("knowledge/intent-mixed.md");
     });
 
     it("does not extract intent_kd from unrelated text mentioning 'intent'", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-real.md
 SESSION DATE: 2026-07-23
 SCOPE: Fix the intent detection bug
-RESULT KD: knowledge/checkpoint-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -782,11 +782,11 @@ RESULT KD: knowledge/impl-foo.md`;
   describe("Embedded KD Paths", () => {
     it("accepts lines with embedded KD paths in body text", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md
+RESULT KD: knowledge/exploration-foo.md
 
 Read the INTENT KD at knowledge/intent-foo.md for details.`;
 
@@ -844,11 +844,11 @@ RESULT KD: knowledge/impl-foo.md
 
     it("skips DISPATCH TO: lines in foreign path detection", async () => {
       const prompt = `DISPATCH TO: artisan
-MODE: checkpoint
+MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -888,11 +888,11 @@ RESULT KD: knowledge/impl-foo.md`;
 
     it("strips ** from intent_kd field value", async () => {
       const prompt = `AGENT: artisan
-MODE: checkpoint
+MODE: explore
 **INTENT KD:** **knowledge/intent-foo.md**
 SESSION DATE: 2026-07-21
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -901,16 +901,16 @@ RESULT KD: knowledge/impl-foo.md`;
 
     it("strips ** from all fields simultaneously", async () => {
       const prompt = `**AGENT:** **artisan**
-**MODE:** **checkpoint**
+**MODE:** **explore**
 **INTENT KD:** **knowledge/intent-foo.md**
 **SESSION DATE:** **2026-07-21**
 **SCOPE:** **Implement feature X**
-**RESULT KD:** **knowledge/impl-foo.md**`;
+**RESULT KD:** **knowledge/exploration-foo.md**`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("artisan");
-      expect(output.args.prompt).toContain("checkpoint");
+      expect(output.args.prompt).toContain("explore");
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
       expect(output.args.prompt).toContain("2026-07-21");
     });
@@ -927,7 +927,8 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       const output = { args: { prompt, subagent_type: "committer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("checkpoint");
-      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      // Checkpoint template renders RESULT KD in header, not INTENT KD
+      expect(output.args.prompt).toContain("knowledge/checkpoint-foo.md");
     });
 
     it("infers mode from natural language 'explore phase'", async () => {
@@ -1180,7 +1181,7 @@ RESULT KD: knowledge/preflight-foo.md`;
       expect(output.args.prompt).not.toMatch(/Read the INTENT KD at/);
     });
 
-    it("checkpoint template body contains 'Read the INTENT KD'", async () => {
+    it("checkpoint template body contains 'Read KDs from KD PATHS'", async () => {
       const prompt = `AGENT: committer
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -1191,7 +1192,7 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      expect(output.args.prompt).toMatch(/Read the INTENT KD at/);
+      expect(output.args.prompt).toMatch(/Read KDs from KD PATHS/);
     });
 
     it("cleanup template body contains 'Read the INTENT KD'", async () => {
