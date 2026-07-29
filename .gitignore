@@ -3,9 +3,6 @@
 
 # Knowledge documents
 knowledge/*
-!knowledge/memory/
-knowledge/memory/*
-!knowledge/memory/*.json
 
 # Environment files
 .env
