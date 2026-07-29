@@ -30,3 +30,8 @@ references/
 
 # Package lock files
 bun.lock
+
+# Database files (memory store)
+*.db
+*.sqlite
+*.sqlite3

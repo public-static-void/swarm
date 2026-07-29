@@ -47,17 +47,42 @@ function debug(msg) {
   }
 }
 
-// --- Memory search ---
+// --- In-memory cache ---
 
 /**
- * Scans knowledge/memory/ for JSON entries matching query parameters.
- * Returns entries sorted by tag-match count (descending), then recency.
+ * In-memory cache for parsed memory entries with TTL.
+ * Reduces disk I/O on repeated searchMemory calls within the TTL window.
+ * TTL is configurable via MEMORY_CACHE_TTL_MS env var (default 30000ms).
  */
-function searchMemory(query) {
-  const { tags = [], topic = "", limit = 5 } = query;
+const memoryCache = {
+  entries: null,
+  lastLoaded: null,
+  ttlMs: parseInt(process.env.MEMORY_CACHE_TTL_MS || "30000", 10),
+  isLoading: false,
+  fileCount: 0
+};
 
+function isCacheValid() {
+  if (memoryCache.entries === null || memoryCache.lastLoaded === null) return false;
+  if ((Date.now() - memoryCache.lastLoaded) >= memoryCache.ttlMs) return false;
+  // Detect external file changes by comparing file count
+  // Uses readdirSync but avoids re-parsing all entries when count is unchanged
+  try {
+    const currentCount = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json")).length;
+    if (currentCount !== memoryCache.fileCount) {
+      memoryCache.entries = null;
+      memoryCache.lastLoaded = null;
+      return false;
+    }
+  } catch (_) {
+    return false;
+  }
+  return true;
+}
+
+function loadEntriesFromDisk() {
   if (!existsSync(MEMORY_DIR)) {
-    debug("searchMemory: memory dir does not exist");
+    debug("loadEntriesFromDisk: memory dir does not exist");
     return [];
   }
 
@@ -65,8 +90,15 @@ function searchMemory(query) {
   try {
     files = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"));
   } catch (e) {
-    debug(`searchMemory: failed to read memory dir: ${e.message}`);
+    debug(`loadEntriesFromDisk: failed to read memory dir: ${e.message}`);
     return [];
+  }
+
+  // Detect file count change — invalidates cache
+  if (memoryCache.entries !== null && files.length !== memoryCache.fileCount) {
+    debug(`loadEntriesFromDisk: file count changed (${memoryCache.fileCount} → ${files.length}), cache invalidated`);
+    memoryCache.entries = null;
+    memoryCache.lastLoaded = null;
   }
 
   const entries = [];
@@ -76,9 +108,37 @@ function searchMemory(query) {
       const entry = JSON.parse(raw);
       entries.push(entry);
     } catch (e) {
-      debug(`searchMemory: skipping malformed ${file}: ${e.message}`);
+      debug(`loadEntriesFromDisk: skipping malformed ${file}: ${e.message}`);
     }
   }
+
+  memoryCache.entries = entries;
+  memoryCache.lastLoaded = Date.now();
+  memoryCache.fileCount = files.length;
+  return entries;
+}
+
+// --- Memory search ---
+
+/**
+ * Scans knowledge/memory/ for JSON entries matching query parameters.
+ * Uses in-memory cache with configurable TTL to reduce disk I/O.
+ * Returns entries sorted by tag-match count (descending), then recency.
+ */
+function searchMemory(query) {
+  const { tags = [], topic = "", limit = 5 } = query;
+
+  // Load from cache or disk
+  let entries;
+  if (isCacheValid()) {
+    entries = memoryCache.entries;
+    debug(`searchMemory: cache hit (${entries.length} entries)`);
+  } else {
+    entries = loadEntriesFromDisk();
+    debug(`searchMemory: cache miss, loaded ${entries.length} entries from disk`);
+  }
+
+  if (entries.length === 0) return [];
 
   // Score each entry by tag overlap count
   const scored = entries.map(entry => {
@@ -111,13 +171,78 @@ function searchMemory(query) {
     }));
 }
 
+// --- Memory validation ---
+
+/**
+ * Validates a memory entry against the canonical schema.
+ * Returns { valid: boolean, error?: string }.
+ * Canonical schema:
+ *   id (MEM-\d{3}), source_kd (string), tags (array 2-8),
+ *   topic (string ≤100), insight (string ≤500),
+ *   created (ISO 8601 with time), session (string), version ("1.0.0")
+ */
+function validateMemoryEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return { valid: false, error: "Entry must be a non-null object" };
+  }
+  if (!/^MEM-\d{3}$/.test(entry.id)) {
+    return { valid: false, error: `id must match MEM-\\d{3}, got "${entry.id}"` };
+  }
+  if (typeof entry.source_kd !== "string" || !entry.source_kd) {
+    return { valid: false, error: "source_kd must be a non-empty string" };
+  }
+  if (!Array.isArray(entry.tags) || entry.tags.length < 2 || entry.tags.length > 8) {
+    return { valid: false, error: "tags must be an array with 2-8 items" };
+  }
+  if (typeof entry.topic !== "string" || entry.topic.length > 100) {
+    return { valid: false, error: `topic must be a string ≤100 chars, got length ${entry.topic?.length || 0}` };
+  }
+  if (typeof entry.insight !== "string" || entry.insight.length > 500) {
+    return { valid: false, error: `insight must be a string ≤500 chars, got length ${entry.insight?.length || 0}` };
+  }
+  if (typeof entry.created !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(entry.created)) {
+    return { valid: false, error: `created must be ISO 8601 with time, got "${entry.created}"` };
+  }
+  if (typeof entry.session !== "string" || !entry.session) {
+    return { valid: false, error: "session must be a non-empty string" };
+  }
+  if (entry.version !== "1.0.0") {
+    return { valid: false, error: 'version must be "1.0.0"' };
+  }
+  return { valid: true };
+}
+
+// --- Output formatting ---
+
+/**
+ * Formats a memory entry for either tool response (JSON) or prompt injection (markdown).
+ * @param {Object} entry - Memory entry object
+ * @param {string} format - "json" or "markdown"
+ * @returns {Object|string} Formatted output
+ */
+function formatMemoryEntry(entry, format) {
+  if (format === "markdown") {
+    return `- [${entry.id}] ${entry.topic}: ${entry.insight} (source: ${entry.source_kd})`;
+  }
+  return entry; // json format returns raw object
+}
+
 // --- Issue scanning ---
 
 /**
  * Scans knowledge/issues/ for open, high-severity issues.
  * Returns array of parsed issue objects.
  */
+function ensureIssuesDir() {
+  try {
+    mkdirSync(ISSUES_DIR, { recursive: true });
+  } catch (_) {
+    // Non-fatal — if mkdir fails, issue operations will return empty
+  }
+}
+
 function scanHighSeverityIssues() {
+  ensureIssuesDir();
   if (!existsSync(ISSUES_DIR)) return [];
 
   let files;
@@ -174,6 +299,7 @@ function parseIssueFile(content, filename) {
  * Used during INTENT phase to surface prior-session issues to the Overseer.
  */
 function scanOpenIssues() {
+  ensureIssuesDir();
   if (!existsSync(ISSUES_DIR)) return [];
 
   let files;
@@ -203,6 +329,7 @@ function scanOpenIssues() {
  * Gets the next sequential issue ID by scanning existing issues.
  */
 function getNextIssueId() {
+  ensureIssuesDir();
   if (!existsSync(ISSUES_DIR)) return "ISSUE-001";
 
   let files;
@@ -299,7 +426,7 @@ export default {
     // read permission on knowledge/memory/.
     async function systemTransform(input, output) {
       const sessionID = input.sessionID;
-      const agent = sessionAgentMap.get(sessionID);
+      const agent = sessionAgentMap.get(sessionID) || input.agent?.toLowerCase();
 
       // All agents get memory_search read access to query prior session insights
       output.system.push(
@@ -356,11 +483,13 @@ export default {
       scanOpenIssues,
       parseIssueFile,
       getNextIssueId,
+      validateMemoryEntry,
+      formatMemoryEntry,
       MEMORY_DIR,
       ISSUES_DIR
     };
   }
 };
 
-// Named export for cross-plugin access by protocol-gate
-export { searchMemory, scanHighSeverityIssues, scanOpenIssues };
+// Named exports for cross-plugin access by protocol-gate / delegation-gate
+export { searchMemory, scanHighSeverityIssues, scanOpenIssues, validateMemoryEntry, formatMemoryEntry };

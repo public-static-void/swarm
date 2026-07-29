@@ -430,6 +430,71 @@ export default {
       const rendered = renderTemplate(template, fields);
       output.args.prompt = rendered;
       debug(`Prompt rendered successfully (${rendered.length} chars)`);
+
+      // --- Memory injection: query prior insights for dispatch context ---
+      // Injects top-3 relevant memory entries into the rendered prompt so the
+      // subagent receives relevant cross-session context at dispatch time.
+      // This runs AFTER template rendering to avoid memory being overwritten.
+      try {
+        // Derive tags from agent MODE using the tag map
+        const MODE_TAG_MAP = {
+          explore: ["investigate", "exploration", "architecture"],
+          investigate: ["root-cause", "analysis", "bug"],
+          align: ["specification", "requirements", "design"],
+          decompose: ["planning", "tasks", "dependencies"],
+          swarm: ["implementation", "code", "patterns"],
+          verify: ["review", "audit", "quality"],
+          extract: ["knowledge", "patterns", "insights"],
+          evolve: ["process", "friction", "improvement"],
+          preflight: ["setup", "git", "workspace"],
+          checkpoint: ["commit", "state", "save"],
+          cleanup: ["commit", "push", "finalize"]
+        };
+        const mode = (fields.mode || "").toLowerCase();
+        const tags = MODE_TAG_MAP[mode] || (mode ? [mode] : []);
+
+        // Extract topic from SCOPE: distill to 3-5 keywords
+        const STOP_WORDS = new Set([
+          "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+          "of", "with", "by", "from", "as", "is", "was", "are", "were", "be",
+          "been", "being", "have", "has", "had", "do", "does", "did", "will",
+          "would", "could", "should", "may", "might", "shall", "can", "need",
+          "this", "that", "these", "those", "it", "its", "not", "no", "nor",
+          "so", "if", "then", "than", "too", "very", "just", "about", "also",
+          "into", "over", "after", "before", "between", "through", "during",
+          "each", "every", "all", "both", "few", "more", "most", "other",
+          "some", "such", "only", "own", "same", "here", "there", "when",
+          "where", "why", "how", "which", "who", "whom", "what", "per"
+        ]);
+        const scope = fields.scope || "";
+        let topic = mode; // fallback to mode
+        if (scope) {
+          const words = scope
+            .toLowerCase()
+            .replace(/[^a-zA-Z0-9\s-]/g, " ")
+            .split(/\s+/)
+            .filter(w => w.length > 2 && !STOP_WORDS.has(w));
+          // Deduplicate while preserving order
+          const unique = [...new Set(words)];
+          topic = unique.slice(0, 5).join(", ") || mode;
+        }
+
+        const memoryModule = await import('../knowledge-gate/index.js');
+        if (typeof memoryModule.searchMemory === 'function') {
+          const memoryResults = memoryModule.searchMemory({ tags, topic, limit: 3 });
+          if (memoryResults && memoryResults.length > 0) {
+            const formatEntry = memoryModule.formatMemoryEntry || ((e) =>
+              `- [${e.id}] ${e.topic}: ${e.insight} (source: ${e.source_kd})`
+            );
+            const memoryBlock = memoryResults.map(e => formatEntry(e, "markdown")).join('\n');
+            output.args.prompt += `\n\n## Relevant Prior Insights\n${memoryBlock}`;
+            debug(`Memory injection: added ${memoryResults.length} results for topic="${topic.substring(0, 50)}" tags=[${tags.join(",")}]`);
+          }
+        }
+      } catch (e) {
+        // Non-blocking: dispatch proceeds without memory if injection fails
+        debug(`Memory injection skipped (non-blocking): ${e.message}`);
+      }
     }
 
     return {
