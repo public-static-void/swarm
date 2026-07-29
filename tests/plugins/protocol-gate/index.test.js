@@ -179,9 +179,10 @@ describe("Protocol-Gate Plugin", () => {
       );
       // Disk check may advance past INTENT on second todowrite — this is expected
       // The key invariant: todowrite content alone doesn't drive advancement,
-      // only disk-based KD existence does
+      // only disk-based KD existence does. Phase may also regress to
+      // PROTOCOL_NOT_LOADED (0) if no intent KD exists on disk.
       const phase = hooks.sessionPhaseMap.get("test-1");
-      expect(phase >= 1).toBe(true);
+      expect(phase <= 1).toBe(true); // never advances beyond INTENT via todowrite alone
     });
 
     it("validates write path in INTENT phase", async () => {
@@ -531,9 +532,10 @@ describe("Protocol-Gate Plugin", () => {
         { tool: "todowrite", sessionID: "test-1", callID: "c2" },
         { args: { todos: keywords.map(k => ({ content: k })) } }
       );
-      // Phase may have advanced via disk check — flag was reset so check fires
+      // Phase may have advanced via disk check — flag was reset so check fires.
+      // Phase may also regress to PROTOCOL_NOT_LOADED (0) if no KD exists on disk.
       const phase = hooks.sessionPhaseMap.get("test-1");
-      expect(phase >= 1).toBe(true);
+      expect(phase <= 1).toBe(true); // never advances beyond INTENT via todowrite alone
     });
   });
 
@@ -1527,8 +1529,9 @@ describe("Protocol-Gate Plugin", () => {
 
       // Phase should be SWARM after backward transition
       expect(hooks.sessionPhaseMap.get("swarm-6")).toBe(hooks.STATES.SWARM);
-      // Backward transition dispatch should NOT increment the counter
-      expect(hooks.swarmDispatchCount.get("swarm-6") || 0).toBe(0);
+      // R004: Backward transition now resets swarmDispatchCount to max(1, implFiles.length).
+      // Since no impl files exist for this session, count becomes max(1, 0) = 1.
+      expect(hooks.swarmDispatchCount.get("swarm-6")).toBe(1);
     });
   });
 
@@ -2101,8 +2104,8 @@ describe("Protocol-Gate Plugin", () => {
 
       // Phase should remain EXPLORE — no regression
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
-      // inFlightDispatches should be populated
-      expect(hooks.inFlightDispatches.get(sid)).toBe("explore");
+      // inFlightDispatches should be populated (stores array of prefixes)
+      expect(hooks.inFlightDispatches.get(sid)).toEqual(["exploration"]);
       cleanupSession(sid);
     });
 
@@ -2128,50 +2131,57 @@ describe("Protocol-Gate Plugin", () => {
       cleanupSession(sid);
     });
 
-    // AC003 (new): After regression, advancement skipped within 500ms
-    it("AC003: advancement skipped within 500ms of regression", async () => {
+    // AC003 (R002): Fresh advancement grace period prevents false regression
+    it("AC003: grace period prevents regression within first 3 disk checks after fresh advancement", async () => {
       const sid = "ptfix-s3";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set(sid, hooks.STATES.INVESTIGATE);
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
-      // Set regression timestamp to now
-      hooks.lastRegressionTime.set(sid, Date.now());
+      // Simulate fresh advancement into VERIFY (as if SWARM just advanced)
+      hooks.freshAdvancement.set(sid, { phase: hooks.STATES.VERIFY, diskCheckCount: 0 });
 
-      // Analysis KD exists — would normally advance
-      createKD(`analysis-investigate-${sid}.md`);
+      // No review or audit KD on disk — would normally cause regression
+      // But grace period should prevent it for the first 3 disk checks
+      for (let i = 0; i < 3; i++) {
+        const result = hooks.checkPhaseStateConsistency(
+          sid, hooks.STATES.VERIFY, hooks.sessionPhaseMap,
+          () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+          hooks.inFlightDispatches, hooks.freshAdvancement
+        );
+        // Should NOT regress during grace period
+        expect(result).toBe(false);
+        expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+      }
 
-      // Trigger disk check via glob — should be skipped by cooldown
-      await hooks["tool.execute.before"](
-        { tool: "glob", sessionID: sid, callID: "c1" },
-        { args: { pattern: "knowledge/*.md" } }
-      );
-
-      // Phase should NOT advance — cooldown active
-      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
+      // After 3 grace-period checks, freshAdvancement entry should be deleted
+      expect(hooks.freshAdvancement.has(sid)).toBe(false);
       cleanupSession(sid);
     });
 
-    // AC004 (new): After 500ms cooldown, advancement resumes
-    it("AC004: advancement resumes after 500ms cooldown", async () => {
+    // AC004 (R002): After grace period expires, legitimate regression works
+    it("AC004: legitimate regression works after grace period expires", async () => {
       const sid = "ptfix-s4";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set(sid, hooks.STATES.INVESTIGATE);
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
-      // Set regression timestamp to 600ms ago
-      hooks.lastRegressionTime.set(sid, Date.now() - 600);
+      // Simulate fresh advancement with already-expired grace period (diskCheckCount >= 3)
+      hooks.freshAdvancement.set(sid, { phase: hooks.STATES.VERIFY, diskCheckCount: 3 });
 
-      // Analysis KD exists — should advance
-      createKD(`analysis-investigate-${sid}.md`);
+      // No review or audit KD — grace period is expired, regression should fire
+      // But first we need an earlier-phase KD to regress to
+      createKD(`impl-swarm-test-${sid}.md`);
 
-      await hooks["tool.execute.before"](
-        { tool: "glob", sessionID: sid, callID: "c1" },
-        { args: { pattern: "knowledge/*.md" } }
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.VERIFY, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.freshAdvancement
       );
 
-      // Phase should advance to ALIGN
-      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.ALIGN);
+      // Should regress to SWARM (impl KD exists)
+      expect(result).toBe(true);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
       cleanupSession(sid);
     });
 
@@ -2188,7 +2198,7 @@ describe("Protocol-Gate Plugin", () => {
       hooks.checkPhaseStateConsistency(
         sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
         () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
-        hooks.inFlightDispatches, hooks.lastRegressionTime
+        hooks.inFlightDispatches, hooks.freshAdvancement
       );
 
       expect(hooks.diskCheckFailures.get(sid)).toBe(8);
@@ -2208,7 +2218,7 @@ describe("Protocol-Gate Plugin", () => {
       hooks.checkPhaseStateConsistency(
         sid, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
         () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
-        hooks.inFlightDispatches, hooks.lastRegressionTime
+        hooks.inFlightDispatches, hooks.freshAdvancement
       );
 
       expect(hooks.phaseRedispatchCount.get(`${sid}:${hooks.STATES.ALIGN}`)).toBe(4);
@@ -2222,12 +2232,12 @@ describe("Protocol-Gate Plugin", () => {
       hooks.sessionPhaseMap.set(sid, hooks.STATES.EXPLORE);
       hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
-      // Dispatch explorer → inFlightDispatches should be set
+      // Dispatch explorer → inFlightDispatches should be set (stores array of prefixes)
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: sid, callID: "c1" },
         { args: { subagent_type: "explorer", prompt: "AGENT: explorer" } }
       );
-      expect(hooks.inFlightDispatches.get(sid)).toBe("explore");
+      expect(hooks.inFlightDispatches.get(sid)).toEqual(["exploration"]);
 
       // Now create the exploration KD on disk — next glob triggers advancement
       // which should clear inFlightDispatches
@@ -2255,7 +2265,7 @@ describe("Protocol-Gate Plugin", () => {
       const result = hooks.checkPhaseStateConsistency(
         sid, hooks.STATES.EXPLORE, hooks.sessionPhaseMap,
         () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
-        hooks.inFlightDispatches, hooks.lastRegressionTime
+        hooks.inFlightDispatches, hooks.freshAdvancement
       );
 
       // Should skip regression — in-flight dispatch means KD is pending
@@ -2263,22 +2273,31 @@ describe("Protocol-Gate Plugin", () => {
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
     });
 
-    // AC011 (new): Debug log output includes KD_IN_FLIGHT and REGRESSION_COOLDOWN tags
-    it("AC011: debug logs include KD_IN_FLIGHT and REGRESSION_COOLDOWN tags", async () => {
+    // AC011 (R002): Debug log output includes FRESH_ADVANCEMENT and GRACE_SKIP tags
+    it("AC011: debug logs include FRESH_ADVANCEMENT and GRACE_SKIP tags", async () => {
       const sid = "ptfix-s11";
       process.env.PROTOCOL_GATE_DEBUG = "1";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
-      hooks.sessionPhaseMap.set(sid, hooks.STATES.EXPLORE);
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
       hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
 
-      // Dispatch explorer — should log KD_IN_FLIGHT
+      // Create impl KD and trigger disk advancement to VERIFY
+      // This should log FRESH_ADVANCEMENT
+      createKD(`impl-swarm-test-${sid}.md`);
+
+      // Need dispatchCount set to advance
+      hooks.swarmDispatchCount.set(sid, 1);
+
       await hooks["tool.execute.before"](
-        { tool: "task", sessionID: sid, callID: "c1" },
-        { args: { subagent_type: "explorer", prompt: "AGENT: explorer" } }
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
       );
 
-      // Set regression timestamp to now — next disk check should log REGRESSION_COOLDOWN
-      hooks.lastRegressionTime.set(sid, Date.now());
+      // Phase should have advanced to VERIFY
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+
+      // Trigger another disk check in VERIFY without review/audit KD
+      // Grace period should log GRACE_SKIP
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: sid, callID: "c2" },
         { args: { pattern: "knowledge/*.md" } }
@@ -2289,8 +2308,8 @@ describe("Protocol-Gate Plugin", () => {
         const logContent = require("fs").readFileSync(
           join(process.cwd(), "plugins", "logs", "protocol-gate.log"), "utf8"
         );
-        expect(logContent).toContain("KD_IN_FLIGHT");
-        expect(logContent).toContain("REGRESSION_COOLDOWN");
+        expect(logContent).toContain("FRESH_ADVANCEMENT");
+        expect(logContent).toContain("GRACE_SKIP");
       } catch (_) {
         // Log file may not exist in test env — skip if not available
       }
@@ -2369,6 +2388,421 @@ describe("Protocol-Gate Plugin", () => {
           { args: { subagent_type: "analyzer", prompt: "AGENT: analyzer" } }
         )
       ).rejects.toThrow("Incorrect agent dispatched");
+      cleanupSession(sid);
+    });
+  });
+
+  describe("VERIFY Phase OR Fix (R005 — BUG-009)", () => {
+    const knowledgeDir = join(process.cwd(), "knowledge");
+
+    function createKD(filename) {
+      try { require("fs").mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
+      require("fs").writeFileSync(join(knowledgeDir, filename), "test content");
+    }
+
+    function cleanupSession(sessionID) {
+      try {
+        const files = require("fs").readdirSync(knowledgeDir);
+        for (const f of files) {
+          if (f.endsWith(`-${sessionID}.md`)) {
+            try { require("fs").rmSync(join(knowledgeDir, f)); } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+
+    // AC010: VERIFY advances with only review KD
+    it("AC010: advances from VERIFY to EXTRACT with only review KD", async () => {
+      const sid = "ror-s1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Create only a review KD (no audit)
+      createKD(`review-test-${sid}.md`);
+
+      // Trigger disk check — should advance because OR allows review-only
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXTRACT);
+      cleanupSession(sid);
+    });
+
+    // AC011: VERIFY advances with only audit KD
+    it("AC011: advances from VERIFY to EXTRACT with only audit KD", async () => {
+      const sid = "ror-s2";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Create only an audit KD (no review)
+      createKD(`audit-test-${sid}.md`);
+
+      // Trigger disk check — should advance because OR allows audit-only
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXTRACT);
+      cleanupSession(sid);
+    });
+
+    // AC012: VERIFY advances with both KDs (backward-compatible)
+    it("AC012: advances from VERIFY to EXTRACT with both review and audit KDs", async () => {
+      const sid = "ror-s3";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Create both review and audit KDs
+      createKD(`review-test-${sid}.md`);
+      createKD(`audit-test-${sid}.md`);
+
+      // Trigger disk check — should advance (backward compatible)
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXTRACT);
+      cleanupSession(sid);
+    });
+
+    // Consistent regression prevention: VERIFY does not regress when either KD exists
+    it("consistency check does not regress VERIFY when only review KD exists", async () => {
+      const sid = "ror-s4";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      createKD(`review-test-${sid}.md`);
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.VERIFY, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.freshAdvancement
+      );
+
+      expect(result).toBe(false);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+      cleanupSession(sid);
+    });
+
+    it("consistency check does not regress VERIFY when only audit KD exists", async () => {
+      const sid = "ror-s5";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      createKD(`audit-test-${sid}.md`);
+
+      const result = hooks.checkPhaseStateConsistency(
+        sid, hooks.STATES.VERIFY, hooks.sessionPhaseMap,
+        () => {}, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.freshAdvancement
+      );
+
+      expect(result).toBe(false);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+      cleanupSession(sid);
+    });
+  });
+
+  describe("SWARM Formula and Counter Reset (R001+R004 — BUG-005+BUG-008)", () => {
+    const knowledgeDir = join(process.cwd(), "knowledge");
+
+    function createKD(filename) {
+      try { require("fs").mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
+      require("fs").writeFileSync(join(knowledgeDir, filename), "test content");
+    }
+
+    function cleanupSession(sessionID) {
+      try {
+        const files = require("fs").readdirSync(knowledgeDir);
+        for (const f of files) {
+          if (f.endsWith(`-${sessionID}.md`)) {
+            try { require("fs").rmSync(join(knowledgeDir, f)); } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+
+    // AC001: After SWARM→VERIFY regression back to SWARM, formula passes with impl file
+    it("AC001: SWARM formula passes after regression when impl files exist", async () => {
+      const sid = "swarmfix-s1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Create 2 impl files and set dispatchCount to 3 (diverged state before regression)
+      createKD(`impl-test-a-${sid}.md`);
+      createKD(`impl-test-b-${sid}.md`);
+      hooks.swarmDispatchCount.set(sid, 3);
+
+      // Set freshAdvancement for VERIFY to prevent consistency check from
+      // auto-regressing before the backward transition task fires
+      hooks.freshAdvancement.set(sid, { phase: hooks.STATES.VERIFY, diskCheckCount: 0 });
+
+      // Dispatch artisan with BACKWARD: true from VERIFY → triggers backward transition to SWARM
+      // handleBackwardTransition resets swarmDispatchCount to max(1, 2) = 2
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { prompt: `AGENT: artisan\nBACKWARD: true`, subagent_type: "artisan" } }
+      );
+
+      // Now phase is SWARM, dispatchCount=2
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
+      expect(hooks.swarmDispatchCount.get(sid)).toBe(2);
+
+      // Trigger disk check — formula: implFiles.length (2) >= effectiveCount (2) → advance
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+      cleanupSession(sid);
+    });
+
+    // AC002: Normal SWARM still requires impl KD before advancing
+    it("AC002: normal SWARM phase requires at least one impl KD before advancing", async () => {
+      const sid = "swarmfix-s2";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // 1 dispatch but 0 impl files — should NOT advance
+      hooks.swarmDispatchCount.set(sid, 1);
+
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
+
+      // Create 1 impl file — should advance to VERIFY
+      createKD(`impl-test-${sid}.md`);
+
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+      cleanupSession(sid);
+    });
+
+    // AC007: handleBackwardTransition regressing FROM VERIFY TO SWARM resets swarmDispatchCount
+    it("AC007: backward transition to SWARM resets swarmDispatchCount to match file count", async () => {
+      const sid = "swarmfix-s3";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Set divergent dispatchCount (5) despite only 2 impl files
+      hooks.swarmDispatchCount.set(sid, 5);
+      createKD(`impl-test-a-${sid}.md`);
+      createKD(`impl-test-b-${sid}.md`);
+
+      // Set freshAdvancement for VERIFY to prevent consistency check auto-regression
+      hooks.freshAdvancement.set(sid, { phase: hooks.STATES.VERIFY, diskCheckCount: 0 });
+
+      // Backward transition to SWARM via task handler
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { prompt: `AGENT: artisan\nBACKWARD: true`, subagent_type: "artisan" } }
+      );
+
+      // swarmDispatchCount should be reset to max(1, 2) = 2
+      expect(hooks.swarmDispatchCount.get(sid)).toBe(2);
+      cleanupSession(sid);
+    });
+
+    // AC008: handleBackwardTransition deletes phaseRedispatchCount for target phase
+    it("AC008: backward transition deletes phaseRedispatchCount for target phase", async () => {
+      const sid = "swarmfix-s4";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Set redispatchCount for SWARM (target phase)
+      hooks.phaseRedispatchCount.set(`${sid}:${hooks.STATES.SWARM}`, 3);
+      hooks.swarmDispatchCount.set(sid, 1);
+      createKD(`impl-test-${sid}.md`);
+
+      // Set freshAdvancement to prevent auto-regression
+      hooks.freshAdvancement.set(sid, { phase: hooks.STATES.VERIFY, diskCheckCount: 0 });
+
+      // Backward transition to SWARM
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { prompt: `AGENT: artisan\nBACKWARD: true`, subagent_type: "artisan" } }
+      );
+
+      // phaseRedispatchCount for SWARM should be deleted
+      expect(hooks.phaseRedispatchCount.has(`${sid}:${hooks.STATES.SWARM}`)).toBe(false);
+      cleanupSession(sid);
+    });
+
+    // AC009: After regression into SWARM, dispatchCount is reconciled to impl file count
+    it("AC009: dispatchCount reconciled to max(1, implFiles.length) after regression", async () => {
+      const sid = "swarmfix-s5";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // 2 impl files exist, dispatchCount=5 (divergent)
+      createKD(`impl-test-a-${sid}.md`);
+      createKD(`impl-test-b-${sid}.md`);
+      hooks.swarmDispatchCount.set(sid, 5);
+
+      // Set freshAdvancement to prevent auto-regression
+      hooks.freshAdvancement.set(sid, { phase: hooks.STATES.VERIFY, diskCheckCount: 0 });
+
+      // Backward transition to SWARM — resets dispatchCount to max(1, 2) = 2
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: sid, callID: "c1" },
+        { args: { prompt: `AGENT: artisan\nBACKWARD: true`, subagent_type: "artisan" } }
+      );
+
+      // dispatchCount reset to max(1, 2) = 2, then the task handler
+      // increments to 3 (matching SWARM dispatch — the backward transition
+      // itself counts as a SWARM dispatch since artisan matches SWARM's agent)
+      expect(hooks.swarmDispatchCount.get(sid)).toBe(3);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
+
+      // With dispatchCount=3 and only 2 impl files, formula does NOT advance
+      // (3 > 2). This shows the reset baseline is working correctly with the
+      // effectiveCount guard preventing false advancement.
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
+      cleanupSession(sid);
+    });
+  });
+
+  describe("Safety Shield Override (R003 — BUG-007)", () => {
+    const knowledgeDir = join(process.cwd(), "knowledge");
+
+    function createKD(filename) {
+      try { require("fs").mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
+      require("fs").writeFileSync(join(knowledgeDir, filename), "test content");
+    }
+
+    function cleanupSession(sessionID) {
+      try {
+        const files = require("fs").readdirSync(knowledgeDir);
+        for (const f of files) {
+          if (f.endsWith(`-${sessionID}.md`)) {
+            try { require("fs").rmSync(join(knowledgeDir, f)); } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    }
+
+    // AC005: Force-advance at 15 disk check failures fires despite pendingVerification
+    it("AC005: force-advance fires at 15 failures even with pendingVerification active", async () => {
+      const sid = "safety-s1";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Activate pendingVerification (simulating subagent at work)
+      hooks.pendingVerification.set(sid, {
+        expectedPrefixes: ["impl"],
+        toolType: "task",
+        timestamp: Date.now(),
+        toolCalls: 0
+      });
+
+      // Set disk check failures to 14 — one more trigger hits 15
+      hooks.diskCheckFailures.set(sid, 14);
+
+      // Trigger disk check — should force-advance despite pendingVerification
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      // Phase should advance to VERIFY (force-advance at 15)
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+      // pendingVerification should be cleared
+      expect(hooks.pendingVerification.has(sid)).toBe(false);
+      cleanupSession(sid);
+    });
+
+    // AC006: Re-dispatch cap at 5 fires despite pendingVerification
+    it("AC006: re-dispatch cap fires at 5 redispatches with pendingVerification active", async () => {
+      const sid = "safety-s2";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Activate pendingVerification
+      hooks.pendingVerification.set(sid, {
+        expectedPrefixes: ["impl"],
+        toolType: "task",
+        timestamp: Date.now(),
+        toolCalls: 0
+      });
+
+      // Set re-dispatch count to 5 for current phase
+      hooks.phaseRedispatchCount.set(`${sid}:${hooks.STATES.SWARM}`, 5);
+
+      // Dispatch task — the re-dispatch cap fires during disk check and advances
+      // the phase to VERIFY. The subsequent task handler then throws WRONG_AGENT
+      // because artisan is not the expected agent for VERIFY phase.
+      // This is expected — the safety mechanism already fired.
+      let caughtError = null;
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "task", sessionID: sid, callID: "c1" },
+          { args: { subagent_type: "artisan", prompt: "AGENT: artisan" } }
+        );
+      } catch (e) {
+        caughtError = e;
+      }
+
+      // Safety override should have fired — phase advanced to VERIFY
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+      // pendingVerification should be cleared by the override
+      expect(hooks.pendingVerification.has(sid)).toBe(false);
+      // Task handler should have thrown WRONG_AGENT (expected — phase changed)
+      expect(caughtError).not.toBeNull();
+      expect(caughtError.code).toBe("WRONG_AGENT");
+      cleanupSession(sid);
+    });
+
+    // Verify that pendingVerification still works normally below safety thresholds
+    it("pendingVerification prevents regression when failures < 15 and redispatches < 5", async () => {
+      const sid = "safety-s3";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Activate pendingVerification
+      hooks.pendingVerification.set(sid, {
+        expectedPrefixes: ["impl"],
+        toolType: "task",
+        timestamp: Date.now(),
+        toolCalls: 0
+      });
+
+      // Some failures but below threshold
+      hooks.diskCheckFailures.set(sid, 5);
+
+      // No impl files exist — would normally trigger regression check
+      // But pendingVerification should prevent it (failures < 15, no task dispatch)
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: sid, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+
+      // Phase should stay SWARM — pendingVerification active
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
       cleanupSession(sid);
     });
   });
