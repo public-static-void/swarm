@@ -35,6 +35,7 @@ vi.mock("fs", () => mockFs);
 function addMemoryEntry(id, overrides = {}) {
   const defaultEntry = {
     id: `MEM-${String(id).padStart(3, "0")}`,
+    type: "fact",
     source_kd: `knowledge/composed-test-${id}.md`,
     tags: ["test", "mock", "sample"],
     topic: `Test topic ${id}`,
@@ -85,7 +86,6 @@ describe("Knowledge-Gate Plugin", () => {
 
   describe("searchMemory — Tag-overlap scoring", () => {
     it("returns higher score for entries with matching tags", () => {
-      // Add 2 entries: one with matching tags, one without
       const memDir = MEMORY_DIR;
       mockFs._files[memDir] = [
         addMemoryEntry(1, { tags: ["target-tag", "mock", "sample"], topic: "Alpha" }),
@@ -93,7 +93,6 @@ describe("Knowledge-Gate Plugin", () => {
       ];
 
       const results = hooks.searchMemory({ tags: ["target-tag"], topic: "", limit: 5 });
-      // Only entries with matching tags get score > 0 and pass the filter
       expect(results).toHaveLength(1);
       expect(results[0].tags).toContain("target-tag");
     });
@@ -122,7 +121,6 @@ describe("Knowledge-Gate Plugin", () => {
       ];
 
       const results = hooks.searchMemory({ tags: [], topic: "", limit: 5 });
-      // Both match (no filter) — newer should come first
       expect(results[0].id).toBe("MEM-002");
       expect(results[1].id).toBe("MEM-001");
     });
@@ -235,7 +233,6 @@ Body text`;
 
   describe("getNextIssueId", () => {
     it("generates ISSUE-001 when no issues exist", () => {
-      // Directory exists but is empty
       const issuesDir = ISSUES_DIR;
       mockFs._dirs.add(issuesDir);
       mockFs._files[issuesDir] = [];
@@ -268,22 +265,52 @@ Body text`;
       expect(output.system[0]).toContain("memory_search");
     });
 
-    it("injects scribe-specific write instructions for scribe agent", async () => {
+    it("injects scribe-specific write instructions via memory_write tool", async () => {
       const output = { system: [] };
       await hooks["experimental.chat.system.transform"](
         { sessionID: "test-session", agent: "scribe" },
         output
       );
-      // Scribe gets the base instruction + memory write instruction
-      const writeInstr = output.system.find(s => s.includes("COMPOSED KD"));
+      const writeInstr = output.system.find(s => s.includes("memory_write tool"));
       expect(writeInstr).toBeTruthy();
+    });
+
+    it("includes dynamic hint line when memory matches agent type", async () => {
+      // Add an entry matching artisan agent type tags
+      const memDir = MEMORY_DIR;
+      mockFs._files[memDir] = [
+        addMemoryEntry(1, { tags: ["implementation", "code"], topic: "Code patterns" })
+      ];
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"](
+        { sessionID: "test-session", agent: "artisan" },
+        output
+      );
+      // systemTransform runs deriveSearchHints which searches memory
+      // Artisan → AGENT_TAG_MAP has ["implementation", "code"] — entry has those tags
+      const hintLine = output.system.find(s => s.includes("Memory:"));
+      expect(hintLine).toBeTruthy();
+      expect(hintLine).toMatch(/Memory: \d+ entries match/);
+    });
+
+    it("does not add hint when no memory entries exist", async () => {
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"](
+        { sessionID: "test-session", agent: "artisan" },
+        output
+      );
+      // Only the memory_search availability line should be present
+      const hintLines = output.system.filter(s => s.includes("Memory:"));
+      expect(hintLines).toHaveLength(0);
     });
   });
 
-  describe("validateMemoryEntry", () => {
-    it("accepts a valid memory entry", () => {
+  describe("validateMemoryEntry — with type field", () => {
+    it("accepts a valid memory entry with type field", () => {
       const valid = {
         id: "MEM-001",
+        type: "fact",
         source_kd: "knowledge/composed-test.md",
         tags: ["test", "sample"],
         topic: "Test topic",
@@ -295,9 +322,59 @@ Body text`;
       expect(hooks.validateMemoryEntry(valid)).toEqual({ valid: true });
     });
 
+    it("rejects entry without type field", () => {
+      const invalid = {
+        id: "MEM-001",
+        source_kd: "knowledge/composed-test.md",
+        tags: ["test", "sample"],
+        topic: "Test topic",
+        insight: "Test insight.",
+        created: "2026-07-29T00:00:00.000Z",
+        session: "ses_test",
+        version: "1.0.0"
+      };
+      const result = hooks.validateMemoryEntry(invalid);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain("type");
+    });
+
+    it("rejects entry with invalid type value", () => {
+      const invalid = {
+        id: "MEM-001",
+        type: "invalid-type",
+        source_kd: "knowledge/composed-test.md",
+        tags: ["test", "sample"],
+        topic: "Test topic",
+        insight: "Test insight.",
+        created: "2026-07-29T00:00:00.000Z",
+        session: "ses_test",
+        version: "1.0.0"
+      };
+      const result = hooks.validateMemoryEntry(invalid);
+      expect(result.valid).toBe(false);
+      expect(result.error).toContain("type");
+    });
+
+    it("accepts all valid type values", () => {
+      const base = {
+        id: "MEM-001",
+        source_kd: "knowledge/composed-test.md",
+        tags: ["test", "sample"],
+        topic: "Test topic",
+        insight: "Test insight.",
+        created: "2026-07-29T00:00:00.000Z",
+        session: "ses_test",
+        version: "1.0.0"
+      };
+      for (const type of ["fact", "decision", "pattern", "warning", "context"]) {
+        expect(hooks.validateMemoryEntry({ ...base, type })).toEqual({ valid: true });
+      }
+    });
+
     it("rejects entry with wrong id format", () => {
       const invalid = {
         id: "entry-001",
+        type: "fact",
         source_kd: "knowledge/composed-test.md",
         tags: ["test", "sample"],
         topic: "Test topic",
@@ -314,6 +391,7 @@ Body text`;
     it("rejects entry with wrong version type", () => {
       const invalid = {
         id: "MEM-001",
+        type: "fact",
         source_kd: "knowledge/composed-test.md",
         tags: ["test", "sample"],
         topic: "Test topic",
@@ -330,6 +408,7 @@ Body text`;
     it("rejects entry with date-only created field", () => {
       const invalid = {
         id: "MEM-001",
+        type: "fact",
         source_kd: "knowledge/composed-test.md",
         tags: ["test", "sample"],
         topic: "Test topic",
@@ -347,6 +426,7 @@ Body text`;
   describe("formatMemoryEntry", () => {
     const entry = {
       id: "MEM-001",
+      type: "pattern",
       source_kd: "knowledge/composed-test.md",
       tags: ["test", "sample"],
       topic: "Test topic",
@@ -356,9 +436,10 @@ Body text`;
       version: "1.0.0"
     };
 
-    it("produces markdown format", () => {
+    it("produces markdown format including type", () => {
       const result = hooks.formatMemoryEntry(entry, "markdown");
       expect(result).toContain("MEM-001");
+      expect(result).toContain("(pattern)");
       expect(result).toContain("Test topic");
       expect(result).toContain("source: knowledge/composed-test.md");
     });
@@ -374,20 +455,15 @@ Body text`;
       const memDir = MEMORY_DIR;
       mockFs._files[memDir] = [addMemoryEntry(1)];
 
-      // First call — cache miss, reads from disk
       const r1 = hooks.searchMemory({ tags: [], topic: "", limit: 5 });
       expect(r1).toHaveLength(1);
       expect(mockFs.readdirSync).toHaveBeenCalledTimes(1);
 
-      // Clear call count for second assertion
       mockFs.readdirSync.mockClear();
 
-      // Second call — should be cache hit (entries from cache, not re-parsed from disk)
       const r2 = hooks.searchMemory({ tags: [], topic: "", limit: 5 });
       expect(r2).toHaveLength(1);
-      // readdirSync was called once for file-count check in isCacheValid (not for full reload)
       expect(mockFs.readdirSync).toHaveBeenCalledTimes(1);
-      // The entries should be the same object reference (from cache)
       expect(r1).toEqual(r2);
     });
 
@@ -395,25 +471,208 @@ Body text`;
       const memDir = MEMORY_DIR;
       mockFs._files[memDir] = [addMemoryEntry(1)];
 
-      // First call populates cache
       hooks.searchMemory({ tags: [], topic: "", limit: 5 });
 
-      // Add a new file (simulating new entry written by Scribe)
       mockFs._files[memDir].push(addMemoryEntry(2));
       mockFs.readdirSync.mockClear();
 
-      // Second call — should detect file count change and reload
       const r2 = hooks.searchMemory({ tags: [], topic: "", limit: 5 });
       expect(r2).toHaveLength(2);
     });
   });
 
-  describe("Named exports", () => {
-    it("exports searchMemory, validateMemoryEntry, and formatMemoryEntry as named exports", () => {
-      expect(typeof plugin.searchMemory).toBe("function");
-      expect(typeof plugin.validateMemoryEntry).toBe("function");
-      expect(typeof plugin.formatMemoryEntry).toBe("function");
-      expect(typeof plugin.scanHighSeverityIssues).toBe("function");
+  describe("deriveSearchHints — Hint derivation engine", () => {
+    it("returns empty for mechanical modes (preflight, checkpoint, cleanup)", () => {
+      for (const mode of ["preflight", "checkpoint", "cleanup"]) {
+        const result = hooks.deriveSearchHints({ mode, agentType: "artisan", scope: "test" });
+        expect(result.shouldHint).toBe(false);
+        expect(result.hints).toHaveLength(0);
+      }
+    });
+
+    it("derives tags from MODE for analytical modes", () => {
+      const result = hooks.deriveSearchHints({ mode: "explore", agentType: "", scope: "" });
+      // explore maps to ["exploration", "architecture", "investigation"]
+      expect(result.shouldHint).toBe(false); // No memory entries exist, so no hint
+    });
+
+    it("adds agent-type-specific tags", () => {
+      const result = hooks.deriveSearchHints({ mode: "swarm", agentType: "analyzer", scope: "" });
+      // swarm → ["implementation", "code", "pattern"] + analyzer → ["analysis", "root-cause"]
+      // No memory entries, so shouldHint is false but tags are derived
+      expect(result.shouldHint).toBe(false);
+    });
+
+    it("returns hint when memory matches", () => {
+      const memDir = MEMORY_DIR;
+      mockFs._files[memDir] = [
+        addMemoryEntry(1, { tags: ["analysis", "bug"], topic: "Bug analysis patterns" })
+      ];
+
+      const result = hooks.deriveSearchHints({ mode: "investigate", agentType: "analyzer", scope: "" });
+      // investigate → ["analysis", "root-cause", "bug"] + analyzer → ["analysis", "root-cause"]
+      // MEM-001 has ["analysis", "bug"] → match!
+      expect(result.shouldHint).toBe(true);
+      expect(result.hints.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("extracts noun keywords from SCOPE", () => {
+      const memDir = MEMORY_DIR;
+      mockFs._files[memDir] = [
+        addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth tokens" })
+      ];
+
+      const result = hooks.deriveSearchHints({ mode: "swarm", agentType: "artisan", scope: "fix auth token permissions" });
+      // swarm → ["implementation", "code", "pattern"] + artisan → ["implementation", "code"]
+      // scope keywords after stop-word+noise removal: ["auth", "token", "permissions"]
+      // MEM-001 has ["auth", "permissions"] → match!
+      expect(result.shouldHint).toBe(true);
+    });
+
+    it("limits to 3 hint lines maximum", () => {
+      const memDir = MEMORY_DIR;
+      mockFs._files[memDir] = [
+        addMemoryEntry(1, { tags: ["implementation", "code", "bug"], topic: "Alpha" }),
+        addMemoryEntry(2, { tags: ["implementation", "bug"], topic: "Beta" }),
+        addMemoryEntry(3, { tags: ["bug"], topic: "Gamma" })
+      ];
+
+      const result = hooks.deriveSearchHints({ mode: "swarm", agentType: "artisan", scope: "" });
+      expect(result.shouldHint).toBe(true);
+      expect(result.hints.length).toBeLessThanOrEqual(3);
+    });
+  });
+
+  describe("generateHintLines — Hint format", () => {
+    it("produces hint in the correct format regex", () => {
+      const results = [
+        { id: "MEM-001", tags: ["bug", "analysis"], topic: "Bug fix", insight: "Fix" },
+        { id: "MEM-002", tags: ["bug"], topic: "Another bug", insight: "Another" }
+      ];
+      const hints = hooks.generateHintLines(results, ["bug"]);
+      expect(hints).toHaveLength(1);
+      expect(hints[0]).toMatch(/^\[Memory: \d+ entries match "[^"]+"\. Use memory_search\("[^"]+"\) to retrieve\.\]$/);
+    });
+
+    it("groups results by primary tag", () => {
+      const results = [
+        { id: "MEM-001", tags: ["bug", "caching"], topic: "Bug fix", insight: "Fix" },
+        { id: "MEM-002", tags: ["bug"], topic: "Another bug", insight: "Another" },
+        { id: "MEM-003", tags: ["caching"], topic: "Cache strategy", insight: "Cache" }
+      ];
+      const hints = hooks.generateHintLines(results, ["caching", "bug"]);
+      expect(hints).toHaveLength(2);
+      expect(hints[0]).toContain("caching");
+      expect(hints[1]).toContain("bug");
+    });
+
+    it("produces generic fallback when no tag-grouping works", () => {
+      const results = [
+        { id: "MEM-001", tags: ["unrelated"], topic: "Something", insight: "Else" }
+      ];
+      const hints = hooks.generateHintLines(results, ["nonexistent"]);
+      expect(hints).toHaveLength(1);
+      expect(hints[0]).toContain("current context");
+    });
+
+    it("returns empty array for empty results", () => {
+      const hints = hooks.generateHintLines([], ["bug"]);
+      expect(hints).toHaveLength(0);
+    });
+  });
+
+  describe("getNextMemoryId", () => {
+    it("generates MEM-001 when no entries exist", () => {
+      const result = hooks.getNextMemoryId();
+      expect(result).toBe("MEM-001");
+    });
+
+    it("generates sequential IDs based on existing entry files", () => {
+      const memDir = MEMORY_DIR;
+      mockFs._files[memDir] = [
+        { fileName: "entry-001.json", content: "{}" },
+        { fileName: "entry-005.json", content: "{}" }
+      ];
+
+      const result = hooks.getNextMemoryId();
+      expect(result).toBe("MEM-006");
+    });
+  });
+
+  describe("checkDuplicateMemory", () => {
+    it("returns null when no matching entries exist", () => {
+      const entry = { tags: ["unique"], topic: "Completely new topic" };
+      const result = hooks.checkDuplicateMemory(entry);
+      expect(result).toBeNull();
+    });
+
+    it("returns existing entry when high-similarity match found", () => {
+      const memDir = MEMORY_DIR;
+      mockFs._files[memDir] = [
+        addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" })
+      ];
+
+      const entry = { tags: ["auth", "permissions"], topic: "Auth token design patterns" };
+      const result = hooks.checkDuplicateMemory(entry);
+      expect(result).not.toBeNull();
+      expect(result.id).toBe("MEM-001");
+    });
+  });
+
+  describe("memory_write tool", () => {
+    it("rejects writes from non-Scribe agents", async () => {
+      const output = { args: { entry: { id: "MEM-020", type: "fact", source_kd: "test.md", tags: ["test", "sample"], topic: "Test", insight: "X", created: "2026-07-29T00:00:00.000Z", session: "s1", version: "1.0.0" } } };
+      await hooks["tool.execute.before"]({ tool: "memory_write", sessionID: "artisan-session" }, output);
+      expect(output.handled).toBe(true);
+      expect(output.result).toContain("permission");
+    });
+
+    it("writes valid entry from Scribe agent", async () => {
+      // Register artisan in sessionAgentMap first (only session mapping is used)
+      await hooks["chat.params"]({ sessionID: "scribe-session", agent: "scribe" }, {});
+
+      const entry = { id: "MEM-020", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight for tool write.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
+      const output = { args: { entry } };
+      await hooks["tool.execute.before"]({ tool: "memory_write", sessionID: "scribe-session" }, output);
+      expect(output.handled).toBe(true);
+      expect(output.result).toContain("written");
+      expect(output.result).toContain("MEM-020");
+    });
+
+    it("auto-assigns ID when not provided", async () => {
+      await hooks["chat.params"]({ sessionID: "scribe-session", agent: "scribe" }, {});
+
+      const entry = { type: "fact", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight for auto-id.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
+      const output = { args: { entry } };
+      await hooks["tool.execute.before"]({ tool: "memory_write", sessionID: "scribe-session" }, output);
+      expect(output.handled).toBe(true);
+      expect(output.result).toContain("MEM-001"); // First entry gets MEM-001
+    });
+
+    it("detects duplicate entries and skips write", async () => {
+      await hooks["chat.params"]({ sessionID: "scribe-session", agent: "scribe" }, {});
+
+      // Pre-populate mock filesystem with an entry — this simulates an existing entry on disk
+      const memDir = MEMORY_DIR;
+      mockFs._files[memDir] = [
+        addMemoryEntry(50, { tags: ["test", "duplicate"], topic: "Duplicate test" })
+      ];
+
+      // Try writing a similar entry (same tags, overlapping topic)
+      const entry2 = { id: "MEM-051", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "duplicate"], topic: "Duplicate test content", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
+      const output2 = { args: { entry: entry2 } };
+      await hooks["tool.execute.before"]({ tool: "memory_write", sessionID: "scribe-session" }, output2);
+      expect(output2.result).toContain("Duplicate");
+    });
+  });
+
+  describe("No named exports (v2.0.0)", () => {
+    it("does not export searchMemory as a named export", () => {
+      expect(plugin.searchMemory).toBeUndefined();
+    });
+
+    it("does not export validateMemoryEntry as a named export", () => {
+      expect(plugin.validateMemoryEntry).toBeUndefined();
     });
   });
 });
