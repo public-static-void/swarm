@@ -2670,15 +2670,15 @@ describe("Protocol-Gate Plugin", () => {
         { args: { prompt: `AGENT: artisan\nBACKWARD: true`, subagent_type: "artisan" } }
       );
 
-      // dispatchCount reset to max(1, 2) = 2, then the task handler
-      // increments to 3 (matching SWARM dispatch — the backward transition
-      // itself counts as a SWARM dispatch since artisan matches SWARM's agent)
-      expect(hooks.swarmDispatchCount.get(sid)).toBe(3);
+      // dispatchCount reset to max(1, 2) = 2 — the backward transition
+      // path does NOT increment dispatchCount; only normal SWARM
+      // dispatches (agent-matching task handler) do.
+      expect(hooks.swarmDispatchCount.get(sid)).toBe(2);
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
 
-      // With dispatchCount=3 and only 2 impl files, formula does NOT advance
-      // (3 > 2). This shows the reset baseline is working correctly with the
-      // effectiveCount guard preventing false advancement.
+      // With dispatchCount=2 and 2 impl files, formula does NOT advance
+      // (2 > 2 is false). This shows the reset baseline is working
+      // correctly with the effectiveCount guard preventing false advancement.
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
       cleanupSession(sid);
     });
