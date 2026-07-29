@@ -10,7 +10,6 @@ permission:
     "knowledge/preflight-*.md": allow
     "knowledge/checkpoint-*.md": allow
     "knowledge/cleanup-*.md": allow
-    "**/skills/kd-system/templates/*.md": allow
     ".ignore": allow
     ".gitignore": allow
     ".gitkeep": allow
@@ -27,12 +26,11 @@ permission:
   task: deny
   skill: allow
   lsp: deny
-  question: deny
+  question: allow
   webfetch: deny
   websearch: deny
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:

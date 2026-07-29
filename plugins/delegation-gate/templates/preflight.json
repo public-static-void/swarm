@@ -1,4 +1,4 @@
 {
   "mode": "preflight",
-  "template": "DISPATCH TO: {agent}\nMODE: preflight\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\nLoad the kd-system skill and the committer-preflight skill. Perform preflight checks per the scope above. After completing all preflight steps, write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion to the protocol-gate."
+  "template": "DISPATCH TO: {agent}\nMODE: preflight\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill and the committer-preflight skill. Read KDs from KD PATHS. Perform preflight checks per the scope above. After completing all preflight steps, write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion to the protocol-gate."
 }

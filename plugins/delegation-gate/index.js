@@ -266,13 +266,14 @@ function renderTemplate(template, fields) {
   return result;
 }
 
-function injectToolDocs(output) {
+function injectToolDocs(output, agentName) {
   const today = new Date().toISOString().slice(0, 10);
+  const displayAgent = agentName || "explorer";
   // Concrete examples prevent LLMs from copying placeholder syntax literally.
   // <name> and <optional context> are genuine variables — angle brackets signal variability.
   const formatHint = `
 Delegation Prompt Format:
-DISPATCH TO: explorer
+DISPATCH TO: ${displayAgent}
 MODE: explore
 INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
@@ -281,17 +282,17 @@ SCOPE: <optional context>
 RESULT KD: knowledge/<type>-<name>.md (when subagent produces a KD)
 
 RESULT KD Naming Conventions:
-- explore:     knowledge/exploration-<name>.md
-- investigate: knowledge/analysis-<name>.md
-- align:       knowledge/spec-<name>.md
-- decompose:   knowledge/plan-<name>.md
-- swarm:       knowledge/impl-<name>.md
-- verify:      knowledge/review-<name>.md, knowledge/audit-<name>.md
-- extract:     knowledge/composed-<name>.md
-- evolve:      knowledge/process-<name>.md
-- checkpoint:  knowledge/checkpoint-<name>.md
-- preflight:   knowledge/preflight-<name>.md
-- cleanup:     knowledge/cleanup-<name>.md
+- explore:     knowledge/exploration-<name>-<session_id>.md
+- investigate: knowledge/analysis-<name>-<session_id>.md
+- align:       knowledge/spec-<name>-<session_id>.md
+- decompose:   knowledge/plan-<name>-<session_id>.md
+- swarm:       knowledge/impl-<name>-<session_id>.md
+- verify:      knowledge/review-<name>-<session_id>.md, knowledge/audit-<name>-<session_id>.md
+- extract:     knowledge/composed-<name>-<session_id>.md
+- evolve:      knowledge/process-<name>-<session_id>.md
+- checkpoint:  knowledge/checkpoint-<name>-<session_id>.md
+- preflight:   knowledge/preflight-<name>-<session_id>.md
+- cleanup:     knowledge/cleanup-<name>-<session_id>.md
 `;
 
   if (!output.args) output.args = {};
@@ -330,7 +331,7 @@ export default {
       debug(`RAW DESCRIPTION (${description.length} chars): ${description.substring(0, 500)}`);
       debug(`RAW SUBAGENT_TYPE: ${subagentType}`);
 
-      injectToolDocs(output);
+      injectToolDocs(output, subagentType);
 
       if (isBareKDPath(prompt)) {
         debug(`VALIDATION FAILED: bare KD path without structured fields`);
@@ -355,7 +356,13 @@ export default {
       }
 
       // scope is optional — provides domain context but doesn't block delegation
-      const requiredFields = ["agent", "mode", "intent_kd", "session_date"];
+      // R009: intent_kd is not required for checkpoint mode — the checkpoint
+      // template doesn't render intent_kd, so requiring it serves no purpose.
+      // Only non-checkpoint modes need intent_kd to identify the upstream KD.
+      const requiredFields = ["agent", "mode", "session_date"];
+      if (fields.mode?.toLowerCase() !== "checkpoint") {
+        requiredFields.push("intent_kd");
+      }
 
       debug(`Extracted fields: ${Object.keys(fields).join(", ")}`);
 
@@ -378,6 +385,15 @@ export default {
       // Scope validation — advisory only, never blocks delegation
       if (fields.scope !== undefined && !validateScope(fields.scope)) {
         debug(`WARNING: scope validation failed (len=${fields.scope.length}, content='${fields.scope.substring(0, 50)}...') — proceeding anyway`);
+      }
+
+      // R008: SWARM mode multi-milestone scope warning — large plans overload artisan context.
+      // Advisory only: warns but does not block delegation. The structural fix (one artisan
+      // per milestone) requires Pathfinder to produce milestone-scoped plans.
+      if (fields.mode?.toLowerCase() === "swarm" && fields.scope) {
+        if (/M\d+.*M\d+|milestones?\s*\d[\s,]*\d/i.test(fields.scope)) {
+          debug(`WARNING: SWARM mode scope references multiple milestones — artisan overload risk. Consider one artisan per milestone.`);
+        }
       }
 
       // Validate result_kd only when provided — falsy check treats "" same as omitted

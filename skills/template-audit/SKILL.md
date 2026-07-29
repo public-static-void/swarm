@@ -1,9 +1,14 @@
 ---
+name: template-audit
+description: "KD template for creating AUDIT documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "AUDIT: {{artifact audited}}"
 version: 1.0.0
 status: draft
 type: audit
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Inspector
 superseded_by: null
 ---

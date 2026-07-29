@@ -2,7 +2,7 @@
 *.bak
 
 # Knowledge documents
-knowledge/
+knowledge/*
 
 # Environment files
 .env

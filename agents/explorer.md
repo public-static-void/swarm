@@ -3,7 +3,7 @@ description: "Explores codebases to map structure, technologies, and key compone
 mode: subagent
 temperature: 0.4
 top_p: 0.6
-steps: 50
+steps: 100
 permission:
   read: allow
   edit:
@@ -19,7 +19,6 @@ permission:
   websearch: allow
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:
@@ -43,7 +42,7 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 - Your output serves as reference that other agents consume for context
 - You reduce uncertainty for the rest of the swarm
-- You produce EXPLORATION KDs. You consume INTENT KDs via the KDS field.
+- You produce EXPLORATION KDs. You consume INTENT KDs via the KD PATHS field.
 
 ## Protocol
 

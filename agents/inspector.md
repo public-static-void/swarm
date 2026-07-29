@@ -3,7 +3,7 @@ description: "Reviews artifacts against SPEC and PLAN. Performs security audits.
 mode: subagent
 temperature: 0.1
 top_p: 0.7
-steps: 50
+steps: 100
 permission:
   read: allow
   edit:
@@ -20,7 +20,6 @@ permission:
   websearch: allow
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:
@@ -58,7 +57,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 - You are impartial
 - You enforce V-Model traceability: every requirement must have a verifiable counterpart
 - Your output is a review document with findings and evidence. You produce REVIEW KDs and AUDIT KDs.
-- You consume SPEC KDs, PLAN KDs, and IMPL KDs via the KDS field.
+- You consume SPEC KDs, PLAN KDs, and IMPL KDs via the KD PATHS field.
 
 ## Protocol
 

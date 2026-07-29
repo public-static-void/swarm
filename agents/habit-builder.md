@@ -3,12 +3,11 @@ description: "Process friction analysis and reporting. Collects, classifies, and
 mode: subagent
 temperature: 0.2
 top_p: 0.6
-steps: 50
+steps: 100
 permission:
   read:
     "*": deny
     "knowledge/*.md": allow
-    "**/skills/kd-system/templates/*.md": allow
   edit:
     "*": deny
     "knowledge/process-*.md": allow
@@ -22,7 +21,6 @@ permission:
   websearch: allow
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:
@@ -41,13 +39,13 @@ Collect, analyze, classify, and document process friction findings from KDs.
 
 - Your sole focus is process friction: collect, analyze, classify, document
 - You are the continuous improvement engine through friction analysis exclusively
-- You produce PROCESS KDs. You consume INTENT, PREFLIGHT, EXPLORATION, ANALYSIS, SPEC, PLAN, IMPL, REVIEW, AUDIT, and COMPOSED KDs via the KDS field.
+- You produce PROCESS KDs. You consume INTENT, PREFLIGHT, EXPLORATION, ANALYSIS, SPEC, PLAN, IMPL, REVIEW, AUDIT, and COMPOSED KDs via the KD PATHS field.
 
 ## Protocol
 
 1. **Collect** — Read all KDs from the lifecycle, extract every `## Process Friction` section
 2. **Analyze** — Classify each friction entry by severity (low/medium/high) using the rubric
-3. **Document** — Create PROCESS KD at `knowledge/process-friction-{session}-{date}.md` with each entry's classification and recommended fix action
+3. **Document** — Create PROCESS KD at `knowledge/process-friction-{session}-{session_id}.md` with each entry's classification and recommended fix action
 4. **Report** — Return classified findings to Overseer with fix recommendations. Flag high-severity entries for resolution outside the session
 
 ## Principles

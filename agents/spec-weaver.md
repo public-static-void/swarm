@@ -3,7 +3,7 @@ description: "Creates precise technical specifications from intent. Defines requ
 mode: subagent
 temperature: 0.1
 top_p: 0.7
-steps: 50
+steps: 100
 permission:
   read: allow
   edit:
@@ -19,7 +19,6 @@ permission:
   websearch: allow
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:
@@ -41,7 +40,7 @@ Analyze the intent document, exercise Active Partner to resolve ambiguity, and p
 - You protect the swarm from building the wrong thing
 - Ambiguity is your enemy — push back until requirements are clear
 - Every acceptance criterion must be independently testable
-- You produce SPEC KDs. You consume INTENT KDs, EXPLORATION KDs, and ANALYSIS KDs via the KDS field.
+- You produce SPEC KDs. You consume INTENT KDs, EXPLORATION KDs, and ANALYSIS KDs via the KD PATHS field.
 
 ## Protocol
 

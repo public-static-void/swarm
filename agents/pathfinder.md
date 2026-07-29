@@ -3,7 +3,7 @@ description: "Translates specs into dependency-aware task plans. Defines milesto
 mode: subagent
 temperature: 0.1
 top_p: 0.7
-steps: 50
+steps: 100
 permission:
   read: allow
   edit:
@@ -19,7 +19,6 @@ permission:
   websearch: deny
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:
@@ -42,7 +41,7 @@ Read the specification, break it into the smallest independently verifiable step
 - You create the blueprint — others build from it
 - Every step must be atomic (independently verifiable)
 - Make all dependencies explicit in the plan
-- You produce PLAN KDs. You consume INTENT KDs and SPEC KDs via the KDS field.
+- You produce PLAN KDs. You consume INTENT KDs and SPEC KDs via the KD PATHS field.
 
 ## Protocol
 

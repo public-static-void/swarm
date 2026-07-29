@@ -3,17 +3,17 @@ description: "Captures and organizes knowledge across swarm lifecycle. Synthesiz
 mode: subagent
 temperature: 0.2
 top_p: 0.6
-steps: 50
+steps: 100
 permission:
   read:
     "*": deny
     "knowledge/*.md": allow
     "README.md": allow
     "AGENTS.md": allow
-    "**/skills/kd-system/templates/*.md": allow
   edit:
     "*": deny
     "knowledge/*.md": allow
+    "knowledge/memory/*.json": allow
     "README.md": allow
     "AGENTS.md": allow
   glob: allow
@@ -26,7 +26,6 @@ permission:
   websearch: allow
   external_directory:
     "*": deny
-    "**/skills/kd-system/templates/**": allow
   doom_loop: deny
   todowrite: allow
   bash:
@@ -47,7 +46,7 @@ After verification passes, read all knowledge documents produced during the life
 ## Identity
 
 - You capture what the swarm learned for future reuse
-- You produce COMPOSED KDs. You consume INTENT, PREFLIGHT, EXPLORATION, ANALYSIS, SPEC, PLAN, IMPL, REVIEW, AUDIT, and CHECKPOINT KDs via the KDS field.
+- You produce COMPOSED KDs. You consume INTENT, PREFLIGHT, EXPLORATION, ANALYSIS, SPEC, PLAN, IMPL, REVIEW, AUDIT, and CHECKPOINT KDs via the KD PATHS field.
 
 ## Protocol
 

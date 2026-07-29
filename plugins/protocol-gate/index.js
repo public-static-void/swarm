@@ -266,7 +266,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   if (phase === STATES.VERIFY) {
     const hasReview = sessionFiles.some(f => /^review-/i.test(f));
     const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
-    const result = hasReview && hasAudit;
+    const result = hasReview || hasAudit;
     debug(`Disk check VERIFY: review=${hasReview}, audit=${hasAudit} → ${result}`);
     return result;
   }
@@ -278,8 +278,12 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   if (phase === STATES.SWARM) {
     const implFiles = sessionFiles.filter(f => pattern.test(f));
     const dispatchCount = swarmDispatchCount.get(sessionID) || 0;
-    const result = dispatchCount > 0 && implFiles.length >= dispatchCount;
-    debug(`Disk check SWARM: impl=${implFiles.length}, dispatched=${dispatchCount} → ${result}`);
+    // Safety guard: use effectiveCount to prevent formula divergence after regression.
+    // With R004 reset in place, dispatchCount is reconciled on each regression, but
+    // this guard ensures even if dispatchCount is 0, we require at least 1 impl file.
+    const effectiveCount = Math.max(1, dispatchCount);
+    const result = dispatchCount > 0 && implFiles.length >= effectiveCount;
+    debug(`Disk check SWARM: impl=${implFiles.length}, dispatched=${dispatchCount}, effective=${effectiveCount} → ${result}`);
     return result;
   }
 
@@ -292,7 +296,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 // When undo deletes KDs, in-memory phase state diverges from disk reality.
 // This function resets phase to the highest phase whose KD still exists on disk
 // for the current session. Returns true if phase was regressed.
-function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount, inFlightDispatches) {
+function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount, inFlightDispatches, freshAdvancement) {
   if (currentPhase === undefined || currentPhase <= STATES.PROTOCOL_NOT_LOADED) return false;
 
   const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
@@ -330,11 +334,29 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     return false;
   }
 
+  // R002: Grace period for fresh phase advancement.
+  // When a phase just advanced via disk check (e.g., SWARM→VERIFY), the new phase's
+  // KD hasn't been produced yet. Skip regression for the first 3 disk checks to
+  // avoid false regression back to the previous phase.
+  // After the grace period expires, normal regression behavior resumes.
+  const faEntry = freshAdvancement?.get(sessionID);
+  if (faEntry && faEntry.phase === currentPhase) {
+    faEntry.diskCheckCount = (faEntry.diskCheckCount || 0) + 1;
+    if (faEntry.diskCheckCount < 3) {
+      debug(`GRACE_SKIP: ${getPhaseName(currentPhase)} phase — skipping consistency check during grace period (diskCheck ${faEntry.diskCheckCount}/3) for session ${sessionID}`);
+      return false;
+    } else {
+      // Grace period expired — delete entry and allow normal regression
+      freshAdvancement.delete(sessionID);
+      debug(`GRACE_EXPIRED: ${getPhaseName(currentPhase)} phase — grace period over, normal regression resumes for session ${sessionID}`);
+    }
+  }
+
   // Check if current phase's KD is still present on disk
   if (currentPhase === STATES.VERIFY) {
     const hasReview = sessionFiles.some(f => /^review-/i.test(f));
     const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
-    if (hasReview && hasAudit) return false; // current phase is fine
+    if (hasReview || hasAudit) return false; // current phase is fine
   } else {
     if (sessionFiles.some(f => currentPattern.test(f))) return false; // current phase is fine
   }
@@ -356,7 +378,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     if (phase === STATES.VERIFY) {
       const hasReview = sessionFiles.some(f => /^review-/i.test(f));
       const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
-      if (hasReview && hasAudit) {
+      if (hasReview || hasAudit) {
         regressedPhase = phase;
         foundEarlierKD = true;
         break;
@@ -435,6 +457,15 @@ export default {
     // Tracks tool calls made while pendingVerification is active per session.
     // Used by R007 safety timeout: warning at 10, force-advance at 15.
     const pendingVerificationToolCount = new Map();
+    // R002: Fresh advancement tracking — records when a phase was just advanced via
+    // disk check. Used by checkPhaseStateConsistency to grant a grace period before
+    // allowing regression. Prevents false regression when SWARM→VERIFY advancement
+    // occurs and VERIFY's KD hasn't been produced yet.
+    // In-memory only — not persisted to .state files (NFR003).
+    const freshAdvancement = new Map(); // sessionID → {phase, diskCheckCount}
+    // R100: Track agent type for ALL sessions (including subagents) to enforce
+    // checkpoint KD restrictions. Populated in chatParams for every session.
+    const sessionAgentMap = new Map();
     // tool.definition doesn't receive sessionID — track the most recent session
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
@@ -528,6 +559,25 @@ export default {
       pendingVerification.delete(sessionID);
       pendingVerificationToolCount.delete(sessionID);
       debug(`pendingVerification: CLEARED (backward transition) for session ${sessionID}`);
+
+      // R004: Reset counters when regressing to a target phase.
+      // This prevents stale dispatch counts from causing formula divergence (BUG-005)
+      // and allows fresh tracking of re-dispatches for the new phase entry.
+      // T-R004-1: Reset swarmDispatchCount when regressing TO SWARM
+      if (targetPhase === STATES.SWARM) {
+        const knowledgeDir = join(process.cwd(), "knowledge");
+        let implFiles = [];
+        try {
+          const files = readdirSync(knowledgeDir);
+          implFiles = files.filter(f => f.endsWith(`-${sessionID}.md`) && /^impl-/i.test(f));
+        } catch (_) {}
+        const reconciliedCount = Math.max(1, implFiles.length);
+        swarmDispatchCount.set(sessionID, reconciliedCount);
+        debug(`COUNTER_RESET: swarmDispatchCount set to ${reconciliedCount} (${implFiles.length} impl files found) for session ${sessionID}`);
+      }
+      // T-R004-2: Reset phaseRedispatchCount for the target phase
+      phaseRedispatchCount.delete(`${sessionID}:${targetPhase}`);
+      debug(`COUNTER_RESET: phaseRedispatchCount deleted for ${getPhaseName(targetPhase)} (session ${sessionID})`);
       return true;
     }
 
@@ -535,6 +585,10 @@ export default {
     async function chatParams(input, output) {
       const { sessionID, agent } = input;
       lastSeenSession = sessionID;
+
+      // R100: Track agent for ALL sessions (overseer and subagents).
+      // Used by checkpoint KD enforcement to verify the writing agent.
+      if (agent) sessionAgentMap.set(sessionID, agent);
 
       if (agent === "overseer") {
         overseerSessions.add(sessionID);
@@ -596,6 +650,48 @@ export default {
       const args = output.args || {};
 
       if (!isOverseerSession(sessionID)) {
+        // R100: Checkpoint KD enforcement for subagent writes/edits.
+        // Only the committer should write checkpoint KDs during SWARM phase.
+        // If a non-committer subagent (e.g. artisan) writes or edits a
+        // checkpoint KD directly, flag it. Check ALL overseer sessions for
+        // SWARM phase to find the parent lifecycle context.
+        if (tool === "write" || tool === "edit") {
+          const path = args?.filePath || "";
+          const relPath = toProjectRelative(path);
+          const isCheckpointKD = /^knowledge\/checkpoint-/i.test(relPath) || /\/knowledge\/checkpoint-/i.test(relPath);
+          if (isCheckpointKD) {
+            const writingAgent = sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown";
+            if (writingAgent !== "committer") {
+              // Check if any overseer session is in SWARM phase
+              let isInSwarm = false;
+              for (const sid of overseerSessions) {
+                if (sessionPhaseMap.get(sid) === STATES.SWARM) {
+                  isInSwarm = true;
+                  break;
+                }
+              }
+              if (writingAgent !== "unknown") {
+                if (isInSwarm) {
+                  // Known non-committer agent wrote checkpoint KD during SWARM — block
+                  debug(`CHECKPOINT VIOLATION: agent=${writingAgent} ${tool} checkpoint KD during SWARM (path=${relPath})`);
+                  throw new ProtocolGateError(
+                    ERROR_TEMPLATES.WRONG_AGENT("committer").code,
+                    `❌ CHECKPOINT VIOLATION: Only committer may write checkpoint KDs during SWARM. Agent "${writingAgent}" attempted to ${tool} checkpoint KD. Dispatch the committer agent for checkpoint commits.`,
+                    "Dispatch the committer agent for checkpoint commits"
+                  );
+                } else {
+                  // Non-committer wrote checkpoint KD but not during SWARM — warn only
+                  debug(`CHECKPOINT WARNING: agent=${writingAgent} ${tool} checkpoint KD outside SWARM phase — allowed but unusual`);
+                }
+              } else {
+                // Cannot determine writing agent — emit warning and defer to review
+                if (isInSwarm) {
+                  debug(`CHECKPOINT WARNING: unknown agent ${tool} checkpoint KD during SWARM (path=${relPath}) — deferring to manual review`);
+                }
+              }
+            }
+          }
+        }
         // Session never identified as overseer via chat.params — pass through.
         // Subagent sessions are never in overseerSessions.
         debug(`tool.execute.before: non-overseer session ${sessionID} tool=${tool} — passing through`);
@@ -655,6 +751,18 @@ export default {
         // Check if path matches the required pattern (handles both relative and absolute paths)
         const isIntentKD = relPath.startsWith("knowledge/intent-") || relPath.includes("/knowledge/intent-");
         const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
+        // R100: Checkpoint KD enforcement — Overseer should not write checkpoint KDs.
+        // Check BEFORE phase-specific restrictions (INTENT, REPORT) to provide the
+        // more specific error: checkpoint KDs are only for committers.
+        const isCheckpointKD = relPath.startsWith("knowledge/checkpoint-") || relPath.includes("/knowledge/checkpoint-");
+        if (isCheckpointKD) {
+          debug(`CHECKPOINT VIOLATION: overseer session ${sessionID} wrote checkpoint KD during ${phaseName} phase`);
+          throw new ProtocolGateError(
+            ERROR_TEMPLATES.WRONG_AGENT("committer").code,
+            `❌ CHECKPOINT VIOLATION: Only committer may write checkpoint KDs. Overseer attempted to write checkpoint KD during ${phaseName} phase.`,
+            "Dispatch the committer agent for checkpoint commits"
+          );
+        }
 
         if (phase === STATES.INTENT && !isIntentKD) {
           debug(`write: BLOCKED phase=${phaseName} path=${path} (must start with knowledge/intent-)`);
@@ -807,6 +915,11 @@ export default {
             // Reset re-dispatch counter for the phase we just advanced from
             phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
             const newPhase = currentPhase + 1;
+            // R002: Record fresh advancement to prevent false regression.
+            // checkPhaseStateConsistency uses this to grant a grace period before
+            // allowing regression from the new phase back to the old one.
+            freshAdvancement.set(sessionID, { phase: newPhase, diskCheckCount: 0 });
+            debug(`FRESH_ADVANCEMENT: ${currentPhaseName} → ${getPhaseName(newPhase)} recorded for session ${sessionID}`);
             debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}`);
             saveState(sessionID);
             // When entering PREFLIGHT, skip the next disk check to give the Overseer
@@ -844,71 +957,96 @@ export default {
                 }
               }
 
-              // BUG-003: pendingVerification — skip consistency check and stuck counter
-              // when a phase advancement is pending (subagent actively producing KD).
-              const pvState = pendingVerification.get(sessionID);
-              if (pvState) {
-                // Increment tool call counter for safety timeout (R007)
-                const toolCalls = (pendingVerificationToolCount.get(sessionID) || 0) + 1;
-                pendingVerificationToolCount.set(sessionID, toolCalls);
+              // R003: Always increment diskCheckFailures — even during
+              // pendingVerification — so safety mechanisms (force-advance at 15,
+              // re-dispatch cap at 5) can fire regardless of pendingVerification state.
+              // Previously, pendingVerification suppressed all stuck detection,
+              // causing the infinite loop to run indefinitely. (BUG-007 fix)
+              const currentFailures = (diskCheckFailures.get(sessionID) || 0) + 1;
+              diskCheckFailures.set(sessionID, currentFailures);
 
-                // Safety timeout: warn at 10, force-advance at 15
-                if (toolCalls >= 15) {
-                  debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
-                  pendingVerification.delete(sessionID);
-                  pendingVerificationToolCount.delete(sessionID);
+              // R003: Check force-advance safety mechanism BEFORE pendingVerification guard.
+              // When pendingVerification is active but the subagent is stuck and not
+              // producing the expected KD, this ensures the force-advance still fires.
+              let safetyTriggered = false;
+              if (currentFailures >= 15) {
+                debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → VERIFY after ${currentFailures} stuck failures (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
+                sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                diskCheckFailures.set(sessionID, 0);
+                phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                pendingVerification.delete(sessionID);
+                pendingVerificationToolCount.delete(sessionID);
+                inFlightDispatches.delete(sessionID);
+                saveState(sessionID);
+                safetyTriggered = true;
+              } else {
+                // R003: Check re-dispatch cap BEFORE pendingVerification guard
+                const redispatchKey = `${sessionID}:${currentPhase}`;
+                const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
+                if (redispatches >= 5 && tool === "task") {
+                  debug(`SAFETY_OVERRIDE: REDISPATCH CAP — ${currentPhaseName} phase — ${redispatches} re-dispatches used. Advancing to VERIFY (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
                   sessionPhaseMap.set(sessionID, STATES.VERIFY);
                   diskCheckFailures.set(sessionID, 0);
-                  inFlightDispatches.delete(sessionID);
-                  saveState(sessionID);
-                } else if (toolCalls >= 10) {
-                  debug(`pendingVerification WARNING: ${toolCalls} tool calls without expected KD — clearing pendingVerification (expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
+                  phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
                   pendingVerification.delete(sessionID);
                   pendingVerificationToolCount.delete(sessionID);
-                } else {
-                  // While pending: skip consistency check and stuck counter
-                  debug(`pendingVerification: active for ${sessionID} — skipping consistency check and stuck counter (toolCalls=${toolCalls}, expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
+                  inFlightDispatches.delete(sessionID);
+                  saveState(sessionID);
+                  safetyTriggered = true;
                 }
-              } else if (!isCreatingExpectedKD) {
-                // No pendingVerification: run normal consistency check + stuck detection
-                const didRegress = checkPhaseStateConsistency(
-                  sessionID, currentPhase, sessionPhaseMap,
-                  saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount,
-                  inFlightDispatches
-                );
+              }
 
-                if (didRegress) {
-                  phase = sessionPhaseMap.get(sessionID) ?? phase;
-                  phaseName = getPhaseName(phase);
+              // If neither safety mechanism fired, run normal logic.
+              // This may be pendingVerification (skip consistency check) or
+              // normal checking (run consistency check + stuck warning).
+              if (!safetyTriggered) {
+                const pvState = pendingVerification.get(sessionID);
+                if (pvState) {
+                  // pendingVerification active — subagent is expected to produce KD.
+                  // Skip consistency check and stuck counter; only track tool calls
+                  // for the safety timeout mechanism.
+                  const toolCalls = (pendingVerificationToolCount.get(sessionID) || 0) + 1;
+                  pendingVerificationToolCount.set(sessionID, toolCalls);
+
+                  // Safety timeout: warn at 10, force-advance at 15 tool calls
+                  if (toolCalls >= 15) {
+                    debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
+                    pendingVerification.delete(sessionID);
+                    pendingVerificationToolCount.delete(sessionID);
+                    sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                    diskCheckFailures.set(sessionID, 0);
+                    inFlightDispatches.delete(sessionID);
+                    saveState(sessionID);
+                  } else if (toolCalls >= 10) {
+                    debug(`pendingVerification WARNING: ${toolCalls} tool calls without expected KD — clearing pendingVerification (expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
+                    pendingVerification.delete(sessionID);
+                    pendingVerificationToolCount.delete(sessionID);
+                  } else {
+                    debug(`pendingVerification: active for ${sessionID} — skipping consistency check and stuck counter (toolCalls=${toolCalls}, expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
+                  }
+                } else if (!isCreatingExpectedKD) {
+                  // No pendingVerification: run normal consistency check + stuck detection
+                  const didRegress = checkPhaseStateConsistency(
+                    sessionID, currentPhase, sessionPhaseMap,
+                    saveState, diskCheckFailures, phaseRedispatchCount, swarmDispatchCount,
+                    inFlightDispatches, freshAdvancement
+                  );
+
+                  if (didRegress) {
+                    phase = sessionPhaseMap.get(sessionID) ?? phase;
+                    phaseName = getPhaseName(phase);
+                  } else {
+                    // Stuck warning at 10 failures (informational, not a safety mechanism)
+                    if (currentFailures === 10) {
+                      const knowledgeDir = join(process.cwd(), "knowledge");
+                      let foundFiles = [];
+                      try { foundFiles = readdirSync(knowledgeDir).filter(f => f.endsWith(`-${sessionID}.md`)); } catch (_) {}
+                      debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${currentFailures} disk checks. Expected prefixes: ${JSON.stringify(currentPhasePrefixes)}. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
+                    }
+                  }
                 } else {
-                  // Normal stuck detection
-                  const failures = (diskCheckFailures.get(sessionID) || 0) + 1;
-                  diskCheckFailures.set(sessionID, failures);
-                  if (failures === 10) {
-                    const knowledgeDir = join(process.cwd(), "knowledge");
-                    let foundFiles = [];
-                    try { foundFiles = readdirSync(knowledgeDir).filter(f => f.endsWith(`-${sessionID}.md`)); } catch (_) {}
-                    debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${failures} disk checks. Expected prefixes: ${JSON.stringify(currentPhasePrefixes)}. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
-                  }
-                  if (failures >= 15) {
-                    debug(`FORCE ADVANCE: ${currentPhaseName} → VERIFY after ${failures} stuck cycles`);
-                    sessionPhaseMap.set(sessionID, STATES.VERIFY);
-                    diskCheckFailures.set(sessionID, 0);
-                    phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
-                    saveState(sessionID);
-                  }
-                  const redispatchKey = `${sessionID}:${currentPhase}`;
-                  const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
-                  if (redispatches >= 5 && tool === "task") {
-                    debug(`REDISPATCH CAP: ${currentPhaseName} phase — ${redispatches} re-dispatches already used. Advancing to VERIFY.`);
-                    sessionPhaseMap.set(sessionID, STATES.VERIFY);
-                    diskCheckFailures.set(sessionID, 0);
-                    phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
-                    saveState(sessionID);
-                  }
+                  debug(`Consistency check: skipped — write creating current phase KD (prefixes=${JSON.stringify(currentPhasePrefixes)})`);
                 }
-              } else {
-                debug(`Consistency check: skipped — write creating current phase KD (prefixes=${JSON.stringify(currentPhasePrefixes)})`);
               }
             }
           }
@@ -930,6 +1068,32 @@ export default {
         }
 
         const prompt = args?.prompt || "";
+
+        // --- Memory injection: query prior insights for dispatch context ---
+        // Injects top-3 relevant memory entries into the dispatch prompt so the
+        // subagent receives relevant cross-session context at dispatch time.
+        try {
+          const memoryModule = await import('../knowledge-gate/index.js');
+          if (typeof memoryModule.searchMemory === 'function') {
+            // Extract topic from SCOPE, MODE, or fall back to phase name
+            const scopeMatch = prompt.match(/SCOPE:\s*(.+)/i);
+            const modeMatch = prompt.match(/MODE:\s*(\S+)/i);
+            const topic = scopeMatch?.[1]?.trim() || modeMatch?.[1] || phaseName;
+
+            const memoryResults = memoryModule.searchMemory({ tags: [], topic, limit: 3 });
+            if (memoryResults && memoryResults.length > 0) {
+              const memoryBlock = memoryResults.map(m =>
+                `- [${m.id}] ${m.topic}: ${m.insight} (source: ${m.source_kd})`
+              ).join('\n');
+              output.args.prompt = prompt + `\n\n## Relevant Prior Insights\n${memoryBlock}`;
+              debug(`Memory injection: added ${memoryResults.length} results for topic="${topic.substring(0, 50)}"`);
+            }
+          }
+        } catch (e) {
+          // Non-blocking: dispatch proceeds without memory if injection fails
+          debug(`Memory injection skipped (non-blocking): ${e.message}`);
+        }
+
         // Try prompt text first; fall back to subagent_type parameter.
         // When protocol-gate runs before delegation-gate, the raw prompt
         // has no structured fields — subagent_type is the reliable source.
@@ -976,16 +1140,28 @@ export default {
             const targetPhaseId = agentPhases.find(pid => validTargets.includes(pid));
 
             if (targetPhaseId !== undefined) {
-              debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
-              handleBackwardTransition(sessionID, phase, targetPhaseId);
+              // R011: Require explicit BACKWARD: true flag for backward transitions
+              // Without the flag, dispatching a non-current-phase agent is a wrong-agent
+              // error even if the agent could theoretically trigger a backward transition.
+              const hasBackwardFlag = /\bBACKWARD:\s*true\b/i.test(prompt);
+              if (hasBackwardFlag) {
+                debug(`task: BACKWARD TRANSITION agent=${agentName} from ${phaseName} → ${getPhaseName(targetPhaseId)}`);
+                handleBackwardTransition(sessionID, phase, targetPhaseId);
+              } else {
+                // Agent matches a backward target but BACKWARD: true flag is missing.
+                // Treat as wrong agent — prevents accidental phase regression.
+                const expectedAgent = currentPhaseAgent || phaseName;
+                debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent}) — BACKWARD: true required for backward transition`);
+                throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+              }
             } else {
               // Wrong agent — not current phase, not a valid backward target
               // NOTE: Checkpoint commits during SWARM (artisan → committer) are handled
-              // by the subagent bypass above — artisan sessions are not in overseerSessions,
+              // by the subagent bypass — artisan sessions are not in overseerSessions,
               // so committer dispatches from artisan pass through protocol-gate untouched.
-              // The Overseer dispatching committer during SWARM triggers a backward
-              // transition to PREFLIGHT (committer maps to PREFLIGHT in agentToPhaseMap,
-              // and PREFLIGHT is a valid backward target for SWARM) — which is correct.
+              // The Overseer dispatching committer during SWARM without BACKWARD: true
+              // is now blocked (R011) — which is correct because checkpoint commits are
+              // the artisan's responsibility, not the overseer's.
               const expectedAgent = currentPhaseAgent || phaseName;
               debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
               throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
@@ -1070,6 +1246,7 @@ export default {
       inFlightDispatches,
       pendingVerification,
       pendingVerificationToolCount,
+      freshAdvancement,
       KD_TYPE_PREFIXES,
       checkPhaseStateConsistency,
       ProtocolGateError,

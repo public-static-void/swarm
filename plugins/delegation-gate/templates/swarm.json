@@ -1,4 +1,4 @@
 {
   "mode": "swarm",
-  "template": "DISPATCH TO: {agent}\nMODE: swarm\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read SPEC KDs and PLAN KDs from KD PATHS. Execute the swarm phase per the scope above. Produce an IMPLEMENTATION SUMMARY KD at {result_kd} using the naming convention: knowledge/impl-<descriptive-name>.md (e.g., knowledge/impl-fix-auth-flow.md)."
+  "template": "DISPATCH TO: {agent}\nMODE: swarm\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read SPEC KDs and PLAN KDs from KD PATHS. Execute the swarm phase per the scope above. Produce an IMPLEMENTATION SUMMARY KD at {result_kd} using the naming convention: knowledge/impl-<descriptive-name>-<session_id>.md (e.g., knowledge/impl-fix-auth-flow-ses_123.md)."
 }

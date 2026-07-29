@@ -1,9 +1,14 @@
 ---
+name: template-plan
+description: "KD template for creating PLAN documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "PLAN: {{feature name}}"
 version: 1.0.0
 status: draft
 type: plan
-created: "{{session_id}}"
+session_id: "{{session_id}}"
 author: Pathfinder
 superseded_by: null
 ---

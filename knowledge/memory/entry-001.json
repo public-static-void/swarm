@@ -1,0 +1,10 @@
+{
+  "id": "MEM-001",
+  "source_kd": "knowledge/composed-permissions-overseer-nudge-2026-06-23.md",
+  "tags": ["permissions", "glob", "read", "templates", "overseer"],
+  "topic": "Permission glob patterns — `**/` prefix for cross-workspace compatibility",
+  "insight": "The read permission system evaluates glob patterns against file paths as given. When agents use absolute paths, relative-only patterns fail. The `**/` prefix enables matching both relative and absolute paths. The external_directory system uses a separate glob engine that supports `**` natively.",
+  "created": "2026-07-28T00:00:00.000Z",
+  "session": "ses_05616a6d7ffeoaAAGkDEIvHEC8",
+  "version": "1.0.0"
+}

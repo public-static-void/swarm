@@ -1,14 +1,19 @@
 ---
+name: template-report
+description: "KD template for creating REPORT documents. Load this skill, then use the template body as your KD structure reference."
+---
+
+---
 title: "REPORT: {{feature name}}"
 version: 1.0.0
 status: draft
 type: report
-created: "{{YYYY-MM-DD}}"
+session_id: "{{session_id}}"
 author: Overseer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/report-{{session}}-{{YYYY-MM-DD}}.md -->
+<!-- Filename: knowledge/report-{{session}}-{{session_id}}.md -->
 
 # REPORT: {{feature}}
 
