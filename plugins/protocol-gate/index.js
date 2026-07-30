@@ -96,7 +96,7 @@ const TOOL_ALLOWLIST = {
   EXTRACT: ["task", "todowrite", "glob"],
   EVOLVE: ["task", "todowrite", "glob"],
   CLEANUP: ["task", "todowrite", "glob", "bash"],
-  REPORT: ["todowrite", "edit", "read", "write"]
+  REPORT: ["todowrite", "edit", "read", "write", "skill"]
 };
 
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
