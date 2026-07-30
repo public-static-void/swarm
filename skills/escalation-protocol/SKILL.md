@@ -63,10 +63,9 @@ On receiving an escalation, the Overseer must:
 
 1. **Assess legitimacy** — Determine whether the request is legitimate (task truly requires the escalated resource)
 2. **Resolve** — Take one of these actions:
-   - Adjust permissions (if within the Overseer's power)
    - Continue the lifecycle normally — the receiving agent reads what it needs independently
     - Escalate to the user via REPORT KD (Step 2)
-3. **Resolution** — Resolve restrictions by adjusting permissions, continuing the lifecycle, or escalating to the user
+3. **Resolution** — Resolve restrictions by continuing the lifecycle or escalating to the user
 
 ## Agent Conduct Rules
 
