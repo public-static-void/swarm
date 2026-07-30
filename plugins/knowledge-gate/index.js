@@ -47,17 +47,42 @@ function debug(msg) {
   }
 }
 
-// --- Memory search ---
+// --- In-memory cache ---
 
 /**
- * Scans knowledge/memory/ for JSON entries matching query parameters.
- * Returns entries sorted by tag-match count (descending), then recency.
+ * In-memory cache for parsed memory entries with TTL.
+ * Reduces disk I/O on repeated searchMemory calls within the TTL window.
+ * TTL is configurable via MEMORY_CACHE_TTL_MS env var (default 30000ms).
  */
-function searchMemory(query) {
-  const { tags = [], topic = "", limit = 5 } = query;
+const memoryCache = {
+  entries: null,
+  lastLoaded: null,
+  ttlMs: parseInt(process.env.MEMORY_CACHE_TTL_MS || "30000", 10),
+  isLoading: false,
+  fileCount: 0
+};
 
+function isCacheValid() {
+  if (memoryCache.entries === null || memoryCache.lastLoaded === null) return false;
+  if ((Date.now() - memoryCache.lastLoaded) >= memoryCache.ttlMs) return false;
+  // Detect external file changes by comparing file count
+  // Uses readdirSync but avoids re-parsing all entries when count is unchanged
+  try {
+    const currentCount = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json")).length;
+    if (currentCount !== memoryCache.fileCount) {
+      memoryCache.entries = null;
+      memoryCache.lastLoaded = null;
+      return false;
+    }
+  } catch (_) {
+    return false;
+  }
+  return true;
+}
+
+function loadEntriesFromDisk() {
   if (!existsSync(MEMORY_DIR)) {
-    debug("searchMemory: memory dir does not exist");
+    debug("loadEntriesFromDisk: memory dir does not exist");
     return [];
   }
 
@@ -65,8 +90,15 @@ function searchMemory(query) {
   try {
     files = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"));
   } catch (e) {
-    debug(`searchMemory: failed to read memory dir: ${e.message}`);
+    debug(`loadEntriesFromDisk: failed to read memory dir: ${e.message}`);
     return [];
+  }
+
+  // Detect file count change — invalidates cache
+  if (memoryCache.entries !== null && files.length !== memoryCache.fileCount) {
+    debug(`loadEntriesFromDisk: file count changed (${memoryCache.fileCount} → ${files.length}), cache invalidated`);
+    memoryCache.entries = null;
+    memoryCache.lastLoaded = null;
   }
 
   const entries = [];
@@ -76,9 +108,37 @@ function searchMemory(query) {
       const entry = JSON.parse(raw);
       entries.push(entry);
     } catch (e) {
-      debug(`searchMemory: skipping malformed ${file}: ${e.message}`);
+      debug(`loadEntriesFromDisk: skipping malformed ${file}: ${e.message}`);
     }
   }
+
+  memoryCache.entries = entries;
+  memoryCache.lastLoaded = Date.now();
+  memoryCache.fileCount = files.length;
+  return entries;
+}
+
+// --- Memory search ---
+
+/**
+ * Scans knowledge/memory/ for JSON entries matching query parameters.
+ * Uses in-memory cache with configurable TTL to reduce disk I/O.
+ * Returns entries sorted by tag-match count (descending), then recency.
+ */
+function searchMemory(query) {
+  const { tags = [], topic = "", limit = 5 } = query;
+
+  // Load from cache or disk
+  let entries;
+  if (isCacheValid()) {
+    entries = memoryCache.entries;
+    debug(`searchMemory: cache hit (${entries.length} entries)`);
+  } else {
+    entries = loadEntriesFromDisk();
+    debug(`searchMemory: cache miss, loaded ${entries.length} entries from disk`);
+  }
+
+  if (entries.length === 0) return [];
 
   // Score each entry by tag overlap count
   const scored = entries.map(entry => {
@@ -111,13 +171,283 @@ function searchMemory(query) {
     }));
 }
 
+// --- Memory validation ---
+
+/**
+ * Controlled vocabulary for memory entry tags.
+ * Tags are singular nouns, lowercase, hyphenated compounds allowed.
+ * Organized by category for deriveSearchHints().
+ */
+const TAG_TAXONOMY = {
+  plugin: ["protocol-gate", "delegation-gate", "knowledge-gate"],
+  agent: ["overseer", "scribe", "analyzer", "artisan", "inspector", "committer", "explorer", "pathfinder", "spec-weaver", "habit-builder"],
+  mode: ["explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve"],
+  domain: ["permissions", "auth", "state-machine", "phase-transition", "bug", "testing", "commit", "template", "scope", "lifecycle", "regression", "cache", "injection", "hook", "schema", "validation"],
+  severity: ["critical", "major", "minor"],
+  type: ["fact", "decision", "pattern", "warning", "context"]
+};
+
+// Flat set of all valid tags for quick lookup
+const ALL_VALID_TAGS = new Set(Object.values(TAG_TAXONOMY).flat());
+
+// MODE → primary tags for deriveSearchHints()
+const MODE_TAG_MAP = {
+  explore: ["exploration", "architecture", "investigation"],
+  investigate: ["analysis", "root-cause", "bug"],
+  align: ["specification", "design", "decision"],
+  decompose: ["planning", "tasks", "dependencies"],
+  swarm: ["implementation", "code", "pattern"],
+  verify: ["review", "audit", "quality"],
+  extract: ["knowledge", "insight", "documentation"],
+  evolve: ["process", "friction", "improvement"]
+};
+
+// Agent type → additional tags for deriveSearchHints()
+// Maps each agent to domain-specific tags for memory retrieval
+const AGENT_TAG_MAP = {
+  explorer: ["investigation", "architecture"],
+  analyzer: ["analysis", "root-cause"],
+  "spec-weaver": ["specification", "design"],
+  pathfinder: ["planning", "decomposition"],
+  artisan: ["implementation", "code"],
+  inspector: ["review", "audit"],
+  scribe: ["knowledge", "documentation"],
+  overseer: ["orchestration", "process"],
+  "habit-builder": ["process", "friction"]
+};
+
+// Stop words for SCOPE keyword extraction (common English words that carry no topical signal)
+const STOP_WORDS = new Set([
+  "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+  "of", "with", "by", "from", "as", "is", "was", "are", "were", "be",
+  "been", "being", "have", "has", "had", "do", "does", "did", "will",
+  "would", "could", "should", "may", "might", "shall", "can", "need",
+  "this", "that", "these", "those", "it", "its", "not", "no", "nor",
+  "so", "if", "then", "than", "too", "very", "just", "about", "also",
+  "into", "over", "after", "before", "between", "through", "during",
+  "each", "every", "all", "both", "few", "more", "most", "other",
+  "some", "such", "only", "own", "same", "here", "there", "when",
+  "where", "why", "how", "which", "who", "whom", "what", "per"
+]);
+
+// Noise words for SCOPE extraction — generic task verbs that carry no topical signal
+const NOISE_WORDS = new Set([
+  "investigate", "implement", "build", "create", "add",
+  "remove", "update", "fix", "change", "review", "check",
+  "verify", "ensure", "make", "write", "read"
+]);
+
+const VALID_TYPES = ["fact", "decision", "pattern", "warning", "context"];
+
+/**
+ * Derives search tags from dispatch context and generates hint lines.
+ * Implements the Library Model: derive context → search → hint if relevant.
+ * Mechanical modes (preflight, checkpoint, cleanup) always return no hint.
+ *
+ * @param {Object} context - Dispatch context { mode, agentType, phase, scope }
+ * @returns {{ hints: string[], shouldHint: boolean }}
+ */
+function deriveSearchHints(context) {
+  const { mode = "", agentType = "", phase = "", scope = "" } = context || {};
+
+  // Mechanical modes skip entirely — no hint overhead for trivial dispatches
+  if (["preflight", "checkpoint", "cleanup"].includes(mode)) {
+    return { hints: [], shouldHint: false };
+  }
+
+  // Collect tags from MODE mapping
+  const tags = [...(MODE_TAG_MAP[mode] || [])];
+
+  // Add agent-type tags
+  const agentTags = AGENT_TAG_MAP[agentType] || [];
+  tags.push(...agentTags);
+
+  // Extract noun keywords from SCOPE (top 3)
+  if (scope) {
+    const keywords = scope
+      .toLowerCase()
+      .replace(/[^a-zA-Z0-9\s-]/g, " ")
+      .split(/\s+/)
+      .filter(w => w.length >= 3 && !STOP_WORDS.has(w) && !NOISE_WORDS.has(w));
+    // Remove duplicates while preserving order, take top 3
+    const unique = [...new Set(keywords)];
+    tags.push(...unique.slice(0, 3));
+  }
+
+  // Deduplicate all tags
+  const uniqueTags = [...new Set(tags)];
+
+  if (uniqueTags.length === 0) {
+    return { hints: [], shouldHint: false };
+  }
+
+  // Search memory with derived tags — call searchMemory directly (internal function)
+  const results = searchMemory({ tags: uniqueTags, limit: 5 });
+  if (results.length === 0) {
+    return { hints: [], shouldHint: false };
+  }
+
+  // Generate hint lines from results
+  const primaryTags = uniqueTags.slice(0, 2);
+  const hints = generateHintLines(results, primaryTags);
+
+  return { hints, shouldHint: hints.length > 0 };
+}
+
+/**
+ * Generates hint lines from search results grouped by primary tag.
+ * Max 3 lines, each ≤300 bytes.
+ * Format: [Memory: N entries match "TAG". Use memory_search("TAG") to retrieve.]
+ */
+function generateHintLines(results, primaryTags) {
+  const lines = [];
+
+  for (const tag of primaryTags) {
+    if (lines.length >= 3) break;
+    const count = results.filter(r => (r.tags || []).includes(tag)).length;
+    if (count > 0) {
+      const line = `[Memory: ${count} entries match "${tag}". Use memory_search("${tag}") to retrieve.]`;
+      // Enforce byte limit — skip if line exceeds 300 bytes (hint must be compact)
+      if (Buffer.byteLength(line, "utf8") <= 300) {
+        lines.push(line);
+      }
+    }
+  }
+
+  // Fallback: if no tag-grouping worked, use generic line
+  if (lines.length === 0 && results.length > 0) {
+    const line = `[Memory: ${results.length} entries match current context. Use memory_search(tags=[...]) to retrieve.]`;
+    if (Buffer.byteLength(line, "utf8") <= 300) {
+      lines.push(line);
+    }
+  }
+
+  return lines.slice(0, 3);
+}
+
+/**
+ * Gets the next sequential memory ID by scanning existing entries.
+ * Mirrors getNextIssueId() pattern.
+ */
+function getNextMemoryId() {
+  if (!existsSync(MEMORY_DIR)) return "MEM-001";
+
+  let files;
+  try {
+    files = readdirSync(MEMORY_DIR).filter(f => f.startsWith("entry-") && f.endsWith(".json"));
+  } catch (_) {
+    return "MEM-001";
+  }
+
+  let maxNum = 0;
+  for (const file of files) {
+    const numMatch = file.match(/entry-(\d+)\.json/);
+    if (numMatch) {
+      const num = parseInt(numMatch[1], 10);
+      if (num > maxNum) maxNum = num;
+    }
+  }
+
+  return `MEM-${String(maxNum + 1).padStart(3, "0")}`;
+}
+
+/**
+ * Checks if a memory entry is a duplicate of an existing entry.
+ * Uses searchMemory with topic match, returns existing entry if score ≥ threshold.
+ */
+function checkDuplicateMemory(entry, threshold = 3) {
+  if (!entry || !entry.topic) return null;
+
+  const results = searchMemory({ tags: entry.tags || [], topic: entry.topic, limit: 5 });
+  for (const r of results) {
+    // Calculate overlap score: tag match + topic match
+    const tagOverlap = (entry.tags || []).filter(t => (r.tags || []).includes(t)).length;
+    const topicMatch = r.topic && entry.topic
+      ? r.topic.toLowerCase().includes(entry.topic.toLowerCase()) ||
+        entry.topic.toLowerCase().includes(r.topic.toLowerCase()) ? 2 : 0
+      : 0;
+    const score = tagOverlap + topicMatch;
+    if (score >= threshold) {
+      return r;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Validates a memory entry against the canonical schema.
+ * Returns { valid: boolean, error?: string }.
+ * Canonical schema:
+ *   id (MEM-\d{3}), source_kd (string), tags (array 2-8),
+ *   topic (string ≤100), insight (string ≤500), type (enum),
+ *   created (ISO 8601 with time), session (string), version ("1.0.0")
+ */
+function validateMemoryEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return { valid: false, error: "Entry must be a non-null object" };
+  }
+  if (!/^MEM-\d{3}$/.test(entry.id)) {
+    return { valid: false, error: `id must match MEM-\\d{3}, got "${entry.id}"` };
+  }
+  if (typeof entry.source_kd !== "string" || !entry.source_kd) {
+    return { valid: false, error: "source_kd must be a non-empty string" };
+  }
+  if (!Array.isArray(entry.tags) || entry.tags.length < 2 || entry.tags.length > 8) {
+    return { valid: false, error: "tags must be an array with 2-8 items" };
+  }
+  if (typeof entry.topic !== "string" || entry.topic.length > 100) {
+    return { valid: false, error: `topic must be a string ≤100 chars, got length ${entry.topic?.length || 0}` };
+  }
+  if (typeof entry.insight !== "string" || entry.insight.length > 500) {
+    return { valid: false, error: `insight must be a string ≤500 chars, got length ${entry.insight?.length || 0}` };
+  }
+  if (!VALID_TYPES.includes(entry.type)) {
+    return { valid: false, error: `type must be one of: ${VALID_TYPES.join(", ")}, got "${entry.type}"` };
+  }
+  if (typeof entry.created !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(entry.created)) {
+    return { valid: false, error: `created must be ISO 8601 with time, got "${entry.created}"` };
+  }
+  if (typeof entry.session !== "string" || !entry.session) {
+    return { valid: false, error: "session must be a non-empty string" };
+  }
+  if (entry.version !== "1.0.0") {
+    return { valid: false, error: 'version must be "1.0.0"' };
+  }
+  return { valid: true };
+}
+
+// --- Output formatting ---
+
+/**
+ * Formats a memory entry for either tool response (JSON) or prompt injection (markdown).
+ * @param {Object} entry - Memory entry object
+ * @param {string} format - "json" or "markdown"
+ * @returns {Object|string} Formatted output
+ */
+function formatMemoryEntry(entry, format) {
+  if (format === "markdown") {
+    return `- [${entry.id}] (${entry.type || "unknown"}) ${entry.topic}: ${entry.insight} (source: ${entry.source_kd})`;
+  }
+  return entry; // json format returns raw object
+}
+
 // --- Issue scanning ---
 
 /**
  * Scans knowledge/issues/ for open, high-severity issues.
  * Returns array of parsed issue objects.
  */
+function ensureIssuesDir() {
+  try {
+    mkdirSync(ISSUES_DIR, { recursive: true });
+  } catch (_) {
+    // Non-fatal — if mkdir fails, issue operations will return empty
+  }
+}
+
 function scanHighSeverityIssues() {
+  ensureIssuesDir();
   if (!existsSync(ISSUES_DIR)) return [];
 
   let files;
@@ -174,6 +504,7 @@ function parseIssueFile(content, filename) {
  * Used during INTENT phase to surface prior-session issues to the Overseer.
  */
 function scanOpenIssues() {
+  ensureIssuesDir();
   if (!existsSync(ISSUES_DIR)) return [];
 
   let files;
@@ -203,6 +534,7 @@ function scanOpenIssues() {
  * Gets the next sequential issue ID by scanning existing issues.
  */
 function getNextIssueId() {
+  ensureIssuesDir();
   if (!existsSync(ISSUES_DIR)) return "ISSUE-001";
 
   let files;
@@ -265,6 +597,70 @@ export default {
         output.handled = true;
       }
 
+      if (tool === "memory_write") {
+        const args = output.args || {};
+        const entry = args.entry || args;
+        const agent = sessionAgentMap.get(sessionID)?.toLowerCase();
+
+        // Permission check: only Scribe can write memory entries
+        if (agent !== "scribe") {
+          output.result = JSON.stringify({ error: "Only Scribe agent has permission to write memory entries. Called by: " + (agent || "unknown") });
+          output.handled = true;
+          debug(`memory_write: rejected — called by non-Scribe agent "${agent}"`);
+          return;
+        }
+
+        // Ensure memory directory exists
+        try { mkdirSync(MEMORY_DIR, { recursive: true }); } catch (_) {}
+
+        // Auto-assign ID before validation — so validateMemoryEntry sees a valid ID
+        if (!entry.id || entry.id === "MEM-XXX") {
+          entry.id = getNextMemoryId();
+        }
+
+        // Validate entry against canonical schema
+        const validation = validateMemoryEntry(entry);
+        if (!validation.valid) {
+          output.result = JSON.stringify({ error: validation.error });
+          output.handled = true;
+          debug(`memory_write: validation failed — ${validation.error}`);
+          return;
+        }
+
+        // Validate tags against controlled vocabulary (warn on unknown, still accept)
+        const unknownTags = (entry.tags || []).filter(t => !ALL_VALID_TAGS.has(t));
+        if (unknownTags.length > 0) {
+          debug(`memory_write: unknown tags detected: ${unknownTags.join(", ")} — accepted with warning`);
+        }
+
+        // Check for duplicates (search memory excluding this entry's own ID if already known)
+        const duplicate = checkDuplicateMemory(entry);
+        if (duplicate && duplicate.id !== entry.id) {
+          output.result = JSON.stringify({ message: "Duplicate entry detected, skipped", existing: duplicate.id });
+          output.handled = true;
+          debug(`memory_write: duplicate detected — existing=${duplicate.id}, skipped`);
+          return;
+        }
+
+        // Write entry to disk
+        const entryId = entry.id.replace("MEM-", "");
+        const filePath = join(MEMORY_DIR, `entry-${entryId}.json`);
+        try {
+          writeFileSync(filePath, JSON.stringify(entry, null, 2), "utf8");
+          // Invalidate cache so next search picks up the new entry
+          memoryCache.entries = null;
+          memoryCache.lastLoaded = null;
+          output.result = JSON.stringify({ message: "Memory entry written", id: entry.id });
+          output.handled = true;
+          debug(`memory_write: written ${filePath}`);
+        } catch (e) {
+          output.result = JSON.stringify({ error: `Failed to write memory entry: ${e.message}` });
+          output.handled = true;
+          debug(`memory_write: write failed — ${e.message}`);
+        }
+        return;
+      }
+
       // After EVOLVE phase (habit-builder), scan for high-severity issues.
       // Detect by checking if a process-*.md KD was just written (EVOLVE output).
       // This runs on every tool call — cheap check against disk.
@@ -292,14 +688,21 @@ export default {
         output.description = "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5). Returns JSON array of matching entries.";
         debug(`toolDefinition: provided description for memory_search`);
       }
+
+      if (toolID === "memory_write") {
+        output.description = "Write a validated memory entry to knowledge/memory/. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk. Only Scribe agent has permission to write.";
+        debug(`toolDefinition: provided description for memory_write`);
+      }
     }
 
     // --- Hook: experimental.chat.system.transform ---
-    // Inject memory_search availability into system prompts for agents that have
-    // read permission on knowledge/memory/.
+    // Dynamic memory hint injection using the Library Model (hint + pull).
+    // Derives search tags from agent type, searches memory, and appends
+    // compact hint lines when relevant entries exist.
+    // Mechanical agent types (committer) get zero hint overhead.
     async function systemTransform(input, output) {
       const sessionID = input.sessionID;
-      const agent = sessionAgentMap.get(sessionID);
+      const agent = sessionAgentMap.get(sessionID) || input.agent?.toLowerCase();
 
       // All agents get memory_search read access to query prior session insights
       output.system.push(
@@ -308,12 +711,21 @@ export default {
         `prior session insights from knowledge/memory/.`
       );
 
-      // Scribe additionally gets write instructions for composing memory entries
+      // Dynamic memory hint: derive from agent context and append if relevant
+      // At systemTransform time, mode/scope are not available (they come at dispatch),
+      // so we use agent-type-only tags per PF-001
+      const hintContext = { mode: "", agentType: agent, phase: "", scope: "" };
+      const { hints } = deriveSearchHints(hintContext);
+      for (const hint of hints) {
+        output.system.push(`[Knowledge Gate] ${hint}`);
+      }
+
+      // Scribe additionally gets write instructions via memory_write tool
       if (agent === "scribe") {
         output.system.push(
           `[Knowledge Gate] After composing a COMPOSED KD, write distilled insights ` +
-          `to knowledge/memory/ as JSON files. Each file: entry-{sequential-id}.json ` +
-          `with fields: id, source_kd, tags, topic, insight, created, session, version.`
+          `via the memory_write tool. The tool validates schema, checks tags against ` +
+          `controlled vocabulary, deduplicates, auto-assigns sequential ID, and writes to disk.`
         );
       }
 
@@ -356,11 +768,16 @@ export default {
       scanOpenIssues,
       parseIssueFile,
       getNextIssueId,
+      getNextMemoryId,
+      validateMemoryEntry,
+      formatMemoryEntry,
+      deriveSearchHints,
+      generateHintLines,
+      checkDuplicateMemory,
       MEMORY_DIR,
       ISSUES_DIR
     };
   }
 };
 
-// Named export for cross-plugin access by protocol-gate
-export { searchMemory, scanHighSeverityIssues, scanOpenIssues };
+

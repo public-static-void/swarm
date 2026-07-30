@@ -8,6 +8,7 @@ permission:
   read:
     "*": deny
     "knowledge/*.md": allow
+    "knowledge/memory/*.json": allow
     "README.md": allow
     "AGENTS.md": allow
   edit:
@@ -60,6 +61,7 @@ After verification passes, read all knowledge documents produced during the life
 8. Update cross-references between related documents
 9. Compress verbose documentation to essential content
 10. Update `AGENTS.md` and `README.md` if warranted
+11. Extract 3-5 distilled insights from the COMPOSED KD and write each as a JSON entry via the `memory_write` tool. The tool validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns the next sequential ID, and writes to disk. Pass the entry object as a JSON argument to the tool with fields: id (optional), source_kd, tags, topic, insight, type (fact|decision|pattern|warning|context), created, session, version.
 
 ## Principles
 

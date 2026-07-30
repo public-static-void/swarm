@@ -70,8 +70,9 @@ describe("Windows Path Separator Fix", () => {
 MODE: cleanup
 INTENT KD: knowledge\\intent-1.md
 SESSION DATE: 2026-07-21
-SCOPE: Test backslash path`;
-      
+SCOPE: Test backslash path
+RESULT KD: knowledge/cleanup-result.md`;
+
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       
@@ -88,8 +89,9 @@ SCOPE: Test backslash path`;
 MODE: cleanup
 INTENT KD: knowledge/intent-1.md
 SESSION DATE: 2026-07-21
-SCOPE: Test forward slash path`;
-      
+SCOPE: Test forward slash path
+RESULT KD: knowledge/cleanup-result.md`;
+
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       
@@ -120,8 +122,9 @@ MODE: cleanup
 INTENT KD: knowledge/intent-1.md
 SESSION DATE: 2026-07-21
 SCOPE: Test foreign detection
+RESULT KD: knowledge/cleanup-result.md
 knowledge\\intent-1.md`;
-      
+
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       
@@ -156,8 +159,9 @@ SCOPE: Test foreign detection
 MODE: cleanup
 INTENT KD: knowledge/intent-1.md
 SESSION DATE: 2026-07-21
-SCOPE: Test Linux behavior`;
-      
+SCOPE: Test Linux behavior
+RESULT KD: knowledge/cleanup-result.md`;
+
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       
@@ -174,8 +178,9 @@ SCOPE: Test Linux behavior`;
 MODE: cleanup
 INTENT KD: knowledge\\foo/intent-1.md
 SESSION DATE: 2026-07-21
-SCOPE: Test mixed separators`;
-      
+SCOPE: Test mixed separators
+RESULT KD: knowledge/cleanup-result.md`;
+
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       
