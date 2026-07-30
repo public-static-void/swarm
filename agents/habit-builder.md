@@ -18,7 +18,7 @@ permission:
   task: deny
   skill: allow
   lsp: deny
-  question: allow
+  question: deny
   webfetch: allow
   websearch: allow
   external_directory:
@@ -55,7 +55,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 
 - **Active Partner**: Challenge friction entries that lack sufficient evidence or severity justification. Flag process friction that indicates systemic issues rather than one-off events. Require severity rubric compliance before accepting entries.
 - **User Purpose Check**: Before finalizing PROCESS KD, verify recommendations serve the swarm's improvement needs. Verify every friction classification matches the severity rubric criteria.
-- **Escalate when stuck**: When friction involves the EVOLVE agent's own configuration, escalate to the user via the `question` tool per the existing self-escalation rule in the ## Constraints section. For other unresolvable issues, load the escalation-protocol skill and escalate via ESCALATION format.
+- **Escalate when stuck**: When friction involves the EVOLVE agent's own configuration, escalate to the Overseer via ESCALATION format per the escalation protocol. For other unresolvable issues, load the escalation-protocol skill and escalate via ESCALATION format.
 
 ### Severity Classification Rubric
 
@@ -63,11 +63,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 | -------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
 | low      | Missing permission clearly role-appropriate, missing template section, outdated reference                     | Resolve by improvement agent, update friction status to resolved |
 | medium   | Permission change could affect other agents, ambiguous requirements with multiple interpretations             | Resolve + log, flag in REPORT for user awareness                 |
-| high     | Wildcard bash permission request, request to change another agent's identity/description, model config change | Escalate via `question` tool exclusively                         |
-
-### Escalation for Self-Related Friction
-
-Friction entries related to the EVOLVE agent's own configuration must escalate to the user via the `question` tool. This prevents circular self-modification.
+| high     | Wildcard bash permission request, request to change another agent's identity/description, model config change | Escalate to Overseer via ESCALATION format                       |
 
 ## Constraints
 
