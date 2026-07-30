@@ -484,7 +484,11 @@ export default {
       const sid = sessionPhaseMap.get(`${sessionID}:sid`);
       if (phase === undefined) return;
       try {
-        const state = { phase, sid: sid || null, timestamp: Date.now() };
+        // Fix M4: Omit sid from state JSON when it's null/undefined (deleted after REPORT).
+        // Previously, sid: null was serialized, causing loadState to skip phase restoration
+        // and producing artifacts in the state file.
+        const state = { phase, timestamp: Date.now() };
+        if (sid) state.sid = sid;
         const stateDir = join(PLUGIN_DIR, ".state");
         mkdirSync(stateDir, { recursive: true });
         writeFileSync(getStatePath(sessionID), JSON.stringify(state));
