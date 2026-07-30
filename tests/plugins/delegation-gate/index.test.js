@@ -458,9 +458,24 @@ RESULT KD: knowledge/impl-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
       expect(output.args.description).toContain("Delegation Prompt Format");
-      // Concrete examples — LLMs copy these as real values, not templates
-      expect(output.args.description).toContain("DISPATCH TO: explorer");
-      expect(output.args.description).toContain("MODE: explore");
+      // Concrete examples reflect actual extracted fields, not hardcoded explorer/explore
+      expect(output.args.description).toContain("DISPATCH TO: artisan");
+      expect(output.args.description).toContain("MODE: checkpoint");
+      // Only current mode's KD prefix is injected — not all 11 modes
+      expect(output.args.description).toContain("RESULT KD: knowledge/checkpoint-<name>-<session_id>.md");
+      expect(output.args.description).toContain("- checkpoint: knowledge/checkpoint-<name>-<session_id>.md");
+      // No other mode prefixes should appear
+      expect(output.args.description).not.toContain("exploration");
+      expect(output.args.description).not.toContain("analysis");
+      expect(output.args.description).not.toContain("spec");
+      expect(output.args.description).not.toContain("plan");
+      expect(output.args.description).not.toContain("impl");
+      expect(output.args.description).not.toContain("review");
+      expect(output.args.description).not.toContain("audit");
+      expect(output.args.description).not.toContain("composed");
+      expect(output.args.description).not.toContain("process");
+      expect(output.args.description).not.toContain("preflight");
+      expect(output.args.description).not.toContain("cleanup");
       // Variable placeholders — genuinely vary per dispatch
       expect(output.args.description).toContain("INTENT KD: knowledge/intent-<name>.md");
       expect(output.args.description).toContain("SESSION ID: <session-id>");
@@ -484,6 +499,86 @@ RESULT KD: knowledge/impl-foo.md`;
       // Should not append a second copy
       const matches = output.args.description.match(/Delegation Prompt Format:/g);
       expect(matches).toHaveLength(1);
+    });
+
+    it("injects only analysis prefix for investigate mode", async () => {
+      const prompt = `AGENT: analyzer
+MODE: investigate
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Investigate plugin system
+RESULT KD: knowledge/analysis-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.description).toContain("MODE: investigate");
+      expect(output.args.description).toContain("RESULT KD: knowledge/analysis-<name>-<session_id>.md");
+      expect(output.args.description).toContain("- investigate: knowledge/analysis-<name>-<session_id>.md");
+      // No other KD prefixes should leak in
+      expect(output.args.description).not.toContain("exploration");
+      expect(output.args.description).not.toContain("review");
+      expect(output.args.description).not.toContain("audit");
+    });
+
+    it("injects both review and audit prefixes for verify mode (dual KDs)", async () => {
+      const prompt = `AGENT: inspector
+MODE: verify
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Verify implementation
+RESULT KD: knowledge/review-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.description).toContain("MODE: verify");
+      // verify mode produces both review and audit KDs
+      expect(output.args.description).toContain("RESULT KD: knowledge/review-<name>-<session_id>.md, knowledge/audit-<name>-<session_id>.md");
+      // Header should be plural since there are two KDs
+      expect(output.args.description).toContain("RESULT KD Naming Conventions:");
+      expect(output.args.description).toContain("- verify: knowledge/review-<name>-<session_id>.md, knowledge/audit-<name>-<session_id>.md");
+      // Single-KD prefix (singular header) should not appear
+      expect(output.args.description).not.toContain("RESULT KD Naming Convention:");
+    });
+
+    it("injects only preflight prefix for preflight mode", async () => {
+      const prompt = `AGENT: committer
+MODE: preflight
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Setup workspace
+RESULT KD: knowledge/preflight-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      expect(output.args.description).toContain("MODE: preflight");
+      expect(output.args.description).toContain("RESULT KD: knowledge/preflight-<name>-<session_id>.md");
+      expect(output.args.description).toContain("- preflight: knowledge/preflight-<name>-<session_id>.md");
+      expect(output.args.description).not.toContain("checkpoint");
+      expect(output.args.description).not.toContain("cleanup");
+    });
+
+    it("falls back to <type> placeholder for unknown mode", async () => {
+      const prompt = `AGENT: custom
+MODE: unknown
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Test unknown mode
+RESULT KD: knowledge/unknown-foo.md`;
+
+      const output = { args: { prompt } };
+      // injectToolDocs runs before template lookup, so description is set even though
+      // the hook ultimately rejects due to missing template for unknown mode
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output)
+      ).rejects.toThrow("No template found for mode: unknown");
+
+      // Description should still have been injected with the fallback <type> prefix
+      expect(output.args.description).toContain("MODE: unknown");
+      expect(output.args.description).toContain("RESULT KD: knowledge/<type>-<name>-<session_id>.md");
+      expect(output.args.description).toContain("- unknown: knowledge/<type>-<name>-<session_id>.md");
     });
   });
 

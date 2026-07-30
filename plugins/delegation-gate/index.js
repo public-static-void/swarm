@@ -56,6 +56,22 @@ const KD_PRODUCING_MODES = [
   "checkpoint", "cleanup"
 ];
 
+// Maps each delegation mode to the KD type prefix(es) it produces.
+// verify produces two KDs (review + audit); all others produce one.
+const MODE_TO_KD_PREFIXES = {
+  explore:     ["exploration"],
+  investigate: ["analysis"],
+  align:       ["spec"],
+  decompose:   ["plan"],
+  swarm:       ["impl"],
+  verify:      ["review", "audit"],
+  extract:     ["composed"],
+  evolve:      ["process"],
+  preflight:   ["preflight"],
+  checkpoint:  ["checkpoint"],
+  cleanup:     ["cleanup"]
+};
+
 let _logFile = null;
 
 function getLogFile() {
@@ -266,33 +282,30 @@ function renderTemplate(template, fields) {
   return result;
 }
 
-function injectToolDocs(output, agentName) {
+function injectToolDocs(output, agentName, mode) {
   const today = new Date().toISOString().slice(0, 10);
   const displayAgent = agentName || "explorer";
+  const displayMode = mode || "explore";
   // Concrete examples prevent LLMs from copying placeholder syntax literally.
   // <name> and <optional context> are genuine variables — angle brackets signal variability.
+  // MODE_TO_KD_PREFIXES maps current mode to its KD type prefix(es) — only the relevant
+  // entry is injected so the LLM sees only the naming convention for this dispatch.
+  const modePrefixes = MODE_TO_KD_PREFIXES[displayMode] || ["<type>"];
+  const resultKdExamples = modePrefixes
+    .map(p => `knowledge/${p}-<name>-<session_id>.md`)
+    .join(", ");
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
-MODE: explore
+MODE: ${displayMode}
 INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
 SESSION ID: <session-id>
 SCOPE: <optional context>
-RESULT KD: knowledge/<type>-<name>.md (when subagent produces a KD)
+RESULT KD: ${resultKdExamples} (when subagent produces a KD)
 
-RESULT KD Naming Conventions:
-- explore:     knowledge/exploration-<name>-<session_id>.md
-- investigate: knowledge/analysis-<name>-<session_id>.md
-- align:       knowledge/spec-<name>-<session_id>.md
-- decompose:   knowledge/plan-<name>-<session_id>.md
-- swarm:       knowledge/impl-<name>-<session_id>.md
-- verify:      knowledge/review-<name>-<session_id>.md, knowledge/audit-<name>-<session_id>.md
-- extract:     knowledge/composed-<name>-<session_id>.md
-- evolve:      knowledge/process-<name>-<session_id>.md
-- checkpoint:  knowledge/checkpoint-<name>-<session_id>.md
-- preflight:   knowledge/preflight-<name>-<session_id>.md
-- cleanup:     knowledge/cleanup-<name>-<session_id>.md
+RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
+- ${displayMode}: ${resultKdExamples}
 `;
 
   if (!output.args) output.args = {};
@@ -330,8 +343,6 @@ export default {
       debug(`RAW PROMPT (${prompt.length} chars): ${prompt.substring(0, 500)}`);
       debug(`RAW DESCRIPTION (${description.length} chars): ${description.substring(0, 500)}`);
       debug(`RAW SUBAGENT_TYPE: ${subagentType}`);
-
-      injectToolDocs(output, subagentType);
 
       if (isBareKDPath(prompt)) {
         debug(`VALIDATION FAILED: bare KD path without structured fields`);
@@ -413,6 +424,9 @@ export default {
       }
 
       debug(`ALLOW delegation: agent=${fields.agent} mode=${fields.mode} intent_kd=${fields.intent_kd} result_kd=${fields.result_kd}`);
+
+      // Inject format hint after field extraction — mode is now available
+      injectToolDocs(output, fields.agent, fields.mode);
 
       const template = templates[fields.mode?.toLowerCase()];
       if (!template) {
