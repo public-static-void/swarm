@@ -731,6 +731,9 @@ export default {
             if (hasAll) {
               debug(`todowrite: all lifecycle keywords present → advancing to INTENT`);
               sessionPhaseMap.set(sessionID, STATES.INTENT);
+              // Fix M2: Re-initialize :sid when entering INTENT after REPORT→PROTOCOL_NOT_LOADED cycle.
+              // Without this, checkDiskAdvancement lacks :sid to filter KDs by session, preventing progression.
+              sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
               debug("INTENT phase: write intent KD with raw user request. No file reading or exploration needed.");
               skipDiskCheckAfterTodo.set(sessionID, true);
               saveState(sessionID);
