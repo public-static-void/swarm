@@ -14,7 +14,7 @@ permission:
     "committer": allow
   skill: allow
   lsp: allow
-  question: allow
+  question: deny
   webfetch: allow
   websearch: allow
   external_directory:
@@ -147,7 +147,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 ## Principles
 
-- **Active Partner**: During implementation, flag design ambiguities, contradictory requirements, or missing context that blocks progress. Ask clarifying questions before making important implementation choices that lack spec coverage.
+- **Active Partner**: During implementation, flag design ambiguities, contradictory requirements, or missing context that blocks progress. Document unresolved ambiguities in the implementation summary KD and, when spec coverage is insufficient, load the escalation-protocol skill and escalate via ESCALATION format.
 - **User Purpose Check**: Before completing implementation, verify it serves the user's stated need from the SPEC KD and INTENT KD. If implementation meets spec requirements but produces a result that doesn't serve the user's actual need, flag it in the implementation summary KD.
 - **Escalate when stuck**: When blocked by missing information, contradictory requirements, or permission gaps that cannot be resolved by loading additional skills, load the escalation-protocol skill and escalate via ESCALATION format. Report: what step failed, what was attempted, what is needed.
 

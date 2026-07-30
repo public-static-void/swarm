@@ -34,7 +34,7 @@ Proposed resolution: <delegate to Agent X, grant permission Y, or use tool Z>
 
 ### Step 2 (fallback): Overseer → User
 
-When the Overseer lacks resolution capability, the Overseer uses the `question` tool to escalate to the user for guidance. Agents escalate solely through the Overseer.
+When the Overseer lacks resolution capability, the Overseer escalates to the user via structured REPORT KDs. Agents escalate solely through the Overseer.
 
 ## Trigger Conditions
 
@@ -63,10 +63,9 @@ On receiving an escalation, the Overseer must:
 
 1. **Assess legitimacy** — Determine whether the request is legitimate (task truly requires the escalated resource)
 2. **Resolve** — Take one of these actions:
-   - Adjust permissions (if within the Overseer's power)
    - Continue the lifecycle normally — the receiving agent reads what it needs independently
-   - Escalate to the user via the `question` tool (Step 2)
-3. **Resolution** — Resolve restrictions by adjusting permissions, continuing the lifecycle, or escalating to the user
+    - Escalate to the user via REPORT KD (Step 2)
+3. **Resolution** — Resolve restrictions by continuing the lifecycle or escalating to the user
 
 ## Agent Conduct Rules
 

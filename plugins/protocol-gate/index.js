@@ -96,7 +96,7 @@ const TOOL_ALLOWLIST = {
   EXTRACT: ["task", "todowrite", "glob"],
   EVOLVE: ["task", "todowrite", "glob"],
   CLEANUP: ["task", "todowrite", "glob", "bash"],
-  REPORT: ["todowrite", "edit", "read", "write"]
+  REPORT: ["todowrite", "edit", "read", "write", "skill"]
 };
 
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
@@ -161,7 +161,8 @@ function loadConfig() {
       phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"],
       agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", CLEANUP: "committer" },
       backwardTransitions: { VERIFY: ["SWARM"] },
-      maxCyclesPerTransition: 3
+      maxCyclesPerTransition: 3,
+      milestoneCount: 1
     };
   }
 }
@@ -278,12 +279,19 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   if (phase === STATES.SWARM) {
     const implFiles = sessionFiles.filter(f => pattern.test(f));
     const dispatchCount = swarmDispatchCount.get(sessionID) || 0;
-    // Safety guard: use effectiveCount to prevent formula divergence after regression.
-    // With R004 reset in place, dispatchCount is reconciled on each regression, but
-    // this guard ensures even if dispatchCount is 0, we require at least 1 impl file.
-    const effectiveCount = Math.max(1, dispatchCount);
-    const result = dispatchCount > 0 && implFiles.length >= effectiveCount;
-    debug(`Disk check SWARM: impl=${implFiles.length}, dispatched=${dispatchCount}, effective=${effectiveCount} → ${result}`);
+    // Use stored milestone count from dispatch prompt when available, then config.
+    // This ensures when the dispatcher specifies MILESTONE_COUNT:N, all N impl KDs
+    // must be on disk before advancing to VERIFY. Falls back to config then default 1.
+    const storedMc = sessionPhaseMap.get(`${sessionID}:milestones`);
+    const cfg = loadConfig();
+    const milestoneCount = storedMc || cfg.milestoneCount || 1;
+    const effectiveCount = Math.max(milestoneCount, dispatchCount, 1);
+    // Require at least one dispatch OR milestoneCount > 1 to advance.
+    // When milestoneCount > 1, the config requires N impl KDs regardless of dispatches.
+    // When milestoneCount is 1 (default), dispatch-driven advancement still applies.
+    const hasSufficientTrigger = dispatchCount > 0 || milestoneCount > 1;
+    const result = hasSufficientTrigger && implFiles.length >= effectiveCount;
+    debug(`Disk check SWARM: impl=${implFiles.length}, dispatched=${dispatchCount}, milestoneCount=${milestoneCount}, effective=${effectiveCount} → ${result}`);
     return result;
   }
 
@@ -484,7 +492,11 @@ export default {
       const sid = sessionPhaseMap.get(`${sessionID}:sid`);
       if (phase === undefined) return;
       try {
-        const state = { phase, sid: sid || null, timestamp: Date.now() };
+        // Fix M4: Omit sid from state JSON when it's null/undefined (deleted after REPORT).
+        // Previously, sid: null was serialized, causing loadState to skip phase restoration
+        // and producing artifacts in the state file.
+        const state = { phase, timestamp: Date.now() };
+        if (sid) state.sid = sid;
         const stateDir = join(PLUGIN_DIR, ".state");
         mkdirSync(stateDir, { recursive: true });
         writeFileSync(getStatePath(sessionID), JSON.stringify(state));
@@ -731,6 +743,9 @@ export default {
             if (hasAll) {
               debug(`todowrite: all lifecycle keywords present → advancing to INTENT`);
               sessionPhaseMap.set(sessionID, STATES.INTENT);
+              // Fix M2: Re-initialize :sid when entering INTENT after REPORT→PROTOCOL_NOT_LOADED cycle.
+              // Without this, checkDiskAdvancement lacks :sid to filter KDs by session, preventing progression.
+              sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
               debug("INTENT phase: write intent KD with raw user request. No file reading or exploration needed.");
               skipDiskCheckAfterTodo.set(sessionID, true);
               saveState(sessionID);
@@ -1089,6 +1104,14 @@ export default {
             if (phase === STATES.SWARM) {
               const count = (swarmDispatchCount.get(sessionID) || 0) + 1;
               swarmDispatchCount.set(sessionID, count);
+              // Extract MILESTONE_COUNT from dispatch prompt to track how many
+              // impl KDs are expected before SWARM→VERIFY advancement.
+              const milestoneMatch = prompt.match(/MILESTONE_COUNT:\s*(\d+)/i);
+              if (milestoneMatch) {
+                const mc = parseInt(milestoneMatch[1], 10);
+                sessionPhaseMap.set(`${sessionID}:milestones`, mc);
+                debug(`SWARM milestone count for ${sessionID}: ${mc} (from dispatch)`);
+              }
               debug(`SWARM dispatch count for ${sessionID}: ${count}`);
             }
             // Track re-dispatches per phase to cap retries

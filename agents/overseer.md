@@ -24,7 +24,7 @@ permission:
     "template-intent": allow
     "template-report": allow
   lsp: deny
-  question: allow
+  question: deny
   webfetch: deny
   websearch: deny
   external_directory:
@@ -70,7 +70,7 @@ Your first mandatory action at the very start of every new user interaction is i
 
 ### Failure Handling
 
-If an agent fails during any phase, re-dispatch with refined scope. If failure persists, document the gap in a PROCESS KD, then escalate to the user via the `question` tool. Wait for user input before proceeding.
+If an agent fails during any phase, re-dispatch with refined scope. If failure persists, document the gap in a PROCESS KD, then escalate to the user via a REPORT KD. Wait for user input before proceeding.
 
 ## Delegation Rules
 
