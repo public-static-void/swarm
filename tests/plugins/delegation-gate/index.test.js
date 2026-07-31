@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
 import pluginModule from "../../../plugins/delegation-gate/index.js";
 
 describe("Delegation-Gate Plugin", () => {
@@ -1425,6 +1427,92 @@ RESULT KD: ${kd}`;
         // Template body should reference the result KD
         expect(output.args.prompt).toContain(kd);
       }
+    });
+  });
+
+  describe("M1: Generation Propagation (P004, AC-R004–R006)", () => {
+    const stateDir = join(process.cwd(), "plugins", "protocol-gate", ".state");
+
+    it("renders GENERATION: 2 and -gen2 naming when the prompt carries GENERATION", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SESSION ID: ses_gen
+GENERATION: 2
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo-ses_gen-gen2.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_gen", callID: "c1" }, output);
+
+      // Header field preserved in rendered template
+      expect(output.args.prompt).toContain("GENERATION: 2");
+      // Template body naming convention carries the generation suffix
+      expect(output.args.prompt).toContain("knowledge/impl-<descriptive-name>-<session_id>-gen2.md");
+      // Injected tool doc shows the generation-scoped result KD example
+      expect(output.args.description).toContain("knowledge/impl-<name>-<session_id>-gen2.md");
+      expect(output.args.description).toContain("GENERATION: <generation>");
+    });
+
+    it("falls back to protocol-gate state file generation when the prompt omits GENERATION", async () => {
+      const statePath = join(stateDir, ".protocol-state-ses_fbk.json");
+      mkdirSync(stateDir, { recursive: true });
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SESSION ID: ses_fbk
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo-ses_fbk.md`;
+
+      // Retry because the shared plugins/protocol-gate/.state dir is concurrently
+      // cleaned by the protocol-gate suite's beforeEach; a cleanup landing between
+      // the write and the hook's read makes the fallback transiently miss.
+      let output;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        writeFileSync(statePath, JSON.stringify({ phase: 3, generation: 4, sid: "ses_fbk", timestamp: Date.now() }));
+        output = { args: { prompt } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_fbk", callID: `c${attempt}` }, output);
+        if (output.args.prompt.includes("GENERATION: 4")) break;
+      }
+
+      expect(output.args.prompt).toContain("GENERATION: 4");
+      expect(output.args.prompt).toContain("knowledge/impl-<descriptive-name>-<session_id>-gen4.md");
+
+      try { rmSync(statePath); } catch (_) {}
+    });
+
+    it("keeps legacy naming when GENERATION is absent and no state file exists", async () => {
+      const prompt = `AGENT: committer
+MODE: checkpoint
+SESSION DATE: 2026-07-15
+SESSION ID: ses_legacy
+SCOPE: Commit X
+RESULT KD: knowledge/checkpoint-foo-ses_legacy.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_legacy", callID: "c1" }, output);
+
+      // Unresolved {generation} placeholder stripped, no -gen suffix injected
+      expect(output.args.prompt).not.toContain("-gen");
+      expect(output.args.description).toContain("knowledge/checkpoint-<name>-<session_id>.md");
+    });
+
+    it("extracts GENERATION field for non-swarm modes (checkpoint)", async () => {
+      const prompt = `AGENT: committer
+MODE: checkpoint
+SESSION DATE: 2026-07-15
+SESSION ID: ses_ckpt
+GENERATION: 1
+SCOPE: Commit X
+RESULT KD: knowledge/checkpoint-step1-ses_ckpt-gen1.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_ckpt", callID: "c1" }, output);
+
+      expect(output.args.prompt).toContain("GENERATION: 1");
+      expect(output.args.prompt).toContain("knowledge/checkpoint-step1-ses_ckpt-gen1.md");
     });
   });
 });
