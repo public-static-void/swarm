@@ -174,18 +174,6 @@ RESULT KD: invalid-path.md`;
       ).rejects.toThrow("Invalid result KD path");
     });
 
-    it("rejects prompt without result_kd for cleanup mode (KD-producing)", async () => {
-      const prompt = `AGENT: committer
-MODE: cleanup
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-15
-SCOPE: Implement feature X`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
     it("treats empty string result_kd as missing for cleanup mode", async () => {
       // Overseer writes "RESULT KD:" with nothing after it — extracts as ""
       const prompt = `AGENT: committer
@@ -911,7 +899,7 @@ Load the kd-system skill. Read the INTENT KD at knowledge/intent-foo.md. Explore
       expect(output.args.prompt).toContain("knowledge/exploration-foo.md");
     });
 
-    it("still rejects absolute paths on their own lines", async () => {
+    it("still rejects /etc/passwd on its own line", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -925,7 +913,7 @@ RESULT KD: knowledge/impl-foo.md
       ).rejects.toThrow("Foreign paths detected");
     });
 
-    it("still rejects absolute paths on their own lines", async () => {
+    it("still rejects /home/user/config.json on its own line", async () => {
       const prompt = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -1088,76 +1076,32 @@ RESULT KD: knowledge/impl-foo.md`;
   });
 
   describe("Result KD Enforcement for KD-Producing Modes (Issue 3)", () => {
-    it("requires result_kd for explore mode", async () => {
-      const prompt = `AGENT: explorer
-MODE: explore
+    it("requires result_kd for every KD-producing mode", async () => {
+      const cases = [
+        { mode: "explore", agent: "explorer", scope: "Explore the codebase" },
+        { mode: "investigate", agent: "artisan", scope: "Investigate the plugin system" },
+        { mode: "decompose", agent: "pathfinder", scope: "Decompose the project into tasks" },
+        { mode: "swarm", agent: "artisan", scope: "Execute implementation" },
+        { mode: "checkpoint", agent: "committer", scope: "Create a checkpoint commit" },
+        { mode: "preflight", agent: "committer", scope: "Setup workspace" },
+        { mode: "align", agent: "spec-weaver", scope: "Align requirements" },
+        { mode: "verify", agent: "inspector", scope: "Verify implementation" },
+        { mode: "extract", agent: "scribe", scope: "Extract documentation" },
+        { mode: "evolve", agent: "habit-builder", scope: "Evolve process" },
+        { mode: "cleanup", agent: "committer", scope: "Commit changes" }
+      ];
+
+      for (const { mode, agent, scope } of cases) {
+        const prompt = `AGENT: ${agent}
+MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
-SCOPE: Explore the codebase`;
+SCOPE: ${scope}`;
 
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for investigate mode", async () => {
-      const prompt = `AGENT: artisan
-MODE: investigate
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Investigate the plugin system`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for decompose mode", async () => {
-      const prompt = `AGENT: pathfinder
-MODE: decompose
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Decompose the project into tasks`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for swarm mode", async () => {
-      const prompt = `AGENT: artisan
-MODE: swarm
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Execute implementation`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for checkpoint mode", async () => {
-      const prompt = `AGENT: committer
-MODE: checkpoint
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Create a checkpoint commit`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for preflight mode", async () => {
-      const prompt = `AGENT: committer
-MODE: preflight
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Setup workspace`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
+        await expect(
+          hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+        ).rejects.toThrow("KD-producing mode requires result_kd");
+      }
     });
 
     it("accepts swarm mode with result_kd", async () => {
@@ -1195,66 +1139,6 @@ INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 SCOPE: Explore
 RESULT KD:`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for align mode", async () => {
-      const prompt = `AGENT: spec-weaver
-MODE: align
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Align requirements`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for verify mode", async () => {
-      const prompt = `AGENT: inspector
-MODE: verify
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Verify implementation`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for extract mode", async () => {
-      const prompt = `AGENT: scribe
-MODE: extract
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Extract documentation`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for evolve mode", async () => {
-      const prompt = `AGENT: habit-builder
-MODE: evolve
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Evolve process`;
-
-      await expect(
-        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-      ).rejects.toThrow("KD-producing mode requires result_kd");
-    });
-
-    it("requires result_kd for cleanup mode", async () => {
-      const prompt = `AGENT: committer
-MODE: cleanup
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-07-21
-SCOPE: Commit changes`;
 
       await expect(
         hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
