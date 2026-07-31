@@ -1,6 +1,6 @@
 // Protocol-Gate Plugin — WHEN: state machine, phase advancement, agent routing
 //
-// Hooks: chat.params, permission.ask, tool.execute.before,
+// Hooks: chat.params, permission.ask, tool.execute.before, command.execute.before,
 //        tool.definition, experimental.chat.system.transform
 // Scope: Overseer-only. Other agents pass through unaffected.
 //
@@ -130,6 +130,89 @@ function getPhaseName(phaseId) {
   return Object.entries(STATES).find(([, id]) => id === phaseId)?.[0];
 }
 
+// Current lifecycle generation for a session, read from the :gen map entry.
+// Defaults to 0 when absent — legacy state files without a generation field
+// behave as generation 0 (NFR001 backward compatibility).
+// Module-level so checkDiskAdvancement can derive the generation from the
+// sessionPhaseMap it already receives as a parameter.
+function getCurrentGeneration(sessionPhaseMap, sessionID) {
+  return sessionPhaseMap.get(`${sessionID}:gen`) || 0;
+}
+
+// Generation-aware session KD matcher. Accepts both naming variants:
+//   - `...-${sessionID}.md`         (generation 0, legacy naming)
+//   - `...-${sessionID}-gen${N}.md` (generation N naming)
+// A file matches only when its generation equals the current state generation
+// (R002, Option A). Gen-less files are treated as generation 0 and are NOT
+// matched when the current generation is > 0 (EC-007) — they belong to a
+// prior lifecycle and must not advance or suppress the new one.
+function matchesSessionKD(filename, sessionID, generation) {
+  if (typeof filename !== "string" || !sessionID) return false;
+  // Generation N variant: `...-${sessionID}-gen${N}.md`
+  const genMarker = `-${sessionID}-gen`;
+  const genIdx = filename.lastIndexOf(genMarker);
+  if (genIdx !== -1) {
+    const tail = filename.slice(genIdx + genMarker.length);
+    const genMatch = tail.match(/^(\d+)\.md$/);
+    if (genMatch) {
+      return parseInt(genMatch[1], 10) === generation;
+    }
+  }
+  // Legacy variant: `...-${sessionID}.md`
+  if (generation > 0) return false;
+  return filename.endsWith(`-${sessionID}.md`);
+}
+
+// Deletes all knowledge KDs belonging to a session — both naming variants
+// (legacy `-${sessionID}.md` and any `-${sessionID}-gen${N}.md`). Called at
+// lifecycle end (REPORT→reset) so stale prior-lifecycle KDs cannot confuse a
+// new generation (BUG-008). Single readdirSync + batch rmSync loop (NFR003 —
+// no per-file glob). EC-005: a missing knowledge/ dir is not an error.
+// R6: logs the count of removed files.
+function cleanupLifecycleKDs(sessionID) {
+  const knowledgeDir = join(process.cwd(), "knowledge");
+  let files = [];
+  try {
+    files = readdirSync(knowledgeDir);
+  } catch (e) {
+    debug(`cleanupLifecycleKDs: knowledge/ dir not found for session ${sessionID} — nothing to clean (EC-005)`);
+    return 0;
+  }
+  const genPattern = new RegExp(`-${sessionID}-gen\\d+\\.md$`, "i");
+  const stale = files.filter(f => f.endsWith(`-${sessionID}.md`) || genPattern.test(f));
+  for (const f of stale) {
+    try {
+      rmSync(join(knowledgeDir, f));
+    } catch (e) {
+      debug(`cleanupLifecycleKDs: failed to remove ${f}: ${e.message}`);
+    }
+  }
+  debug(`Cleanup of ${stale.length} stale KDs for session ${sessionID}`);
+  return stale.length;
+}
+
+// Override signal files (.state/.override-{sessionID}.json) expire after this
+// window. A stale file must never apply a phase change long after the user
+// (or the /phase command template) wrote it.
+const OVERRIDE_TTL_MS = 5 * 60 * 1000;
+
+// Parses a /phase command argument into a phase number. Accepts:
+//   - a number string 0-12 (e.g. "5" → ALIGN)
+//   - a phase name, case-insensitive (e.g. "INTENT", "preflight")
+// Returns null when the argument is not a valid phase reference — the AC-R006
+// rejection cases (99, INVALID, empty) all funnel through here.
+function parsePhaseArg(arg) {
+  if (typeof arg !== "string") return null;
+  const trimmed = arg.trim().toUpperCase();
+  if (trimmed === "") return null;
+  if (/^\d+$/.test(trimmed)) {
+    const n = parseInt(trimmed, 10);
+    if (Number.isInteger(n) && n >= 0 && n <= 12) return n;
+    return null;
+  }
+  return Object.prototype.hasOwnProperty.call(STATES, trimmed) ? STATES[trimmed] : null;
+}
+
 let _logFile = null;
 
 function getLogFile() {
@@ -239,10 +322,26 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     return false;
   }
 
-  // Filter to only files matching the current session ID.
+  // Filter to only files matching the current session ID AND generation.
   // KD filenames embed the session ID as a suffix (e.g. preflight-workspace-ses_abc123.md).
   // Uses suffix matching to prevent substring collisions (ses_abc1 matching ses_abc123).
-  const sessionFiles = files.filter(f => f.endsWith(`-${sessionID}.md`));
+  // Generation scoping (P003/R002): files from a prior lifecycle carry a
+  // different `-genN-` suffix and must not advance the new lifecycle (BUG-008).
+  // NFR005: generation defaults to 0 when the state was never loaded or the
+  // file carried no generation field — session-ID-only matching is the fallback.
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const sessionFiles = [];
+  for (const f of files) {
+    if (matchesSessionKD(f, sessionID, generation)) {
+      sessionFiles.push(f);
+    } else if (f.endsWith(`-${sessionID}.md`) || f.includes(`-${sessionID}-gen`)) {
+      // Same session but different generation — stale prior-lifecycle KD.
+      // Log the skip so generation mismatches are diagnosable (R006/R5).
+      const fileGenMatch = f.match(/-gen(\d+)\.md$/);
+      const fileGen = fileGenMatch ? parseInt(fileGenMatch[1], 10) : 0;
+      debug(`Skipped KD ${f}: generation mismatch (file=${fileGen}, current=${generation})`);
+    }
+  }
 
   // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
   // PREFLIGHT advances when a `preflight-` KD is written by the Committer.
@@ -314,7 +413,10 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return false; }
 
-  const sessionFiles = files.filter(f => f.endsWith(`-${sessionID}.md`));
+  // Generation-scoped (P003): stale gen-N KDs from a prior lifecycle must not
+  // suppress legitimate phase regression in the current lifecycle (R3 gap fix).
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const sessionFiles = files.filter(f => matchesSessionKD(f, sessionID, generation));
 
   const patterns = {
     [STATES.INTENT]: /^intent-/i,
@@ -488,19 +590,27 @@ export default {
     }
 
     function saveState(sessionID) {
-      const phase = sessionPhaseMap.get(sessionID);
+      // P009: the phase entry is deleted at lifecycle end (REPORT reset).
+      // Persist that state as phase 0 — the next loadState() restores
+      // PROTOCOL_NOT_LOADED and honors any manual edit of this file (AC-R005).
+      const phase = sessionPhaseMap.get(sessionID) ?? STATES.PROTOCOL_NOT_LOADED;
       const sid = sessionPhaseMap.get(`${sessionID}:sid`);
-      if (phase === undefined) return;
       try {
+        // generation persists across lifecycle resets via the :gen map entry.
+        // Written even at phase 0 so the counter survives restarts between
+        // lifecycles (P001/R001). Returns boolean so callers can enforce the
+        // NFR002 atomicity contract: revert in-memory :gen when save fails.
+        const generation = sessionPhaseMap.get(`${sessionID}:gen`) || 0;
         // Fix M4: Omit sid from state JSON when it's null/undefined (deleted after REPORT).
         // Previously, sid: null was serialized, causing loadState to skip phase restoration
         // and producing artifacts in the state file.
-        const state = { phase, timestamp: Date.now() };
+        const state = { phase, generation, timestamp: Date.now() };
         if (sid) state.sid = sid;
         const stateDir = join(PLUGIN_DIR, ".state");
         mkdirSync(stateDir, { recursive: true });
         writeFileSync(getStatePath(sessionID), JSON.stringify(state));
-      } catch (e) { debug(`saveState error: ${e.message}`); }
+        return true;
+      } catch (e) { debug(`saveState error: ${e.message}`); return false; }
     }
 
     function loadState(sessionID) {
@@ -508,6 +618,13 @@ export default {
       debug(`loadState: checking ${statePath}`);
       try {
         const data = JSON.parse(readFileSync(statePath, "utf8"));
+        // Generation restoration happens for ANY phase, including phase 0.
+        // After REPORT→PROTOCOL_NOT_LOADED the file is {phase:0, generation:N}
+        // and the counter must survive process restarts between lifecycles.
+        if (data.generation !== undefined) {
+          sessionPhaseMap.set(`${sessionID}:gen`, data.generation);
+          debug(`loadState: restored generation=${data.generation} for ${sessionID}`);
+        }
         if (data.phase !== undefined && data.phase > STATES.PROTOCOL_NOT_LOADED) {
           sessionPhaseMap.set(sessionID, data.phase);
           if (data.sid) {
@@ -522,6 +639,65 @@ export default {
       return false;
     }
 
+    // --- Phase override (M3, R005/AC-R006) ---
+    // Two paths set a phase override for a session:
+    //   1. The /phase command (command.execute.before hook) sets the phase
+    //      directly in memory and persists it via saveState — deterministic,
+    //      no filesystem round-trip.
+    //   2. A signal file `.state/.override-{sessionID}.json` written by the
+    //      command template (commands/phase.md) — fallback for runtimes where
+    //      the hook is not invoked. Consumed exactly once by chat.params.
+    // The file path carries a 5-minute TTL and refuses forward jumps larger
+    // than 3 phases (defense against a stale or miswritten file; the explicit
+    // /phase command bypasses this limit because the user typed it directly).
+    function getOverridePath(sessionID) {
+      return join(PLUGIN_DIR, ".state", `.override-${sessionID}.json`);
+    }
+
+    function applyPhaseOverride(sessionID) {
+      const overridePath = getOverridePath(sessionID);
+      let raw;
+      try {
+        raw = readFileSync(overridePath, "utf8");
+      } catch (_) {
+        return false; // no override file
+      }
+      try {
+        const data = JSON.parse(raw);
+        if (data.createdAt && Date.now() - new Date(data.createdAt).getTime() > OVERRIDE_TTL_MS) {
+          debug(`Phase override: dropped expired override for session ${sessionID} (TTL ${OVERRIDE_TTL_MS}ms)`);
+          rmSync(overridePath, { force: true });
+          return false;
+        }
+        const n = Number(data.phase);
+        if (!Number.isInteger(n) || n < STATES.PROTOCOL_NOT_LOADED || n > STATES.REPORT) {
+          debug(`Phase override: invalid phase value ${data.phase} in override file for session ${sessionID}`);
+          rmSync(overridePath, { force: true });
+          return false;
+        }
+        const current = sessionPhaseMap.get(sessionID);
+        if (current !== undefined && n > current + 3) {
+          debug(`Phase override: REJECTED forward jump ${getPhaseName(current)}(${current}) → ${getPhaseName(n)}(${n}) for session ${sessionID} (max +3)`);
+          rmSync(overridePath, { force: true });
+          return false;
+        }
+        sessionPhaseMap.set(sessionID, n);
+        // Re-capture the session ID so checkDiskAdvancement can filter KDs by
+        // session — required when the override starts a fresh lifecycle.
+        if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
+          sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+        }
+        saveState(sessionID);
+        rmSync(overridePath, { force: true }); // consumed once
+        debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
+        return true;
+      } catch (e) {
+        debug(`Phase override: malformed override file for session ${sessionID}: ${e.message}`);
+        rmSync(overridePath, { force: true });
+        return false;
+      }
+    }
+
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
 
     debug("Plugin initializing…");
@@ -533,15 +709,18 @@ export default {
     // These accumulate when sessions are interrupted mid-lifecycle.
     // Only delete files where sid is missing from the JSON, not where sid is null
     // (null sid is valid for INTENT-phase state before intent KD is written).
+    // A phase-0 file that carries a `generation` field is a completed-lifecycle
+    // marker (post-REPORT state) — it must survive restarts so the counter is
+    // not lost between lifecycles (R4).
     try {
       const stateDir = join(PLUGIN_DIR, ".state");
       const stateFiles = readdirSync(stateDir).filter(f => f.startsWith(".protocol-state-") && f.endsWith(".json"));
       for (const sf of stateFiles) {
         try {
           const data = JSON.parse(readFileSync(join(stateDir, sf), "utf8"));
-          if (data.sid === undefined) {
+          if (data.sid === undefined && data.generation === undefined) {
             rmSync(join(stateDir, sf));
-            debug(`Plugin init: cleaned orphaned state file ${sf} (no SID)`);
+            debug(`Plugin init: cleaned orphaned state file ${sf} (no SID, no generation)`);
           }
         } catch (_) {}
       }
@@ -581,7 +760,7 @@ export default {
         let implFiles = [];
         try {
           const files = readdirSync(knowledgeDir);
-          implFiles = files.filter(f => f.endsWith(`-${sessionID}.md`) && /^impl-/i.test(f));
+          implFiles = files.filter(f => matchesSessionKD(f, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID)) && /^impl-/i.test(f));
         } catch (_) {}
         const reconciliedCount = Math.max(1, implFiles.length);
         swarmDispatchCount.set(sessionID, reconciliedCount);
@@ -604,6 +783,11 @@ export default {
 
       if (agent === "overseer") {
         overseerSessions.add(sessionID);
+        // M3: consume any pending /phase override file first. Runs before the
+        // entry check so a file is honored even mid-lifecycle (the hook already
+        // applied the value in memory — the file then re-applies the same value
+        // and is deleted, which is idempotent).
+        applyPhaseOverride(sessionID);
         // Only initialize when session isn't already tracked (opencode calls
         // chat.params on every tool invocation cycle, not once per session).
         if (!sessionPhaseMap.has(sessionID)) {
@@ -613,6 +797,8 @@ export default {
             // BUG-004: Capture session ID at initialization, not at intent KD write.
             // checkDiskAdvancement requires :sid to filter KD files by session.
             sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+            // saveState re-persists any :gen restored by loadState — a phase-0
+            // post-REPORT state file's generation survives this re-initialization.
             saveState(sessionID);
           }
         }
@@ -622,6 +808,38 @@ export default {
         debug(`chat.params: non-overseer session ${sessionID} (agent=${agent}) — passing through`);
         return;
       }
+    }
+
+    // --- Hook: command.execute.before (M3, R005) ---
+    // Implements the /phase slash command. Validates the argument against
+    // STATES (AC-R006 rejection cases: 99, INVALID, empty) and applies the
+    // override in memory + on disk. Registered alongside commands/phase.md;
+    // the hook is the deterministic path and the command template's override
+    // file is the fallback for runtimes that never invoke this hook.
+    async function commandExecuteBefore(input, output) {
+      const commandName = String(input.command || "").replace(/^\/+/, "");
+      if (commandName !== "phase") return;
+      const { sessionID, arguments: arg } = input;
+      const trimmed = String(arg ?? "").trim();
+      if (!trimmed) {
+        output.parts = [{ type: "text", text: "Error: /phase requires an argument. Usage: /phase <0-12|PHASE_NAME>" }];
+        return;
+      }
+      const n = parsePhaseArg(trimmed);
+      if (n === null) {
+        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 0-12 or one of ${Object.keys(STATES).join(", ")}.` }];
+        return;
+      }
+      sessionPhaseMap.set(sessionID, n);
+      // Re-capture the session ID so checkDiskAdvancement can filter KDs by
+      // session — required when /phase starts a fresh lifecycle.
+      if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
+        sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+      }
+      overseerSessions.add(sessionID);
+      saveState(sessionID);
+      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
+      output.parts = [{ type: "text", text: `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
     }
 
     // --- Hook: permission.ask ---
@@ -791,15 +1009,40 @@ export default {
         // REPORT → PROTOCOL_NOT_LOADED: report KD written means lifecycle is complete.
         // Reset to phase 0 so the Overseer can start a new lifecycle with todowrite.
         if (phase === STATES.REPORT && isReportKD) {
-          debug(`write: report KD written → transitioning to PROTOCOL_NOT_LOADED`);
-          sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+          debug(`write: report KD written → transitioning lifecycle end`);
+          // R001: increment generation on lifecycle end — the new generation
+          // scopes all KDs written in the next lifecycle. NFR002/EC-003:
+          // increment is atomic with saveState — revert on save failure.
+          const currentGen = getCurrentGeneration(sessionPhaseMap, sessionID);
+          const nextGen = currentGen + 1;
+          sessionPhaseMap.set(`${sessionID}:gen`, nextGen);
+          // R004/P009: delete the phase entry instead of setting PROTOCOL_NOT_LOADED.
+          // chat.params only re-runs loadState() when the entry is absent, so a
+          // 0 here would keep the in-memory map diverged from a manually edited
+          // state file (BUG-009). Deleting forces loadState() on the next message.
+          sessionPhaseMap.delete(sessionID);
           diskCheckFailures.set(sessionID, 0);
           sessionPhaseMap.delete(`${sessionID}:sid`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
           pendingVerification.delete(sessionID);
           pendingVerificationToolCount.delete(sessionID);
-          saveState(sessionID);
+          if (!saveState(sessionID)) {
+            sessionPhaseMap.set(`${sessionID}:gen`, currentGen);
+            debug(`saveState failed — generation stays ${currentGen} for session ${sessionID} (NFR002)`);
+          } else {
+            debug(`Generation ${currentGen} → ${nextGen} for session ${sessionID}`);
+          }
+          // R003/P008: remove this lifecycle's KDs so stale files can never
+          // advance or suppress the next generation. EC-008: cleanup failure
+          // must not block the phase reset — wrapped in try-catch. EC-004
+          // accepted race: any KD written between the REPORT trigger and this
+          // cleanup belongs to the ending lifecycle; deletion is safe.
+          try {
+            cleanupLifecycleKDs(sessionID);
+          } catch (e) {
+            debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message} (EC-008)`);
+          }
           phase = STATES.PROTOCOL_NOT_LOADED;
           phaseName = getPhaseName(phase);
         }
@@ -887,15 +1130,32 @@ export default {
         const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
 
         if (phase === STATES.REPORT && isReportKD) {
-          debug(`edit: report KD edited → transitioning to PROTOCOL_NOT_LOADED`);
-          sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+          debug(`edit: report KD edited → transitioning lifecycle end`);
+          // R001: generation increment — mirrors the write handler (see above
+          // for the NFR002 atomicity rationale). R004/P009: delete the phase
+          // entry so the next chat.params re-runs loadState() (BUG-009).
+          const currentGen = getCurrentGeneration(sessionPhaseMap, sessionID);
+          const nextGen = currentGen + 1;
+          sessionPhaseMap.set(`${sessionID}:gen`, nextGen);
+          sessionPhaseMap.delete(sessionID);
           diskCheckFailures.set(sessionID, 0);
           sessionPhaseMap.delete(`${sessionID}:sid`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
           pendingVerification.delete(sessionID);
           pendingVerificationToolCount.delete(sessionID);
-          saveState(sessionID);
+          if (!saveState(sessionID)) {
+            sessionPhaseMap.set(`${sessionID}:gen`, currentGen);
+            debug(`saveState failed — generation stays ${currentGen} for session ${sessionID} (NFR002)`);
+          } else {
+            debug(`Generation ${currentGen} → ${nextGen} for session ${sessionID}`);
+          }
+          // R003/P008: cleanup stale session KDs; EC-008 try-catch (see write handler).
+          try {
+            cleanupLifecycleKDs(sessionID);
+          } catch (e) {
+            debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message} (EC-008)`);
+          }
           phase = STATES.PROTOCOL_NOT_LOADED;
           phaseName = getPhaseName(phase);
         } else if (phase === STATES.REPORT && !isReportKD) {
@@ -946,7 +1206,12 @@ export default {
           } else {
             // REPORT doesn't use disk-based advancement — skip stuck detection.
             // REPORT writes the KD directly; other phases rely on KD file existence.
-            if (currentPhase !== STATES.REPORT) {
+            // P009: after lifecycle-end the phase entry was deleted; currentPhase
+            // is undefined and there is nothing to check — skip the whole block
+            // (getPhaseName(undefined).toLowerCase() would throw).
+            if (currentPhase === undefined) {
+              debug(`Disk advancement: no phase entry for ${sessionID} — skipping consistency block`);
+            } else if (currentPhase !== STATES.REPORT) {
               const currentPhasePrefixes = getPrefixes(currentPhase);
               if (currentPhasePrefixes.length === 0) {
                 currentPhasePrefixes.push(currentPhaseName.toLowerCase());
@@ -1055,7 +1320,7 @@ export default {
                     if (currentFailures === 10) {
                       const knowledgeDir = join(process.cwd(), "knowledge");
                       let foundFiles = [];
-                      try { foundFiles = readdirSync(knowledgeDir).filter(f => f.endsWith(`-${sessionID}.md`)); } catch (_) {}
+                      try { foundFiles = readdirSync(knowledgeDir).filter(f => matchesSessionKD(f, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID))); } catch (_) {}
                       debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${currentFailures} disk checks. Expected prefixes: ${JSON.stringify(currentPhasePrefixes)}. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
                     }
                   }
@@ -1215,10 +1480,13 @@ export default {
       if (instructions) {
         let systemMsg = `[Protocol Gate] Phase ${phaseName}: ${instructions}`;
 
-        // During INTENT phase, inject session ID so Overseer can use it in filename
+        // During INTENT phase, inject session ID + generation so Overseer can
+        // use them in the KD filename. The -gen{N} suffix (R002 Option A)
+        // scopes this lifecycle's KDs so stale prior-lifecycle KDs never match.
         if (phase === STATES.INTENT && sessionID) {
+          const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
           systemMsg += `\n\nYour session ID is: ${sessionID}`;
-          systemMsg += `\nUse this session ID in the intent KD filename: knowledge/intent-{name}-${sessionID}.md`;
+          systemMsg += `\nUse this session ID and generation in the intent KD filename: knowledge/intent-{name}-${sessionID}-gen${generation}.md`;
         }
 
         output.system.push(systemMsg);
@@ -1230,6 +1498,7 @@ export default {
       "chat.params": chatParams,
       "permission.ask": permissionAsk,
       "tool.execute.before": toolExecuteBefore,
+      "command.execute.before": commandExecuteBefore,
       "tool.definition": toolDefinition,
       "experimental.chat.system.transform": systemTransform,
       // Test-access properties
@@ -1247,6 +1516,12 @@ export default {
       freshAdvancement,
       KD_TYPE_PREFIXES,
       checkPhaseStateConsistency,
+      checkDiskAdvancement,
+      cleanupLifecycleKDs,
+      getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
+      parsePhaseArg,
+      applyPhaseOverride,
+      getOverridePath,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
       get lastSeenSession() { return lastSeenSession; }
