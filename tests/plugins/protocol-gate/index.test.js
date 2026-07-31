@@ -902,13 +902,13 @@ describe("Protocol-Gate Plugin", () => {
   });
 
   describe("experimental.chat.system.transform Hook", () => {
-    it("passes through when no session has been seen", async () => {
+    it("passes through for system.transform when no session has been seen", async () => {
       const output = { system: ["base system prompt"] };
       await hooks["experimental.chat.system.transform"]({}, output);
       expect(output.system).toEqual(["base system prompt"]);
     });
 
-    it("passes through for non-overseer sessions", async () => {
+    it("passes through for system.transform for non-overseer sessions", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "artisan" }, {});
       const output = { system: ["base"] };
       await hooks["experimental.chat.system.transform"]({ sessionID: "test-1" }, output);
@@ -1308,7 +1308,7 @@ describe("Protocol-Gate Plugin", () => {
       try { require("fs").unlinkSync(join(knowledgeDir, "preflight-workspace-other-session.md")); } catch (_) {}
     });
 
-    it("does not advance when no session ID is set", async () => {
+    it("does not advance from PREFLIGHT when no session ID is set", async () => {
       const sid = "preflight-5";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
@@ -1388,7 +1388,7 @@ describe("Protocol-Gate Plugin", () => {
       try { require("fs").unlinkSync(join(knowledgeDir, "cleanup-finalize-other-session.md")); } catch (_) {}
     });
 
-    it("does not advance when no session ID is set", async () => {
+    it("does not advance from CLEANUP when no session ID is set", async () => {
       const sid = "cleanup-4";
       await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
       hooks.sessionPhaseMap.set(sid, hooks.STATES.CLEANUP);
@@ -2541,6 +2541,20 @@ describe("Protocol-Gate Plugin", () => {
         }
       } catch (_) {}
     }
+
+    // Clean up KDs from prior test runs (or from debug repro scripts that
+    // reused these session IDs) so file-count assertions start from zero.
+    const SWARM_TEST_SIDS = ["swarmfix-s1", "swarmfix-s2", "swarmfix-s3", "swarmfix-s4", "swarmfix-s5"];
+    beforeEach(() => {
+      try {
+        const files = require("fs").readdirSync(knowledgeDir);
+        for (const f of files) {
+          if (SWARM_TEST_SIDS.some(sid => f.endsWith(`-${sid}.md`))) {
+            try { require("fs").rmSync(join(knowledgeDir, f)); } catch (_) {}
+          }
+        }
+      } catch (_) {}
+    });
 
     // AC001: After SWARM→VERIFY regression back to SWARM, formula passes with impl file
     it("AC001: SWARM formula passes after regression when impl files exist", async () => {
