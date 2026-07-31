@@ -1,37 +1,29 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { join } from "path";
+import { tmpdir } from "os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 
-// Compute real project paths so mock matches what the plugin uses
-const PROJECT_ROOT = process.cwd();
-const MEMORY_DIR = join(PROJECT_ROOT, "knowledge", "memory");
-const ISSUES_DIR = join(PROJECT_ROOT, "knowledge", "issues");
+// The plugin reads its data dirs from KNOWLEDGE_GATE_MEMORY_DIR /
+// KNOWLEDGE_GATE_ISSUES_DIR env overrides (test seam in the plugin). We point
+// them at real temp dirs — no vi.mock("fs") needed. The previous approach
+// mocked the fs module process-wide, which leaked into sibling suites under
+// bun's test runner and made every protocol-gate disk check fail.
 
-// Mock fs before importing the plugin
-const mockFs = {
-  _files: {},
-  _dirs: new Set(),
-  existsSync: vi.fn((path) => mockFs._dirs.has(path)),
-  readdirSync: vi.fn((path) => {
-    const files = mockFs._files[path] || [];
-    return files.map(f => f.fileName);
-  }),
-  readFileSync: vi.fn((path, encoding) => {
-    for (const dir of Object.keys(mockFs._files)) {
-      for (const f of mockFs._files[dir]) {
-        if (path === join(dir, f.fileName) || path.endsWith(f.fileName)) return f.content;
-      }
-    }
-    return "";
-  }),
-  mkdirSync: vi.fn(),
-  appendFileSync: vi.fn(),
-  writeFileSync: vi.fn(),
-  rmSync: vi.fn()
-};
+let tempRoot;
+let MEMORY_DIR;
+let ISSUES_DIR;
+let pluginModule;
+let hooks;
+let importSeq = 0;
 
-vi.mock("fs", () => mockFs);
+// Helper to populate the real temp memory/issues dirs
+function writeEntries(dir, entries) {
+  for (const { fileName, content } of entries) {
+    writeFileSync(join(dir, fileName), content);
+  }
+}
 
-// Helper to add a memory entry to the mock filesystem
+// Helper to add a memory entry to the temp dir
 function addMemoryEntry(id, overrides = {}) {
   const defaultEntry = {
     id: `MEM-${String(id).padStart(3, "0")}`,
@@ -68,29 +60,39 @@ function addIssueFile(id, overrides = {}) {
 }
 
 describe("Knowledge-Gate Plugin", () => {
-  let plugin;
-  let hooks;
+  beforeAll(() => {
+    tempRoot = mkdtempSync(join(tmpdir(), "kg-test-"));
+    MEMORY_DIR = join(tempRoot, "memory");
+    ISSUES_DIR = join(tempRoot, "issues");
+    process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+    process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+  });
 
   beforeEach(async () => {
-    vi.clearAllMocks();
-    // Reset mock filesystem
-    mockFs._files = {};
-    mockFs._dirs = new Set();
-    // Set up knowledge/memory/ directory
-    mockFs._dirs.add(MEMORY_DIR);
-    // Re-import to reset module state
-    vi.resetModules();
-    plugin = await import("../../../plugins/knowledge-gate/index.js");
-    hooks = await plugin.default.server({}, {});
+    // Reset the temp dirs so each test starts from empty state
+    rmSync(MEMORY_DIR, { recursive: true, force: true });
+    rmSync(ISSUES_DIR, { recursive: true, force: true });
+    mkdirSync(MEMORY_DIR, { recursive: true });
+    mkdirSync(ISSUES_DIR, { recursive: true });
+    // Query-string cache bust gives a fresh module instance — and a fresh
+    // module-level memory cache — per test (bun equivalent of vi.resetModules).
+    importSeq += 1;
+    pluginModule = await import(`../../../plugins/knowledge-gate/index.js?test=${importSeq}`);
+    hooks = await pluginModule.default.server({}, {});
+  });
+
+  afterAll(() => {
+    delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+    delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+    rmSync(tempRoot, { recursive: true, force: true });
   });
 
   describe("searchMemory — Tag-overlap scoring", () => {
     it("returns higher score for entries with matching tags", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["target-tag", "mock", "sample"], topic: "Alpha" }),
         addMemoryEntry(2, { tags: ["other", "unrelated"], topic: "Beta" })
-      ];
+      ]);
 
       const results = hooks.searchMemory({ tags: ["target-tag"], topic: "", limit: 5 });
       expect(results).toHaveLength(1);
@@ -100,11 +102,10 @@ describe("Knowledge-Gate Plugin", () => {
 
   describe("searchMemory — Topic match scoring", () => {
     it("returns higher score for entries with matching topic substring", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { topic: "Authentication flow design", tags: ["auth"] }),
         addMemoryEntry(2, { topic: "Cache invalidation strategy", tags: ["cache"] })
-      ];
+      ]);
 
       const results = hooks.searchMemory({ tags: [], topic: "auth", limit: 5 });
       expect(results).toHaveLength(1);
@@ -114,11 +115,10 @@ describe("Knowledge-Gate Plugin", () => {
 
   describe("searchMemory — Recency sort", () => {
     it("sorts newer entries before older entries at equal score", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { created: "2026-07-20T00:00:00.000Z" }),
         addMemoryEntry(2, { created: "2026-07-29T00:00:00.000Z" })
-      ];
+      ]);
 
       const results = hooks.searchMemory({ tags: [], topic: "", limit: 5 });
       expect(results[0].id).toBe("MEM-002");
@@ -128,10 +128,9 @@ describe("Knowledge-Gate Plugin", () => {
 
   describe("searchMemory — Empty results", () => {
     it("returns empty array when no entries match", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["database"], topic: "SQL queries" })
-      ];
+      ]);
 
       const results = hooks.searchMemory({ tags: ["nonexistent"], topic: "zzzzz", limit: 5 });
       expect(results).toEqual([]);
@@ -140,20 +139,18 @@ describe("Knowledge-Gate Plugin", () => {
 
   describe("searchMemory — Limit enforcement", () => {
     it("returns at most the specified number of results", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1),
         addMemoryEntry(2),
         addMemoryEntry(3)
-      ];
+      ]);
 
       const results = hooks.searchMemory({ tags: [], topic: "", limit: 2 });
       expect(results).toHaveLength(2);
     });
 
     it("uses default limit of 5 when not specified", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = Array.from({ length: 10 }, (_, i) => addMemoryEntry(i + 1));
+      writeEntries(MEMORY_DIR, Array.from({ length: 10 }, (_, i) => addMemoryEntry(i + 1)));
 
       const results = hooks.searchMemory({ tags: [], topic: "" });
       expect(results).toHaveLength(5);
@@ -162,11 +159,10 @@ describe("Knowledge-Gate Plugin", () => {
 
   describe("searchMemory — Backward compatibility", () => {
     it("works with topic-only query (no tags)", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { topic: "Auth permissions design" }),
         addMemoryEntry(2, { topic: "Cache layer" })
-      ];
+      ]);
 
       const results = hooks.searchMemory({ topic: "auth" });
       expect(results).toHaveLength(1);
@@ -174,11 +170,10 @@ describe("Knowledge-Gate Plugin", () => {
     });
 
     it("works with tags-only query (no topic)", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["permissions", "auth", "test"] }),
         addMemoryEntry(2, { tags: ["cache", "performance"] })
-      ];
+      ]);
 
       const results = hooks.searchMemory({ tags: ["permissions"] });
       expect(results).toHaveLength(1);
@@ -188,13 +183,11 @@ describe("Knowledge-Gate Plugin", () => {
 
   describe("scanHighSeverityIssues", () => {
     it("filters correctly by severity and status", () => {
-      const issuesDir = ISSUES_DIR;
-      mockFs._dirs.add(issuesDir);
-      mockFs._files[issuesDir] = [
+      writeEntries(ISSUES_DIR, [
         addIssueFile(1, { severity: "high", status: "open" }),
         addIssueFile(2, { severity: "low", status: "open" }),
         addIssueFile(3, { severity: "high", status: "closed" })
-      ];
+      ]);
 
       const results = hooks.scanHighSeverityIssues();
       expect(results).toHaveLength(1);
@@ -202,6 +195,7 @@ describe("Knowledge-Gate Plugin", () => {
     });
 
     it("returns empty array when issues directory is missing", () => {
+      rmSync(ISSUES_DIR, { recursive: true, force: true });
       const results = hooks.scanHighSeverityIssues();
       expect(results).toEqual([]);
     });
@@ -233,21 +227,15 @@ Body text`;
 
   describe("getNextIssueId", () => {
     it("generates ISSUE-001 when no issues exist", () => {
-      const issuesDir = ISSUES_DIR;
-      mockFs._dirs.add(issuesDir);
-      mockFs._files[issuesDir] = [];
-
       const result = hooks.getNextIssueId();
       expect(result).toBe("ISSUE-001");
     });
 
     it("generates sequential IDs based on existing issue files", () => {
-      const issuesDir = ISSUES_DIR;
-      mockFs._dirs.add(issuesDir);
-      mockFs._files[issuesDir] = [
+      writeEntries(ISSUES_DIR, [
         { fileName: "issue-001.md", content: "" },
         { fileName: "issue-005.md", content: "" }
-      ];
+      ]);
 
       const result = hooks.getNextIssueId();
       expect(result).toBe("ISSUE-006");
@@ -276,11 +264,9 @@ Body text`;
     });
 
     it("includes dynamic hint line when memory matches agent type", async () => {
-      // Add an entry matching artisan agent type tags
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["implementation", "code"], topic: "Code patterns" })
-      ];
+      ]);
 
       const output = { system: [] };
       await hooks["experimental.chat.system.transform"](
@@ -452,29 +438,27 @@ Body text`;
 
   describe("Cache behavior", () => {
     it("uses cached entries on second call without disk read", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [addMemoryEntry(1)];
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { topic: "Original content" })]);
 
       const r1 = hooks.searchMemory({ tags: [], topic: "", limit: 5 });
       expect(r1).toHaveLength(1);
-      expect(mockFs.readdirSync).toHaveBeenCalledTimes(1);
 
-      mockFs.readdirSync.mockClear();
+      // Rewrite the same file with different content (file count unchanged —
+      // the cache's only invalidation signal). A cached second call must
+      // return the stale first-read content; a disk read would return the new.
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { topic: "Changed content" })]);
 
       const r2 = hooks.searchMemory({ tags: [], topic: "", limit: 5 });
       expect(r2).toHaveLength(1);
-      expect(mockFs.readdirSync).toHaveBeenCalledTimes(1);
       expect(r1).toEqual(r2);
     });
 
     it("invalidates cache when a new file is added", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [addMemoryEntry(1)];
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1)]);
 
       hooks.searchMemory({ tags: [], topic: "", limit: 5 });
 
-      mockFs._files[memDir].push(addMemoryEntry(2));
-      mockFs.readdirSync.mockClear();
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1), addMemoryEntry(2)]);
 
       const r2 = hooks.searchMemory({ tags: [], topic: "", limit: 5 });
       expect(r2).toHaveLength(2);
@@ -504,10 +488,9 @@ Body text`;
     });
 
     it("returns hint when memory matches", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["analysis", "bug"], topic: "Bug analysis patterns" })
-      ];
+      ]);
 
       const result = hooks.deriveSearchHints({ mode: "investigate", agentType: "analyzer", scope: "" });
       // investigate → ["analysis", "root-cause", "bug"] + analyzer → ["analysis", "root-cause"]
@@ -517,10 +500,9 @@ Body text`;
     });
 
     it("extracts noun keywords from SCOPE", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth tokens" })
-      ];
+      ]);
 
       const result = hooks.deriveSearchHints({ mode: "swarm", agentType: "artisan", scope: "fix auth token permissions" });
       // swarm → ["implementation", "code", "pattern"] + artisan → ["implementation", "code"]
@@ -530,12 +512,11 @@ Body text`;
     });
 
     it("limits to 3 hint lines maximum", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["implementation", "code", "bug"], topic: "Alpha" }),
         addMemoryEntry(2, { tags: ["implementation", "bug"], topic: "Beta" }),
         addMemoryEntry(3, { tags: ["bug"], topic: "Gamma" })
-      ];
+      ]);
 
       const result = hooks.deriveSearchHints({ mode: "swarm", agentType: "artisan", scope: "" });
       expect(result.shouldHint).toBe(true);
@@ -588,11 +569,10 @@ Body text`;
     });
 
     it("generates sequential IDs based on existing entry files", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         { fileName: "entry-001.json", content: "{}" },
         { fileName: "entry-005.json", content: "{}" }
-      ];
+      ]);
 
       const result = hooks.getNextMemoryId();
       expect(result).toBe("MEM-006");
@@ -607,10 +587,9 @@ Body text`;
     });
 
     it("returns existing entry when high-similarity match found", () => {
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" })
-      ];
+      ]);
 
       const entry = { tags: ["auth", "permissions"], topic: "Auth token design patterns" };
       const result = hooks.checkDuplicateMemory(entry);
@@ -628,7 +607,7 @@ Body text`;
     });
 
     it("writes valid entry from Scribe agent", async () => {
-      // Register artisan in sessionAgentMap first (only session mapping is used)
+      // Register scribe in sessionAgentMap first (only session mapping is used)
       await hooks["chat.params"]({ sessionID: "scribe-session", agent: "scribe" }, {});
 
       const entry = { id: "MEM-020", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight for tool write.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
@@ -652,11 +631,10 @@ Body text`;
     it("detects duplicate entries and skips write", async () => {
       await hooks["chat.params"]({ sessionID: "scribe-session", agent: "scribe" }, {});
 
-      // Pre-populate mock filesystem with an entry — this simulates an existing entry on disk
-      const memDir = MEMORY_DIR;
-      mockFs._files[memDir] = [
+      // Pre-populate the temp dir with an entry — simulates an existing entry on disk
+      writeEntries(MEMORY_DIR, [
         addMemoryEntry(50, { tags: ["test", "duplicate"], topic: "Duplicate test" })
-      ];
+      ]);
 
       // Try writing a similar entry (same tags, overlapping topic)
       const entry2 = { id: "MEM-051", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "duplicate"], topic: "Duplicate test content", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
@@ -668,11 +646,11 @@ Body text`;
 
   describe("No named exports (v2.0.0)", () => {
     it("does not export searchMemory as a named export", () => {
-      expect(plugin.searchMemory).toBeUndefined();
+      expect(pluginModule.searchMemory).toBeUndefined();
     });
 
     it("does not export validateMemoryEntry as a named export", () => {
-      expect(plugin.validateMemoryEntry).toBeUndefined();
+      expect(pluginModule.validateMemoryEntry).toBeUndefined();
     });
   });
 });
