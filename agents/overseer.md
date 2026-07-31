@@ -9,6 +9,8 @@ permission:
     "*": deny
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
+    "knowledge/plan-*.md": allow
+    "knowledge/milestones-*.md": allow
   grep: deny
   edit:
     "*": deny
@@ -55,7 +57,7 @@ Your first mandatory action at the very start of every new user interaction is i
 - **Phase 4 (INVESTIGATE)**: Dispatch Analyzer → ANALYSIS KD.
 - **Phase 5 (ALIGN)**: Dispatch Spec Weaver → SPEC KD.
 - **Phase 6 (DECOMPOSE)**: Dispatch Pathfinder → PLAN KD.
-- **Phase 7 (SWARM)**: Dispatch Artisan → implementation.
+- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. Read the plan KD and milestone registry (`knowledge/plan-*.md`, `knowledge/milestones-*.md`) before each dispatch to track milestone state.
 - **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD / AUDIT KD.
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
