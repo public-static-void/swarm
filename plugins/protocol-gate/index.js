@@ -77,7 +77,7 @@ const PHASE_INSTRUCTIONS = {
   INVESTIGATE: "Dispatch the Analyzer agent.",
   ALIGN: "Dispatch the Spec Weaver agent.",
   DECOMPOSE: "Dispatch the Pathfinder agent.",
-  SWARM: "Dispatch the Artisan agent.",
+  SWARM: "Dispatch the Artisan agent. Read the plan and milestone registry KDs to track milestone state before each dispatch.",
   VERIFY: "Dispatch the Inspector agent.",
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
@@ -93,7 +93,7 @@ const TOOL_ALLOWLIST = {
   INVESTIGATE: ["task", "todowrite", "glob"],
   ALIGN: ["task", "todowrite", "glob"],
   DECOMPOSE: ["task", "todowrite", "glob"],
-  SWARM: ["task", "todowrite", "glob"],
+  SWARM: ["task", "todowrite", "glob", "read"],
   VERIFY: ["task", "todowrite", "glob"],
   EXTRACT: ["task", "todowrite", "glob"],
   EVOLVE: ["task", "todowrite", "glob"],
@@ -106,6 +106,7 @@ const TOOL_ALLOWLIST = {
 // instead of treating the tool as fully available.
 const TOOL_RESTRICTIONS = {
   INTENT: { read: "ONLY templates and intent KDs", bash: "ONLY mkdir for knowledge directory creation" },
+  SWARM: { read: "ONLY plan and milestone registry KDs" },
   REPORT: { read: "ONLY templates and knowledge KDs" }
 };
 
@@ -345,7 +346,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     }
   }
 
-  // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
+  // DECOMPOSE has no single-prefix pattern — its dual-KD gate is handled below.
   // PREFLIGHT advances when a `preflight-` KD is written by the Committer.
   // The session-ID filter prevents stale KDs from prior sessions from triggering advancement.
   const patterns = {
@@ -354,7 +355,6 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     [STATES.EXPLORE]: /^exploration-/i,
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
-    [STATES.DECOMPOSE]: /^plan-/i,
     [STATES.SWARM]: /^impl-/i,
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
@@ -363,6 +363,19 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   };
 
   const pattern = patterns[phase];
+
+  // DECOMPOSE advancement requires BOTH the plan KD and the milestone registry
+  // (R003 dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM must
+  // not start until the registry (live state SSOT) is on disk. A plan- KD alone
+  // is the EC03 case — fail-closed, no advancement.
+  if (phase === STATES.DECOMPOSE) {
+    const hasPlan = sessionFiles.some(f => /^plan-/i.test(f));
+    const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f));
+    const result = hasPlan && hasMilestones;
+    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones} → ${result}`);
+    return result;
+  }
+
   if (!pattern) return false;
 
   if (phase === STATES.VERIFY) {
@@ -370,18 +383,6 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
     const result = hasReview || hasAudit;
     debug(`Disk check VERIFY: review=${hasReview}, audit=${hasAudit} → ${result}`);
-    return result;
-  }
-
-  // DECOMPOSE advancement requires BOTH the plan KD and the milestone registry
-  // (R003). The Pathfinder produces both at DECOMPOSE; SWARM must not start
-  // until the registry (live state SSOT) is on disk. A plan- KD alone is the
-  // EC03 case — fail-closed, no advancement.
-  if (phase === STATES.DECOMPOSE) {
-    const hasPlan = sessionFiles.some(f => /^plan-/i.test(f));
-    const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f));
-    const result = hasPlan && hasMilestones;
-    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones} → ${result}`);
     return result;
   }
 
@@ -1109,11 +1110,21 @@ export default {
       // --- read handler ---
       else if (tool === "read") {
         const path = args?.filePath || "";
-        if (phase === STATES.INTENT || phase === STATES.REPORT) {
-          const relPath = toProjectRelative(path);
-          const isTemplate = relPath.includes("templates");
-          const isSkillFile = relPath.endsWith("/SKILL.md") || relPath.includes("/skills/");
+        const relPath = toProjectRelative(path);
+        const isTemplate = relPath.includes("templates");
+        const isSkillFile = relPath.endsWith("/SKILL.md") || relPath.includes("/skills/");
 
+        if (phase === STATES.SWARM) {
+          // SWARM phase: dispatcher visibility — the Overseer reads the plan and
+          // the milestone registry to track milestone state and drive
+          // per-milestone artisan dispatches. All other reads stay blocked.
+          const isPlanKD = /^knowledge\/plan-/i.test(relPath) || /\/knowledge\/plan-/i.test(relPath);
+          const isMilestonesKD = /^knowledge\/milestones-/i.test(relPath) || /\/knowledge\/milestones-/i.test(relPath);
+          if (!isPlanKD && !isMilestonesKD) {
+            debug(`read: BLOCKED phase=${phaseName} path=${path} (SWARM reads restricted to plan and milestone registry KDs)`);
+            throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/plan-*.md or knowledge/milestones-*.md", "Read from knowledge/plan-*.md or knowledge/milestones-*.md only");
+          }
+        } else if (phase === STATES.INTENT || phase === STATES.REPORT) {
           if (phase === STATES.INTENT) {
             // INTENT phase: only allow templates, skill files, and the current session's intent KDs.
             // Restricting to intent KDs prevents the Overseer from reading prior-session
