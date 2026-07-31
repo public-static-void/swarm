@@ -127,7 +127,7 @@ function loadTemplates(config) {
       const templateData = JSON.parse(readFileSync(templatePath, "utf8"));
       if (!templateData.template || typeof templateData.template !== "string") {
         debug(`Template ${mode}: disk file missing 'template' field — using fallback`);
-        templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
+        templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
       } else {
         debug(`Template ${mode}: loaded from disk`);
         templates[mode] = templateData.template;
@@ -153,7 +153,7 @@ function extractFromText(text, fields, override = false) {
       if (override || !fields["agent"]) fields["agent"] = agentMatch[2].trim().replace(/\*\*/g, "").trim();
       continue;
     }
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       const key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       if (override || !fields[key]) fields[key] = match[2].trim().replace(/\*\*/g, "").trim();
@@ -247,7 +247,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim().replace(/\\/g, "/");
-    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
@@ -282,17 +282,21 @@ function renderTemplate(template, fields) {
   return result;
 }
 
-function injectToolDocs(output, agentName, mode) {
+function injectToolDocs(output, agentName, mode, generation) {
   const today = new Date().toISOString().slice(0, 10);
   const displayAgent = agentName || "explorer";
   const displayMode = mode || "explore";
+  // Generation suffix (P004/R002 Option A): when a lifecycle generation is
+  // known, KD names carry `-gen{N}` after the session ID so stale prior-lifecycle
+  // KDs never match. Generation 0 / unknown keeps the legacy bare suffix.
+  const genSuffix = generation !== undefined && generation !== "" ? `-gen${generation}` : "";
   // Concrete examples prevent LLMs from copying placeholder syntax literally.
   // <name> and <optional context> are genuine variables — angle brackets signal variability.
   // MODE_TO_KD_PREFIXES maps current mode to its KD type prefix(es) — only the relevant
   // entry is injected so the LLM sees only the naming convention for this dispatch.
   const modePrefixes = MODE_TO_KD_PREFIXES[displayMode] || ["<type>"];
   const resultKdExamples = modePrefixes
-    .map(p => `knowledge/${p}-<name>-<session_id>.md`)
+    .map(p => `knowledge/${p}-<name>-<session_id>${genSuffix}.md`)
     .join(", ");
   const formatHint = `
 Delegation Prompt Format:
@@ -301,6 +305,7 @@ MODE: ${displayMode}
 INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
 SESSION ID: <session-id>
+GENERATION: <generation>
 SCOPE: <optional context>
 RESULT KD: ${resultKdExamples} (when subagent produces a KD)
 
@@ -366,6 +371,22 @@ export default {
         fields["session_id"] = sessionID;
       }
 
+      // generation from protocol-gate state file — fills {generation} when the
+      // prompt omits GENERATION: (P004). Mirrors the SESSION ID fallback above;
+      // saveState always writes generation, so an active session has a value.
+      if (!fields["generation"] && sessionID) {
+        try {
+          const statePath = join(PLUGIN_DIR, "..", "protocol-gate", ".state", `.protocol-state-${sessionID}.json`);
+          const stateData = JSON.parse(readFileSync(statePath, "utf8"));
+          if (stateData.generation !== undefined) {
+            fields["generation"] = String(stateData.generation);
+            debug(`GENERATION fallback: read generation=${stateData.generation} from protocol-gate state`);
+          }
+        } catch (_) {
+          debug(`GENERATION fallback: no protocol-gate state file for ${sessionID}`);
+        }
+      }
+
       // scope is optional — provides domain context but doesn't block delegation
       // R009: intent_kd is not required for checkpoint mode — the checkpoint
       // template doesn't render intent_kd, so requiring it serves no purpose.
@@ -426,7 +447,7 @@ export default {
       debug(`ALLOW delegation: agent=${fields.agent} mode=${fields.mode} intent_kd=${fields.intent_kd} result_kd=${fields.result_kd}`);
 
       // Inject format hint after field extraction — mode is now available
-      injectToolDocs(output, fields.agent, fields.mode);
+      injectToolDocs(output, fields.agent, fields.mode, fields.generation);
 
       const template = templates[fields.mode?.toLowerCase()];
       if (!template) {
