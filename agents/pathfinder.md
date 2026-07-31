@@ -9,6 +9,7 @@ permission:
   edit:
     "*": deny
     "knowledge/plan-*.md": allow
+    "knowledge/milestones-*.md": allow
   glob: allow
   grep: allow
   task: deny
@@ -48,7 +49,7 @@ Read the specification, break it into the smallest independently verifiable step
 1. Load the kd-system skill before creating any KD
 2. Read the SPEC KD fully — every requirement, criterion, and edge case
 3. Break into atomic tasks with explicit dependencies — each task must produce a verifiable output
-4. Group into milestones with completion criteria
+4. Group into milestones with completion criteria — each milestone is an independently dispatchable unit: a single Artisan dispatch completes exactly one milestone. Produce the machine-readable Milestones section and the milestone registry KD.
 5. Identify risks, blockers, and ambiguous requirements — propose mitigations
 6. Create PLAN KD with dependency graph (Mermaid flowchart)
 7. Verify completeness: cross-check every acceptance criterion from SPEC against plan tasks
