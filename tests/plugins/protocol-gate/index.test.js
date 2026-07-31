@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 
@@ -13,6 +13,10 @@ describe("Protocol-Gate Plugin", () => {
       const files = readdirSync(stateDir);
       for (const f of files) {
         if (f.startsWith(".protocol-state-") && f.endsWith(".json")) {
+          try { rmSync(join(stateDir, f)); } catch (_) {}
+        }
+        // M3: remove /phase override signal files between tests
+        if (f.startsWith(".override-") && f.endsWith(".json")) {
           try { rmSync(join(stateDir, f)); } catch (_) {}
         }
       }
@@ -32,6 +36,7 @@ describe("Protocol-Gate Plugin", () => {
       expect(typeof result["chat.params"]).toBe("function");
       expect(typeof result["permission.ask"]).toBe("function");
       expect(typeof result["tool.execute.before"]).toBe("function");
+      expect(typeof result["command.execute.before"]).toBe("function");
       expect(typeof result["tool.definition"]).toBe("function");
       expect(typeof result["experimental.chat.system.transform"]).toBe("function");
     });
@@ -1137,7 +1142,7 @@ describe("Protocol-Gate Plugin", () => {
   });
 
   describe("REPORT Dead-End Fix → PROTOCOL_NOT_LOADED Transition", () => {
-    it("transitions REPORT → PROTOCOL_NOT_LOADED when report KD is written", async () => {
+    it("resets lifecycle when report KD is edited (phase entry deleted)", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
 
@@ -1146,7 +1151,8 @@ describe("Protocol-Gate Plugin", () => {
         { args: { filePath: "knowledge/report-lifecycle-test-1.md", content: "# Report" } }
       );
 
-      expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      // P009: the phase entry is deleted so the next chat.params re-runs loadState()
+      expect(hooks.sessionPhaseMap.get("test-1")).toBeUndefined();
     });
 
     it("stays in REPORT when non-report KD is written", async () => {
@@ -1186,17 +1192,22 @@ describe("Protocol-Gate Plugin", () => {
       ).rejects.toThrow("Missing lifecycle keywords");
     });
 
-    it("allows full lifecycle after REPORT → PROTOCOL_NOT_LOADED → INTENT", async () => {
+    it("allows full lifecycle after REPORT reset → new lifecycle via chat.params + todowrite", async () => {
       await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
 
       // Advance to REPORT
       hooks.sessionPhaseMap.set("test-1", hooks.STATES.REPORT);
 
-      // Write report KD → transitions to PROTOCOL_NOT_LOADED
+      // Write report KD → lifecycle end (phase entry deleted, generation incremented)
       await hooks["tool.execute.before"](
         { tool: "edit", sessionID: "test-1", callID: "c1" },
         { args: { filePath: "knowledge/report-lifecycle-test-1.md", content: "# Report" } }
       );
+      expect(hooks.sessionPhaseMap.get("test-1")).toBeUndefined();
+      expect(hooks.getCurrentGeneration("test-1")).toBe(1);
+
+      // opencode calls chat.params on the next message — loadState re-initializes
+      await hooks["chat.params"]({ sessionID: "test-1", agent: "overseer" }, {});
       expect(hooks.sessionPhaseMap.get("test-1")).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
 
       // Start new lifecycle from PROTOCOL_NOT_LOADED
@@ -2804,6 +2815,675 @@ describe("Protocol-Gate Plugin", () => {
       // Phase should stay SWARM — pendingVerification active
       expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
       cleanupSession(sid);
+    });
+  });
+
+  describe("M1: Generation Boundary (R001/R002, AC-R001–R003, EC-007)", () => {
+    const knowledgeDir = join(process.cwd(), "knowledge");
+    const stateDir = join(process.cwd(), "plugins", "protocol-gate", ".state");
+    const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
+
+    function createKD(filename) {
+      try { mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
+      writeFileSync(join(knowledgeDir, filename), "test content");
+    }
+
+    function removeKD(filename) {
+      try { rmSync(join(knowledgeDir, filename)); } catch (_) {}
+    }
+
+    function statePath(sid) {
+      return join(stateDir, `.protocol-state-${sid}.json`);
+    }
+
+    function cleanupSessionGen(sessionID) {
+      // Remove legacy AND generation-scoped KDs for this session
+      try {
+        const files = readdirSync(knowledgeDir);
+        for (const f of files) {
+          if (f.endsWith(`-${sessionID}.md`) || f.includes(`-${sessionID}-gen`)) {
+            removeKD(f);
+          }
+        }
+      } catch (_) {}
+      try { rmSync(statePath(sessionID)); } catch (_) {}
+    }
+
+    // AC-R001: generation counter increments monotonically across lifecycle resets
+    it("AC-R001: state file records generation=1 after first REPORT, =2 after second (monotonic)", async () => {
+      const sid = "gen-r001";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.REPORT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // First lifecycle end via the edit handler
+      await hooks["tool.execute.before"](
+        { tool: "edit", sessionID: sid, callID: "c1" },
+        { args: { filePath: `knowledge/report-first-${sid}.md` } }
+      );
+
+      expect(hooks.getCurrentGeneration(sid)).toBe(1);
+      // P009: the phase entry is deleted at lifecycle end (forces loadState on next message)
+      expect(hooks.sessionPhaseMap.get(sid)).toBeUndefined();
+      let state = JSON.parse(readFileSync(statePath(sid), "utf8"));
+      expect(state.generation).toBe(1);
+      expect(state.phase).toBe(0);
+
+      // Second lifecycle end via the write handler
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.REPORT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: sid, callID: "c2" },
+        { args: { filePath: `knowledge/report-second-${sid}.md`, content: "report" } }
+      );
+
+      expect(hooks.getCurrentGeneration(sid)).toBe(2);
+      expect(hooks.sessionPhaseMap.get(sid)).toBeUndefined();
+      state = JSON.parse(readFileSync(statePath(sid), "utf8"));
+      expect(state.generation).toBe(2);
+      expect(state.phase).toBe(0);
+      cleanupSessionGen(sid);
+    });
+
+    // AC-R002: stale prior-generation KDs cannot advance the new lifecycle
+    it("AC-R002a: checkDiskAdvancement returns false at gen 2 when only -gen1- KDs exist", async () => {
+      const sid = "gen-r002a";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.sessionPhaseMap.set(`${sid}:gen`, 2);
+
+      createKD(`intent-stale-${sid}-gen1.md`);
+      const advanced = hooks.checkDiskAdvancement(sid, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount);
+      expect(advanced).toBe(false);
+      cleanupSessionGen(sid);
+    });
+
+    it("AC-R002b: checkDiskAdvancement returns true at gen 2 when a -gen2- intent KD exists", async () => {
+      const sid = "gen-r002b";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.sessionPhaseMap.set(`${sid}:gen`, 2);
+
+      createKD(`intent-fresh-${sid}-gen2.md`);
+      const advanced = hooks.checkDiskAdvancement(sid, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount);
+      expect(advanced).toBe(true);
+      cleanupSessionGen(sid);
+    });
+
+    it("AC-R002c: through the tool path, gen-2 lifecycle stays at INTENT after todowrite; advances to PREFLIGHT only after a gen-2 intent KD", async () => {
+      const sid = "gen-r002c";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      // Second lifecycle: phase 0 (post-REPORT), generation 2, stale gen-1 KDs on disk
+      hooks.sessionPhaseMap.set(`${sid}:gen`, 2);
+      createKD(`intent-stale-${sid}-gen1.md`);
+
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c1" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+
+      // todowrite advanced to INTENT; disk check skipped in the same call — no premature PREFLIGHT
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${sid}:sid`)).toBe(sid);
+
+      // Valid gen-2 intent KD appears → disk check advances to PREFLIGHT
+      createKD(`intent-fresh-${sid}-gen2.md`);
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID: "c2" },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+      cleanupSessionGen(sid);
+    });
+
+    it("EC-007: gen-less KDs are not matched when current generation > 0", async () => {
+      const sid = "gen-ec007";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.sessionPhaseMap.set(`${sid}:gen`, 2);
+
+      createKD(`intent-genless-${sid}.md`); // legacy naming belongs to generation 0
+      const advanced = hooks.checkDiskAdvancement(sid, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount);
+      expect(advanced).toBe(false);
+      cleanupSessionGen(sid);
+    });
+
+    // AC-R003: legacy state files (no generation field) fall back to generation 0
+    it("AC-R003: legacy state file without generation → generation 0 and session-ID-only matching works", async () => {
+      const sid = "gen-r003";
+      writeFileSync(statePath(sid), JSON.stringify({ phase: hooks.STATES.INTENT, timestamp: Date.now() }));
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INTENT);
+      expect(hooks.getCurrentGeneration(sid)).toBe(0);
+
+      createKD(`intent-legacy-${sid}.md`);
+      const advanced = hooks.checkDiskAdvancement(sid, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount);
+      expect(advanced).toBe(true);
+      cleanupSessionGen(sid);
+    });
+
+    // R4: phase-0 state files carrying generation survive restart cleanup
+    it("R4: orphan cleanup preserves phase-0 files with generation; deletes gen-less phase-0 files", async () => {
+      const sid1 = "gen-r004a";
+      const sid2 = "gen-r004b";
+      writeFileSync(statePath(sid1), JSON.stringify({ phase: 0, generation: 2, timestamp: Date.now() }));
+      writeFileSync(statePath(sid2), JSON.stringify({ phase: 0, timestamp: Date.now() }));
+      hooks = await pluginModule.server({}, {});
+      expect(existsSync(statePath(sid1))).toBe(true);
+      expect(existsSync(statePath(sid2))).toBe(false);
+      // Generation restored from the surviving phase-0 file
+      await hooks["chat.params"]({ sessionID: sid1, agent: "overseer" }, {});
+      expect(hooks.getCurrentGeneration(sid1)).toBe(2);
+      cleanupSessionGen(sid1);
+    });
+
+    it("P001: loadState restores generation from a phase-0 file (post-REPORT restart)", async () => {
+      const sid = "gen-r005";
+      writeFileSync(statePath(sid), JSON.stringify({ phase: 0, generation: 3, timestamp: Date.now() }));
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      expect(hooks.getCurrentGeneration(sid)).toBe(3);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      cleanupSessionGen(sid);
+    });
+
+    it("P004: systemTransform injects the -genN- naming instruction during INTENT", async () => {
+      const sid = "gen-r006";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.sessionPhaseMap.set(`${sid}:gen`, 2);
+      const output = { system: ["base"] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: sid }, output);
+      expect(output.system[1]).toContain(`knowledge/intent-{name}-${sid}-gen2.md`);
+      cleanupSessionGen(sid);
+    });
+  });
+
+  describe("M2: Lifecycle-End Reset Hardening (P007–P009, AC-R004–R005)", () => {
+    const knowledgeDir = join(process.cwd(), "knowledge");
+    const stateDir = join(process.cwd(), "plugins", "protocol-gate", ".state");
+
+    function createKD(filename) {
+      try { mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
+      writeFileSync(join(knowledgeDir, filename), "test content");
+    }
+
+    function removeKD(filename) {
+      try { rmSync(join(knowledgeDir, filename)); } catch (_) {}
+    }
+
+    function statePath(sid) {
+      return join(stateDir, `.protocol-state-${sid}.json`);
+    }
+
+    function cleanupSessionGen(sessionID) {
+      try {
+        const files = readdirSync(knowledgeDir);
+        for (const f of files) {
+          if (f.endsWith(`-${sessionID}.md`) || f.includes(`-${sessionID}-gen`)) {
+            removeKD(f);
+          }
+        }
+      } catch (_) {}
+      try { rmSync(statePath(sessionID)); } catch (_) {}
+    }
+
+    // AC-R004: REPORT write triggers cleanup of all session KDs (both naming
+    // variants); other sessions' KDs are retained; the count is returned.
+    it("AC-R004: REPORT write deletes session KDs (legacy + gen variants) and retains other sessions' KDs", async () => {
+      const sid = "reset-r004";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.REPORT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      hooks.sessionPhaseMap.set(`${sid}:gen`, 2);
+
+      createKD(`intent-old-${sid}.md`);            // legacy variant
+      createKD(`intent-stale-${sid}-gen1.md`);     // prior generation
+      createKD(`intent-fresh-${sid}-gen2.md`);     // current generation
+      createKD(`report-final-${sid}.md`);          // the report KD being written
+      createKD("intent-other-other-session.md");   // different session — must survive
+
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: sid, callID: "c1" },
+        { args: { filePath: `knowledge/report-final-${sid}.md`, content: "report" } }
+      );
+
+      expect(existsSync(join(knowledgeDir, `intent-old-${sid}.md`))).toBe(false);
+      expect(existsSync(join(knowledgeDir, `intent-stale-${sid}-gen1.md`))).toBe(false);
+      expect(existsSync(join(knowledgeDir, `intent-fresh-${sid}-gen2.md`))).toBe(false);
+      // R6: cleanup removes the current lifecycle's KDs too (including the report KD)
+      expect(existsSync(join(knowledgeDir, `report-final-${sid}.md`))).toBe(false);
+      expect(existsSync(join(knowledgeDir, "intent-other-other-session.md"))).toBe(true);
+
+      // Deletion count via the exposed function on a fresh fixture
+      createKD(`intent-old2-${sid}.md`);
+      expect(hooks.cleanupLifecycleKDs(sid)).toBe(1);
+      expect(existsSync(join(knowledgeDir, `intent-old2-${sid}.md`))).toBe(false);
+
+      removeKD("intent-other-other-session.md");
+      cleanupSessionGen(sid);
+    });
+
+    // AC-R005: after REPORT the phase entry is deleted, so a manual state-file
+    // edit is honored by loadState() on the next message (no restart needed).
+    it("AC-R005: after REPORT the phase entry is deleted; manual state edit is loaded on next message", async () => {
+      const sid = "reset-r005";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.REPORT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      await hooks["tool.execute.before"](
+        { tool: "edit", sessionID: sid, callID: "c1" },
+        { args: { filePath: `knowledge/report-recovery-${sid}.md` } }
+      );
+
+      expect(hooks.sessionPhaseMap.has(sid)).toBe(false);
+      expect(hooks.getCurrentGeneration(sid)).toBe(1);
+
+      // Manual recovery: user edits the state file to force a phase
+      writeFileSync(statePath(sid), JSON.stringify({ phase: hooks.STATES.INTENT, generation: 1, sid, timestamp: Date.now() }));
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${sid}:sid`)).toBe(sid);
+      cleanupSessionGen(sid);
+    });
+  });
+
+  describe("M3: Phase Override /phase (P011–P012, AC-R006, EC-006)", () => {
+    const knowledgeDir = join(process.cwd(), "knowledge");
+    const stateDir = join(process.cwd(), "plugins", "protocol-gate", ".state");
+
+    function createKD(filename) {
+      try { mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
+      writeFileSync(join(knowledgeDir, filename), "test content");
+    }
+
+    function removeKD(filename) {
+      try { rmSync(join(knowledgeDir, filename)); } catch (_) {}
+    }
+
+    function statePath(sid) {
+      return join(stateDir, `.protocol-state-${sid}.json`);
+    }
+
+    function overridePath(sid) {
+      return join(stateDir, `.override-${sid}.json`);
+    }
+
+    function cleanupSessionGen(sessionID) {
+      try {
+        const files = readdirSync(knowledgeDir);
+        for (const f of files) {
+          if (f.endsWith(`-${sessionID}.md`) || f.includes(`-${sessionID}-gen`)) {
+            removeKD(f);
+          }
+        }
+      } catch (_) {}
+      try { rmSync(statePath(sessionID)); } catch (_) {}
+      try { rmSync(overridePath(sessionID)); } catch (_) {}
+    }
+
+    it("AC-R006a: /phase INTENT sets INTENT (1) in memory and persists to disk", async () => {
+      const sid = "phase-r006a";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: sid, arguments: "INTENT" }, output);
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INTENT);
+      expect(output.parts[0].text).toContain("Phase set to INTENT (1) for session");
+      const state = JSON.parse(readFileSync(statePath(sid), "utf8"));
+      expect(state.phase).toBe(hooks.STATES.INTENT);
+      expect(state.sid).toBe(sid);
+      cleanupSessionGen(sid);
+    });
+
+    it("AC-R006b: /phase 5 sets ALIGN (5) in memory", async () => {
+      const sid = "phase-r006b";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "/phase", sessionID: sid, arguments: "5" }, output);
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.ALIGN);
+      expect(output.parts[0].text).toContain("Phase set to ALIGN (5) for session");
+      cleanupSessionGen(sid);
+    });
+
+    it("AC-R006c: /phase PREFLIGHT sets PREFLIGHT (2) in memory and disk", async () => {
+      const sid = "phase-r006c";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: sid, arguments: "  preflight  " }, output);
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+      const state = JSON.parse(readFileSync(statePath(sid), "utf8"));
+      expect(state.phase).toBe(hooks.STATES.PREFLIGHT);
+      expect(state.sid).toBe(sid);
+      cleanupSessionGen(sid);
+    });
+
+    it("AC-R006d: /phase 99 is rejected with an error and changes nothing", async () => {
+      const sid = "phase-r006d";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: sid, arguments: "99" }, output);
+
+      expect(output.parts[0].text).toContain("invalid phase");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      const state = JSON.parse(readFileSync(statePath(sid), "utf8"));
+      expect(state.phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      cleanupSessionGen(sid);
+    });
+
+    it("AC-R006e: /phase INVALID is rejected with an error", async () => {
+      const sid = "phase-r006e";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: sid, arguments: "INVALID" }, output);
+
+      expect(output.parts[0].text).toContain("invalid phase");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      cleanupSessionGen(sid);
+    });
+
+    it("AC-R006f: /phase with no argument is rejected", async () => {
+      const sid = "phase-r006f";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: sid, arguments: "" }, output);
+
+      expect(output.parts[0].text).toContain("requires an argument");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      cleanupSessionGen(sid);
+    });
+
+    it("EC-006: /phase works during an active phase advancement (mid-lifecycle override)", async () => {
+      const sid = "phase-ec006";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: sid, arguments: "INTENT" }, output);
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${sid}:sid`)).toBe(sid);
+      cleanupSessionGen(sid);
+    });
+
+    it("override file is consumed by chat.params (command-template fallback path)", async () => {
+      const sid = "phase-file1";
+      writeFileSync(overridePath(sid), JSON.stringify({ phase: hooks.STATES.EXPLORE, sessionID: sid, createdAt: new Date().toISOString() }));
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+      expect(existsSync(overridePath(sid))).toBe(false);
+      // consumed once — a second chat.params leaves the phase untouched
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+      cleanupSessionGen(sid);
+    });
+
+    it("override file captures the session ID (disk advancement works after override)", async () => {
+      const sid = "phase-file2";
+      writeFileSync(overridePath(sid), JSON.stringify({ phase: hooks.STATES.INTENT, sessionID: sid, createdAt: new Date().toISOString() }));
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+
+      expect(hooks.sessionPhaseMap.get(`${sid}:sid`)).toBe(sid);
+      createKD(`intent-file-${sid}.md`);
+      const advanced = hooks.checkDiskAdvancement(sid, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount);
+      expect(advanced).toBe(true);
+      cleanupSessionGen(sid);
+    });
+
+    it("expired override files (TTL) are dropped without applying", async () => {
+      const sid = "phase-ttl";
+      const old = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+      writeFileSync(overridePath(sid), JSON.stringify({ phase: hooks.STATES.REPORT, sessionID: sid, createdAt: old }));
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(existsSync(overridePath(sid))).toBe(false);
+      cleanupSessionGen(sid);
+    });
+
+    it("forward jumps larger than +3 phases are rejected from the override file", async () => {
+      const sid = "phase-jump";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // ALIGN (5) is +4 from INTENT (1) → rejected
+      writeFileSync(overridePath(sid), JSON.stringify({ phase: hooks.STATES.ALIGN, sessionID: sid, createdAt: new Date().toISOString() }));
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INTENT);
+      expect(existsSync(overridePath(sid))).toBe(false);
+
+      // INVESTIGATE (4) is +3 from INTENT (1) → allowed
+      writeFileSync(overridePath(sid), JSON.stringify({ phase: hooks.STATES.INVESTIGATE, sessionID: sid, createdAt: new Date().toISOString() }));
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
+      cleanupSessionGen(sid);
+    });
+
+    it("malformed override files are removed without applying", async () => {
+      const sid = "phase-bad";
+      writeFileSync(overridePath(sid), "{not json");
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(existsSync(overridePath(sid))).toBe(false);
+      cleanupSessionGen(sid);
+    });
+  });
+
+  describe("M4: Full Workflow Integration (AC-R007–R010)", () => {
+    const knowledgeDir = join(process.cwd(), "knowledge");
+    const stateDir = join(process.cwd(), "plugins", "protocol-gate", ".state");
+    const logPath = join(process.cwd(), "plugins", "logs", "protocol-gate.log");
+    const keywords = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
+
+    function createKD(filename) {
+      try { mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
+      writeFileSync(join(knowledgeDir, filename), "test content");
+    }
+
+    function removeKD(filename) {
+      try { rmSync(join(knowledgeDir, filename)); } catch (_) {}
+    }
+
+    function statePath(sid) {
+      return join(stateDir, `.protocol-state-${sid}.json`);
+    }
+
+    function cleanupSessionGen(sessionID) {
+      try {
+        const files = readdirSync(knowledgeDir);
+        for (const f of files) {
+          if (f.endsWith(`-${sessionID}.md`) || f.includes(`-${sessionID}-gen`)) {
+            removeKD(f);
+          }
+        }
+      } catch (_) {}
+      try { rmSync(statePath(sessionID)); } catch (_) {}
+    }
+
+    async function todo(sid, callID) {
+      await hooks["tool.execute.before"](
+        { tool: "todowrite", sessionID: sid, callID },
+        { args: { todos: keywords.map(k => ({ content: k })) } }
+      );
+    }
+
+    // Drives a full 12-phase lifecycle in one session via todowrite disk checks.
+    // KDs are created with the -gen{gen} suffix (legacy naming when gen === 0).
+    // When fromIntent is true the session is already at INTENT (e.g. after a
+    // /phase recovery) and the opening todowrite is skipped.
+    async function runLifecycle(sid, gen, fromIntent = false) {
+      const suffix = gen === 0 ? `-${sid}.md` : `-${sid}-gen${gen}.md`;
+      if (!fromIntent) {
+        await todo(sid, "c1");
+        expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INTENT);
+      }
+      createKD(`intent-a${suffix}`);
+      await todo(sid, "c2");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+      createKD(`preflight-a${suffix}`);
+      await todo(sid, "c3"); // PREFLIGHT skip consumed
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+      await todo(sid, "c4");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXPLORE);
+      createKD(`exploration-a${suffix}`);
+      await todo(sid, "c5");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INVESTIGATE);
+      createKD(`analysis-a${suffix}`);
+      await todo(sid, "c6");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.ALIGN);
+      createKD(`spec-a${suffix}`);
+      await todo(sid, "c7");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.DECOMPOSE);
+      createKD(`plan-a${suffix}`);
+      await todo(sid, "c8");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.SWARM);
+      hooks.swarmDispatchCount.set(sid, 1);
+      createKD(`impl-a${suffix}`);
+      await todo(sid, "c9");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.VERIFY);
+      createKD(`review-a${suffix}`);
+      await todo(sid, "c10");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EXTRACT);
+      createKD(`composed-a${suffix}`);
+      await todo(sid, "c11");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.EVOLVE);
+      createKD(`process-a${suffix}`);
+      await todo(sid, "c12");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.CLEANUP);
+      createKD(`cleanup-a${suffix}`);
+      await todo(sid, "c13");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.REPORT);
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: sid, callID: "c14" },
+        { args: { filePath: `knowledge/report-a${suffix}`, content: "report" } }
+      );
+      expect(hooks.sessionPhaseMap.has(sid)).toBe(false);
+    }
+
+    it("AC-R007: debug logs capture generation increment, stale-KD cleanup, and generation-scoped disk checks", async () => {
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        const sid = "dbg-r007";
+        await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+        hooks.sessionPhaseMap.set(sid, hooks.STATES.REPORT);
+        hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+        createKD(`intent-stale-${sid}.md`);
+        await hooks["tool.execute.before"](
+          { tool: "edit", sessionID: sid, callID: "c1" },
+          { args: { filePath: `knowledge/report-debug-${sid}.md` } }
+        );
+        expect(hooks.getCurrentGeneration(sid)).toBe(1);
+
+        // /phase override log
+        const output = { parts: [] };
+        await hooks["command.execute.before"]({ command: "phase", sessionID: sid, arguments: "INTENT" }, output);
+
+        // generation-scoped match/skip entries
+        hooks.sessionPhaseMap.set(sid, hooks.STATES.INTENT);
+        hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+        hooks.sessionPhaseMap.set(`${sid}:gen`, 2);
+        createKD(`intent-stale2-${sid}-gen1.md`);
+        createKD(`intent-match-${sid}-gen2.md`);
+        hooks.checkDiskAdvancement(sid, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount);
+
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("Generation 0 → 1");
+        expect(log).toContain("Cleanup of 1 stale KDs");
+        expect(log).toContain("Phase override: INTENT (1)");
+        expect(log).toContain("generation mismatch (file=1, current=2)");
+        expect(log).toContain("Disk check INTENT:");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+        cleanupSessionGen("dbg-r007");
+      }
+    });
+
+    it("AC-R008: second lifecycle stays at INTENT — stale KDs never advance it prematurely", async () => {
+      const sid = "wf-r008";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      await runLifecycle(sid, 0);
+      expect(hooks.getCurrentGeneration(sid)).toBe(1);
+
+      // Stale prior-lifecycle KDs appear on disk (e.g. written after cleanup,
+      // or a race between REPORT cleanup and the next lifecycle start).
+      createKD(`intent-stale-legacy-${sid}.md`);
+      createKD(`intent-stale-gen0-${sid}-gen0.md`);
+      createKD(`preflight-stale-${sid}-gen0.md`);
+
+      // Second lifecycle starts
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      await todo(sid, "s1");
+      // todowrite advanced PROTOCOL_NOT_LOADED → INTENT; stale KDs must NOT
+      // auto-advance to PREFLIGHT (BUG-008)
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INTENT);
+
+      // Direct disk check with only stale KDs present → no advancement (EC-007 scoping)
+      const advanced = hooks.checkDiskAdvancement(sid, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount);
+      expect(advanced).toBe(false);
+
+      // A valid gen-1 intent KD advances the second lifecycle normally
+      createKD(`intent-second-${sid}-gen1.md`);
+      await todo(sid, "s2");
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.PREFLIGHT);
+      cleanupSessionGen(sid);
+    });
+
+    it("AC-R009: three lifecycle restarts — generation matches the cycle number and no stale KDs remain", async () => {
+      const sid = "gen-r009";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      for (let cycle = 1; cycle <= 3; cycle++) {
+        await runLifecycle(sid, cycle - 1);
+        expect(hooks.getCurrentGeneration(sid)).toBe(cycle);
+        // After each REPORT, cleanup removed every KD belonging to this session
+        const leftover = readdirSync(knowledgeDir).filter(f => f.includes(`-${sid}`));
+        expect(leftover).toHaveLength(0);
+        // Re-init the next lifecycle (REPORT deleted the phase entry)
+        await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+        expect(hooks.getCurrentGeneration(sid)).toBe(cycle);
+      }
+      cleanupSessionGen(sid);
+    });
+
+    it("AC-R010: recovery from a stuck PREFLIGHT via /phase INTENT — INTENT tools work, lifecycle completes", async () => {
+      const sid = "rec-r010";
+      await hooks["chat.params"]({ sessionID: sid, agent: "overseer" }, {});
+      // Simulate a stuck state: PREFLIGHT with no valid KDs on disk
+      hooks.sessionPhaseMap.set(sid, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${sid}:sid`, sid);
+
+      // Recover with /phase INTENT
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: sid, arguments: "INTENT" }, output);
+      expect(hooks.sessionPhaseMap.get(sid)).toBe(hooks.STATES.INTENT);
+      expect(output.parts[0].text).toContain("Phase set to INTENT (1) for session");
+
+      // INTENT-phase tools work after recovery: write passes the allowlist and
+      // the fabricated-section validator
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "write", sessionID: sid, callID: "r1" },
+          { args: { filePath: `knowledge/intent-rec-${sid}.md`, content: "## Raw Request\nfix phase\n## Triage Notes\nnone\n## Next Steps\nimplement\n## Process Friction\nnone" } }
+        )
+      ).resolves.toBeUndefined();
+      createKD(`intent-rec-${sid}.md`);
+
+      // Complete the workflow to REPORT from INTENT (fromIntent path)
+      await runLifecycle(sid, 0, true);
+      expect(hooks.getCurrentGeneration(sid)).toBe(1);
+      cleanupSessionGen(sid);
     });
   });
 });
