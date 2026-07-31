@@ -107,6 +107,7 @@ describe("Protocol-Gate Plugin", () => {
     await todo(s, "c7");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
     createKD(`plan-a${suffix}`);
+    createKD(`milestones-a${suffix}`);
     await todo(s, "c8");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
     hooks.swarmDispatchCount.set(s, 1);
@@ -572,6 +573,43 @@ describe("Protocol-Gate Plugin", () => {
       );
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
     }
+  });
+
+  it("R003: DECOMPOSE advances only when BOTH plan- and milestones- KDs exist (dual-KD gate)", async () => {
+    const s = sid("decomp-dual");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+    // plan- alone: no advancement (EC03 — registry missing at DECOMPOSE)
+    createKD(`plan-only-${s}.md`);
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+    // milestones- alone: no advancement (plan is the primary DECOMPOSE artifact)
+    removeKD(`plan-only-${s}.md`);
+    createKD(`milestones-only-${s}.md`);
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+    // both plan- + milestones-: advancement
+    createKD(`plan-both-${s}.md`);
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+  });
+
+  it("R003: stale-generation milestones registry does not advance DECOMPOSE (generation scoping)", async () => {
+    const s = sid("decomp-gen");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    hooks.sessionPhaseMap.set(`${s}:gen`, 2);
+
+    // Current-gen plan but stale gen-1 registry → blocked (only the plan matches)
+    createKD(`plan-cur-${s}-gen2.md`);
+    createKD(`milestones-stale-${s}-gen1.md`);
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+    // Current-gen registry completes the pair → advancement
+    createKD(`milestones-cur-${s}-gen2.md`);
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
   it("enforces checkpoint-KD ownership: artisan blocked, committer allowed (R100)", async () => {
