@@ -69,10 +69,12 @@ by agent for rev.  review      by new KD
 ## Naming Convention
 
 ```
-{type}-{descriptive-name}-{session_id}.md
+{type}-{descriptive-name}-{session_id}-gen{generation}.md
 ```
 
-Example: `spec-auth-flow-ses_0711b9644ffe.md`
+Example: `spec-auth-flow-ses_0711b9644ffe-gen1.md`
+
+The `-gen{N}` suffix is the lifecycle generation from protocol-gate state. Each lifecycle's KDs are scoped to its generation — the protocol-gate only matches KDs whose generation equals the current lifecycle generation, so stale KDs from prior lifecycles never advance or regress a new one. Legacy KDs without `-genN-` are treated as generation 0.
 
 ## Storage
 
@@ -101,8 +103,9 @@ Before creating any KD, verify each of these:
 
 ### Step 3: Naming
 
-- [ ] File name: `{prefix}-{descriptive-name}-{session_id}.md`
+- [ ] File name: `{prefix}-{descriptive-name}-{session_id}-gen{generation}.md`
 - [ ] Prefix matches the KD type from the table above
+- [ ] Generation matches the lifecycle generation provided by the dispatcher
 
 ### Step 4: Storage
 
@@ -136,6 +139,6 @@ When creating a KD:
 2. Load the corresponding template skill using the `skill` tool: `skill("template-{type}")`
 3. Run the Pre-Creation Compliance Checklist above
 4. Copy the template structure and fill in the placeholders
-5. Save to `knowledge/{prefix}-{name}-{session_id}.md`
+5. Save to `knowledge/{prefix}-{name}-{session_id}-gen{generation}.md`
 6. Run Post-Creation Verification
 7. Set `status: draft` initially, advance through states as it moves through gates
