@@ -1,6 +1,6 @@
 ---
 name: kd-system
-description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, review, audit, analysis, report, process, implementation summary, checkpoint, or cleanup documents."
+description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, milestone registry, review, audit, analysis, report, process, implementation summary, checkpoint, or cleanup documents."
 ---
 
 # KD System — Agentic Swarm
@@ -17,6 +17,7 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 | PREFLIGHT              | `preflight-`   | Committer     | Scribe, Habit Builder                                     | `template-preflight`              |
 | SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector, Scribe, Habit Builder     | `template-spec`                   |
 | PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector, Scribe, Habit Builder                 | `template-plan`                   |
+| MILESTONE REGISTRY     | `milestones-`  | Pathfinder    | Overseer, Artisan, Inspector                              | `template-milestones`             |
 | IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe, Habit Builder                          | `template-impl` |
 | REVIEW                 | `review-`      | Inspector     | Artisan, Scribe, Habit Builder                            | `template-review`                 |
 | AUDIT                  | `audit-`       | Inspector     | Artisan, Scribe, Habit Builder                            | `template-audit`                  |
