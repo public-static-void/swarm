@@ -47,7 +47,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 
 1. **Collect** — Read all KDs from the lifecycle, extract every `## Process Friction` section
 2. **Analyze** — Classify each friction entry by severity (low/medium/high) using the rubric
-3. **Document** — Create PROCESS KD at `knowledge/process-friction-{session}-{session_id}.md` with each entry's classification and recommended fix action
+3. **Document** — Create PROCESS KD at `knowledge/process-friction-{session}-{session_id}-gen{generation}.md` with each entry's classification and recommended fix action
 4. **Report** — Return classified findings to Overseer with fix recommendations. Flag high-severity entries for resolution outside the session
 5. **Track Issues** — Create issue files in `knowledge/issues/` when process friction warrants tracking. Use the issue schema defined in the knowledge-gate plugin (id, title, severity, status, created, session, assigned_to, tags). Use `getNextIssueId()` to determine the next sequential ID. Validate entries before writing.
 

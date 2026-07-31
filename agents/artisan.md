@@ -100,8 +100,8 @@ Read the specification and plan, implement each step, write tests, produce an im
    ```
    task({
      mode: "checkpoint",
-      intent_kd: "knowledge/intent-foo-{session_id}.md",
-      result_kd: "knowledge/checkpoint-{session_id}-step1.md",
+      intent_kd: "knowledge/intent-foo-{session_id}-gen{generation}.md",
+      result_kd: "knowledge/checkpoint-{session_id}-gen{generation}-step1.md",
       session_date: "2026-07-07",
      scope: "Implement feature X",
      description: "placeholder",
@@ -116,7 +116,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 
    After dispatching the Committer for checkpoint commits, verify the checkpoint was persisted before proceeding:
 
-   1. **Define expected path** — Before dispatch, set `result_kd` in the structured fields (e.g., `knowledge/checkpoint-{session_id}-<step>.md`).
+   1. **Define expected path** — Before dispatch, set `result_kd` in the structured fields (e.g., `knowledge/checkpoint-{session_id}-gen{generation}-<step>.md`).
    2. **Wait for completion** — The Committer dispatch is synchronous. When it returns, proceed to verification.
    3. **Verify CHECKPOINT KD** — Use `glob` to check that the file at the `result_kd` path exists. Use `read` to confirm it is a valid KD (non-empty, contains expected fields).
    4. **If CHECKPOINT KD exists and valid**: Continue to the next plan step.
