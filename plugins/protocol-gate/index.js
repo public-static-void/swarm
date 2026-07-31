@@ -35,18 +35,20 @@ const STATES = {
 const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
 
 // KD type prefixes — maps phase constants to the prefix used in KD filenames.
-// Must match the regex patterns in checkDiskAdvancement() (lines 220-232).
+// Must match the regex patterns in checkDiskAdvancement() (lines 349-361) and
+// the dual-KD special cases (VERIFY, DECOMPOSE).
 // Used by in-flight dispatch tracking so the R001 guard can correctly match
 // pending KDs against the disk pattern. (BUG-001/BUG-002 fix)
-// VERIFY phase produces TWO KDs (review + audit); stored as array. All other
-// phases use a single string for backward compatibility.
+// VERIFY produces TWO KDs (review + audit); DECOMPOSE produces the plan KD plus
+// the milestone registry (milestones-). Multi-KD phases are stored as arrays;
+// all other phases use a single string for backward compatibility.
 const KD_TYPE_PREFIXES = {
   [STATES.INTENT]: "intent",
   [STATES.PREFLIGHT]: "preflight",
   [STATES.EXPLORE]: "exploration",
   [STATES.INVESTIGATE]: "analysis",
   [STATES.ALIGN]: "spec",
-  [STATES.DECOMPOSE]: "plan",
+  [STATES.DECOMPOSE]: ["plan", "milestones"],
   [STATES.SWARM]: "impl",
   [STATES.VERIFY]: ["review", "audit"],
   [STATES.EXTRACT]: "composed",
@@ -368,6 +370,18 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
     const result = hasReview || hasAudit;
     debug(`Disk check VERIFY: review=${hasReview}, audit=${hasAudit} → ${result}`);
+    return result;
+  }
+
+  // DECOMPOSE advancement requires BOTH the plan KD and the milestone registry
+  // (R003). The Pathfinder produces both at DECOMPOSE; SWARM must not start
+  // until the registry (live state SSOT) is on disk. A plan- KD alone is the
+  // EC03 case — fail-closed, no advancement.
+  if (phase === STATES.DECOMPOSE) {
+    const hasPlan = sessionFiles.some(f => /^plan-/i.test(f));
+    const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f));
+    const result = hasPlan && hasMilestones;
+    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones} → ${result}`);
     return result;
   }
 
