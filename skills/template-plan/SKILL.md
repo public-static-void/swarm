@@ -28,6 +28,22 @@ flowchart LR
     P003 --> P004
 ```
 
+## Milestones
+
+Every milestone is an independently dispatchable unit: one Artisan dispatch completes exactly one milestone. Milestone IDs must be unique within the plan and match `/^[A-Za-z0-9][A-Za-z0-9_-]*$/` (filesystem-safe — IDs appear in registry filenames and dispatch prompts). Every plan step `P###` must belong to exactly one milestone. State is tracked in the milestone registry KD `knowledge/milestones-{{feature}}-{{session_id}}-gen{{generation}}.md` written by Pathfinder at DECOMPOSE.
+
+### M1: {{milestone description}}
+
+- **Plan Steps**: {{P001, P002}}
+- **Completion Criteria**: {{what must be true when this milestone is done}}
+- **Dispatch Unit**: one Artisan dispatch completes this milestone independently
+
+### M2: {{milestone description}}
+
+- **Plan Steps**: {{P003}}
+- **Completion Criteria**: {{condition}}
+- **Dispatch Unit**: one Artisan dispatch completes this milestone independently
+
 ## Steps
 
 ### P001: {{step description}}
