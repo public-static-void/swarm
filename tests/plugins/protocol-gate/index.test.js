@@ -1581,4 +1581,85 @@ ${table}
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
     });
   });
+
+  describe("M4: registry write ordering fix (R017, AC017, issue-7)", () => {
+    it("AC017: a multi-milestone dispatch (repeated MILESTONE ID lines) is rejected before any registry write — registry byte-identical", async () => {
+      const s = sid("m4-card-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
+      const before = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID: "c1" },
+          { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMILESTONE ID: M2\nMODE: swarm" } }
+        )
+      ).rejects.toThrow(/MULTI_MILESTONE|Multiple milestones/);
+
+      const after = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(after).toBe(before);
+      expect(after).toContain("  M1: pending");
+      expect(after).toContain("  M2: pending");
+    });
+
+    it("AC017: a comma-separated MILESTONE ID list is rejected before any registry write — no phantom row", async () => {
+      const s = sid("m4-card-2");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
+      const before = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID: "c1" },
+          { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1, M2\nMODE: swarm" } }
+        )
+      ).rejects.toThrow(/MULTI_MILESTONE|Multiple milestones/);
+
+      const after = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(after).toBe(before);
+      expect(after).toContain("  M1: pending");
+      expect(after).toContain("  M2: pending");
+    });
+
+    it("AC017: a single-milestone dispatch still advances its row exactly once (no phantom advancement)", async () => {
+      const s = sid("m4-card-3");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "c1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+      );
+      let content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: in-progress");
+      expect(content).toContain("  M2: pending");
+
+      // Idempotent second dispatch of the same milestone — still exactly one row advanced
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "c2" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+      );
+      content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: in-progress");
+      expect(content).toContain("  M2: pending");
+    });
+
+    it("collectMilestoneIds collects every MILESTONE ID field variant, mirroring delegation-gate semantics", async () => {
+      expect(hooks.collectMilestoneIds("MILESTONE ID: M3\nMILESTONE ID: M4")).toEqual(["M3", "M4"]);
+      expect(hooks.collectMilestoneIds("MILESTONE_ID: M3\nMODE: swarm")).toEqual(["M3"]);
+      expect(hooks.collectMilestoneIds("MILESTONE.ID: M3\nMODE: swarm")).toEqual(["M3"]);
+      expect(hooks.collectMilestoneIds("**MILESTONE ID:** **M3**")).toEqual(["M3"]);
+      expect(hooks.collectMilestoneIds("AGENT: artisan\nMODE: swarm")).toEqual([]);
+      expect(hooks.collectMilestoneIds(null)).toEqual([]);
+      // A comma inside one field is a single collected entry — the call site
+      // rejects it as MULTI_MILESTONE (mirrors delegation-gate's /,/.test).
+      expect(hooks.collectMilestoneIds("MILESTONE ID: M1, M2")).toEqual(["M1, M2"]);
+    });
+  });
 });
