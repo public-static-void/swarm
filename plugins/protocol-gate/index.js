@@ -9,8 +9,8 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
+import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { basename, dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -214,6 +214,36 @@ function parsePhaseArg(arg) {
     return null;
   }
   return Object.prototype.hasOwnProperty.call(STATES, trimmed) ? STATES[trimmed] : null;
+}
+
+// NFR004: session IDs reach file paths and can be attacker-influenced. Reject
+// path separators, NUL, and the traversal entries so a crafted ID can never
+// escape the plugin's .state directory. opencode session IDs (ses_...) pass.
+function sanitizeSessionID(sessionID) {
+  if (typeof sessionID !== "string" || sessionID.length === 0) return null;
+  if (sessionID === "." || sessionID === "..") return null;
+  if (/[\\/\0]/.test(sessionID)) return null;
+  return sessionID;
+}
+
+// NFR001: atomic durable write — tmp file + fsync + rename. The rename is
+// atomic on the same filesystem, so a crash mid-write can never leave a torn
+// file at the target path. Throws on failure; callers surface the error.
+function atomicWriteFileSync(targetPath, data) {
+  const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    const fd = openSync(tmpPath, "w");
+    try {
+      writeSync(fd, data);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmpPath, targetPath);
+  } catch (e) {
+    try { rmSync(tmpPath, { force: true }); } catch (_) {}
+    throw e;
+  }
 }
 
 let _logFile = null;
@@ -795,26 +825,35 @@ export default {
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
 
-    // --- State persistence ---
-    // Persists phase + session ID to disk so opencode --continue restores state.
-    // Without this, restarting the plugin server loses all in-memory state.
-    // State files live in the plugin's .state/ directory, not .opencode/ which
-    // may have special purpose in opencode's config hierarchy.
+    // --- State persistence (M1: file-backed SSOT) ---
+    // The .state file is the single source of truth for phase (R001). The
+    // in-memory sessionPhaseMap is a cache reconciled against the file on every
+    // overseer message; every transition persists before it is considered
+    // complete (R002); a restart restores from the file (R003); a fresh session
+    // ID continues the pointed-to lifecycle via the active-session pointer (R004).
     function getStatePath(sessionID) {
-      return join(PLUGIN_DIR, ".state", `.protocol-state-${sessionID}.json`);
+      const safe = sanitizeSessionID(sessionID);
+      if (!safe) return null;
+      return join(PLUGIN_DIR, ".state", `.protocol-state-${safe}.json`);
     }
 
     function saveState(sessionID) {
+      const statePath = getStatePath(sessionID);
+      if (!statePath) {
+        debug(`saveState: unsafe session ID rejected: ${JSON.stringify(sessionID)} (NFR004)`);
+        process.stderr.write(`[protocol-gate] saveState: unsafe session ID rejected (NFR004)\n`);
+        return false;
+      }
       // P009: the phase entry is deleted at lifecycle end (REPORT reset).
-      // Persist that state as phase 0 — the next loadState() restores
-      // PROTOCOL_NOT_LOADED and honors any manual edit of this file (AC-R005).
+      // Persist that state as phase 0 — the next reconcile restores
+      // PROTOCOL_NOT_LOADED and honors any manual edit of this file.
       const phase = sessionPhaseMap.get(sessionID) ?? STATES.PROTOCOL_NOT_LOADED;
       const sid = sessionPhaseMap.get(`${sessionID}:sid`);
       try {
         // generation persists across lifecycle resets via the :gen map entry.
         // Written even at phase 0 so the counter survives restarts between
-        // lifecycles (P001/R001). Returns boolean so callers can enforce the
-        // NFR002 atomicity contract: revert in-memory :gen when save fails.
+        // lifecycles (R003). Returns boolean so callers can enforce the NFR001
+        // atomicity contract: revert in-memory :gen when save fails.
         const generation = sessionPhaseMap.get(`${sessionID}:gen`) || 0;
         // Fix M4: Omit sid from state JSON when it's null/undefined (deleted after REPORT).
         // Previously, sid: null was serialized, causing loadState to skip phase restoration
@@ -823,35 +862,142 @@ export default {
         if (sid) state.sid = sid;
         const stateDir = join(PLUGIN_DIR, ".state");
         mkdirSync(stateDir, { recursive: true });
-        writeFileSync(getStatePath(sessionID), JSON.stringify(state));
+        // NFR001/R005: atomic durable write — tmp file + fsync + rename. A
+        // failure (disk full, permissions) surfaces to the caller as false +
+        // stderr so the in-memory phase never silently diverges from disk.
+        atomicWriteFileSync(statePath, JSON.stringify(state));
+        // R004: keep the workspace-level active-session pointer current so a
+        // restart that mints a fresh session ID can continue this lifecycle.
+        if (!writeActiveSession(sessionID)) {
+          debug(`saveState: state persisted but active-session pointer update failed for ${sessionID}`);
+        }
         return true;
-      } catch (e) { debug(`saveState error: ${e.message}`); return false; }
+      } catch (e) {
+        debug(`saveState error: ${e.message}`);
+        process.stderr.write(`[protocol-gate] saveState error for session ${sessionID}: ${e.message}\n`);
+        return false;
+      }
     }
 
-    function loadState(sessionID) {
+    // Reads + parses the session's state file. Returns the parsed state object,
+    // "missing" when no file exists, or "corrupt" when the file exists but
+    // cannot be parsed. On corruption the original file is preserved via a
+    // backup rename (R006) — never silently clobbered with phase 0.
+    function readStateFile(sessionID) {
       const statePath = getStatePath(sessionID);
-      debug(`loadState: checking ${statePath}`);
+      if (!statePath) return "missing"; // unsafe session ID — nothing to read (NFR004)
       try {
-        const data = JSON.parse(readFileSync(statePath, "utf8"));
-        // Generation restoration happens for ANY phase, including phase 0.
-        // After REPORT→PROTOCOL_NOT_LOADED the file is {phase:0, generation:N}
-        // and the counter must survive process restarts between lifecycles.
-        if (data.generation !== undefined) {
-          sessionPhaseMap.set(`${sessionID}:gen`, data.generation);
-          debug(`loadState: restored generation=${data.generation} for ${sessionID}`);
+        return JSON.parse(readFileSync(statePath, "utf8"));
+      } catch (e) {
+        if (e.code === "ENOENT") return "missing";
+        try {
+          const backupPath = join(PLUGIN_DIR, ".state", `.protocol-state-${sanitizeSessionID(sessionID)}.corrupt-${Date.now()}.json`);
+          renameSync(statePath, backupPath);
+          debug(`loadState: corrupt state file backed up to ${backupPath} (${e.message})`);
+          process.stderr.write(`[protocol-gate] Corrupt state file for session ${sessionID} — backed up to ${basename(backupPath)}; initializing PROTOCOL_NOT_LOADED (R006)\n`);
+        } catch (be) {
+          debug(`loadState: failed to back up corrupt state file for ${sessionID}: ${be.message}`);
         }
-        if (data.phase !== undefined && data.phase > STATES.PROTOCOL_NOT_LOADED) {
-          sessionPhaseMap.set(sessionID, data.phase);
-          if (data.sid) {
-            sessionPhaseMap.set(`${sessionID}:sid`, data.sid);
+        return "corrupt";
+      }
+    }
+
+    // Spec contract: returns the parsed {phase, generation, sid} object or null
+    // when no valid file exists. reconcileSessionState drives the map mutation;
+    // this keeps the documented loadState contract testable.
+    function loadState(sessionID) {
+      const state = readStateFile(sessionID);
+      return state === "missing" || state === "corrupt" || state === null ? null : state;
+    }
+
+    // --- Active-session pointer (R004) ---
+    // Workspace-level file recording the most recently active lifecycle. A
+    // fresh session ID with no own state file restores the pointed-to phase and
+    // adopts that lifecycle, covering opencode restarting with a new session ID.
+    function getActiveSessionPath() {
+      return join(PLUGIN_DIR, ".state", ".active-session.json");
+    }
+
+    function readActiveSession() {
+      try {
+        const data = JSON.parse(readFileSync(getActiveSessionPath(), "utf8"));
+        if (data && typeof data.sessionID === "string" && data.sessionID.length > 0) {
+          return data;
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    function writeActiveSession(sessionID) {
+      const safe = sanitizeSessionID(sessionID);
+      if (!safe) return false;
+      try {
+        mkdirSync(join(PLUGIN_DIR, ".state"), { recursive: true });
+        atomicWriteFileSync(getActiveSessionPath(), JSON.stringify({ sessionID: safe, lastUpdated: new Date().toISOString() }));
+        return true;
+      } catch (e) {
+        debug(`writeActiveSession error: ${e.message}`);
+        return false;
+      }
+    }
+
+    // P002/R001: the file is the runtime SSOT — reconcile the in-memory cache
+    // on every overseer message so manual file edits are honored mid-session.
+    // Priority: valid own file (R003) > active-session pointer adoption (R004)
+    // > fresh PROTOCOL_NOT_LOADED init. Corrupt files back up + fresh init (R006).
+    function reconcileSessionState(sessionID) {
+      const state = readStateFile(sessionID);
+
+      if (state === "missing") {
+        // R004: no own state file — continue the pointed-to lifecycle when a
+        // workspace-level active-session pointer exists for a different session.
+        const pointer = readActiveSession();
+        if (pointer && pointer.sessionID && pointer.sessionID !== sessionID) {
+          const pointed = readStateFile(pointer.sessionID);
+          if (pointed !== "missing" && pointed !== "corrupt" && pointed !== null) {
+            const gen = pointed.generation !== undefined ? pointed.generation : 0;
+            sessionPhaseMap.set(`${sessionID}:gen`, gen);
+            sessionPhaseMap.set(`${sessionID}:sid`, pointed.sid || pointer.sessionID);
+            const phase = typeof pointed.phase === "number" ? pointed.phase : STATES.PROTOCOL_NOT_LOADED;
+            sessionPhaseMap.set(sessionID, phase);
+            debug(`reconcile: adopted phase=${getPhaseName(phase)} from active-session ${pointer.sessionID} for ${sessionID} (R004)`);
+            // The current session now owns the lifecycle — persist its own
+            // state file and move the pointer so the adoption is durable.
+            saveState(sessionID);
+            return;
           }
-          overseerSessions.add(sessionID);
-          lastSeenSession = sessionID;
-          debug(`loadState: restored phase=${getPhaseName(data.phase)} sid=${data.sid}`);
-          return true;
         }
-      } catch (e) { debug(`loadState: failed for ${sessionID}: ${e.message}`); }
-      return false;
+        // Fresh session — initialize PROTOCOL_NOT_LOADED and persist (R004).
+        sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+        sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+        saveState(sessionID);
+        debug(`reconcile: initialized PROTOCOL_NOT_LOADED for ${sessionID}`);
+        return;
+      }
+
+      if (state === "corrupt") {
+        // R006: the corrupt file was backed up by readStateFile — initialize
+        // fresh rather than trusting a half-written state. The next valid
+        // transition overwrites the original path with valid JSON.
+        sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+        sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+        saveState(sessionID);
+        debug(`reconcile: initialized PROTOCOL_NOT_LOADED after corrupt state file for ${sessionID} (R006)`);
+        return;
+      }
+
+      // Valid own file — restore phase, generation, and sid (R001/R003).
+      if (state.generation !== undefined) {
+        sessionPhaseMap.set(`${sessionID}:gen`, state.generation);
+      }
+      if (state.sid) {
+        sessionPhaseMap.set(`${sessionID}:sid`, state.sid);
+      } else if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
+        sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+      }
+      const phase = typeof state.phase === "number" ? state.phase : STATES.PROTOCOL_NOT_LOADED;
+      sessionPhaseMap.set(sessionID, phase);
+      debug(`reconcile: restored phase=${getPhaseName(phase)} sid=${state.sid} for ${sessionID} (R001)`);
     }
 
     // --- Phase override (M3, R005/AC-R006) ---
@@ -1019,24 +1165,15 @@ export default {
       if (agent === "overseer") {
         overseerSessions.add(sessionID);
         // M3: consume any pending /phase override file first. Runs before the
-        // entry check so a file is honored even mid-lifecycle (the hook already
+        // reconcile so a file is honored even mid-lifecycle (the hook already
         // applied the value in memory — the file then re-applies the same value
         // and is deleted, which is idempotent).
         applyPhaseOverride(sessionID);
-        // Only initialize when session isn't already tracked (opencode calls
-        // chat.params on every tool invocation cycle, not once per session).
-        if (!sessionPhaseMap.has(sessionID)) {
-          if (!loadState(sessionID)) {
-            debug(`chat.params: initializing overseer session ${sessionID}`);
-            sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
-            // BUG-004: Capture session ID at initialization, not at intent KD write.
-            // checkDiskAdvancement requires :sid to filter KD files by session.
-            sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
-            // saveState re-persists any :gen restored by loadState — a phase-0
-            // post-REPORT state file's generation survives this re-initialization.
-            saveState(sessionID);
-          }
-        }
+        // P002/R001: the state file is the runtime SSOT — reconcile the
+        // in-memory cache on every overseer message so manual file edits are
+        // honored mid-session. The old `!sessionPhaseMap.has` one-shot load
+        // guard is deliberately removed: the file always wins.
+        reconcileSessionState(sessionID);
       } else {
         // Non-overseer sessions pass through unaffected — don't touch the maps.
         // Protocol-gate is Overseer-only; subagent tool calls must not be blocked.
@@ -1832,6 +1969,14 @@ export default {
       parsePhaseArg,
       applyPhaseOverride,
       getOverridePath,
+      saveState,
+      loadState,
+      getStatePath,
+      sanitizeSessionID,
+      getActiveSessionPath,
+      readActiveSession,
+      writeActiveSession,
+      reconcileSessionState,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
       get lastSeenSession() { return lastSeenSession; }
