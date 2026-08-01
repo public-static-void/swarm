@@ -1036,7 +1036,10 @@ ${table}
       expect(content).toContain("  M4: in-progress");
     });
 
-    it("does not touch the registry when no overseer session is in SWARM", async () => {
+    it("R013: checks off from the impl KD filename even when the parent session is not in-memory SWARM", async () => {
+      // The check-off guard is the registry's in-progress row + the impl KD on
+      // disk (R012) — NOT the parent session's in-memory phase. After a restart
+      // the map may not reflect SWARM, yet the milestone must still check off.
       const overseer = sid("m4-auto-3");
       await initOverseer(overseer);
       hooks.sessionPhaseMap.set(overseer, hooks.STATES.VERIFY);
@@ -1051,7 +1054,7 @@ ${table}
       );
 
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
-      expect(content).toContain("  M4: in-progress");
+      expect(content).toContain("  M4: checked-off");
     });
 
     it("leaves the registry untouched when the dispatch carries no MILESTONE ID", async () => {
@@ -1088,6 +1091,172 @@ ${table}
       const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M3", ["assigned", "in-progress"]);
       expect(result.ok).toBe(false);
       expect(result.reason).toBe("no-registry");
+    });
+  });
+
+  describe("M3: persistent milestone tracking (R010–R016, AC010–AC016)", () => {
+    it("AC010: surfaces the live milestone list to the Overseer in the SWARM system transform", async () => {
+      const s = sid("m3-vis-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"], ["M2", "checked-off"]]);
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, output);
+      const system = output.system.join("\n");
+      expect(system).toContain("Milestone registry (live state SSOT)");
+      expect(system).toContain("M1=in-progress");
+      expect(system).toContain("M2=checked-off");
+      expect(system).toContain('MILESTONE ID: <id>');
+
+      // Non-SWARM phases do not receive the milestone list
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      const output2 = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, output2);
+      expect(output2.system.join("\n")).not.toContain("Milestone registry");
+    });
+
+    it("AC013: checks off a milestone after restart — parent session derived from the impl KD filename, empty overseerSessions", async () => {
+      // Simulate a restart: the fresh plugin instance has an EMPTY
+      // overseerSessions set. Only the persisted .state file and the registry
+      // on disk remain — autoCheckOffMilestone must derive the parent session
+      // and generation from the impl KD filename + on-disk state.
+      const s = sid("m3-restart-1");
+      createRegistry(s, [["M1", "in-progress"]]);
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(statePath(s), JSON.stringify({ phase: 7, generation: 0, sid: s }));
+      expect(hooks.overseerSessions.size).toBe(0);
+
+      const artisan = sid("m3-restart-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M1-restart-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: checked-off");
+    });
+
+    it("AC013: restart check-off works for generation N via the on-disk generation", async () => {
+      const s = sid("m3-restart-2");
+      // Generation-scoped lifecycle: registry + impl KD carry the -gen3 suffix,
+      // and the state file (the SSOT) records generation 3. The in-memory map
+      // is EMPTY after restart — autoCheckOffMilestone must read gen 3 from disk.
+      createKD(`milestones-feature-${s}-gen3.md`, registryContent([["M2", "in-progress"]]));
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(statePath(s), JSON.stringify({ phase: 7, generation: 3, sid: s }));
+
+      const artisan = sid("m3-restart-art2");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M2-gen3-${s}-gen3.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen3.md`), "utf8");
+      expect(content).toContain("  M2: checked-off");
+    });
+
+    it("AC014: reconstructs every row state from disk after restart — no in-memory data required", async () => {
+      const s = sid("m3-recon-1");
+      // m1 in-progress, m2 checked-off with its impl KD on disk (the exact
+      // AC014 crash/restart fixture). The in-memory map is EMPTY.
+      createRegistry(s, [["M1", "in-progress"], ["M2", "checked-off"]]);
+      createKD(`impl-M2-recon-${s}.md`);
+
+      const gate = hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
+      expect(gate.total).toBe(2);
+      expect(gate.checkedOff).toBe(1);
+      expect(gate.ok).toBe(false);
+      expect(gate.rows).toEqual([
+        { id: "M1", state: "in-progress", checkedOff: false },
+        { id: "M2", state: "checked-off", checkedOff: true }
+      ]);
+
+      // Once M1's impl KD lands AND the check-off transition is recorded
+      // (R012 — the KD alone never implies completion), the gate reconstructs
+      // all-checked-off from disk alone.
+      createKD(`impl-M1-recon-${s}.md`);
+      hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["checked-off"]);
+      const gate2 = hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
+      expect(gate2.ok).toBe(true);
+      expect(gate2.checkedOff).toBe(2);
+    });
+
+    it("AC014: atomic registry write leaves no tmp residue and the YAML stays valid", async () => {
+      const s = sid("m3-atomic-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
+
+      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["assigned", "in-progress"]);
+      expect(result.ok).toBe(true);
+      expect(result.changed).toBe(true);
+
+      // Atomic write: no tmp files left behind — a crash mid-write can never
+      // expose a torn registry file at the target path.
+      const files = readdirSync(knowledgeDir).filter(f => f.includes(".tmp-"));
+      expect(files).toEqual([]);
+      // Registry still parses into valid rows after the write.
+      const registry = hooks.readMilestoneRegistry(s, hooks.sessionPhaseMap);
+      expect(registry.rows).toEqual([
+        { id: "M1", state: "in-progress" },
+        { id: "M2", state: "pending" }
+      ]);
+      // Human-readable table preserved.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("| M1 | desc | pending |");
+    });
+
+    it("AC016: re-dispatch of a checked-off milestone re-opens it; the gate re-blocks until the fix is re-checked-off", async () => {
+      const s = sid("m3-reopen-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-reopen-${s}.md`);
+
+      // All rows checked-off with impl KDs → the gate would allow SWARM→VERIFY.
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+
+      // Inspector findings → Overseer moves back to SWARM and re-dispatches M1.
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "c1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+      );
+      let content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: in-progress");
+
+      // The gate fails closed again until the fix impl KD is written.
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+      // Fix delivered → auto check-off re-advances the row → gate opens again.
+      const artisan = sid("m3-reopen-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M1-fix-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY (fix)" } }
+      );
+      content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: checked-off");
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+    });
+
+    it("AC016: a non-reopen write leaves a checked-off row immutable (evidence preserved)", async () => {
+      const s = sid("m3-reopen-2");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+
+      // markStuckMilestonesFailed-style call (no reopen) must not regress the row.
+      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["failed"]);
+      expect(result.ok).toBe(true);
+      expect(result.changed).toBe(false);
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: checked-off");
     });
   });
 
