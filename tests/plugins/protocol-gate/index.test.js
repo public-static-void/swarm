@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 
@@ -58,10 +58,6 @@ ${table}
     return join(stateDir, `.protocol-state-${s}.json`);
   }
 
-  function overridePath(s) {
-    return join(stateDir, `.override-${s}.json`);
-  }
-
   async function initOverseer(s) {
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
   }
@@ -88,10 +84,10 @@ ${table}
   });
 
   afterEach(() => {
-    // Remove session-scoped fixtures (KDs + state + override files) only.
-    // The state-file sweep (f.includes(s)) also removes corrupt backups and any
-    // pointer that references a used session; the pointer is removed outright
-    // so the real workspace is never left pointing at a test session.
+    // Remove session-scoped fixtures (KDs + state files) only. The state-file
+    // sweep (f.includes(s)) also removes corrupt backups and any pointer that
+    // references a used session; the pointer is removed outright so the real
+    // workspace is never left pointing at a test session.
     for (const s of usedSids) {
       try {
         const files = readdirSync(knowledgeDir);
@@ -102,7 +98,6 @@ ${table}
         }
       } catch (_) {}
       try { rmSync(statePath(s)); } catch (_) {}
-      try { rmSync(overridePath(s)); } catch (_) {}
       try {
         const files = readdirSync(stateDir);
         for (const f of files) {
@@ -517,32 +512,60 @@ ${table}
     }
   });
 
-  it("consumes /phase override files on chat.params; expired and malformed overrides are dropped", async () => {
-    const s = sid("phase-file");
-    writeFileSync(overridePath(s), JSON.stringify({ phase: hooks.STATES.EXPLORE, sessionID: s, createdAt: new Date().toISOString() }));
-    await initOverseer(s);
-    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
-    expect(existsSync(overridePath(s))).toBe(false);
+  describe("M2: /phase command prompt simplification (AC007–AC009)", () => {
+    it("AC007: commands/phase.md is confirmation-only with no state-writing instructions", async () => {
+      const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
+      // Confirmation-only prompt — the hook applies and persists the override.
+      // Case-insensitive: the sentence is capitalized at the start of a paragraph.
+      expect(template.toLowerCase()).toContain("phase was manually overridden to");
+      // No instruction to hand-write state or override files (R007/NFR005).
+      expect(template).not.toContain(".override-");
+      expect(template).not.toContain("write the override file");
+      expect(template).not.toContain(".state");
+    });
 
-    // Expired override (6+ min old) is not applied. The active-session pointer
-    // is removed before each fresh session so R004 continuation cannot adopt a
-    // previous session's phase — these cases isolate the override-file TTL
-    // behavior in a workspace with no active lifecycle.
-    const ttl = sid("phase-ttl");
-    const old = new Date(Date.now() - 6 * 60 * 1000).toISOString();
-    writeFileSync(overridePath(ttl), JSON.stringify({ phase: hooks.STATES.REPORT, sessionID: ttl, createdAt: old }));
-    try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
-    await initOverseer(ttl);
-    expect(hooks.sessionPhaseMap.get(ttl)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
-    expect(existsSync(overridePath(ttl))).toBe(false);
+    it("AC008: /phase override persists to disk and survives a restart", async () => {
+      const s = sid("ac008");
+      await initOverseer(s);
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "SWARM" }, output);
 
-    // Malformed override is removed without applying
-    const bad = sid("phase-bad");
-    writeFileSync(overridePath(bad), "{not json");
-    try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
-    await initOverseer(bad);
-    expect(hooks.sessionPhaseMap.get(bad)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
-    expect(existsSync(overridePath(bad))).toBe(false);
+      // The hook is the single user-facing override: validates, sets, persists.
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(output.parts[0].text).toContain("Phase set to SWARM (7) for session");
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.SWARM);
+
+      // Simulated restart with the same session ID → the override is restored.
+      hooks = await pluginModule.server({}, {});
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+    });
+
+    it("AC009: /phase jumps any distance — 0→SWARM(7) and →REPORT(12) succeed with no +3 cap", async () => {
+      const s = sid("ac009");
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+
+      // PROTOCOL_NOT_LOADED (0) directly to SWARM (7) — a +7 jump.
+      const out7 = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "SWARM" }, out7);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(out7.parts[0].text).toContain("Phase set to SWARM (7) for session");
+
+      // And a direct jump to REPORT (12) from SWARM (7).
+      const out12 = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "12" }, out12);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.REPORT);
+      expect(out12.parts[0].text).toContain("Phase set to REPORT (12) for session");
+    });
+
+    it("P010: no .override- fallback remains in plugin source or command templates", async () => {
+      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
+      expect(pluginSrc).not.toContain(".override-");
+      expect(pluginSrc).not.toContain("OVERRIDE_TTL_MS");
+      expect(template).not.toContain(".override-");
+    });
   });
 
   describe("M1: file-backed phase state SSOT (AC001–AC006, NFR004)", () => {

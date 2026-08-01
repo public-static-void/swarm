@@ -194,11 +194,6 @@ function cleanupLifecycleKDs(sessionID) {
   return stale.length;
 }
 
-// Override signal files (.state/.override-{sessionID}.json) expire after this
-// window. A stale file must never apply a phase change long after the user
-// (or the /phase command template) wrote it.
-const OVERRIDE_TTL_MS = 5 * 60 * 1000;
-
 // Parses a /phase command argument into a phase number. Accepts:
 //   - a number string 0-12 (e.g. "5" → ALIGN)
 //   - a phase name, case-insensitive (e.g. "INTENT", "preflight")
@@ -1000,65 +995,6 @@ export default {
       debug(`reconcile: restored phase=${getPhaseName(phase)} sid=${state.sid} for ${sessionID} (R001)`);
     }
 
-    // --- Phase override (M3, R005/AC-R006) ---
-    // Two paths set a phase override for a session:
-    //   1. The /phase command (command.execute.before hook) sets the phase
-    //      directly in memory and persists it via saveState — deterministic,
-    //      no filesystem round-trip.
-    //   2. A signal file `.state/.override-{sessionID}.json` written by the
-    //      command template (commands/phase.md) — fallback for runtimes where
-    //      the hook is not invoked. Consumed exactly once by chat.params.
-    // The file path carries a 5-minute TTL and refuses forward jumps larger
-    // than 3 phases (defense against a stale or miswritten file; the explicit
-    // /phase command bypasses this limit because the user typed it directly).
-    function getOverridePath(sessionID) {
-      return join(PLUGIN_DIR, ".state", `.override-${sessionID}.json`);
-    }
-
-    function applyPhaseOverride(sessionID) {
-      const overridePath = getOverridePath(sessionID);
-      let raw;
-      try {
-        raw = readFileSync(overridePath, "utf8");
-      } catch (_) {
-        return false; // no override file
-      }
-      try {
-        const data = JSON.parse(raw);
-        if (data.createdAt && Date.now() - new Date(data.createdAt).getTime() > OVERRIDE_TTL_MS) {
-          debug(`Phase override: dropped expired override for session ${sessionID} (TTL ${OVERRIDE_TTL_MS}ms)`);
-          rmSync(overridePath, { force: true });
-          return false;
-        }
-        const n = Number(data.phase);
-        if (!Number.isInteger(n) || n < STATES.PROTOCOL_NOT_LOADED || n > STATES.REPORT) {
-          debug(`Phase override: invalid phase value ${data.phase} in override file for session ${sessionID}`);
-          rmSync(overridePath, { force: true });
-          return false;
-        }
-        const current = sessionPhaseMap.get(sessionID);
-        if (current !== undefined && n > current + 3) {
-          debug(`Phase override: REJECTED forward jump ${getPhaseName(current)}(${current}) → ${getPhaseName(n)}(${n}) for session ${sessionID} (max +3)`);
-          rmSync(overridePath, { force: true });
-          return false;
-        }
-        sessionPhaseMap.set(sessionID, n);
-        // Re-capture the session ID so checkDiskAdvancement can filter KDs by
-        // session — required when the override starts a fresh lifecycle.
-        if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
-          sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
-        }
-        saveState(sessionID);
-        rmSync(overridePath, { force: true }); // consumed once
-        debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
-        return true;
-      } catch (e) {
-        debug(`Phase override: malformed override file for session ${sessionID}: ${e.message}`);
-        rmSync(overridePath, { force: true });
-        return false;
-      }
-    }
-
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
 
     debug("Plugin initializing…");
@@ -1164,11 +1100,6 @@ export default {
 
       if (agent === "overseer") {
         overseerSessions.add(sessionID);
-        // M3: consume any pending /phase override file first. Runs before the
-        // reconcile so a file is honored even mid-lifecycle (the hook already
-        // applied the value in memory — the file then re-applies the same value
-        // and is deleted, which is idempotent).
-        applyPhaseOverride(sessionID);
         // P002/R001: the state file is the runtime SSOT — reconcile the
         // in-memory cache on every overseer message so manual file edits are
         // honored mid-session. The old `!sessionPhaseMap.has` one-shot load
@@ -1182,12 +1113,13 @@ export default {
       }
     }
 
-    // --- Hook: command.execute.before (M3, R005) ---
-    // Implements the /phase slash command. Validates the argument against
-    // STATES (AC-R006 rejection cases: 99, INVALID, empty) and applies the
-    // override in memory + on disk. Registered alongside commands/phase.md;
-    // the hook is the deterministic path and the command template's override
-    // file is the fallback for runtimes that never invoke this hook.
+    // --- Hook: command.execute.before (R008) ---
+    // Implements the /phase slash command — the single user-facing override
+    // path. Validates the argument against STATES (rejections: 99, INVALID,
+    // empty), sets the phase in memory, persists via saveState, and replies
+    // with a deterministic confirmation. Any valid phase 0-12 is accepted with
+    // no forward-jump cap (R009); the command template is confirmation-only —
+    // the LLM never hand-writes state files (R007/NFR005).
     async function commandExecuteBefore(input, output) {
       const commandName = String(input.command || "").replace(/^\/+/, "");
       if (commandName !== "phase") return;
@@ -1967,8 +1899,6 @@ export default {
       markStuckMilestonesFailed,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
-      applyPhaseOverride,
-      getOverridePath,
       saveState,
       loadState,
       getStatePath,
