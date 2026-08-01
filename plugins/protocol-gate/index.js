@@ -77,7 +77,7 @@ const PHASE_INSTRUCTIONS = {
   INVESTIGATE: "Dispatch the Analyzer agent.",
   ALIGN: "Dispatch the Spec Weaver agent.",
   DECOMPOSE: "Dispatch the Pathfinder agent.",
-  SWARM: "Dispatch the Artisan agent. Read the plan and milestone registry KDs to track milestone state before each dispatch.",
+  SWARM: "Dispatch the Artisan agent. Read the plan and milestone registry KDs to track milestone state before each dispatch. Include exactly one MILESTONE ID: matching the registry row you are dispatching.",
   VERIFY: "Dispatch the Inspector agent.",
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
@@ -287,6 +287,78 @@ function extractAgentFromPrompt(prompt) {
     if (renderedMatch) return renderedMatch[1].trim().toLowerCase();
   }
   return null;
+}
+
+// Extracts the MILESTONE ID from a raw dispatch prompt. protocol-gate runs
+// BEFORE delegation-gate, so the raw prompt (not the rendered template) is the
+// source of truth. Accepts the canonical `MILESTONE ID:` field and the
+// underscore variant, with optional Markdown bold markers. Returns the trimmed
+// value or null when absent. Exactly-one and format validation is
+// delegation-gate's job (HOW); protocol-gate only needs the value to update the
+// registry (WHEN).
+function extractMilestoneIdFromPrompt(prompt) {
+  if (typeof prompt !== "string") return null;
+  for (const line of prompt.split("\n")) {
+    const normalized = line.replace(/\*\*/g, "").trim();
+    const match = normalized.match(/^MILESTONE[_\s]ID:\s*(.+)$/i);
+    if (match) {
+      const value = match[1].trim();
+      return value || null;
+    }
+  }
+  return null;
+}
+
+// Advances a milestone row in the session's milestone registry KD through the
+// given state chain (e.g. ["assigned", "in-progress"]) on a SWARM dispatch.
+// Only the machine-readable `## Milestone States` YAML block is rewritten — the
+// human-readable Milestone Details table stays untouched. A row already at the
+// final state or in checked-off is left alone: completed milestones must not
+// regress via re-dispatch (backward transitions belong to the M5 gate).
+// Returns { ok, path, changed } on success or { ok: false, reason } otherwise.
+function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states) {
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const knowledgeDir = join(process.cwd(), "knowledge");
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return { ok: false, reason: "no-registry" }; }
+  const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKD(f, sessionID, generation));
+  if (!registry) return { ok: false, reason: "no-registry" };
+
+  const path = join(knowledgeDir, registry);
+  let content;
+  try { content = readFileSync(path, "utf8"); } catch (_) { return { ok: false, reason: "no-registry" }; }
+
+  const blockStart = content.search(/^##\s*Milestone States\s*$/m);
+  if (blockStart === -1) return { ok: false, reason: "no-yaml-block" };
+  const fenceStart = content.indexOf("```yaml", blockStart);
+  const fenceEnd = content.indexOf("```", fenceStart + 7);
+  if (fenceStart === -1 || fenceEnd === -1) return { ok: false, reason: "no-yaml-block" };
+
+  const block = content.slice(fenceStart, fenceEnd);
+  const rowPattern = new RegExp(`^\\s*${escapeRegExp(milestoneId)}:\\s*([A-Za-z-]+)\\s*$`, "m");
+  const rowMatch = block.match(rowPattern);
+  if (!rowMatch) return { ok: false, reason: "milestone-not-found" };
+
+  const current = rowMatch[1];
+  const finalState = Array.isArray(states) && states.length > 0 ? states[states.length - 1] : "in-progress";
+  if (current === finalState || current === "checked-off") {
+    return { ok: true, path, changed: false };
+  }
+
+  const newBlock = block.replace(rowPattern, `  ${milestoneId}: ${finalState}`);
+  const newContent = content.slice(0, fenceStart) + newBlock + content.slice(fenceEnd);
+  try {
+    writeFileSync(path, newContent);
+    debug(`Registry ${registry}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
+    return { ok: true, path, changed: true };
+  } catch (e) {
+    debug(`Registry write failed for ${registry}: ${e.message}`);
+    return { ok: false, reason: "write-failed" };
+  }
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // Normalize absolute paths to project-relative for prefix matching.
@@ -1402,6 +1474,15 @@ export default {
                 sessionPhaseMap.set(`${sessionID}:milestones`, mc);
                 debug(`SWARM milestone count for ${sessionID}: ${mc} (from dispatch)`);
               }
+              // M3: per-milestone registry tracking — parse the MILESTONE ID from
+              // the raw dispatch prompt and advance that milestone's row in the
+              // milestone registry (pending → assigned → in-progress). Runs here
+              // (not delegation-gate) so the registry is the live state SSOT.
+              const milestoneId = extractMilestoneIdFromPrompt(prompt);
+              if (milestoneId) {
+                const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, ["assigned", "in-progress"]);
+                debug(`SWARM registry update for ${milestoneId}: ${JSON.stringify(regResult)}`);
+              }
               debug(`SWARM dispatch count for ${sessionID}: ${count}`);
             }
             // Track re-dispatches per phase to cap retries
@@ -1543,6 +1624,8 @@ export default {
       checkPhaseStateConsistency,
       checkDiskAdvancement,
       cleanupLifecycleKDs,
+      extractMilestoneIdFromPrompt,
+      updateMilestoneRegistry,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
       applyPhaseOverride,
