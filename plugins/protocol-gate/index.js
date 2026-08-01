@@ -9,7 +9,7 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "fs";
+import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "fs";
 import { basename, dirname, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -337,15 +337,20 @@ function extractMilestoneIdFromPrompt(prompt) {
 // given state chain (e.g. ["assigned", "in-progress"]) on a SWARM dispatch.
 // Only the machine-readable `## Milestone States` YAML block is rewritten — the
 // human-readable Milestone Details table stays untouched. A row already at the
-// final state or in checked-off is left alone: completed milestones must not
-// regress via re-dispatch (backward transitions belong to the M5 gate).
-// M4 (R009/R010): reaching checked-off is restricted to in-progress milestones —
-// the artisan checks off only after its impl KD lands, so pending/assigned/failed
-// rows are rejected with invalid-transition. Row matching is case-insensitive
-// (impl KDs may carry any casing for the milestone token, e.g. impl-m3 vs row M3)
-// and the replacement preserves the registry row's own casing.
+// final state is left alone (idempotent). Reaching checked-off is restricted to
+// in-progress milestones — the artisan checks off only after its impl KD lands,
+// so pending/assigned/failed rows are rejected with invalid-transition. Row
+// matching is case-insensitive (impl KDs may carry any casing for the milestone
+// token, e.g. impl-m3 vs row M3) and the replacement preserves the registry
+// row's own casing.
+// R014/NFR001: the write is atomic (tmp + fsync + rename) so a crash mid-write
+// can never leave a torn registry YAML on disk.
+// R016 (P017): a checked-off row is immutable for every caller EXCEPT the SWARM
+// re-dispatch path (opts.reopen). When the Overseer re-dispatches a checked-off
+// milestone after inspector findings, the row re-opens to a non-terminal state
+// so the SWARM→VERIFY gate fails closed again until the fix is re-verified.
 // Returns { ok, path, changed } on success or { ok: false, reason } otherwise.
-function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states) {
+function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states, opts = {}) {
   const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!located) return { ok: false, reason: "no-registry" };
 
@@ -362,14 +367,19 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
     return { ok: false, reason: "invalid-transition" };
   }
   if (current === "checked-off") {
-    return { ok: true, path: located.path, changed: false };
+    // Only the SWARM re-dispatch path re-opens completed rows (R016); every
+    // other writer leaves them immutable so evidence is never silently lost.
+    if (!opts.reopen || finalState === "checked-off") {
+      return { ok: true, path: located.path, changed: false };
+    }
   }
 
   const rowId = rowMatch[0].slice(0, rowMatch[0].indexOf(":")).trim();
   const newBlock = located.block.replace(rowPattern, `  ${rowId}: ${finalState}`);
   const newContent = located.content.slice(0, located.fenceStart) + newBlock + located.content.slice(located.fenceEnd);
   try {
-    writeFileSync(located.path, newContent);
+    // R014/NFR001: atomic durable registry write — no torn YAML after a crash.
+    atomicWriteFileSync(located.path, newContent);
     debug(`Registry ${located.path}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
     return { ok: true, path: located.path, changed: true };
   } catch (e) {
@@ -1069,21 +1079,61 @@ export default {
       return true;
     }
 
-    // M4 (R009/R010): When the artisan writes its milestone-scoped impl KD,
+    // R013/P014: restart-proof check-off — the impl KD filename is the ONLY
+    // source of the parent lifecycle. Candidate parent sessions are collected
+    // from the on-disk .state files (which survive restart) plus the in-memory
+    // overseer cache; the filename's embedded `-{sessionID}-gen{N}` suffix
+    // selects the parent via matchesSessionKD. A fresh instance with an empty
+    // overseerSessions set still checks the milestone off (AC013).
+    function collectParentSessionCandidates() {
+      const candidates = new Set(overseerSessions);
+      try {
+        const stateDir = join(PLUGIN_DIR, ".state");
+        for (const f of readdirSync(stateDir)) {
+          const m = f.match(/^\.protocol-state-(.+)\.json$/);
+          if (m) candidates.add(m[1]);
+        }
+      } catch (_) {}
+      return [...candidates];
+    }
+
+    // Persisted generation for a session — reads the .state file so check-off
+    // matches the correct lifecycle after a restart when the in-memory map is
+    // empty (the file is the SSOT, R014). Returns null when no valid file
+    // exists so callers can fall back to the in-memory value.
+    function getPersistedGeneration(sessionID) {
+      const statePath = getStatePath(sessionID);
+      if (!statePath) return null;
+      try {
+        const data = JSON.parse(readFileSync(statePath, "utf8"));
+        return typeof data.generation === "number" ? data.generation : 0;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // M3 (R012/R013): When the artisan writes its milestone-scoped impl KD,
     // advance that milestone to checked-off in the parent lifecycle's registry.
-    // The impl KD on disk IS the verifiable evidence of completion — the M5
-    // all-checked-off gate reads it back via checkMilestoneCheckedOff. Only a
-    // matching overseer session in SWARM is touched; the impl KD filename carries
-    // the parent session ID, which maps the artifact back to its lifecycle.
+    // The impl KD on disk IS the verifiable evidence of completion — the
+    // SWARM→VERIFY gate reads it back via checkMilestoneCheckedOff. Only a row
+    // in-progress in the registry can complete (R012); the parent session and
+    // generation come from the filename + on-disk state, never from in-memory
+    // session state alone.
     function autoCheckOffMilestone(relPath) {
       const milestoneId = extractMilestoneIdFromImplKD(relPath);
       if (!milestoneId) return;
-      for (const overseerID of overseerSessions) {
-        if (sessionPhaseMap.get(overseerID) !== STATES.SWARM) continue;
-        const generation = getCurrentGeneration(sessionPhaseMap, overseerID);
-        if (matchesSessionKD(relPath, overseerID, generation)) {
-          const result = updateMilestoneRegistry(overseerID, sessionPhaseMap, milestoneId, ["checked-off"]);
-          debug(`M4 auto check-off: impl KD for milestone ${milestoneId} → ${JSON.stringify(result)}`);
+      for (const candidate of collectParentSessionCandidates()) {
+        // Disk generation is the SSOT (restart-proof); the map is a fallback.
+        const generation = getPersistedGeneration(candidate) ?? getCurrentGeneration(sessionPhaseMap, candidate);
+        if (matchesSessionKD(relPath, candidate, generation)) {
+          // Seed the in-memory generation so the generation-scoped registry
+          // lookup (locateMilestoneRegistry) finds the same lifecycle after a
+          // restart when the map is empty.
+          if (!sessionPhaseMap.has(`${candidate}:gen`)) {
+            sessionPhaseMap.set(`${candidate}:gen`, generation);
+          }
+          const result = updateMilestoneRegistry(candidate, sessionPhaseMap, milestoneId, ["checked-off"]);
+          debug(`M3 auto check-off: impl KD for milestone ${milestoneId} (parent ${candidate}) → ${JSON.stringify(result)}`);
           break;
         }
       }
@@ -1492,6 +1542,26 @@ export default {
         }
       }
 
+      // R016/P017: a SWARM re-dispatch must re-open its checked-off milestone
+      // BEFORE the all-checked-off gate runs. The gate is checked on the same
+      // task call (below); without the re-open first, an all-done registry would
+      // advance SWARM→VERIFY and the re-dispatch would be blocked as a wrong
+      // agent before the task handler ever runs. Only genuine artisan dispatches
+      // to SWARM's agent advance the registry; every other task call passes
+      // through untouched.
+      if (tool === "task" && phase === STATES.SWARM) {
+        let dispatchAgent = extractAgentFromPrompt(args?.prompt || "");
+        if (!dispatchAgent && args?.subagent_type) dispatchAgent = String(args.subagent_type).toLowerCase();
+        const swarmAgent = PHASE_AGENT_MAP[getPhaseName(STATES.SWARM)]?.toLowerCase();
+        if (dispatchAgent && swarmAgent && dispatchAgent === swarmAgent) {
+          const milestoneId = extractMilestoneIdFromPrompt(args?.prompt || "");
+          if (milestoneId) {
+            const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, ["assigned", "in-progress"], { reopen: true });
+            debug(`SWARM registry update (pre-gate) for ${milestoneId}: ${JSON.stringify(regResult)}`);
+          }
+        }
+      }
+
       // --- disk-based advancement for lifecycle tools (R009) ---
       // Runs BEFORE the task handler so the phase is current when agent routing
       // validates the dispatched agent. Without this, task calls in PREFLIGHT
@@ -1738,15 +1808,10 @@ export default {
               // M5 (R011-R014): MILESTONE_COUNT is no longer extracted or
               // stored — the all-checked-off registry gate replaces count-based
               // advancement, so count signals have no gating effect (AC024).
-              // M3: per-milestone registry tracking — parse the MILESTONE ID from
-              // the raw dispatch prompt and advance that milestone's row in the
-              // milestone registry (pending → assigned → in-progress). Runs here
-              // (not delegation-gate) so the registry is the live state SSOT.
-              const milestoneId = extractMilestoneIdFromPrompt(prompt);
-              if (milestoneId) {
-                const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, ["assigned", "in-progress"]);
-                debug(`SWARM registry update for ${milestoneId}: ${JSON.stringify(regResult)}`);
-              }
+              // M3: per-milestone registry tracking runs in the pre-gate block
+              // above (R016 re-open must precede the all-checked-off gate).
+              // swarmDispatchCount remains a pure counter — it has no gating
+              // effect (M5: the all-checked-off registry gate replaces it).
               debug(`SWARM dispatch count for ${sessionID}: ${count}`);
             }
             // Track re-dispatches per phase to cap retries
@@ -1859,6 +1924,19 @@ export default {
           systemMsg += `\nUse this session ID and generation in the intent KD filename: knowledge/intent-{name}-${sessionID}-gen${generation}.md`;
         }
 
+        // R010 (AC010): during SWARM, surface the milestone list (IDs + live
+        // states) so the Overseer knows the plan's milestones and dispatches
+        // exactly one MILESTONE ID per artisan. The registry KD is the SSOT —
+        // the list is read fresh from disk, never from in-memory caches.
+        if (phase === STATES.SWARM && sessionID) {
+          const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+          if (registry && registry.rows.length > 0) {
+            const list = registry.rows.map(r => `${r.id}=${r.state}`).join(", ");
+            systemMsg += `\n\nMilestone registry (live state SSOT): ${list}`;
+            systemMsg += `\nInclude exactly one "MILESTONE ID: <id>" matching the registry row you are dispatching.`;
+          }
+        }
+
         output.system.push(systemMsg);
       }
       debug(`systemTransform: injected phase constraint for phase=${phaseName}`);
@@ -1897,6 +1975,8 @@ export default {
       readMilestoneRegistry,
       checkAllMilestonesCheckedOff,
       markStuckMilestonesFailed,
+      collectParentSessionCandidates,
+      getPersistedGeneration,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
       saveState,
