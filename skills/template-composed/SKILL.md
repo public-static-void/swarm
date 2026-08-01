@@ -13,7 +13,8 @@ author: Scribe
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/composed-{{agent}}-{{task}}-{{session_id}}.md -->
+<!-- Filename: knowledge/composed-{{agent}}-{{task}}-{{session_id}}-gen{{generation}}.md -->
+<!-- GENERATION: {{generation}} is the lifecycle counter from protocol-gate state. Each lifecycle's KDs are scoped to its generation (`-genN-` after the session ID) so stale KDs from prior lifecycles are never matched. Use the generation value provided by the dispatcher. -->
 
 # COMPOSED: Context for {{target agent}}
 

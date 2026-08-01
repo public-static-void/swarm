@@ -1,4 +1,4 @@
 {
   "mode": "extract",
-  "template": "DISPATCH TO: {agent}\nMODE: extract\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read all upstream KDs from KD PATHS (EXPLORATION, ANALYSIS, SPEC, PLAN, IMPL, REVIEW, AUDIT, CHECKPOINT, PREFLIGHT KDs). Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd} using the naming convention: knowledge/composed-<name>-<session_id>.md"
+  "template": "DISPATCH TO: {agent}\nMODE: extract\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read all upstream KDs from KD PATHS (EXPLORATION, ANALYSIS, SPEC, PLAN, IMPL, REVIEW, AUDIT, CHECKPOINT, PREFLIGHT KDs). Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd} using the naming convention: knowledge/composed-<name>-<session_id>-gen{generation}.md"
 }

@@ -1,4 +1,4 @@
 {
   "mode": "decompose",
-  "template": "DISPATCH TO: {agent}\nMODE: decompose\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read the SPEC KD from KD PATHS. Decompose the project per the scope above. Produce a PLAN KD at {result_kd} using the naming convention: knowledge/plan-<name>-<session_id>.md"
+  "template": "DISPATCH TO: {agent}\nMODE: decompose\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read the SPEC KD from KD PATHS. Decompose the project per the scope above. Produce a PLAN KD at {result_kd} using the naming convention: knowledge/plan-<name>-<session_id>-gen{generation}.md"
 }

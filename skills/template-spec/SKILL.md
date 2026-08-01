@@ -13,7 +13,8 @@ author: Spec Weaver
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/spec-{{feature}}-{{session_id}}.md -->
+<!-- Filename: knowledge/spec-{{feature}}-{{session_id}}-gen{{generation}}.md -->
+<!-- GENERATION: {{generation}} is the lifecycle counter from protocol-gate state. Each lifecycle's KDs are scoped to its generation (`-genN-` after the session ID) so stale KDs from prior lifecycles are never matched. Use the generation value provided by the dispatcher. -->
 
 # SPEC: {{feature name}}
 

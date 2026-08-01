@@ -1,6 +1,6 @@
 // Protocol-Gate Plugin — WHEN: state machine, phase advancement, agent routing
 //
-// Hooks: chat.params, permission.ask, tool.execute.before,
+// Hooks: chat.params, permission.ask, tool.execute.before, command.execute.before,
 //        tool.definition, experimental.chat.system.transform
 // Scope: Overseer-only. Other agents pass through unaffected.
 //
@@ -35,18 +35,20 @@ const STATES = {
 const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
 
 // KD type prefixes — maps phase constants to the prefix used in KD filenames.
-// Must match the regex patterns in checkDiskAdvancement() (lines 220-232).
+// Must match the regex patterns in checkDiskAdvancement() (lines 349-361) and
+// the dual-KD special cases (VERIFY, DECOMPOSE).
 // Used by in-flight dispatch tracking so the R001 guard can correctly match
 // pending KDs against the disk pattern. (BUG-001/BUG-002 fix)
-// VERIFY phase produces TWO KDs (review + audit); stored as array. All other
-// phases use a single string for backward compatibility.
+// VERIFY produces TWO KDs (review + audit); DECOMPOSE produces the plan KD plus
+// the milestone registry (milestones-). Multi-KD phases are stored as arrays;
+// all other phases use a single string for backward compatibility.
 const KD_TYPE_PREFIXES = {
   [STATES.INTENT]: "intent",
   [STATES.PREFLIGHT]: "preflight",
   [STATES.EXPLORE]: "exploration",
   [STATES.INVESTIGATE]: "analysis",
   [STATES.ALIGN]: "spec",
-  [STATES.DECOMPOSE]: "plan",
+  [STATES.DECOMPOSE]: ["plan", "milestones"],
   [STATES.SWARM]: "impl",
   [STATES.VERIFY]: ["review", "audit"],
   [STATES.EXTRACT]: "composed",
@@ -75,7 +77,7 @@ const PHASE_INSTRUCTIONS = {
   INVESTIGATE: "Dispatch the Analyzer agent.",
   ALIGN: "Dispatch the Spec Weaver agent.",
   DECOMPOSE: "Dispatch the Pathfinder agent.",
-  SWARM: "Dispatch the Artisan agent.",
+  SWARM: "Dispatch the Artisan agent. Read the plan and milestone registry KDs to track milestone state before each dispatch. Include exactly one MILESTONE ID: matching the registry row you are dispatching. Name the dispatch's RESULT KD milestone-scoped — knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md — so the impl KD checks that milestone off on write.",
   VERIFY: "Dispatch the Inspector agent.",
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
@@ -91,7 +93,7 @@ const TOOL_ALLOWLIST = {
   INVESTIGATE: ["task", "todowrite", "glob"],
   ALIGN: ["task", "todowrite", "glob"],
   DECOMPOSE: ["task", "todowrite", "glob"],
-  SWARM: ["task", "todowrite", "glob"],
+  SWARM: ["task", "todowrite", "glob", "read"],
   VERIFY: ["task", "todowrite", "glob"],
   EXTRACT: ["task", "todowrite", "glob"],
   EVOLVE: ["task", "todowrite", "glob"],
@@ -104,6 +106,7 @@ const TOOL_ALLOWLIST = {
 // instead of treating the tool as fully available.
 const TOOL_RESTRICTIONS = {
   INTENT: { read: "ONLY templates and intent KDs", bash: "ONLY mkdir for knowledge directory creation" },
+  SWARM: { read: "ONLY plan and milestone registry KDs" },
   REPORT: { read: "ONLY templates and knowledge KDs" }
 };
 
@@ -128,6 +131,89 @@ const ERROR_TEMPLATES = {
 
 function getPhaseName(phaseId) {
   return Object.entries(STATES).find(([, id]) => id === phaseId)?.[0];
+}
+
+// Current lifecycle generation for a session, read from the :gen map entry.
+// Defaults to 0 when absent — legacy state files without a generation field
+// behave as generation 0 (NFR001 backward compatibility).
+// Module-level so checkDiskAdvancement can derive the generation from the
+// sessionPhaseMap it already receives as a parameter.
+function getCurrentGeneration(sessionPhaseMap, sessionID) {
+  return sessionPhaseMap.get(`${sessionID}:gen`) || 0;
+}
+
+// Generation-aware session KD matcher. Accepts both naming variants:
+//   - `...-${sessionID}.md`         (generation 0, legacy naming)
+//   - `...-${sessionID}-gen${N}.md` (generation N naming)
+// A file matches only when its generation equals the current state generation
+// (R002, Option A). Gen-less files are treated as generation 0 and are NOT
+// matched when the current generation is > 0 (EC-007) — they belong to a
+// prior lifecycle and must not advance or suppress the new one.
+function matchesSessionKD(filename, sessionID, generation) {
+  if (typeof filename !== "string" || !sessionID) return false;
+  // Generation N variant: `...-${sessionID}-gen${N}.md`
+  const genMarker = `-${sessionID}-gen`;
+  const genIdx = filename.lastIndexOf(genMarker);
+  if (genIdx !== -1) {
+    const tail = filename.slice(genIdx + genMarker.length);
+    const genMatch = tail.match(/^(\d+)\.md$/);
+    if (genMatch) {
+      return parseInt(genMatch[1], 10) === generation;
+    }
+  }
+  // Legacy variant: `...-${sessionID}.md`
+  if (generation > 0) return false;
+  return filename.endsWith(`-${sessionID}.md`);
+}
+
+// Deletes all knowledge KDs belonging to a session — both naming variants
+// (legacy `-${sessionID}.md` and any `-${sessionID}-gen${N}.md`). Called at
+// lifecycle end (REPORT→reset) so stale prior-lifecycle KDs cannot confuse a
+// new generation (BUG-008). Single readdirSync + batch rmSync loop (NFR003 —
+// no per-file glob). EC-005: a missing knowledge/ dir is not an error.
+// R6: logs the count of removed files.
+function cleanupLifecycleKDs(sessionID) {
+  const knowledgeDir = join(process.cwd(), "knowledge");
+  let files = [];
+  try {
+    files = readdirSync(knowledgeDir);
+  } catch (e) {
+    debug(`cleanupLifecycleKDs: knowledge/ dir not found for session ${sessionID} — nothing to clean (EC-005)`);
+    return 0;
+  }
+  const genPattern = new RegExp(`-${sessionID}-gen\\d+\\.md$`, "i");
+  const stale = files.filter(f => f.endsWith(`-${sessionID}.md`) || genPattern.test(f));
+  for (const f of stale) {
+    try {
+      rmSync(join(knowledgeDir, f));
+    } catch (e) {
+      debug(`cleanupLifecycleKDs: failed to remove ${f}: ${e.message}`);
+    }
+  }
+  debug(`Cleanup of ${stale.length} stale KDs for session ${sessionID}`);
+  return stale.length;
+}
+
+// Override signal files (.state/.override-{sessionID}.json) expire after this
+// window. A stale file must never apply a phase change long after the user
+// (or the /phase command template) wrote it.
+const OVERRIDE_TTL_MS = 5 * 60 * 1000;
+
+// Parses a /phase command argument into a phase number. Accepts:
+//   - a number string 0-12 (e.g. "5" → ALIGN)
+//   - a phase name, case-insensitive (e.g. "INTENT", "preflight")
+// Returns null when the argument is not a valid phase reference — the AC-R006
+// rejection cases (99, INVALID, empty) all funnel through here.
+function parsePhaseArg(arg) {
+  if (typeof arg !== "string") return null;
+  const trimmed = arg.trim().toUpperCase();
+  if (trimmed === "") return null;
+  if (/^\d+$/.test(trimmed)) {
+    const n = parseInt(trimmed, 10);
+    if (Number.isInteger(n) && n >= 0 && n <= 12) return n;
+    return null;
+  }
+  return Object.prototype.hasOwnProperty.call(STATES, trimmed) ? STATES[trimmed] : null;
 }
 
 let _logFile = null;
@@ -161,8 +247,7 @@ function loadConfig() {
       phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"],
       agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", CLEANUP: "committer" },
       backwardTransitions: { VERIFY: ["SWARM"] },
-      maxCyclesPerTransition: 3,
-      milestoneCount: 1
+      maxCyclesPerTransition: 3
     };
   }
 }
@@ -203,6 +288,219 @@ function extractAgentFromPrompt(prompt) {
   return null;
 }
 
+// Extracts the MILESTONE ID from a raw dispatch prompt. protocol-gate runs
+// BEFORE delegation-gate, so the raw prompt (not the rendered template) is the
+// source of truth. Accepts the canonical `MILESTONE ID:` field and the
+// underscore variant, with optional Markdown bold markers. Returns the trimmed
+// value or null when absent. Exactly-one and format validation is
+// delegation-gate's job (HOW); protocol-gate only needs the value to update the
+// registry (WHEN).
+function extractMilestoneIdFromPrompt(prompt) {
+  if (typeof prompt !== "string") return null;
+  for (const line of prompt.split("\n")) {
+    const normalized = line.replace(/\*\*/g, "").trim();
+    const match = normalized.match(/^MILESTONE[_\s]ID:\s*(.+)$/i);
+    if (match) {
+      const value = match[1].trim();
+      return value || null;
+    }
+  }
+  return null;
+}
+
+// Advances a milestone row in the session's milestone registry KD through the
+// given state chain (e.g. ["assigned", "in-progress"]) on a SWARM dispatch.
+// Only the machine-readable `## Milestone States` YAML block is rewritten — the
+// human-readable Milestone Details table stays untouched. A row already at the
+// final state or in checked-off is left alone: completed milestones must not
+// regress via re-dispatch (backward transitions belong to the M5 gate).
+// M4 (R009/R010): reaching checked-off is restricted to in-progress milestones —
+// the artisan checks off only after its impl KD lands, so pending/assigned/failed
+// rows are rejected with invalid-transition. Row matching is case-insensitive
+// (impl KDs may carry any casing for the milestone token, e.g. impl-m3 vs row M3)
+// and the replacement preserves the registry row's own casing.
+// Returns { ok, path, changed } on success or { ok: false, reason } otherwise.
+function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states) {
+  const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!located) return { ok: false, reason: "no-registry" };
+
+  const rowPattern = new RegExp(`^\\s*${escapeRegExp(milestoneId)}:\\s*([A-Za-z-]+)\\s*$`, "mi");
+  const rowMatch = located.block.match(rowPattern);
+  if (!rowMatch) return { ok: false, reason: "milestone-not-found" };
+
+  const current = rowMatch[1];
+  const finalState = Array.isArray(states) && states.length > 0 ? states[states.length - 1] : "in-progress";
+  if (current === finalState) {
+    return { ok: true, path: located.path, changed: false };
+  }
+  if (finalState === "checked-off" && current !== "in-progress") {
+    return { ok: false, reason: "invalid-transition" };
+  }
+  if (current === "checked-off") {
+    return { ok: true, path: located.path, changed: false };
+  }
+
+  const rowId = rowMatch[0].slice(0, rowMatch[0].indexOf(":")).trim();
+  const newBlock = located.block.replace(rowPattern, `  ${rowId}: ${finalState}`);
+  const newContent = located.content.slice(0, located.fenceStart) + newBlock + located.content.slice(located.fenceEnd);
+  try {
+    writeFileSync(located.path, newContent);
+    debug(`Registry ${located.path}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
+    return { ok: true, path: located.path, changed: true };
+  } catch (e) {
+    debug(`Registry write failed for ${located.path}: ${e.message}`);
+    return { ok: false, reason: "write-failed" };
+  }
+}
+
+// M4 (R009/R010): Locates and parses the session's milestone registry KD.
+// Shared by updateMilestoneRegistry and readMilestoneState so both helpers agree
+// on the machine-readable `## Milestone States` YAML block as the SSOT.
+// Returns { path, content, block, fenceStart, fenceEnd } or null when the
+// registry file or YAML block is missing.
+function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const knowledgeDir = join(process.cwd(), "knowledge");
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
+  const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKD(f, sessionID, generation));
+  if (!registry) return null;
+
+  const path = join(knowledgeDir, registry);
+  let content;
+  try { content = readFileSync(path, "utf8"); } catch (_) { return null; }
+
+  const blockStart = content.search(/^##\s*Milestone States\s*$/m);
+  if (blockStart === -1) return null;
+  const fenceStart = content.indexOf("```yaml", blockStart);
+  const fenceEnd = content.indexOf("```", fenceStart + 7);
+  if (fenceStart === -1 || fenceEnd === -1) return null;
+  return { path, content, block: content.slice(fenceStart, fenceEnd), fenceStart, fenceEnd };
+}
+
+// M4 (R009/R010): Reads the current state of a milestone row from the registry
+// YAML block. Returns the state string or null when the registry/row is missing.
+function readMilestoneState(sessionID, sessionPhaseMap, milestoneId) {
+  const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!located) return null;
+  const rowPattern = new RegExp(`^\\s*${escapeRegExp(milestoneId)}:\\s*([A-Za-z-]+)\\s*$`, "mi");
+  const rowMatch = located.block.match(rowPattern);
+  return rowMatch ? rowMatch[1] : null;
+}
+
+// M4 (R009/R010): Finds the milestone-scoped impl KD on disk for a milestone.
+// Mirrors matchesSessionKD generation scoping: gen 0 matches the legacy
+// `-<session>.md` suffix; gen N matches only `-<session>-genN.md`. The milestone
+// prefix match is case-insensitive. Returns the filename or null.
+function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
+  if (!milestoneId) return null;
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const knowledgeDir = join(process.cwd(), "knowledge");
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
+  const prefix = `impl-${milestoneId}-`;
+  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKD(f, sessionID, generation));
+  return found || null;
+}
+
+// M4 (R009/R010): Cross-checks a milestone's registry state against its impl KD
+// on disk — the verifiable check-off semantics the M5 all-checked-off gate will
+// consume. A row is genuinely checked-off only when BOTH the registry row says
+// checked-off AND the milestone-scoped impl KD exists on disk.
+function checkMilestoneCheckedOff(sessionID, sessionPhaseMap, milestoneId) {
+  const state = readMilestoneState(sessionID, sessionPhaseMap, milestoneId);
+  const implKD = findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId);
+  return {
+    checkedOff: state === "checked-off" && implKD !== null,
+    implKDOnDisk: implKD !== null,
+    state,
+    implKD
+  };
+}
+
+// M5 (R011-R014): Parses the session's milestone registry rows from the
+// machine-readable `## Milestone States` YAML block (the same SSOT the M4
+// helpers use). Returns { rows: [{ id, state }], path, content, block,
+// fenceStart, fenceEnd } or null when the registry file or YAML block is
+// missing/unparsable.
+function readMilestoneRegistry(sessionID, sessionPhaseMap) {
+  const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!located) return null;
+  const rows = [];
+  const rowPattern = /^\s*([A-Za-z0-9_-]+):\s*([A-Za-z-]+)\s*$/gm;
+  let match;
+  while ((match = rowPattern.exec(located.block)) !== null) {
+    rows.push({ id: match[1], state: match[2] });
+  }
+  return { rows, ...located };
+}
+
+// M5 (R011-R014): The all-checked-off gate — SWARM→VERIFY advances ONLY when
+// every registry row is checked-off AND its milestone-scoped impl KD is on
+// disk (checkMilestoneCheckedOff semantics: registry state + disk evidence).
+// Fails closed on missing (REGISTRY_MISSING) and empty (REGISTRY_EMPTY)
+// registries. Returns { ok, total, checkedOff, rows }.
+function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
+  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!registry) {
+    debug(`REGISTRY_MISSING: no milestone registry for session ${sessionID} — SWARM cannot advance`);
+    return { ok: false, total: 0, checkedOff: 0, rows: [] };
+  }
+  if (registry.rows.length === 0) {
+    debug(`REGISTRY_EMPTY: milestone registry has no rows for session ${sessionID} — SWARM cannot advance`);
+    return { ok: false, total: 0, checkedOff: 0, rows: [] };
+  }
+  const rows = registry.rows.map(r => ({
+    id: r.id,
+    state: r.state,
+    checkedOff: checkMilestoneCheckedOff(sessionID, sessionPhaseMap, r.id).checkedOff
+  }));
+  const checkedOff = rows.filter(r => r.checkedOff).length;
+  const ok = checkedOff === rows.length;
+  if (!ok) {
+    const stuck = rows.filter(r => !r.checkedOff);
+    debug(`SWARM gate: ${checkedOff}/${rows.length} milestones checked-off — blocked by: ${stuck.map(r => `${r.id}=${r.state}`).join(", ")}`);
+  }
+  return { ok, total: rows.length, checkedOff, rows };
+}
+
+// M5 (R011-R014): Repurposes the legacy SWARM safety force-advances. A stuck
+// SWARM session never auto-advances to VERIFY — it marks every non-checked-off
+// milestone failed in the registry, logs SAFETY_STUCK, and stays in SWARM.
+// The only escape hatch is the user's /phase override (SAFETY_ESCAPE).
+function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger) {
+  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!registry) {
+    debug(`SAFETY_STUCK: ${trigger} for session ${sessionID} — no registry to mark`);
+    return;
+  }
+  for (const row of registry.rows) {
+    if (row.state !== "checked-off" && row.state !== "failed") {
+      const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["failed"]);
+      debug(`SAFETY_STUCK: marked ${row.id} failed (${trigger}) — ${JSON.stringify(result)}`);
+    }
+  }
+  debug(`SAFETY_STUCK: ${trigger} for session ${sessionID} — staying in SWARM (no auto-advance)`);
+}
+
+// M4 (R009/R010): Extracts the milestone ID from an impl KD filename per the
+// milestone-scoped naming contract `impl-<milestone-id>-<name>-<session>[-gen{N}].md`.
+// The first token after the `impl-` prefix is the milestone ID. Returns null for
+// non-impl filenames (other KD types) and invalid input — a legacy unscoped
+// impl KD yields its first name token, which never matches a registry row.
+function extractMilestoneIdFromImplKD(filename) {
+  if (typeof filename !== "string") return null;
+  const base = filename.replace(/\\/g, "/").split("/").pop();
+  if (!/^impl-/i.test(base)) return null;
+  const name = base.replace(/\.md$/, "");
+  const token = name.replace(/^impl-/i, "").split("-")[0];
+  return token || null;
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // Normalize absolute paths to project-relative for prefix matching.
 // opencode passes absolute paths (e.g. /home/user/project/knowledge/intent-foo.md)
 // but our checks use relative patterns (e.g. knowledge/intent-).
@@ -239,12 +537,28 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     return false;
   }
 
-  // Filter to only files matching the current session ID.
+  // Filter to only files matching the current session ID AND generation.
   // KD filenames embed the session ID as a suffix (e.g. preflight-workspace-ses_abc123.md).
   // Uses suffix matching to prevent substring collisions (ses_abc1 matching ses_abc123).
-  const sessionFiles = files.filter(f => f.endsWith(`-${sessionID}.md`));
+  // Generation scoping (P003/R002): files from a prior lifecycle carry a
+  // different `-genN-` suffix and must not advance the new lifecycle (BUG-008).
+  // NFR005: generation defaults to 0 when the state was never loaded or the
+  // file carried no generation field — session-ID-only matching is the fallback.
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const sessionFiles = [];
+  for (const f of files) {
+    if (matchesSessionKD(f, sessionID, generation)) {
+      sessionFiles.push(f);
+    } else if (f.endsWith(`-${sessionID}.md`) || f.includes(`-${sessionID}-gen`)) {
+      // Same session but different generation — stale prior-lifecycle KD.
+      // Log the skip so generation mismatches are diagnosable (R006/R5).
+      const fileGenMatch = f.match(/-gen(\d+)\.md$/);
+      const fileGen = fileGenMatch ? parseInt(fileGenMatch[1], 10) : 0;
+      debug(`Skipped KD ${f}: generation mismatch (file=${fileGen}, current=${generation})`);
+    }
+  }
 
-  // DECOMPOSE uses `/^plan-/i` to advance when a plan KD exists.
+  // DECOMPOSE has no single-prefix pattern — its dual-KD gate is handled below.
   // PREFLIGHT advances when a `preflight-` KD is written by the Committer.
   // The session-ID filter prevents stale KDs from prior sessions from triggering advancement.
   const patterns = {
@@ -253,7 +567,6 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     [STATES.EXPLORE]: /^exploration-/i,
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
-    [STATES.DECOMPOSE]: /^plan-/i,
     [STATES.SWARM]: /^impl-/i,
     [STATES.VERIFY]: /^review-|^audit-/i,
     [STATES.EXTRACT]: /^composed-/i,
@@ -262,6 +575,19 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   };
 
   const pattern = patterns[phase];
+
+  // DECOMPOSE advancement requires BOTH the plan KD and the milestone registry
+  // (R003 dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM must
+  // not start until the registry (live state SSOT) is on disk. A plan- KD alone
+  // is the EC03 case — fail-closed, no advancement.
+  if (phase === STATES.DECOMPOSE) {
+    const hasPlan = sessionFiles.some(f => /^plan-/i.test(f));
+    const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f));
+    const result = hasPlan && hasMilestones;
+    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones} → ${result}`);
+    return result;
+  }
+
   if (!pattern) return false;
 
   if (phase === STATES.VERIFY) {
@@ -272,27 +598,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     return result;
   }
 
-  // SWARM advancement requires dispatch-count tracking (Issue 6).
-  // When the Overseer dispatches multiple artisans, each must produce an `impl-` KD
-  // before advancing to VERIFY. Without this, the first artisan's KD triggers
-  // premature advancement while others are still working.
+  // M5 (R011-R014): SWARM advancement requires ALL registry milestones to be
+  // checked-off with their impl KDs on disk (checkAllMilestonesCheckedOff).
+  // The milestone registry is the live state SSOT — the legacy dispatch-count
+  // gate (MILESTONE_COUNT, swarmDispatchCount) has no gating effect. Fails
+  // closed on missing/empty/unparsable registries (REGISTRY_MISSING/EMPTY).
   if (phase === STATES.SWARM) {
-    const implFiles = sessionFiles.filter(f => pattern.test(f));
-    const dispatchCount = swarmDispatchCount.get(sessionID) || 0;
-    // Use stored milestone count from dispatch prompt when available, then config.
-    // This ensures when the dispatcher specifies MILESTONE_COUNT:N, all N impl KDs
-    // must be on disk before advancing to VERIFY. Falls back to config then default 1.
-    const storedMc = sessionPhaseMap.get(`${sessionID}:milestones`);
-    const cfg = loadConfig();
-    const milestoneCount = storedMc || cfg.milestoneCount || 1;
-    const effectiveCount = Math.max(milestoneCount, dispatchCount, 1);
-    // Require at least one dispatch OR milestoneCount > 1 to advance.
-    // When milestoneCount > 1, the config requires N impl KDs regardless of dispatches.
-    // When milestoneCount is 1 (default), dispatch-driven advancement still applies.
-    const hasSufficientTrigger = dispatchCount > 0 || milestoneCount > 1;
-    const result = hasSufficientTrigger && implFiles.length >= effectiveCount;
-    debug(`Disk check SWARM: impl=${implFiles.length}, dispatched=${dispatchCount}, milestoneCount=${milestoneCount}, effective=${effectiveCount} → ${result}`);
-    return result;
+    const gate = checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap);
+    debug(`Disk check SWARM: all-checked-off gate → ${gate.ok} (${gate.checkedOff}/${gate.total})`);
+    return gate.ok;
   }
 
   const result = sessionFiles.some(f => pattern.test(f));
@@ -314,7 +628,10 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return false; }
 
-  const sessionFiles = files.filter(f => f.endsWith(`-${sessionID}.md`));
+  // Generation-scoped (P003): stale gen-N KDs from a prior lifecycle must not
+  // suppress legitimate phase regression in the current lifecycle (R3 gap fix).
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const sessionFiles = files.filter(f => matchesSessionKD(f, sessionID, generation));
 
   const patterns = {
     [STATES.INTENT]: /^intent-/i,
@@ -488,19 +805,27 @@ export default {
     }
 
     function saveState(sessionID) {
-      const phase = sessionPhaseMap.get(sessionID);
+      // P009: the phase entry is deleted at lifecycle end (REPORT reset).
+      // Persist that state as phase 0 — the next loadState() restores
+      // PROTOCOL_NOT_LOADED and honors any manual edit of this file (AC-R005).
+      const phase = sessionPhaseMap.get(sessionID) ?? STATES.PROTOCOL_NOT_LOADED;
       const sid = sessionPhaseMap.get(`${sessionID}:sid`);
-      if (phase === undefined) return;
       try {
+        // generation persists across lifecycle resets via the :gen map entry.
+        // Written even at phase 0 so the counter survives restarts between
+        // lifecycles (P001/R001). Returns boolean so callers can enforce the
+        // NFR002 atomicity contract: revert in-memory :gen when save fails.
+        const generation = sessionPhaseMap.get(`${sessionID}:gen`) || 0;
         // Fix M4: Omit sid from state JSON when it's null/undefined (deleted after REPORT).
         // Previously, sid: null was serialized, causing loadState to skip phase restoration
         // and producing artifacts in the state file.
-        const state = { phase, timestamp: Date.now() };
+        const state = { phase, generation, timestamp: Date.now() };
         if (sid) state.sid = sid;
         const stateDir = join(PLUGIN_DIR, ".state");
         mkdirSync(stateDir, { recursive: true });
         writeFileSync(getStatePath(sessionID), JSON.stringify(state));
-      } catch (e) { debug(`saveState error: ${e.message}`); }
+        return true;
+      } catch (e) { debug(`saveState error: ${e.message}`); return false; }
     }
 
     function loadState(sessionID) {
@@ -508,6 +833,13 @@ export default {
       debug(`loadState: checking ${statePath}`);
       try {
         const data = JSON.parse(readFileSync(statePath, "utf8"));
+        // Generation restoration happens for ANY phase, including phase 0.
+        // After REPORT→PROTOCOL_NOT_LOADED the file is {phase:0, generation:N}
+        // and the counter must survive process restarts between lifecycles.
+        if (data.generation !== undefined) {
+          sessionPhaseMap.set(`${sessionID}:gen`, data.generation);
+          debug(`loadState: restored generation=${data.generation} for ${sessionID}`);
+        }
         if (data.phase !== undefined && data.phase > STATES.PROTOCOL_NOT_LOADED) {
           sessionPhaseMap.set(sessionID, data.phase);
           if (data.sid) {
@@ -522,6 +854,65 @@ export default {
       return false;
     }
 
+    // --- Phase override (M3, R005/AC-R006) ---
+    // Two paths set a phase override for a session:
+    //   1. The /phase command (command.execute.before hook) sets the phase
+    //      directly in memory and persists it via saveState — deterministic,
+    //      no filesystem round-trip.
+    //   2. A signal file `.state/.override-{sessionID}.json` written by the
+    //      command template (commands/phase.md) — fallback for runtimes where
+    //      the hook is not invoked. Consumed exactly once by chat.params.
+    // The file path carries a 5-minute TTL and refuses forward jumps larger
+    // than 3 phases (defense against a stale or miswritten file; the explicit
+    // /phase command bypasses this limit because the user typed it directly).
+    function getOverridePath(sessionID) {
+      return join(PLUGIN_DIR, ".state", `.override-${sessionID}.json`);
+    }
+
+    function applyPhaseOverride(sessionID) {
+      const overridePath = getOverridePath(sessionID);
+      let raw;
+      try {
+        raw = readFileSync(overridePath, "utf8");
+      } catch (_) {
+        return false; // no override file
+      }
+      try {
+        const data = JSON.parse(raw);
+        if (data.createdAt && Date.now() - new Date(data.createdAt).getTime() > OVERRIDE_TTL_MS) {
+          debug(`Phase override: dropped expired override for session ${sessionID} (TTL ${OVERRIDE_TTL_MS}ms)`);
+          rmSync(overridePath, { force: true });
+          return false;
+        }
+        const n = Number(data.phase);
+        if (!Number.isInteger(n) || n < STATES.PROTOCOL_NOT_LOADED || n > STATES.REPORT) {
+          debug(`Phase override: invalid phase value ${data.phase} in override file for session ${sessionID}`);
+          rmSync(overridePath, { force: true });
+          return false;
+        }
+        const current = sessionPhaseMap.get(sessionID);
+        if (current !== undefined && n > current + 3) {
+          debug(`Phase override: REJECTED forward jump ${getPhaseName(current)}(${current}) → ${getPhaseName(n)}(${n}) for session ${sessionID} (max +3)`);
+          rmSync(overridePath, { force: true });
+          return false;
+        }
+        sessionPhaseMap.set(sessionID, n);
+        // Re-capture the session ID so checkDiskAdvancement can filter KDs by
+        // session — required when the override starts a fresh lifecycle.
+        if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
+          sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+        }
+        saveState(sessionID);
+        rmSync(overridePath, { force: true }); // consumed once
+        debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
+        return true;
+      } catch (e) {
+        debug(`Phase override: malformed override file for session ${sessionID}: ${e.message}`);
+        rmSync(overridePath, { force: true });
+        return false;
+      }
+    }
+
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
 
     debug("Plugin initializing…");
@@ -533,15 +924,18 @@ export default {
     // These accumulate when sessions are interrupted mid-lifecycle.
     // Only delete files where sid is missing from the JSON, not where sid is null
     // (null sid is valid for INTENT-phase state before intent KD is written).
+    // A phase-0 file that carries a `generation` field is a completed-lifecycle
+    // marker (post-REPORT state) — it must survive restarts so the counter is
+    // not lost between lifecycles (R4).
     try {
       const stateDir = join(PLUGIN_DIR, ".state");
       const stateFiles = readdirSync(stateDir).filter(f => f.startsWith(".protocol-state-") && f.endsWith(".json"));
       for (const sf of stateFiles) {
         try {
           const data = JSON.parse(readFileSync(join(stateDir, sf), "utf8"));
-          if (data.sid === undefined) {
+          if (data.sid === undefined && data.generation === undefined) {
             rmSync(join(stateDir, sf));
-            debug(`Plugin init: cleaned orphaned state file ${sf} (no SID)`);
+            debug(`Plugin init: cleaned orphaned state file ${sf} (no SID, no generation)`);
           }
         } catch (_) {}
       }
@@ -581,7 +975,7 @@ export default {
         let implFiles = [];
         try {
           const files = readdirSync(knowledgeDir);
-          implFiles = files.filter(f => f.endsWith(`-${sessionID}.md`) && /^impl-/i.test(f));
+          implFiles = files.filter(f => matchesSessionKD(f, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID)) && /^impl-/i.test(f));
         } catch (_) {}
         const reconciliedCount = Math.max(1, implFiles.length);
         swarmDispatchCount.set(sessionID, reconciliedCount);
@@ -591,6 +985,26 @@ export default {
       phaseRedispatchCount.delete(`${sessionID}:${targetPhase}`);
       debug(`COUNTER_RESET: phaseRedispatchCount deleted for ${getPhaseName(targetPhase)} (session ${sessionID})`);
       return true;
+    }
+
+    // M4 (R009/R010): When the artisan writes its milestone-scoped impl KD,
+    // advance that milestone to checked-off in the parent lifecycle's registry.
+    // The impl KD on disk IS the verifiable evidence of completion — the M5
+    // all-checked-off gate reads it back via checkMilestoneCheckedOff. Only a
+    // matching overseer session in SWARM is touched; the impl KD filename carries
+    // the parent session ID, which maps the artifact back to its lifecycle.
+    function autoCheckOffMilestone(relPath) {
+      const milestoneId = extractMilestoneIdFromImplKD(relPath);
+      if (!milestoneId) return;
+      for (const overseerID of overseerSessions) {
+        if (sessionPhaseMap.get(overseerID) !== STATES.SWARM) continue;
+        const generation = getCurrentGeneration(sessionPhaseMap, overseerID);
+        if (matchesSessionKD(relPath, overseerID, generation)) {
+          const result = updateMilestoneRegistry(overseerID, sessionPhaseMap, milestoneId, ["checked-off"]);
+          debug(`M4 auto check-off: impl KD for milestone ${milestoneId} → ${JSON.stringify(result)}`);
+          break;
+        }
+      }
     }
 
     // --- Hook: chat.params ---
@@ -604,6 +1018,11 @@ export default {
 
       if (agent === "overseer") {
         overseerSessions.add(sessionID);
+        // M3: consume any pending /phase override file first. Runs before the
+        // entry check so a file is honored even mid-lifecycle (the hook already
+        // applied the value in memory — the file then re-applies the same value
+        // and is deleted, which is idempotent).
+        applyPhaseOverride(sessionID);
         // Only initialize when session isn't already tracked (opencode calls
         // chat.params on every tool invocation cycle, not once per session).
         if (!sessionPhaseMap.has(sessionID)) {
@@ -613,6 +1032,8 @@ export default {
             // BUG-004: Capture session ID at initialization, not at intent KD write.
             // checkDiskAdvancement requires :sid to filter KD files by session.
             sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+            // saveState re-persists any :gen restored by loadState — a phase-0
+            // post-REPORT state file's generation survives this re-initialization.
             saveState(sessionID);
           }
         }
@@ -622,6 +1043,44 @@ export default {
         debug(`chat.params: non-overseer session ${sessionID} (agent=${agent}) — passing through`);
         return;
       }
+    }
+
+    // --- Hook: command.execute.before (M3, R005) ---
+    // Implements the /phase slash command. Validates the argument against
+    // STATES (AC-R006 rejection cases: 99, INVALID, empty) and applies the
+    // override in memory + on disk. Registered alongside commands/phase.md;
+    // the hook is the deterministic path and the command template's override
+    // file is the fallback for runtimes that never invoke this hook.
+    async function commandExecuteBefore(input, output) {
+      const commandName = String(input.command || "").replace(/^\/+/, "");
+      if (commandName !== "phase") return;
+      const { sessionID, arguments: arg } = input;
+      const trimmed = String(arg ?? "").trim();
+      if (!trimmed) {
+        output.parts = [{ type: "text", text: "Error: /phase requires an argument. Usage: /phase <0-12|PHASE_NAME>" }];
+        return;
+      }
+      const n = parsePhaseArg(trimmed);
+      if (n === null) {
+        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 0-12 or one of ${Object.keys(STATES).join(", ")}.` }];
+        return;
+      }
+      const prevPhase = sessionPhaseMap.get(sessionID);
+      sessionPhaseMap.set(sessionID, n);
+      // Re-capture the session ID so checkDiskAdvancement can filter KDs by
+      // session — required when /phase starts a fresh lifecycle.
+      if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
+        sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+      }
+      overseerSessions.add(sessionID);
+      saveState(sessionID);
+      // M5 (R011-R014): the user's /phase override is the ONLY escape hatch
+      // from a stuck SWARM — the automatic safety mechanisms never advance it.
+      if (prevPhase === STATES.SWARM && n !== STATES.SWARM) {
+        debug(`SAFETY_ESCAPE: /phase override ${getPhaseName(prevPhase)} → ${getPhaseName(n)} for session ${sessionID} — manual escape from SWARM`);
+      }
+      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
+      output.parts = [{ type: "text", text: `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
     }
 
     // --- Hook: permission.ask ---
@@ -702,6 +1161,14 @@ export default {
                 }
               }
             }
+          }
+          // M4 (R009/R010): the artisan's milestone-scoped impl KD write is the
+          // check-off signal — advance that milestone in the parent SWARM
+          // lifecycle's registry. Only the artisan (the intended writer of impl
+          // KDs) triggers it; other agents' writes never touch milestone state.
+          const isImplKD = /^knowledge\/impl-/i.test(relPath) || /\/knowledge\/impl-/i.test(relPath);
+          if (isImplKD && (sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown") === "artisan") {
+            autoCheckOffMilestone(relPath);
           }
         }
         // Session never identified as overseer via chat.params — pass through.
@@ -791,15 +1258,40 @@ export default {
         // REPORT → PROTOCOL_NOT_LOADED: report KD written means lifecycle is complete.
         // Reset to phase 0 so the Overseer can start a new lifecycle with todowrite.
         if (phase === STATES.REPORT && isReportKD) {
-          debug(`write: report KD written → transitioning to PROTOCOL_NOT_LOADED`);
-          sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+          debug(`write: report KD written → transitioning lifecycle end`);
+          // R001: increment generation on lifecycle end — the new generation
+          // scopes all KDs written in the next lifecycle. NFR002/EC-003:
+          // increment is atomic with saveState — revert on save failure.
+          const currentGen = getCurrentGeneration(sessionPhaseMap, sessionID);
+          const nextGen = currentGen + 1;
+          sessionPhaseMap.set(`${sessionID}:gen`, nextGen);
+          // R004/P009: delete the phase entry instead of setting PROTOCOL_NOT_LOADED.
+          // chat.params only re-runs loadState() when the entry is absent, so a
+          // 0 here would keep the in-memory map diverged from a manually edited
+          // state file (BUG-009). Deleting forces loadState() on the next message.
+          sessionPhaseMap.delete(sessionID);
           diskCheckFailures.set(sessionID, 0);
           sessionPhaseMap.delete(`${sessionID}:sid`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
           pendingVerification.delete(sessionID);
           pendingVerificationToolCount.delete(sessionID);
-          saveState(sessionID);
+          if (!saveState(sessionID)) {
+            sessionPhaseMap.set(`${sessionID}:gen`, currentGen);
+            debug(`saveState failed — generation stays ${currentGen} for session ${sessionID} (NFR002)`);
+          } else {
+            debug(`Generation ${currentGen} → ${nextGen} for session ${sessionID}`);
+          }
+          // R003/P008: remove this lifecycle's KDs so stale files can never
+          // advance or suppress the next generation. EC-008: cleanup failure
+          // must not block the phase reset — wrapped in try-catch. EC-004
+          // accepted race: any KD written between the REPORT trigger and this
+          // cleanup belongs to the ending lifecycle; deletion is safe.
+          try {
+            cleanupLifecycleKDs(sessionID);
+          } catch (e) {
+            debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message} (EC-008)`);
+          }
           phase = STATES.PROTOCOL_NOT_LOADED;
           phaseName = getPhaseName(phase);
         }
@@ -852,11 +1344,21 @@ export default {
       // --- read handler ---
       else if (tool === "read") {
         const path = args?.filePath || "";
-        if (phase === STATES.INTENT || phase === STATES.REPORT) {
-          const relPath = toProjectRelative(path);
-          const isTemplate = relPath.includes("templates");
-          const isSkillFile = relPath.endsWith("/SKILL.md") || relPath.includes("/skills/");
+        const relPath = toProjectRelative(path);
+        const isTemplate = relPath.includes("templates");
+        const isSkillFile = relPath.endsWith("/SKILL.md") || relPath.includes("/skills/");
 
+        if (phase === STATES.SWARM) {
+          // SWARM phase: dispatcher visibility — the Overseer reads the plan and
+          // the milestone registry to track milestone state and drive
+          // per-milestone artisan dispatches. All other reads stay blocked.
+          const isPlanKD = /^knowledge\/plan-/i.test(relPath) || /\/knowledge\/plan-/i.test(relPath);
+          const isMilestonesKD = /^knowledge\/milestones-/i.test(relPath) || /\/knowledge\/milestones-/i.test(relPath);
+          if (!isPlanKD && !isMilestonesKD) {
+            debug(`read: BLOCKED phase=${phaseName} path=${path} (SWARM reads restricted to plan and milestone registry KDs)`);
+            throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/plan-*.md or knowledge/milestones-*.md", "Read from knowledge/plan-*.md or knowledge/milestones-*.md only");
+          }
+        } else if (phase === STATES.INTENT || phase === STATES.REPORT) {
           if (phase === STATES.INTENT) {
             // INTENT phase: only allow templates, skill files, and the current session's intent KDs.
             // Restricting to intent KDs prevents the Overseer from reading prior-session
@@ -887,15 +1389,32 @@ export default {
         const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
 
         if (phase === STATES.REPORT && isReportKD) {
-          debug(`edit: report KD edited → transitioning to PROTOCOL_NOT_LOADED`);
-          sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+          debug(`edit: report KD edited → transitioning lifecycle end`);
+          // R001: generation increment — mirrors the write handler (see above
+          // for the NFR002 atomicity rationale). R004/P009: delete the phase
+          // entry so the next chat.params re-runs loadState() (BUG-009).
+          const currentGen = getCurrentGeneration(sessionPhaseMap, sessionID);
+          const nextGen = currentGen + 1;
+          sessionPhaseMap.set(`${sessionID}:gen`, nextGen);
+          sessionPhaseMap.delete(sessionID);
           diskCheckFailures.set(sessionID, 0);
           sessionPhaseMap.delete(`${sessionID}:sid`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
           pendingVerification.delete(sessionID);
           pendingVerificationToolCount.delete(sessionID);
-          saveState(sessionID);
+          if (!saveState(sessionID)) {
+            sessionPhaseMap.set(`${sessionID}:gen`, currentGen);
+            debug(`saveState failed — generation stays ${currentGen} for session ${sessionID} (NFR002)`);
+          } else {
+            debug(`Generation ${currentGen} → ${nextGen} for session ${sessionID}`);
+          }
+          // R003/P008: cleanup stale session KDs; EC-008 try-catch (see write handler).
+          try {
+            cleanupLifecycleKDs(sessionID);
+          } catch (e) {
+            debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message} (EC-008)`);
+          }
           phase = STATES.PROTOCOL_NOT_LOADED;
           phaseName = getPhaseName(phase);
         } else if (phase === STATES.REPORT && !isReportKD) {
@@ -946,7 +1465,12 @@ export default {
           } else {
             // REPORT doesn't use disk-based advancement — skip stuck detection.
             // REPORT writes the KD directly; other phases rely on KD file existence.
-            if (currentPhase !== STATES.REPORT) {
+            // P009: after lifecycle-end the phase entry was deleted; currentPhase
+            // is undefined and there is nothing to check — skip the whole block
+            // (getPhaseName(undefined).toLowerCase() would throw).
+            if (currentPhase === undefined) {
+              debug(`Disk advancement: no phase entry for ${sessionID} — skipping consistency block`);
+            } else if (currentPhase !== STATES.REPORT) {
               const currentPhasePrefixes = getPrefixes(currentPhase);
               if (currentPhasePrefixes.length === 0) {
                 currentPhasePrefixes.push(currentPhaseName.toLowerCase());
@@ -985,20 +1509,46 @@ export default {
               // producing the expected KD, this ensures the force-advance still fires.
               let safetyTriggered = false;
               if (currentFailures >= 15) {
-                debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → VERIFY after ${currentFailures} stuck failures (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
-                sessionPhaseMap.set(sessionID, STATES.VERIFY);
-                diskCheckFailures.set(sessionID, 0);
-                phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
-                pendingVerification.delete(sessionID);
-                pendingVerificationToolCount.delete(sessionID);
-                inFlightDispatches.delete(sessionID);
-                saveState(sessionID);
+                if (currentPhase === STATES.SWARM) {
+                  // M5 (R011-R014): repurposed — a stuck SWARM never
+                  // auto-advances to VERIFY. Mark stuck milestones failed,
+                  // reset counters, stay in SWARM. User /phase is the escape.
+                  markStuckMilestonesFailed(sessionID, sessionPhaseMap, `FORCE ADVANCE at ${currentFailures} failures`);
+                  diskCheckFailures.set(sessionID, 0);
+                  phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                  pendingVerification.delete(sessionID);
+                  pendingVerificationToolCount.delete(sessionID);
+                  inFlightDispatches.delete(sessionID);
+                  saveState(sessionID);
+                } else {
+                  debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → VERIFY after ${currentFailures} stuck failures (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
+                  sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                  diskCheckFailures.set(sessionID, 0);
+                  phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                  pendingVerification.delete(sessionID);
+                  pendingVerificationToolCount.delete(sessionID);
+                  inFlightDispatches.delete(sessionID);
+                  saveState(sessionID);
+                }
                 safetyTriggered = true;
               } else {
                 // R003: Check re-dispatch cap BEFORE pendingVerification guard
                 const redispatchKey = `${sessionID}:${currentPhase}`;
                 const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
                 if (redispatches >= 5 && tool === "task") {
+                  if (currentPhase === STATES.SWARM) {
+                    // M5 (R011-R014): repurposed — the redispatch cap during
+                    // SWARM blocks the dispatch, marks the stuck milestone
+                    // failed, and throws SAFETY_STUCK (no auto-advance).
+                    markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`);
+                    diskCheckFailures.set(sessionID, 0);
+                    phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                    pendingVerification.delete(sessionID);
+                    pendingVerificationToolCount.delete(sessionID);
+                    inFlightDispatches.delete(sessionID);
+                    saveState(sessionID);
+                    throw new ProtocolGateError("SAFETY_STUCK", `❌ SAFETY_STUCK: SWARM re-dispatch cap (${redispatches}) reached — milestone marked failed. Escalate to user or override with /phase`, "Escalate to user or use /phase to override");
+                  }
                   debug(`SAFETY_OVERRIDE: REDISPATCH CAP — ${currentPhaseName} phase — ${redispatches} re-dispatches used. Advancing to VERIFY (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
                   sessionPhaseMap.set(sessionID, STATES.VERIFY);
                   diskCheckFailures.set(sessionID, 0);
@@ -1025,13 +1575,25 @@ export default {
 
                   // Safety timeout: warn at 10, force-advance at 15 tool calls
                   if (toolCalls >= 15) {
-                    debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
-                    pendingVerification.delete(sessionID);
-                    pendingVerificationToolCount.delete(sessionID);
-                    sessionPhaseMap.set(sessionID, STATES.VERIFY);
-                    diskCheckFailures.set(sessionID, 0);
-                    inFlightDispatches.delete(sessionID);
-                    saveState(sessionID);
+                    if (currentPhase === STATES.SWARM) {
+                      // M5 (R011-R014): repurposed — a stuck SWARM never
+                      // auto-advances to VERIFY. Mark stuck milestones failed,
+                      // clear pendingVerification, stay in SWARM.
+                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `pendingVerification force-advance after ${toolCalls} tool calls`);
+                      pendingVerification.delete(sessionID);
+                      pendingVerificationToolCount.delete(sessionID);
+                      diskCheckFailures.set(sessionID, 0);
+                      inFlightDispatches.delete(sessionID);
+                      saveState(sessionID);
+                    } else {
+                      debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
+                      pendingVerification.delete(sessionID);
+                      pendingVerificationToolCount.delete(sessionID);
+                      sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                      diskCheckFailures.set(sessionID, 0);
+                      inFlightDispatches.delete(sessionID);
+                      saveState(sessionID);
+                    }
                   } else if (toolCalls >= 10) {
                     debug(`pendingVerification WARNING: ${toolCalls} tool calls without expected KD — clearing pendingVerification (expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
                     pendingVerification.delete(sessionID);
@@ -1055,7 +1617,7 @@ export default {
                     if (currentFailures === 10) {
                       const knowledgeDir = join(process.cwd(), "knowledge");
                       let foundFiles = [];
-                      try { foundFiles = readdirSync(knowledgeDir).filter(f => f.endsWith(`-${sessionID}.md`)); } catch (_) {}
+                      try { foundFiles = readdirSync(knowledgeDir).filter(f => matchesSessionKD(f, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID))); } catch (_) {}
                       debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${currentFailures} disk checks. Expected prefixes: ${JSON.stringify(currentPhasePrefixes)}. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
                     }
                   }
@@ -1104,13 +1666,17 @@ export default {
             if (phase === STATES.SWARM) {
               const count = (swarmDispatchCount.get(sessionID) || 0) + 1;
               swarmDispatchCount.set(sessionID, count);
-              // Extract MILESTONE_COUNT from dispatch prompt to track how many
-              // impl KDs are expected before SWARM→VERIFY advancement.
-              const milestoneMatch = prompt.match(/MILESTONE_COUNT:\s*(\d+)/i);
-              if (milestoneMatch) {
-                const mc = parseInt(milestoneMatch[1], 10);
-                sessionPhaseMap.set(`${sessionID}:milestones`, mc);
-                debug(`SWARM milestone count for ${sessionID}: ${mc} (from dispatch)`);
+              // M5 (R011-R014): MILESTONE_COUNT is no longer extracted or
+              // stored — the all-checked-off registry gate replaces count-based
+              // advancement, so count signals have no gating effect (AC024).
+              // M3: per-milestone registry tracking — parse the MILESTONE ID from
+              // the raw dispatch prompt and advance that milestone's row in the
+              // milestone registry (pending → assigned → in-progress). Runs here
+              // (not delegation-gate) so the registry is the live state SSOT.
+              const milestoneId = extractMilestoneIdFromPrompt(prompt);
+              if (milestoneId) {
+                const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, ["assigned", "in-progress"]);
+                debug(`SWARM registry update for ${milestoneId}: ${JSON.stringify(regResult)}`);
               }
               debug(`SWARM dispatch count for ${sessionID}: ${count}`);
             }
@@ -1215,10 +1781,13 @@ export default {
       if (instructions) {
         let systemMsg = `[Protocol Gate] Phase ${phaseName}: ${instructions}`;
 
-        // During INTENT phase, inject session ID so Overseer can use it in filename
+        // During INTENT phase, inject session ID + generation so Overseer can
+        // use them in the KD filename. The -gen{N} suffix (R002 Option A)
+        // scopes this lifecycle's KDs so stale prior-lifecycle KDs never match.
         if (phase === STATES.INTENT && sessionID) {
+          const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
           systemMsg += `\n\nYour session ID is: ${sessionID}`;
-          systemMsg += `\nUse this session ID in the intent KD filename: knowledge/intent-{name}-${sessionID}.md`;
+          systemMsg += `\nUse this session ID and generation in the intent KD filename: knowledge/intent-{name}-${sessionID}-gen${generation}.md`;
         }
 
         output.system.push(systemMsg);
@@ -1230,6 +1799,7 @@ export default {
       "chat.params": chatParams,
       "permission.ask": permissionAsk,
       "tool.execute.before": toolExecuteBefore,
+      "command.execute.before": commandExecuteBefore,
       "tool.definition": toolDefinition,
       "experimental.chat.system.transform": systemTransform,
       // Test-access properties
@@ -1247,6 +1817,21 @@ export default {
       freshAdvancement,
       KD_TYPE_PREFIXES,
       checkPhaseStateConsistency,
+      checkDiskAdvancement,
+      cleanupLifecycleKDs,
+      extractMilestoneIdFromPrompt,
+      updateMilestoneRegistry,
+      extractMilestoneIdFromImplKD,
+      findMilestoneImplKD,
+      readMilestoneState,
+      checkMilestoneCheckedOff,
+      readMilestoneRegistry,
+      checkAllMilestonesCheckedOff,
+      markStuckMilestonesFailed,
+      getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
+      parsePhaseArg,
+      applyPhaseOverride,
+      getOverridePath,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
       get lastSeenSession() { return lastSeenSession; }

@@ -38,7 +38,10 @@ const ERRORS = {
   INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope should not contain code blocks (security) or absolute /home/ paths (info leak)" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },
-  MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" }
+  MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" },
+  MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
+  INVALID_MILESTONE_ID: { code: "INVALID_MILESTONE_ID", message: "Invalid MILESTONE ID format", guidance: "MILESTONE ID must match /^[A-Za-z0-9][A-Za-z0-9_-]*$/" },
+  RESULT_KD_MILESTONE_MISMATCH: { code: "RESULT_KD_MILESTONE_MISMATCH", message: "Swarm result KD does not match the MILESTONE ID", guidance: "Name the impl KD knowledge/impl-<milestone-id>-<name>-<session-id>[-gen{N}].md with the dispatched MILESTONE ID as the first token after impl-" }
 };
 
 // All recognized delegation modes — used for template lookup and natural-language inference.
@@ -127,7 +130,7 @@ function loadTemplates(config) {
       const templateData = JSON.parse(readFileSync(templatePath, "utf8"));
       if (!templateData.template || typeof templateData.template !== "string") {
         debug(`Template ${mode}: disk file missing 'template' field — using fallback`);
-        templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
+        templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
       } else {
         debug(`Template ${mode}: loaded from disk`);
         templates[mode] = templateData.template;
@@ -153,7 +156,7 @@ function extractFromText(text, fields, override = false) {
       if (override || !fields["agent"]) fields["agent"] = agentMatch[2].trim().replace(/\*\*/g, "").trim();
       continue;
     }
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       const key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       if (override || !fields[key]) fields[key] = match[2].trim().replace(/\*\*/g, "").trim();
@@ -247,7 +250,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim().replace(/\\/g, "/");
-    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
@@ -265,10 +268,38 @@ function isBareKDPath(prompt) {
   return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(normalized);
 }
 
+// Collects every MILESTONE ID field value from a prompt — one entry per
+// `MILESTONE ID:` / `MILESTONE_ID:` line, with Markdown bold markers stripped.
+// A comma inside a single value means multiple milestones were crammed into one
+// field; both cases are rejected as MULTI_MILESTONE (R007).
+function collectMilestoneIds(prompt) {
+  if (!prompt) return [];
+  const ids = [];
+  for (const line of prompt.split("\n")) {
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?MILESTONE[. _]ID(?:\*\*)?:\s*(.*)/i);
+    if (match) {
+      const value = match[1].trim().replace(/\*\*/g, "").trim();
+      if (value) ids.push(value);
+    }
+  }
+  return ids;
+}
+
 // Detects literal placeholder patterns like {scope} or {result_kd} that the
 // Overseer failed to fill in — these pass structural extraction but are meaningless.
 function containsPlaceholder(value) {
   return /^\{[a-zA-Z_][a-zA-Z0-9_]*\}$/.test(value.trim());
+}
+
+// M4 (R009/R010): Extracts the milestone token from a swarm result KD path per
+// the milestone-scoped impl naming contract — the first token after `impl-`.
+// Returns null when the path is not an impl KD at all.
+function extractMilestoneTokenFromResultKd(resultKd) {
+  if (typeof resultKd !== "string") return null;
+  const base = resultKd.replace(/\\/g, "/").split("/").pop();
+  if (!/^impl-/i.test(base)) return null;
+  const name = base.replace(/\.md$/, "");
+  return name.replace(/^impl-/i, "").split("-")[0] || null;
 }
 
 function renderTemplate(template, fields) {
@@ -282,25 +313,38 @@ function renderTemplate(template, fields) {
   return result;
 }
 
-function injectToolDocs(output, agentName, mode) {
+function injectToolDocs(output, agentName, mode, generation) {
   const today = new Date().toISOString().slice(0, 10);
   const displayAgent = agentName || "explorer";
   const displayMode = mode || "explore";
+  // Generation suffix (P004/R002 Option A): when a lifecycle generation is
+  // known, KD names carry `-gen{N}` after the session ID so stale prior-lifecycle
+  // KDs never match. Generation 0 / unknown keeps the legacy bare suffix.
+  const genSuffix = generation !== undefined && generation !== "" ? `-gen${generation}` : "";
   // Concrete examples prevent LLMs from copying placeholder syntax literally.
   // <name> and <optional context> are genuine variables — angle brackets signal variability.
   // MODE_TO_KD_PREFIXES maps current mode to its KD type prefix(es) — only the relevant
   // entry is injected so the LLM sees only the naming convention for this dispatch.
   const modePrefixes = MODE_TO_KD_PREFIXES[displayMode] || ["<type>"];
+  // M4 (R009/R010): swarm result KDs carry the dispatched milestone as the
+  // first token after impl- — knowledge/impl-<milestone-id>-<name>-... Only
+  // injected for swarm so other modes don't see the contract they must not use.
+  const milestoneToken = displayMode === "swarm" ? "<milestone-id>-" : "";
   const resultKdExamples = modePrefixes
-    .map(p => `knowledge/${p}-<name>-<session_id>.md`)
+    .map(p => `knowledge/${p}-${milestoneToken}<name>-<session_id>${genSuffix}.md`)
     .join(", ");
+  // M3 (R006): swarm dispatches carry exactly one MILESTONE ID — the structural
+  // field the protocol-gate registry transition keys on. Only injected for swarm
+  // so other modes don't see a field they must not include.
+  const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: <milestone-id> (exactly one, required for swarm)\n" : "";
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
 MODE: ${displayMode}
-INTENT KD: knowledge/intent-<name>.md
+${milestoneLine}INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
 SESSION ID: <session-id>
+GENERATION: <generation>
 SCOPE: <optional context>
 RESULT KD: ${resultKdExamples} (when subagent produces a KD)
 
@@ -366,6 +410,22 @@ export default {
         fields["session_id"] = sessionID;
       }
 
+      // generation from protocol-gate state file — fills {generation} when the
+      // prompt omits GENERATION: (P004). Mirrors the SESSION ID fallback above;
+      // saveState always writes generation, so an active session has a value.
+      if (!fields["generation"] && sessionID) {
+        try {
+          const statePath = join(PLUGIN_DIR, "..", "protocol-gate", ".state", `.protocol-state-${sessionID}.json`);
+          const stateData = JSON.parse(readFileSync(statePath, "utf8"));
+          if (stateData.generation !== undefined) {
+            fields["generation"] = String(stateData.generation);
+            debug(`GENERATION fallback: read generation=${stateData.generation} from protocol-gate state`);
+          }
+        } catch (_) {
+          debug(`GENERATION fallback: no protocol-gate state file for ${sessionID}`);
+        }
+      }
+
       // scope is optional — provides domain context but doesn't block delegation
       // R009: intent_kd is not required for checkpoint mode — the checkpoint
       // template doesn't render intent_kd, so requiring it serves no purpose.
@@ -426,7 +486,7 @@ export default {
       debug(`ALLOW delegation: agent=${fields.agent} mode=${fields.mode} intent_kd=${fields.intent_kd} result_kd=${fields.result_kd}`);
 
       // Inject format hint after field extraction — mode is now available
-      injectToolDocs(output, fields.agent, fields.mode);
+      injectToolDocs(output, fields.agent, fields.mode, fields.generation);
 
       const template = templates[fields.mode?.toLowerCase()];
       if (!template) {
@@ -438,6 +498,43 @@ export default {
       if (KD_PRODUCING_MODES.includes(fields.mode?.toLowerCase()) && !fields.result_kd) {
         debug(`VALIDATION FAILED: KD-producing mode '${fields.mode}' requires result_kd`);
         throw new DelegationGateError(ERRORS.MISSING_RESULT_KD.code, ERRORS.MISSING_RESULT_KD.message, ERRORS.MISSING_RESULT_KD.guidance);
+      }
+
+      // R006–R008: swarm dispatches require exactly one valid MILESTONE ID.
+      // Runs after the result_kd check so a missing result_kd reports the more
+      // specific error first. Multiple milestones in one dispatch are rejected
+      // structurally (MULTI_MILESTONE) instead of warned about — the advisory
+      // regex only caught prose references (MEM-015), never enforced anything.
+      if (fields.mode?.toLowerCase() === "swarm") {
+        const milestoneIds = collectMilestoneIds(prompt);
+        if (milestoneIds.length === 0) {
+          debug(`VALIDATION FAILED: swarm mode requires MILESTONE ID`);
+          throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, ERRORS.MISSING_STRUCTURED_FIELDS.message, "Include exactly one MILESTONE ID: <milestone-id> field in swarm dispatches");
+        }
+        if (milestoneIds.length > 1 || /,/.test(milestoneIds[0])) {
+          debug(`VALIDATION FAILED: multiple milestones in single swarm dispatch: ${JSON.stringify(milestoneIds)}`);
+          throw new DelegationGateError(ERRORS.MULTI_MILESTONE.code, ERRORS.MULTI_MILESTONE.message, ERRORS.MULTI_MILESTONE.guidance);
+        }
+        const milestoneId = milestoneIds[0];
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(milestoneId)) {
+          debug(`VALIDATION FAILED: invalid MILESTONE ID format '${milestoneId}'`);
+          throw new DelegationGateError(ERRORS.INVALID_MILESTONE_ID.code, ERRORS.INVALID_MILESTONE_ID.message, ERRORS.INVALID_MILESTONE_ID.guidance);
+        }
+        fields["milestone_id"] = milestoneId;
+        debug(`ALLOW swarm dispatch for milestone: ${milestoneId}`);
+
+        // M4 (R009/R010): the swarm result KD must be milestone-scoped — the
+        // first token after impl- is the dispatched milestone ID. This naming
+        // is the check-off contract the protocol-gate reads back: the impl KD
+        // on disk is the verifiable evidence of the milestone's completion.
+        // Matching is case-insensitive so impl-m3-... satisfies MILESTONE ID: M3.
+        if (fields.result_kd) {
+          const resultToken = extractMilestoneTokenFromResultKd(fields.result_kd);
+          if (!resultToken || resultToken.toLowerCase() !== milestoneId.toLowerCase()) {
+            debug(`VALIDATION FAILED: swarm result KD '${fields.result_kd}' does not carry milestone '${milestoneId}'`);
+            throw new DelegationGateError(ERRORS.RESULT_KD_MILESTONE_MISMATCH.code, ERRORS.RESULT_KD_MILESTONE_MISMATCH.message, ERRORS.RESULT_KD_MILESTONE_MISMATCH.guidance);
+          }
+        }
       }
 
       debug(`Rendering template for mode='${fields.mode}', agent='${fields.agent}'`);

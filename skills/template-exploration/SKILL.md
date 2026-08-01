@@ -13,7 +13,8 @@ author: Explorer
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/exploration-{{topic}}-{{session_id}}.md -->
+<!-- Filename: knowledge/exploration-{{topic}}-{{session_id}}-gen{{generation}}.md -->
+<!-- GENERATION: {{generation}} is the lifecycle counter from protocol-gate state. Each lifecycle's KDs are scoped to its generation (`-genN-` after the session ID) so stale KDs from prior lifecycles are never matched. Use the generation value provided by the dispatcher. -->
 
 # EXPLORATION: {{topic}}
 

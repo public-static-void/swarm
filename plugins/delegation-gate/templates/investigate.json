@@ -1,4 +1,4 @@
 {
   "mode": "investigate",
-  "template": "DISPATCH TO: {agent}\nMODE: investigate\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read the EXPLORATION KD from KD PATHS. Investigate the codebase per the scope above. Produce an ANALYSIS KD at {result_kd} using the naming convention: knowledge/analysis-<name>-<session_id>.md"
+  "template": "DISPATCH TO: {agent}\nMODE: investigate\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read the EXPLORATION KD from KD PATHS. Investigate the codebase per the scope above. Produce an ANALYSIS KD at {result_kd} using the naming convention: knowledge/analysis-<name>-<session_id>-gen{generation}.md"
 }

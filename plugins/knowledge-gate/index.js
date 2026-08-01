@@ -14,15 +14,23 @@
 //
 // Debug logging: set KNOWLEDGE_GATE_DEBUG=1 in environment to enable.
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
 const PROJECT_ROOT = join(PLUGIN_DIR, "..", "..");
 
-const MEMORY_DIR = join(PROJECT_ROOT, "knowledge", "memory");
-const ISSUES_DIR = join(PROJECT_ROOT, "knowledge", "issues");
+// Test seam: KNOWLEDGE_GATE_MEMORY_DIR / KNOWLEDGE_GATE_ISSUES_DIR override
+// the data directories so the test suite can point the plugin at isolated
+// temp dirs instead of mocking the fs module process-wide (which leaks into
+// sibling suites under bun). Production defaults are unchanged.
+const MEMORY_DIR = process.env.KNOWLEDGE_GATE_MEMORY_DIR
+  ? resolve(process.env.KNOWLEDGE_GATE_MEMORY_DIR)
+  : join(PROJECT_ROOT, "knowledge", "memory");
+const ISSUES_DIR = process.env.KNOWLEDGE_GATE_ISSUES_DIR
+  ? resolve(process.env.KNOWLEDGE_GATE_ISSUES_DIR)
+  : join(PROJECT_ROOT, "knowledge", "issues");
 
 // --- Debug logging ---
 
