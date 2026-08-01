@@ -247,8 +247,7 @@ function loadConfig() {
       phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"],
       agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", CLEANUP: "committer" },
       backwardTransitions: { VERIFY: ["SWARM"] },
-      maxCyclesPerTransition: 3,
-      milestoneCount: 1
+      maxCyclesPerTransition: 3
     };
   }
 }
@@ -419,6 +418,71 @@ function checkMilestoneCheckedOff(sessionID, sessionPhaseMap, milestoneId) {
   };
 }
 
+// M5 (R011-R014): Parses the session's milestone registry rows from the
+// machine-readable `## Milestone States` YAML block (the same SSOT the M4
+// helpers use). Returns { rows: [{ id, state }], path, content, block,
+// fenceStart, fenceEnd } or null when the registry file or YAML block is
+// missing/unparsable.
+function readMilestoneRegistry(sessionID, sessionPhaseMap) {
+  const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!located) return null;
+  const rows = [];
+  const rowPattern = /^\s*([A-Za-z0-9_-]+):\s*([A-Za-z-]+)\s*$/gm;
+  let match;
+  while ((match = rowPattern.exec(located.block)) !== null) {
+    rows.push({ id: match[1], state: match[2] });
+  }
+  return { rows, ...located };
+}
+
+// M5 (R011-R014): The all-checked-off gate — SWARM→VERIFY advances ONLY when
+// every registry row is checked-off AND its milestone-scoped impl KD is on
+// disk (checkMilestoneCheckedOff semantics: registry state + disk evidence).
+// Fails closed on missing (REGISTRY_MISSING) and empty (REGISTRY_EMPTY)
+// registries. Returns { ok, total, checkedOff, rows }.
+function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
+  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!registry) {
+    debug(`REGISTRY_MISSING: no milestone registry for session ${sessionID} — SWARM cannot advance`);
+    return { ok: false, total: 0, checkedOff: 0, rows: [] };
+  }
+  if (registry.rows.length === 0) {
+    debug(`REGISTRY_EMPTY: milestone registry has no rows for session ${sessionID} — SWARM cannot advance`);
+    return { ok: false, total: 0, checkedOff: 0, rows: [] };
+  }
+  const rows = registry.rows.map(r => ({
+    id: r.id,
+    state: r.state,
+    checkedOff: checkMilestoneCheckedOff(sessionID, sessionPhaseMap, r.id).checkedOff
+  }));
+  const checkedOff = rows.filter(r => r.checkedOff).length;
+  const ok = checkedOff === rows.length;
+  if (!ok) {
+    const stuck = rows.filter(r => !r.checkedOff);
+    debug(`SWARM gate: ${checkedOff}/${rows.length} milestones checked-off — blocked by: ${stuck.map(r => `${r.id}=${r.state}`).join(", ")}`);
+  }
+  return { ok, total: rows.length, checkedOff, rows };
+}
+
+// M5 (R011-R014): Repurposes the legacy SWARM safety force-advances. A stuck
+// SWARM session never auto-advances to VERIFY — it marks every non-checked-off
+// milestone failed in the registry, logs SAFETY_STUCK, and stays in SWARM.
+// The only escape hatch is the user's /phase override (SAFETY_ESCAPE).
+function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger) {
+  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!registry) {
+    debug(`SAFETY_STUCK: ${trigger} for session ${sessionID} — no registry to mark`);
+    return;
+  }
+  for (const row of registry.rows) {
+    if (row.state !== "checked-off" && row.state !== "failed") {
+      const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["failed"]);
+      debug(`SAFETY_STUCK: marked ${row.id} failed (${trigger}) — ${JSON.stringify(result)}`);
+    }
+  }
+  debug(`SAFETY_STUCK: ${trigger} for session ${sessionID} — staying in SWARM (no auto-advance)`);
+}
+
 // M4 (R009/R010): Extracts the milestone ID from an impl KD filename per the
 // milestone-scoped naming contract `impl-<milestone-id>-<name>-<session>[-gen{N}].md`.
 // The first token after the `impl-` prefix is the milestone ID. Returns null for
@@ -534,27 +598,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     return result;
   }
 
-  // SWARM advancement requires dispatch-count tracking (Issue 6).
-  // When the Overseer dispatches multiple artisans, each must produce an `impl-` KD
-  // before advancing to VERIFY. Without this, the first artisan's KD triggers
-  // premature advancement while others are still working.
+  // M5 (R011-R014): SWARM advancement requires ALL registry milestones to be
+  // checked-off with their impl KDs on disk (checkAllMilestonesCheckedOff).
+  // The milestone registry is the live state SSOT — the legacy dispatch-count
+  // gate (MILESTONE_COUNT, swarmDispatchCount) has no gating effect. Fails
+  // closed on missing/empty/unparsable registries (REGISTRY_MISSING/EMPTY).
   if (phase === STATES.SWARM) {
-    const implFiles = sessionFiles.filter(f => pattern.test(f));
-    const dispatchCount = swarmDispatchCount.get(sessionID) || 0;
-    // Use stored milestone count from dispatch prompt when available, then config.
-    // This ensures when the dispatcher specifies MILESTONE_COUNT:N, all N impl KDs
-    // must be on disk before advancing to VERIFY. Falls back to config then default 1.
-    const storedMc = sessionPhaseMap.get(`${sessionID}:milestones`);
-    const cfg = loadConfig();
-    const milestoneCount = storedMc || cfg.milestoneCount || 1;
-    const effectiveCount = Math.max(milestoneCount, dispatchCount, 1);
-    // Require at least one dispatch OR milestoneCount > 1 to advance.
-    // When milestoneCount > 1, the config requires N impl KDs regardless of dispatches.
-    // When milestoneCount is 1 (default), dispatch-driven advancement still applies.
-    const hasSufficientTrigger = dispatchCount > 0 || milestoneCount > 1;
-    const result = hasSufficientTrigger && implFiles.length >= effectiveCount;
-    debug(`Disk check SWARM: impl=${implFiles.length}, dispatched=${dispatchCount}, milestoneCount=${milestoneCount}, effective=${effectiveCount} → ${result}`);
-    return result;
+    const gate = checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap);
+    debug(`Disk check SWARM: all-checked-off gate → ${gate.ok} (${gate.checkedOff}/${gate.total})`);
+    return gate.ok;
   }
 
   const result = sessionFiles.some(f => pattern.test(f));
@@ -1013,6 +1065,7 @@ export default {
         output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 0-12 or one of ${Object.keys(STATES).join(", ")}.` }];
         return;
       }
+      const prevPhase = sessionPhaseMap.get(sessionID);
       sessionPhaseMap.set(sessionID, n);
       // Re-capture the session ID so checkDiskAdvancement can filter KDs by
       // session — required when /phase starts a fresh lifecycle.
@@ -1021,6 +1074,11 @@ export default {
       }
       overseerSessions.add(sessionID);
       saveState(sessionID);
+      // M5 (R011-R014): the user's /phase override is the ONLY escape hatch
+      // from a stuck SWARM — the automatic safety mechanisms never advance it.
+      if (prevPhase === STATES.SWARM && n !== STATES.SWARM) {
+        debug(`SAFETY_ESCAPE: /phase override ${getPhaseName(prevPhase)} → ${getPhaseName(n)} for session ${sessionID} — manual escape from SWARM`);
+      }
       debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
       output.parts = [{ type: "text", text: `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
     }
@@ -1451,20 +1509,46 @@ export default {
               // producing the expected KD, this ensures the force-advance still fires.
               let safetyTriggered = false;
               if (currentFailures >= 15) {
-                debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → VERIFY after ${currentFailures} stuck failures (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
-                sessionPhaseMap.set(sessionID, STATES.VERIFY);
-                diskCheckFailures.set(sessionID, 0);
-                phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
-                pendingVerification.delete(sessionID);
-                pendingVerificationToolCount.delete(sessionID);
-                inFlightDispatches.delete(sessionID);
-                saveState(sessionID);
+                if (currentPhase === STATES.SWARM) {
+                  // M5 (R011-R014): repurposed — a stuck SWARM never
+                  // auto-advances to VERIFY. Mark stuck milestones failed,
+                  // reset counters, stay in SWARM. User /phase is the escape.
+                  markStuckMilestonesFailed(sessionID, sessionPhaseMap, `FORCE ADVANCE at ${currentFailures} failures`);
+                  diskCheckFailures.set(sessionID, 0);
+                  phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                  pendingVerification.delete(sessionID);
+                  pendingVerificationToolCount.delete(sessionID);
+                  inFlightDispatches.delete(sessionID);
+                  saveState(sessionID);
+                } else {
+                  debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → VERIFY after ${currentFailures} stuck failures (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
+                  sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                  diskCheckFailures.set(sessionID, 0);
+                  phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                  pendingVerification.delete(sessionID);
+                  pendingVerificationToolCount.delete(sessionID);
+                  inFlightDispatches.delete(sessionID);
+                  saveState(sessionID);
+                }
                 safetyTriggered = true;
               } else {
                 // R003: Check re-dispatch cap BEFORE pendingVerification guard
                 const redispatchKey = `${sessionID}:${currentPhase}`;
                 const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
                 if (redispatches >= 5 && tool === "task") {
+                  if (currentPhase === STATES.SWARM) {
+                    // M5 (R011-R014): repurposed — the redispatch cap during
+                    // SWARM blocks the dispatch, marks the stuck milestone
+                    // failed, and throws SAFETY_STUCK (no auto-advance).
+                    markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`);
+                    diskCheckFailures.set(sessionID, 0);
+                    phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                    pendingVerification.delete(sessionID);
+                    pendingVerificationToolCount.delete(sessionID);
+                    inFlightDispatches.delete(sessionID);
+                    saveState(sessionID);
+                    throw new ProtocolGateError("SAFETY_STUCK", `❌ SAFETY_STUCK: SWARM re-dispatch cap (${redispatches}) reached — milestone marked failed. Escalate to user or override with /phase`, "Escalate to user or use /phase to override");
+                  }
                   debug(`SAFETY_OVERRIDE: REDISPATCH CAP — ${currentPhaseName} phase — ${redispatches} re-dispatches used. Advancing to VERIFY (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
                   sessionPhaseMap.set(sessionID, STATES.VERIFY);
                   diskCheckFailures.set(sessionID, 0);
@@ -1491,13 +1575,25 @@ export default {
 
                   // Safety timeout: warn at 10, force-advance at 15 tool calls
                   if (toolCalls >= 15) {
-                    debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
-                    pendingVerification.delete(sessionID);
-                    pendingVerificationToolCount.delete(sessionID);
-                    sessionPhaseMap.set(sessionID, STATES.VERIFY);
-                    diskCheckFailures.set(sessionID, 0);
-                    inFlightDispatches.delete(sessionID);
-                    saveState(sessionID);
+                    if (currentPhase === STATES.SWARM) {
+                      // M5 (R011-R014): repurposed — a stuck SWARM never
+                      // auto-advances to VERIFY. Mark stuck milestones failed,
+                      // clear pendingVerification, stay in SWARM.
+                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `pendingVerification force-advance after ${toolCalls} tool calls`);
+                      pendingVerification.delete(sessionID);
+                      pendingVerificationToolCount.delete(sessionID);
+                      diskCheckFailures.set(sessionID, 0);
+                      inFlightDispatches.delete(sessionID);
+                      saveState(sessionID);
+                    } else {
+                      debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
+                      pendingVerification.delete(sessionID);
+                      pendingVerificationToolCount.delete(sessionID);
+                      sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                      diskCheckFailures.set(sessionID, 0);
+                      inFlightDispatches.delete(sessionID);
+                      saveState(sessionID);
+                    }
                   } else if (toolCalls >= 10) {
                     debug(`pendingVerification WARNING: ${toolCalls} tool calls without expected KD — clearing pendingVerification (expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
                     pendingVerification.delete(sessionID);
@@ -1570,14 +1666,9 @@ export default {
             if (phase === STATES.SWARM) {
               const count = (swarmDispatchCount.get(sessionID) || 0) + 1;
               swarmDispatchCount.set(sessionID, count);
-              // Extract MILESTONE_COUNT from dispatch prompt to track how many
-              // impl KDs are expected before SWARM→VERIFY advancement.
-              const milestoneMatch = prompt.match(/MILESTONE_COUNT:\s*(\d+)/i);
-              if (milestoneMatch) {
-                const mc = parseInt(milestoneMatch[1], 10);
-                sessionPhaseMap.set(`${sessionID}:milestones`, mc);
-                debug(`SWARM milestone count for ${sessionID}: ${mc} (from dispatch)`);
-              }
+              // M5 (R011-R014): MILESTONE_COUNT is no longer extracted or
+              // stored — the all-checked-off registry gate replaces count-based
+              // advancement, so count signals have no gating effect (AC024).
               // M3: per-milestone registry tracking — parse the MILESTONE ID from
               // the raw dispatch prompt and advance that milestone's row in the
               // milestone registry (pending → assigned → in-progress). Runs here
@@ -1734,6 +1825,9 @@ export default {
       findMilestoneImplKD,
       readMilestoneState,
       checkMilestoneCheckedOff,
+      readMilestoneRegistry,
+      checkAllMilestonesCheckedOff,
+      markStuckMilestonesFailed,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
       applyPhaseOverride,
