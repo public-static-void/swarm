@@ -38,7 +38,9 @@ const ERRORS = {
   INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope should not contain code blocks (security) or absolute /home/ paths (info leak)" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },
-  MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" }
+  MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" },
+  MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
+  INVALID_MILESTONE_ID: { code: "INVALID_MILESTONE_ID", message: "Invalid MILESTONE ID format", guidance: "MILESTONE ID must match /^[A-Za-z0-9][A-Za-z0-9_-]*$/" }
 };
 
 // All recognized delegation modes — used for template lookup and natural-language inference.
@@ -153,7 +155,7 @@ function extractFromText(text, fields, override = false) {
       if (override || !fields["agent"]) fields["agent"] = agentMatch[2].trim().replace(/\*\*/g, "").trim();
       continue;
     }
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       const key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       if (override || !fields[key]) fields[key] = match[2].trim().replace(/\*\*/g, "").trim();
@@ -247,7 +249,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim().replace(/\\/g, "/");
-    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
@@ -263,6 +265,23 @@ function isBareKDPath(prompt) {
   // Normalize backslashes to forward slashes for cross-platform compatibility.
   const normalized = prompt.trim().replace(/\\/g, "/");
   return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(normalized);
+}
+
+// Collects every MILESTONE ID field value from a prompt — one entry per
+// `MILESTONE ID:` / `MILESTONE_ID:` line, with Markdown bold markers stripped.
+// A comma inside a single value means multiple milestones were crammed into one
+// field; both cases are rejected as MULTI_MILESTONE (R007).
+function collectMilestoneIds(prompt) {
+  if (!prompt) return [];
+  const ids = [];
+  for (const line of prompt.split("\n")) {
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?MILESTONE[. _]ID(?:\*\*)?:\s*(.*)/i);
+    if (match) {
+      const value = match[1].trim().replace(/\*\*/g, "").trim();
+      if (value) ids.push(value);
+    }
+  }
+  return ids;
 }
 
 // Detects literal placeholder patterns like {scope} or {result_kd} that the
@@ -298,11 +317,15 @@ function injectToolDocs(output, agentName, mode, generation) {
   const resultKdExamples = modePrefixes
     .map(p => `knowledge/${p}-<name>-<session_id>${genSuffix}.md`)
     .join(", ");
+  // M3 (R006): swarm dispatches carry exactly one MILESTONE ID — the structural
+  // field the protocol-gate registry transition keys on. Only injected for swarm
+  // so other modes don't see a field they must not include.
+  const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: <milestone-id> (exactly one, required for swarm)\n" : "";
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
 MODE: ${displayMode}
-INTENT KD: knowledge/intent-<name>.md
+${milestoneLine}INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
 SESSION ID: <session-id>
 GENERATION: <generation>
@@ -459,6 +482,30 @@ export default {
       if (KD_PRODUCING_MODES.includes(fields.mode?.toLowerCase()) && !fields.result_kd) {
         debug(`VALIDATION FAILED: KD-producing mode '${fields.mode}' requires result_kd`);
         throw new DelegationGateError(ERRORS.MISSING_RESULT_KD.code, ERRORS.MISSING_RESULT_KD.message, ERRORS.MISSING_RESULT_KD.guidance);
+      }
+
+      // R006–R008: swarm dispatches require exactly one valid MILESTONE ID.
+      // Runs after the result_kd check so a missing result_kd reports the more
+      // specific error first. Multiple milestones in one dispatch are rejected
+      // structurally (MULTI_MILESTONE) instead of warned about — the advisory
+      // regex only caught prose references (MEM-015), never enforced anything.
+      if (fields.mode?.toLowerCase() === "swarm") {
+        const milestoneIds = collectMilestoneIds(prompt);
+        if (milestoneIds.length === 0) {
+          debug(`VALIDATION FAILED: swarm mode requires MILESTONE ID`);
+          throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, ERRORS.MISSING_STRUCTURED_FIELDS.message, "Include exactly one MILESTONE ID: <milestone-id> field in swarm dispatches");
+        }
+        if (milestoneIds.length > 1 || /,/.test(milestoneIds[0])) {
+          debug(`VALIDATION FAILED: multiple milestones in single swarm dispatch: ${JSON.stringify(milestoneIds)}`);
+          throw new DelegationGateError(ERRORS.MULTI_MILESTONE.code, ERRORS.MULTI_MILESTONE.message, ERRORS.MULTI_MILESTONE.guidance);
+        }
+        const milestoneId = milestoneIds[0];
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(milestoneId)) {
+          debug(`VALIDATION FAILED: invalid MILESTONE ID format '${milestoneId}'`);
+          throw new DelegationGateError(ERRORS.INVALID_MILESTONE_ID.code, ERRORS.INVALID_MILESTONE_ID.message, ERRORS.INVALID_MILESTONE_ID.guidance);
+        }
+        fields["milestone_id"] = milestoneId;
+        debug(`ALLOW swarm dispatch for milestone: ${milestoneId}`);
       }
 
       debug(`Rendering template for mode='${fields.mode}', agent='${fields.agent}'`);
