@@ -20,9 +20,30 @@ describe("Protocol-Gate Plugin", () => {
     return name;
   }
 
-  function createKD(filename) {
+  function createKD(filename, content = "test content") {
     try { mkdirSync(knowledgeDir, { recursive: true }); } catch (_) {}
-    writeFileSync(join(knowledgeDir, filename), "test content");
+    writeFileSync(join(knowledgeDir, filename), content);
+  }
+
+  // Writes a milestone registry fixture with the machine-readable
+  // `## Milestone States` YAML block plus a human-readable details table —
+  // the shape the Pathfinder produces at DECOMPOSE (template-milestones).
+  function createRegistry(s, rows) {
+    const yaml = rows.map(([id, state]) => `  ${id}: ${state}`).join("\n");
+    const table = rows.map(([id, state]) => `| ${id} | desc | ${state} |`).join("\n");
+    createKD(`milestones-feature-${s}.md`, `## Milestone States
+
+\`\`\`yaml
+milestones:
+${yaml}
+\`\`\`
+
+## Milestone Details
+
+| Milestone ID | Description | State |
+| ------------ | ----------- | ----- |
+${table}
+`);
   }
 
   function removeKD(filename) {
@@ -657,6 +678,64 @@ describe("Protocol-Gate Plugin", () => {
         )
       ).rejects.toThrow("Read from knowledge/plan-*.md or knowledge/milestones-*.md");
     }
+  });
+
+  describe("M3: per-milestone dispatch — registry state wiring", () => {
+    it("transitions the dispatched milestone pending → assigned → in-progress in the registry YAML block", async () => {
+      const s = sid("m3-reg-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "c1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M2\nMODE: swarm" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      // The machine-readable YAML block is the state SSOT — it is updated...
+      expect(content).toContain("  M2: in-progress");
+      expect(content).toContain("  M1: pending");
+      // ...while the human-readable details table stays untouched.
+      expect(content).toContain("| M2 | desc | pending |");
+    });
+
+    it("leaves the registry untouched when the dispatch carries no MILESTONE ID", async () => {
+      const s = sid("m3-reg-2");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "c1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMODE: swarm" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M2: pending");
+      expect(hooks.swarmDispatchCount.get(s)).toBe(1);
+    });
+
+    it("extractMilestoneIdFromPrompt parses field variants and returns null when absent", async () => {
+      expect(hooks.extractMilestoneIdFromPrompt("AGENT: artisan\nMILESTONE ID: M3\nMODE: swarm")).toBe("M3");
+      expect(hooks.extractMilestoneIdFromPrompt("MILESTONE_ID: M3\nMODE: swarm")).toBe("M3");
+      expect(hooks.extractMilestoneIdFromPrompt("**MILESTONE ID:** **M3**")).toBe("M3");
+      expect(hooks.extractMilestoneIdFromPrompt("AGENT: artisan\nMODE: swarm")).toBeNull();
+      expect(hooks.extractMilestoneIdFromPrompt(null)).toBeNull();
+    });
+
+    it("updateMilestoneRegistry skips without throwing when no registry file exists", async () => {
+      const s = sid("m3-reg-3");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M3", ["assigned", "in-progress"]);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe("no-registry");
+    });
   });
 
   it("M2: SWARM allowlist includes read and tool.definition shows the read restriction", async () => {
