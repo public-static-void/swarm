@@ -1051,12 +1051,15 @@ RESULT KD: knowledge/investigation-foo.md`;
         // M3: swarm dispatches require exactly one MILESTONE ID — include it for
         // the swarm case so the inference test stays focused on mode detection.
         const milestoneLine = mode === "swarm" ? "MILESTONE ID: M1\n" : "";
+        // M4: swarm result KDs must carry the dispatched milestone as the first
+        // token after impl- (check-off naming contract) — scope the example.
+        const resultKd = mode === "swarm" ? "knowledge/impl-M1-foo.md" : `knowledge/${mode}-foo.md`;
         const prompt = `AGENT: artisan
 Run the ${mode} now.
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 ${milestoneLine}SCOPE: Test ${mode} mode
-${needsResultKd ? `RESULT KD: knowledge/${mode}-foo.md` : ""}`;
+${needsResultKd ? `RESULT KD: ${resultKd}` : ""}`;
 
         const output = { args: { prompt, subagent_type: "artisan" } };
         await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -1114,12 +1117,12 @@ INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 MILESTONE ID: M1
 SCOPE: Execute implementation
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/impl-M1-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("swarm");
-      expect(output.args.prompt).toContain("knowledge/impl-foo.md");
+      expect(output.args.prompt).toContain("knowledge/impl-M1-foo.md");
     });
 
     it("accepts explore mode with result_kd", async () => {
@@ -1293,7 +1296,7 @@ RESULT KD: knowledge/exploration-foo.md`;
         { mode: "investigate", agent: "analyzer", kd: "knowledge/analysis-foo.md" },
         { mode: "align", agent: "spec-weaver", kd: "knowledge/spec-foo.md" },
         { mode: "decompose", agent: "pathfinder", kd: "knowledge/plan-foo.md" },
-        { mode: "swarm", agent: "artisan", kd: "knowledge/impl-foo.md", milestoneId: "M1" },
+        { mode: "swarm", agent: "artisan", kd: "knowledge/impl-M1-foo.md", milestoneId: "M1" },
         { mode: "verify", agent: "inspector", kd: "knowledge/review-foo.md" },
         { mode: "extract", agent: "scribe", kd: "knowledge/composed-foo.md" },
         { mode: "evolve", agent: "habit-builder", kd: "knowledge/process-foo.md" },
@@ -1330,7 +1333,7 @@ SESSION ID: ses_gen
 GENERATION: 2
 MILESTONE ID: M1
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo-ses_gen-gen2.md`;
+RESULT KD: knowledge/impl-M1-foo-ses_gen-gen2.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_gen", callID: "c1" }, output);
@@ -1338,9 +1341,9 @@ RESULT KD: knowledge/impl-foo-ses_gen-gen2.md`;
       // Header field preserved in rendered template
       expect(output.args.prompt).toContain("GENERATION: 2");
       // Template body naming convention carries the generation suffix
-      expect(output.args.prompt).toContain("knowledge/impl-<descriptive-name>-<session_id>-gen2.md");
+      expect(output.args.prompt).toContain("knowledge/impl-<milestone-id>-<descriptive-name>-<session_id>-gen2.md");
       // Injected tool doc shows the generation-scoped result KD example
-      expect(output.args.description).toContain("knowledge/impl-<name>-<session_id>-gen2.md");
+      expect(output.args.description).toContain("knowledge/impl-<milestone-id>-<name>-<session_id>-gen2.md");
       expect(output.args.description).toContain("GENERATION: <generation>");
     });
 
@@ -1354,7 +1357,7 @@ SESSION DATE: 2026-07-15
 SESSION ID: ses_fbk
 MILESTONE ID: M1
 SCOPE: Implement feature X
-RESULT KD: knowledge/impl-foo-ses_fbk.md`;
+RESULT KD: knowledge/impl-M1-foo-ses_fbk.md`;
 
       // Retry because the shared plugins/protocol-gate/.state dir is concurrently
       // cleaned by the protocol-gate suite's beforeEach; a cleanup landing between
@@ -1368,7 +1371,7 @@ RESULT KD: knowledge/impl-foo-ses_fbk.md`;
       }
 
       expect(output.args.prompt).toContain("GENERATION: 4");
-      expect(output.args.prompt).toContain("knowledge/impl-<descriptive-name>-<session_id>-gen4.md");
+      expect(output.args.prompt).toContain("knowledge/impl-<milestone-id>-<descriptive-name>-<session_id>-gen4.md");
 
       try { rmSync(statePath); } catch (_) {}
     });
@@ -1484,7 +1487,7 @@ INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
 MILESTONE ID: M3
 SCOPE: Execute implementation
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/impl-M3-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -1511,7 +1514,7 @@ INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
 MILESTONE ID: M3
 SCOPE: Execute implementation
-RESULT KD: knowledge/impl-foo.md`;
+RESULT KD: knowledge/impl-M3-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -1530,6 +1533,108 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.description).not.toContain("MILESTONE ID:");
+    });
+  });
+
+  describe("M4: milestone-scoped impl result KD (R009–R010)", () => {
+    it("accepts a milestone-scoped result KD matching the swarm MILESTONE ID", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+MILESTONE ID: M4
+SCOPE: Execute milestone M4
+RESULT KD: knowledge/impl-M4-feature-ses_x-gen0.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_x", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("MILESTONE ID: M4");
+      expect(output.args.prompt).toContain("knowledge/impl-M4-feature-ses_x-gen0.md");
+    });
+
+    it("accepts a case-insensitive milestone token (impl-m3 for MILESTONE ID M3)", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+MILESTONE ID: M3
+SCOPE: Execute milestone M3
+RESULT KD: knowledge/impl-m3-ses_m3-gen0.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_m3", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/impl-m3-ses_m3-gen0.md");
+    });
+
+    it("rejects a result KD whose milestone token differs from the swarm MILESTONE ID", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+MILESTONE ID: M4
+SCOPE: Execute milestone M4
+RESULT KD: knowledge/impl-M5-feature-ses_x-gen0.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Swarm result KD does not match the MILESTONE ID");
+    });
+
+    it("rejects an unscoped swarm result KD (no milestone token)", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+MILESTONE ID: M4
+SCOPE: Execute milestone M4
+RESULT KD: knowledge/impl-feature-ses_x-gen0.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Swarm result KD does not match the MILESTONE ID");
+    });
+
+    it("does not enforce result KD milestone scoping for non-swarm modes", async () => {
+      const prompt = `AGENT: committer
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+SCOPE: Commit X
+RESULT KD: knowledge/checkpoint-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/checkpoint-foo.md");
+    });
+
+    it("injects the milestone-scoped impl KD naming contract into the swarm tool doc", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+MILESTONE ID: M4
+SCOPE: Execute milestone M4
+RESULT KD: knowledge/impl-M4-feature-ses_x-gen0.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_x", callID: "c1" }, output);
+      // Generation 0/unknown uses the legacy bare suffix (matchesSessionKD semantics)
+      expect(output.args.description).toContain("RESULT KD: knowledge/impl-<milestone-id>-<name>-<session_id>.md");
+      expect(output.args.description).toContain("- swarm: knowledge/impl-<milestone-id>-<name>-<session_id>.md");
+    });
+
+    it("keeps the milestone token out of non-swarm result KD examples", async () => {
+      const prompt = `AGENT: committer
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+SCOPE: Commit X
+RESULT KD: knowledge/checkpoint-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.description).toContain("RESULT KD: knowledge/checkpoint-<name>-<session_id>.md");
+      expect(output.args.description).not.toContain("<milestone-id>");
     });
   });
 });
