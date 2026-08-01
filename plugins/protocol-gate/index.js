@@ -126,7 +126,8 @@ const ERROR_TEMPLATES = {
   BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "⏳ WAIT: Awaiting chat.params initialization", guidance: "Wait for chat.params to initialize" },
   WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `❌ WRONG AGENT: Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
   CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "❌ ERROR: Backward transition cycle limit exceeded. Escalate to user", guidance: "Escalate to user" },
-  FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" }
+  FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" },
+  MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" }
 };
 
 function getPhaseName(phaseId) {
@@ -313,24 +314,33 @@ function extractAgentFromPrompt(prompt) {
   return null;
 }
 
-// Extracts the MILESTONE ID from a raw dispatch prompt. protocol-gate runs
-// BEFORE delegation-gate, so the raw prompt (not the rendered template) is the
-// source of truth. Accepts the canonical `MILESTONE ID:` field and the
-// underscore variant, with optional Markdown bold markers. Returns the trimmed
-// value or null when absent. Exactly-one and format validation is
-// delegation-gate's job (HOW); protocol-gate only needs the value to update the
-// registry (WHEN).
-function extractMilestoneIdFromPrompt(prompt) {
-  if (typeof prompt !== "string") return null;
+// Collects every MILESTONE ID field value from a dispatch prompt — one entry
+// per `MILESTONE ID:` / `MILESTONE_ID:` / `MILESTONE.ID:` line, with Markdown
+// bold markers stripped. Mirrors delegation-gate's collectMilestoneIds so both
+// gates agree on cardinality (R017). A comma inside a single value means
+// multiple milestones were crammed into one field; the caller rejects that as
+// MULTI_MILESTONE.
+function collectMilestoneIds(prompt) {
+  if (typeof prompt !== "string") return [];
+  const ids = [];
   for (const line of prompt.split("\n")) {
-    const normalized = line.replace(/\*\*/g, "").trim();
-    const match = normalized.match(/^MILESTONE[_\s]ID:\s*(.+)$/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?MILESTONE[. _]ID(?:\*\*)?:\s*(.*)/i);
     if (match) {
-      const value = match[1].trim();
-      return value || null;
+      const value = match[1].trim().replace(/\*\*/g, "").trim();
+      if (value) ids.push(value);
     }
   }
-  return null;
+  return ids;
+}
+
+// Extracts the single MILESTONE ID from a raw dispatch prompt. protocol-gate
+// runs BEFORE delegation-gate, so the raw prompt (not the rendered template)
+// is the source of truth. R017/P019: cardinality (exactly one) is validated at
+// the dispatch call site BEFORE any registry mutation — this helper only
+// surfaces the first value for callers that already know cardinality holds.
+function extractMilestoneIdFromPrompt(prompt) {
+  const ids = collectMilestoneIds(prompt);
+  return ids.length > 0 ? ids[0] : null;
 }
 
 // Advances a milestone row in the session's milestone registry KD through the
@@ -1549,15 +1559,25 @@ export default {
       // agent before the task handler ever runs. Only genuine artisan dispatches
       // to SWARM's agent advance the registry; every other task call passes
       // through untouched.
+      // R017/P019 (issue-7): MILESTONE_ID cardinality is validated BEFORE any
+      // registry mutation. A MULTI_MILESTONE rejection must leave the registry
+      // byte-identical — without this check, first-line-wins extraction would
+      // advance the first row before delegation-gate rejected the dispatch
+      // (phantom in-progress row). Mirrors delegation-gate's collectMilestoneIds
+      // semantics so both gates agree on cardinality.
       if (tool === "task" && phase === STATES.SWARM) {
         let dispatchAgent = extractAgentFromPrompt(args?.prompt || "");
         if (!dispatchAgent && args?.subagent_type) dispatchAgent = String(args.subagent_type).toLowerCase();
         const swarmAgent = PHASE_AGENT_MAP[getPhaseName(STATES.SWARM)]?.toLowerCase();
         if (dispatchAgent && swarmAgent && dispatchAgent === swarmAgent) {
-          const milestoneId = extractMilestoneIdFromPrompt(args?.prompt || "");
-          if (milestoneId) {
-            const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, ["assigned", "in-progress"], { reopen: true });
-            debug(`SWARM registry update (pre-gate) for ${milestoneId}: ${JSON.stringify(regResult)}`);
+          const milestoneIds = collectMilestoneIds(args?.prompt || "");
+          if (milestoneIds.length > 1 || (milestoneIds.length === 1 && /,/.test(milestoneIds[0]))) {
+            debug(`MULTI_MILESTONE: multiple milestones in single swarm dispatch: ${JSON.stringify(milestoneIds)}`);
+            throw new ProtocolGateError(ERROR_TEMPLATES.MULTI_MILESTONE.code, ERROR_TEMPLATES.MULTI_MILESTONE.message, ERROR_TEMPLATES.MULTI_MILESTONE.guidance);
+          }
+          if (milestoneIds.length === 1) {
+            const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneIds[0], ["assigned", "in-progress"], { reopen: true });
+            debug(`SWARM registry update (pre-gate) for ${milestoneIds[0]}: ${JSON.stringify(regResult)}`);
           }
         }
       }
@@ -1967,6 +1987,7 @@ export default {
       checkDiskAdvancement,
       cleanupLifecycleKDs,
       extractMilestoneIdFromPrompt,
+      collectMilestoneIds,
       updateMilestoneRegistry,
       extractMilestoneIdFromImplKD,
       findMilestoneImplKD,
