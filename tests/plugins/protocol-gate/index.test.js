@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 
@@ -88,7 +88,10 @@ ${table}
   });
 
   afterEach(() => {
-    // Remove session-scoped fixtures (KDs + state + override files) only
+    // Remove session-scoped fixtures (KDs + state + override files) only.
+    // The state-file sweep (f.includes(s)) also removes corrupt backups and any
+    // pointer that references a used session; the pointer is removed outright
+    // so the real workspace is never left pointing at a test session.
     for (const s of usedSids) {
       try {
         const files = readdirSync(knowledgeDir);
@@ -100,7 +103,16 @@ ${table}
       } catch (_) {}
       try { rmSync(statePath(s)); } catch (_) {}
       try { rmSync(overridePath(s)); } catch (_) {}
+      try {
+        const files = readdirSync(stateDir);
+        for (const f of files) {
+          if (f.includes(s)) {
+            try { rmSync(join(stateDir, f)); } catch (_) {}
+          }
+        }
+      } catch (_) {}
     }
+    try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
     usedSids.clear();
   });
 
@@ -512,10 +524,14 @@ ${table}
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
     expect(existsSync(overridePath(s))).toBe(false);
 
-    // Expired override (6+ min old) is not applied
+    // Expired override (6+ min old) is not applied. The active-session pointer
+    // is removed before each fresh session so R004 continuation cannot adopt a
+    // previous session's phase — these cases isolate the override-file TTL
+    // behavior in a workspace with no active lifecycle.
     const ttl = sid("phase-ttl");
     const old = new Date(Date.now() - 6 * 60 * 1000).toISOString();
     writeFileSync(overridePath(ttl), JSON.stringify({ phase: hooks.STATES.REPORT, sessionID: ttl, createdAt: old }));
+    try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
     await initOverseer(ttl);
     expect(hooks.sessionPhaseMap.get(ttl)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
     expect(existsSync(overridePath(ttl))).toBe(false);
@@ -523,9 +539,169 @@ ${table}
     // Malformed override is removed without applying
     const bad = sid("phase-bad");
     writeFileSync(overridePath(bad), "{not json");
+    try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
     await initOverseer(bad);
     expect(hooks.sessionPhaseMap.get(bad)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
     expect(existsSync(overridePath(bad))).toBe(false);
+  });
+
+  describe("M1: file-backed phase state SSOT (AC001–AC006, NFR004)", () => {
+    it("AC001: the state file is re-read on every overseer message — manual mid-session edits are honored", async () => {
+      // Fresh plugin instance with a phase-7 state file → first message reads 7.
+      const s = sid("ac001");
+      writeFileSync(statePath(s), JSON.stringify({ phase: 7, generation: 0, sid: s, timestamp: Date.now() }));
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(7);
+
+      // Manual edit to phase 3 mid-session → next overseer message honors it.
+      writeFileSync(statePath(s), JSON.stringify({ phase: 3, generation: 0, sid: s, timestamp: Date.now() }));
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(3);
+    });
+
+    it("AC002: every phase transition persists the phase to the state file (forward, backward, override, reset)", async () => {
+      const s = sid("ac002");
+      await initOverseer(s);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+
+      // Forward: 0 → 12 (PROTOCOL_NOT_LOADED → REPORT), assert the file after each.
+      for (let phase = 1; phase <= 12; phase++) {
+        hooks.sessionPhaseMap.set(s, phase);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        expect(hooks.saveState(s)).toBe(true);
+        expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(phase);
+      }
+
+      // Backward: 12 → SWARM (7)
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      expect(hooks.saveState(s)).toBe(true);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.SWARM);
+
+      // Override via the /phase hook: 7 → EXPLORE (3)
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "EXPLORE" }, output);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.EXPLORE);
+
+      // Reset: REPORT write → phase entry deleted, file carries phase 0.
+      hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: s, callID: "r1" },
+        { args: { filePath: `knowledge/report-ac002-${s}.md`, content: "report" } }
+      );
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+    });
+
+    it("AC003: same-session restart restores the phase without clobbering the file", async () => {
+      const s = sid("ac003");
+      writeFileSync(statePath(s), JSON.stringify({ phase: 5, generation: 0, sid: s, timestamp: Date.now() }));
+      // Simulated restart: fresh plugin instance with an empty in-memory map.
+      hooks = await pluginModule.server({}, {});
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(5);
+      // The file was NOT re-initialized to phase 0 and NOT clobbered (R003).
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(5);
+    });
+
+    it("AC004: fresh session continues the pointed-to lifecycle; with no pointer it initializes fresh", async () => {
+      const s = sid("ac004-a");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      expect(hooks.saveState(s)).toBe(true);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.SWARM);
+
+      // Fresh session ID with a valid active-session pointer → restores the pointed-to phase.
+      const fresh = sid("ac004-b");
+      await initOverseer(fresh);
+      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.SWARM);
+      expect(hooks.readActiveSession().sessionID).toBe(fresh);
+
+      // Fresh session ID with no pointer and no file → PROTOCOL_NOT_LOADED,
+      // writes a state file, and updates the pointer (R004).
+      try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
+      const bare = sid("ac004-c");
+      await initOverseer(bare);
+      expect(hooks.sessionPhaseMap.get(bare)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(JSON.parse(readFileSync(statePath(bare), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.readActiveSession().sessionID).toBe(bare);
+    });
+
+    it("AC005: forced write failure — saveState returns false and logs to stderr; no silent divergence", async () => {
+      const s = sid("ac005");
+      await initOverseer(s);
+      // Preserve the last good file content, then make the target path unwritable
+      // (a directory collides with the rename) so the write is guaranteed to fail
+      // regardless of process privileges.
+      const original = readFileSync(statePath(s), "utf8");
+      hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+      rmSync(statePath(s));
+      mkdirSync(statePath(s));
+
+      let stderr = "";
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
+      try {
+        expect(hooks.saveState(s)).toBe(false);
+        expect(stderr).toContain("saveState error");
+      } finally {
+        process.stderr.write = origWrite;
+        // Restore the original file so cleanup and subsequent tests see a file.
+        rmSync(statePath(s), { recursive: true, force: true });
+        writeFileSync(statePath(s), original);
+      }
+
+      // The disk still holds the pre-transition phase — the failed transition
+      // never silently diverged the file from the in-memory intent.
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+    });
+
+    it("AC006: corrupt state file — backup + log + fresh init; next valid transition writes valid JSON", async () => {
+      const s = sid("ac006");
+      writeFileSync(statePath(s), "{not json");
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await initOverseer(s);
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+        // The original corrupt content is preserved via a backup rename (R006).
+        const backups = readdirSync(stateDir).filter(f => f.includes(s) && f.includes("corrupt"));
+        expect(backups.length).toBe(1);
+        expect(readFileSync(join(stateDir, backups[0]), "utf8")).toBe("{not json");
+        expect(readFileSync(logPath, "utf8")).toContain("corrupt state file backed up");
+
+        // The next valid transition overwrites the original path with valid JSON.
+        await todo(s, "c1");
+        const saved = JSON.parse(readFileSync(statePath(s), "utf8"));
+        expect(saved.phase).toBe(hooks.STATES.INTENT);
+        expect(saved.sid).toBe(s);
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("P006/NFR004: session IDs with separators or traversal are rejected for file paths", async () => {
+      for (const evil of ["../evil", "a/b", "a\\b", "/absolute", "..", ".", ""]) {
+        expect(hooks.sanitizeSessionID(evil)).toBeNull();
+      }
+      expect(hooks.sanitizeSessionID("ses_123")).toBe("ses_123");
+      expect(hooks.getStatePath("../evil")).toBeNull();
+
+      // saveState fails visibly for an unsafe ID and never writes outside .state.
+      const outside = join(stateDir, "..", ".protocol-state-evil.json");
+      expect(existsSync(outside)).toBe(false);
+      let stderr = "";
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
+      try {
+        expect(hooks.saveState("../evil")).toBe(false);
+        expect(stderr).toContain("unsafe session ID");
+      } finally {
+        process.stderr.write = origWrite;
+      }
+      expect(existsSync(outside)).toBe(false);
+    });
   });
 
   it("AC-R008: a second lifecycle stays at INTENT — stale prior-lifecycle KDs never advance it prematurely", async () => {
