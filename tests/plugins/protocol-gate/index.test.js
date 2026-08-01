@@ -25,13 +25,13 @@ describe("Protocol-Gate Plugin", () => {
     writeFileSync(join(knowledgeDir, filename), content);
   }
 
-  // Writes a milestone registry fixture with the machine-readable
-  // `## Milestone States` YAML block plus a human-readable details table —
-  // the shape the Pathfinder produces at DECOMPOSE (template-milestones).
-  function createRegistry(s, rows) {
+  // Builds the milestone registry fixture body: the machine-readable
+  // `## Milestone States` YAML block (the state SSOT) plus a human-readable
+  // details table — the shape the Pathfinder produces at DECOMPOSE.
+  function registryContent(rows) {
     const yaml = rows.map(([id, state]) => `  ${id}: ${state}`).join("\n");
     const table = rows.map(([id, state]) => `| ${id} | desc | ${state} |`).join("\n");
-    createKD(`milestones-feature-${s}.md`, `## Milestone States
+    return `## Milestone States
 
 \`\`\`yaml
 milestones:
@@ -43,7 +43,11 @@ ${yaml}
 | Milestone ID | Description | State |
 | ------------ | ----------- | ----- |
 ${table}
-`);
+`;
+  }
+
+  function createRegistry(s, rows) {
+    createKD(`milestones-feature-${s}.md`, registryContent(rows));
   }
 
   function removeKD(filename) {
@@ -128,11 +132,12 @@ ${table}
     await todo(s, "c7");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
     createKD(`plan-a${suffix}`);
-    createKD(`milestones-a${suffix}`);
+    createKD(`milestones-a${suffix}`, registryContent([["M1", "checked-off"]]));
     await todo(s, "c8");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
-    hooks.swarmDispatchCount.set(s, 1);
-    createKD(`impl-a${suffix}`);
+    // M5: SWARM→VERIFY advances on the registry all-checked-off gate — the
+    // milestone-scoped impl KD is the disk evidence for the checked-off row.
+    createKD(`impl-M1-a${suffix}`);
     await todo(s, "c9");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
     createKD(`review-a${suffix}`);
@@ -996,5 +1001,216 @@ ${table}
       delete process.env.PROTOCOL_GATE_DEBUG;
       try { rmSync(logPath); } catch (_) {}
     }
+  });
+
+  describe("M5: registry-based SWARM→VERIFY gate (R011–R014, AC016–AC024)", () => {
+    it("AC017: advances SWARM→VERIFY only when ALL registry milestones are checked-off with impl KDs on disk", async () => {
+      const s = sid("m5-all-off");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+
+      // No impl KDs on disk → blocked (registry alone is not evidence)
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+      // Only one of two milestones has its impl KD → still blocked
+      createKD(`impl-M1-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+      // Both impl KDs on disk → all milestones genuinely checked-off → advance
+      createKD(`impl-M2-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+    });
+
+    it("AC016: does not advance while any registry milestone is not checked-off, even with N impl KDs on disk", async () => {
+      const s = sid("m5-pending");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
+
+      // M2's impl KD exists but its registry row is still in-progress → blocked
+      createKD(`impl-M1-feature-${s}.md`);
+      createKD(`impl-M2-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+      // M3 pending with impl KD on disk → still blocked
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "pending"]]);
+      createKD(`impl-M3-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+    });
+
+    it("AC018: missing, empty, and unparsable registries fail closed with a log, never advance", async () => {
+      const s = sid("m5-missing");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        // Missing registry → REGISTRY_MISSING
+        expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+        // Empty registry (no milestone rows) → REGISTRY_EMPTY
+        const empty = sid("m5-empty");
+        await initOverseer(empty);
+        hooks.sessionPhaseMap.set(empty, hooks.STATES.SWARM);
+        hooks.sessionPhaseMap.set(`${empty}:sid`, empty);
+        createKD(`milestones-empty-${empty}.md`, registryContent([]));
+        expect(hooks.checkDiskAdvancement(empty, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+        // Unparsable registry (no Milestone States YAML block) → REGISTRY_MISSING
+        const unparsable = sid("m5-unparsable");
+        await initOverseer(unparsable);
+        hooks.sessionPhaseMap.set(unparsable, hooks.STATES.SWARM);
+        hooks.sessionPhaseMap.set(`${unparsable}:sid`, unparsable);
+        createKD(`milestones-garbage-${unparsable}.md`, "# no milestone states block");
+        expect(hooks.checkDiskAdvancement(unparsable, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("REGISTRY_MISSING");
+        expect(log).toContain("REGISTRY_EMPTY");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("AC019: 15-failure force-advance during SWARM marks failed, stays in SWARM, logs SAFETY_STUCK", async () => {
+      const s = sid("m5-safety-15");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // M1 genuinely checked-off (registry row + impl KD); M2 in-progress blocks the gate
+      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        // 14 failed disk checks (glob creates no impl KD) → phase stays SWARM
+        for (let i = 0; i < 14; i++) {
+          await hooks["tool.execute.before"]({ tool: "glob", sessionID: s, callID: `g${i}` }, { args: { pattern: "knowledge/*.md" } });
+          expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        }
+        // 15th failure fires the force-advance safety — M5 repurposes it
+        await hooks["tool.execute.before"]({ tool: "glob", sessionID: s, callID: "g15" }, { args: { pattern: "knowledge/*.md" } });
+
+        // Never advances to VERIFY — stays in SWARM, M2 marked failed
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(content).toContain("  M1: checked-off");
+        expect(content).toContain("  M2: failed");
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("SAFETY_STUCK");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("AC019: 5-redispatch cap during SWARM blocks the dispatch, marks failed, stays in SWARM, logs SAFETY_STUCK", async () => {
+      const s = sid("m5-safety-redisp");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      hooks.phaseRedispatchCount.set(`${s}:${hooks.STATES.SWARM}`, 5);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await expect(
+          hooks["tool.execute.before"](
+            { tool: "task", sessionID: s, callID: "r1" },
+            { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+          )
+        ).rejects.toThrow("SAFETY_STUCK");
+
+        // Stays in SWARM, the stuck milestone is marked failed
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(content).toContain("  M1: failed");
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("SAFETY_STUCK");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("AC019: pendingVerification force-advance during SWARM marks failed, stays in SWARM, logs SAFETY_STUCK", async () => {
+      const s = sid("m5-safety-pv");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      // Seed a pendingVerification session one tool call short of the force-advance threshold
+      hooks.pendingVerification.set(s, { expectedPrefixes: ["impl"], toolType: "write", timestamp: Date.now(), toolCalls: 0 });
+      hooks.pendingVerificationToolCount.set(s, 14);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"]({ tool: "glob", sessionID: s, callID: "pv1" }, { args: { pattern: "knowledge/*.md" } });
+
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(content).toContain("  M1: failed");
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("SAFETY_STUCK");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("AC021: /phase override from SWARM logs SAFETY_ESCAPE — the only automatic escape hatch removed", async () => {
+      const s = sid("m5-escape");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"]]);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        const output = { parts: [] };
+        await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "VERIFY" }, output);
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("SAFETY_ESCAPE");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("AC024: MILESTONE_COUNT is no longer extracted or stored; counts have no gating effect", async () => {
+      const s = sid("m5-nomc");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"]]);
+
+      // Dispatch with a legacy MILESTONE_COUNT field — must not be stored or gate
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "c1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMILESTONE_COUNT: 3\nMODE: swarm" } }
+      );
+      expect(hooks.sessionPhaseMap.get(`${s}:milestones`)).toBeUndefined();
+      expect(hooks.swarmDispatchCount.get(s)).toBe(1);
+
+      // Even with dispatchCount 1 and an impl KD on disk, the pending row blocks
+      createKD(`impl-M1-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+      // Registry fully checked-off advances regardless of count signals
+      createRegistry(s, [["M1", "checked-off"]]);
+      hooks.swarmDispatchCount.set(s, 5);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+    });
   });
 });
