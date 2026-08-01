@@ -45,7 +45,7 @@ milestones:
 |------|-----|--------|-----------|
 | (creation) | pending | Pathfinder | registry written at DECOMPOSE |
 | pending / in-progress / failed | assigned | protocol-gate | SWARM task dispatch with matching MILESTONE_ID |
-| assigned | in-progress | Artisan | dispatch starts |
+| assigned | in-progress | protocol-gate | SWARM task dispatch fires — same pass as assigned (M3) |
 | in-progress | checked-off | Artisan | successful completion: steps done, tests green, impl KD written, checkpoint commit |
 | assigned / in-progress | failed | protocol-gate | automatic safety trigger during SWARM |
 | assigned / in-progress | failed | Artisan | escalation without completion |
