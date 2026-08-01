@@ -701,6 +701,155 @@ ${table}
       expect(content).toContain("| M2 | desc | pending |");
     });
 
+    it("advances the completed milestone in-progress → checked-off in the registry YAML block", async () => {
+      const s = sid("m4-reg-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M4", "in-progress"], ["M5", "pending"]]);
+
+      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M4", ["checked-off"]);
+      expect(result.ok).toBe(true);
+      expect(result.changed).toBe(true);
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M4: checked-off");
+      expect(content).toContain("  M5: pending");
+      // human-readable details table stays untouched
+      expect(content).toContain("| M4 | desc | in-progress |");
+    });
+
+    it("rejects checked-off from pending — only in-progress milestones can complete", async () => {
+      const s = sid("m4-reg-2");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M4", "pending"]]);
+
+      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M4", ["checked-off"]);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe("invalid-transition");
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M4: pending");
+    });
+
+    it("leaves an already checked-off row untouched (idempotent)", async () => {
+      const s = sid("m4-reg-3");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M4", "checked-off"]]);
+
+      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M4", ["checked-off"]);
+      expect(result.ok).toBe(true);
+      expect(result.changed).toBe(false);
+    });
+
+    it("extractMilestoneIdFromImplKD parses the milestone-scoped impl KD naming contract", async () => {
+      expect(hooks.extractMilestoneIdFromImplKD("impl-M4-milestone-tracking-ses_x-gen0.md")).toBe("M4");
+      expect(hooks.extractMilestoneIdFromImplKD("impl-m3-foo-ses_x-gen0.md")).toBe("m3");
+      // legacy unscoped impl KD — no milestone contract token
+      expect(hooks.extractMilestoneIdFromImplKD("impl-fix-auth-flow-ses_123-gen2.md")).toBe("fix");
+      expect(hooks.extractMilestoneIdFromImplKD("milestones-feature-ses_x.md")).toBeNull();
+      expect(hooks.extractMilestoneIdFromImplKD(null)).toBeNull();
+    });
+
+    it("findMilestoneImplKD locates the milestone-scoped impl KD on disk (generation-scoped)", async () => {
+      const s = sid("m4-find-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`impl-M4-feature-${s}.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-feature-${s}.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M5")).toBeNull();
+
+      // generation scoping: stale prior-generation impl KD does not count
+      hooks.sessionPhaseMap.set(`${s}:gen`, 2);
+      createKD(`impl-M4-stale-${s}-gen1.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBeNull();
+      createKD(`impl-M4-fresh-${s}-gen2.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-fresh-${s}-gen2.md`);
+    });
+
+    it("checkMilestoneCheckedOff cross-checks the registry row against its impl KD on disk", async () => {
+      const s = sid("m4-xchk-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+      // checked-off row WITHOUT its impl KD → treated as not checked off (M5 gate semantics)
+      createRegistry(s, [["M4", "checked-off"]]);
+      const missing = hooks.checkMilestoneCheckedOff(s, hooks.sessionPhaseMap, "M4");
+      expect(missing.checkedOff).toBe(false);
+      expect(missing.implKDOnDisk).toBe(false);
+      expect(missing.state).toBe("checked-off");
+
+      // checked-off row WITH its impl KD → genuinely checked off
+      createKD(`impl-M4-feature-${s}.md`);
+      const present = hooks.checkMilestoneCheckedOff(s, hooks.sessionPhaseMap, "M4");
+      expect(present.checkedOff).toBe(true);
+      expect(present.implKDOnDisk).toBe(true);
+      expect(present.implKD).toBe(`impl-M4-feature-${s}.md`);
+
+      // in-progress row → not checked off even with an impl KD on disk
+      createRegistry(s, [["M4", "in-progress"]]);
+      const inProgress = hooks.checkMilestoneCheckedOff(s, hooks.sessionPhaseMap, "M4");
+      expect(inProgress.checkedOff).toBe(false);
+    });
+
+    it("marks a milestone checked-off when the artisan writes its milestone-scoped impl KD", async () => {
+      const overseer = sid("m4-auto-1");
+      await initOverseer(overseer);
+      hooks.sessionPhaseMap.set(overseer, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${overseer}:sid`, overseer);
+      createRegistry(overseer, [["M4", "in-progress"]]);
+
+      const artisan = sid("m4-auto-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M4-feature-${overseer}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
+      expect(content).toContain("  M4: checked-off");
+    });
+
+    it("does not check off when the impl KD uses the legacy unscoped naming", async () => {
+      const overseer = sid("m4-auto-2");
+      await initOverseer(overseer);
+      hooks.sessionPhaseMap.set(overseer, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${overseer}:sid`, overseer);
+      createRegistry(overseer, [["M4", "in-progress"]]);
+
+      const artisan = sid("m4-auto-art2");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-feature-${overseer}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
+      expect(content).toContain("  M4: in-progress");
+    });
+
+    it("does not touch the registry when no overseer session is in SWARM", async () => {
+      const overseer = sid("m4-auto-3");
+      await initOverseer(overseer);
+      hooks.sessionPhaseMap.set(overseer, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${overseer}:sid`, overseer);
+      createRegistry(overseer, [["M4", "in-progress"]]);
+
+      const artisan = sid("m4-auto-art3");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M4-feature-${overseer}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
+      expect(content).toContain("  M4: in-progress");
+    });
+
     it("leaves the registry untouched when the dispatch carries no MILESTONE ID", async () => {
       const s = sid("m3-reg-2");
       await initOverseer(s);
