@@ -9,8 +9,8 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
+import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "fs";
+import { basename, dirname, join } from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -126,7 +126,8 @@ const ERROR_TEMPLATES = {
   BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "⏳ WAIT: Awaiting chat.params initialization", guidance: "Wait for chat.params to initialize" },
   WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `❌ WRONG AGENT: Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
   CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "❌ ERROR: Backward transition cycle limit exceeded. Escalate to user", guidance: "Escalate to user" },
-  FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" }
+  FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" },
+  MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" }
 };
 
 function getPhaseName(phaseId) {
@@ -194,11 +195,6 @@ function cleanupLifecycleKDs(sessionID) {
   return stale.length;
 }
 
-// Override signal files (.state/.override-{sessionID}.json) expire after this
-// window. A stale file must never apply a phase change long after the user
-// (or the /phase command template) wrote it.
-const OVERRIDE_TTL_MS = 5 * 60 * 1000;
-
 // Parses a /phase command argument into a phase number. Accepts:
 //   - a number string 0-12 (e.g. "5" → ALIGN)
 //   - a phase name, case-insensitive (e.g. "INTENT", "preflight")
@@ -214,6 +210,36 @@ function parsePhaseArg(arg) {
     return null;
   }
   return Object.prototype.hasOwnProperty.call(STATES, trimmed) ? STATES[trimmed] : null;
+}
+
+// NFR004: session IDs reach file paths and can be attacker-influenced. Reject
+// path separators, NUL, and the traversal entries so a crafted ID can never
+// escape the plugin's .state directory. opencode session IDs (ses_...) pass.
+function sanitizeSessionID(sessionID) {
+  if (typeof sessionID !== "string" || sessionID.length === 0) return null;
+  if (sessionID === "." || sessionID === "..") return null;
+  if (/[\\/\0]/.test(sessionID)) return null;
+  return sessionID;
+}
+
+// NFR001: atomic durable write — tmp file + fsync + rename. The rename is
+// atomic on the same filesystem, so a crash mid-write can never leave a torn
+// file at the target path. Throws on failure; callers surface the error.
+function atomicWriteFileSync(targetPath, data) {
+  const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    const fd = openSync(tmpPath, "w");
+    try {
+      writeSync(fd, data);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmpPath, targetPath);
+  } catch (e) {
+    try { rmSync(tmpPath, { force: true }); } catch (_) {}
+    throw e;
+  }
 }
 
 let _logFile = null;
@@ -288,39 +314,53 @@ function extractAgentFromPrompt(prompt) {
   return null;
 }
 
-// Extracts the MILESTONE ID from a raw dispatch prompt. protocol-gate runs
-// BEFORE delegation-gate, so the raw prompt (not the rendered template) is the
-// source of truth. Accepts the canonical `MILESTONE ID:` field and the
-// underscore variant, with optional Markdown bold markers. Returns the trimmed
-// value or null when absent. Exactly-one and format validation is
-// delegation-gate's job (HOW); protocol-gate only needs the value to update the
-// registry (WHEN).
-function extractMilestoneIdFromPrompt(prompt) {
-  if (typeof prompt !== "string") return null;
+// Collects every MILESTONE ID field value from a dispatch prompt — one entry
+// per `MILESTONE ID:` / `MILESTONE_ID:` / `MILESTONE.ID:` line, with Markdown
+// bold markers stripped. Mirrors delegation-gate's collectMilestoneIds so both
+// gates agree on cardinality (R017). A comma inside a single value means
+// multiple milestones were crammed into one field; the caller rejects that as
+// MULTI_MILESTONE.
+function collectMilestoneIds(prompt) {
+  if (typeof prompt !== "string") return [];
+  const ids = [];
   for (const line of prompt.split("\n")) {
-    const normalized = line.replace(/\*\*/g, "").trim();
-    const match = normalized.match(/^MILESTONE[_\s]ID:\s*(.+)$/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?MILESTONE[. _]ID(?:\*\*)?:\s*(.*)/i);
     if (match) {
-      const value = match[1].trim();
-      return value || null;
+      const value = match[1].trim().replace(/\*\*/g, "").trim();
+      if (value) ids.push(value);
     }
   }
-  return null;
+  return ids;
+}
+
+// Extracts the single MILESTONE ID from a raw dispatch prompt. protocol-gate
+// runs BEFORE delegation-gate, so the raw prompt (not the rendered template)
+// is the source of truth. R017/P019: cardinality (exactly one) is validated at
+// the dispatch call site BEFORE any registry mutation — this helper only
+// surfaces the first value for callers that already know cardinality holds.
+function extractMilestoneIdFromPrompt(prompt) {
+  const ids = collectMilestoneIds(prompt);
+  return ids.length > 0 ? ids[0] : null;
 }
 
 // Advances a milestone row in the session's milestone registry KD through the
 // given state chain (e.g. ["assigned", "in-progress"]) on a SWARM dispatch.
 // Only the machine-readable `## Milestone States` YAML block is rewritten — the
 // human-readable Milestone Details table stays untouched. A row already at the
-// final state or in checked-off is left alone: completed milestones must not
-// regress via re-dispatch (backward transitions belong to the M5 gate).
-// M4 (R009/R010): reaching checked-off is restricted to in-progress milestones —
-// the artisan checks off only after its impl KD lands, so pending/assigned/failed
-// rows are rejected with invalid-transition. Row matching is case-insensitive
-// (impl KDs may carry any casing for the milestone token, e.g. impl-m3 vs row M3)
-// and the replacement preserves the registry row's own casing.
+// final state is left alone (idempotent). Reaching checked-off is restricted to
+// in-progress milestones — the artisan checks off only after its impl KD lands,
+// so pending/assigned/failed rows are rejected with invalid-transition. Row
+// matching is case-insensitive (impl KDs may carry any casing for the milestone
+// token, e.g. impl-m3 vs row M3) and the replacement preserves the registry
+// row's own casing.
+// R014/NFR001: the write is atomic (tmp + fsync + rename) so a crash mid-write
+// can never leave a torn registry YAML on disk.
+// R016 (P017): a checked-off row is immutable for every caller EXCEPT the SWARM
+// re-dispatch path (opts.reopen). When the Overseer re-dispatches a checked-off
+// milestone after inspector findings, the row re-opens to a non-terminal state
+// so the SWARM→VERIFY gate fails closed again until the fix is re-verified.
 // Returns { ok, path, changed } on success or { ok: false, reason } otherwise.
-function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states) {
+function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states, opts = {}) {
   const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!located) return { ok: false, reason: "no-registry" };
 
@@ -337,14 +377,19 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
     return { ok: false, reason: "invalid-transition" };
   }
   if (current === "checked-off") {
-    return { ok: true, path: located.path, changed: false };
+    // Only the SWARM re-dispatch path re-opens completed rows (R016); every
+    // other writer leaves them immutable so evidence is never silently lost.
+    if (!opts.reopen || finalState === "checked-off") {
+      return { ok: true, path: located.path, changed: false };
+    }
   }
 
   const rowId = rowMatch[0].slice(0, rowMatch[0].indexOf(":")).trim();
   const newBlock = located.block.replace(rowPattern, `  ${rowId}: ${finalState}`);
   const newContent = located.content.slice(0, located.fenceStart) + newBlock + located.content.slice(located.fenceEnd);
   try {
-    writeFileSync(located.path, newContent);
+    // R014/NFR001: atomic durable registry write — no torn YAML after a crash.
+    atomicWriteFileSync(located.path, newContent);
     debug(`Registry ${located.path}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
     return { ok: true, path: located.path, changed: true };
   } catch (e) {
@@ -795,26 +840,35 @@ export default {
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
 
-    // --- State persistence ---
-    // Persists phase + session ID to disk so opencode --continue restores state.
-    // Without this, restarting the plugin server loses all in-memory state.
-    // State files live in the plugin's .state/ directory, not .opencode/ which
-    // may have special purpose in opencode's config hierarchy.
+    // --- State persistence (M1: file-backed SSOT) ---
+    // The .state file is the single source of truth for phase (R001). The
+    // in-memory sessionPhaseMap is a cache reconciled against the file on every
+    // overseer message; every transition persists before it is considered
+    // complete (R002); a restart restores from the file (R003); a fresh session
+    // ID continues the pointed-to lifecycle via the active-session pointer (R004).
     function getStatePath(sessionID) {
-      return join(PLUGIN_DIR, ".state", `.protocol-state-${sessionID}.json`);
+      const safe = sanitizeSessionID(sessionID);
+      if (!safe) return null;
+      return join(PLUGIN_DIR, ".state", `.protocol-state-${safe}.json`);
     }
 
     function saveState(sessionID) {
+      const statePath = getStatePath(sessionID);
+      if (!statePath) {
+        debug(`saveState: unsafe session ID rejected: ${JSON.stringify(sessionID)} (NFR004)`);
+        process.stderr.write(`[protocol-gate] saveState: unsafe session ID rejected (NFR004)\n`);
+        return false;
+      }
       // P009: the phase entry is deleted at lifecycle end (REPORT reset).
-      // Persist that state as phase 0 — the next loadState() restores
-      // PROTOCOL_NOT_LOADED and honors any manual edit of this file (AC-R005).
+      // Persist that state as phase 0 — the next reconcile restores
+      // PROTOCOL_NOT_LOADED and honors any manual edit of this file.
       const phase = sessionPhaseMap.get(sessionID) ?? STATES.PROTOCOL_NOT_LOADED;
       const sid = sessionPhaseMap.get(`${sessionID}:sid`);
       try {
         // generation persists across lifecycle resets via the :gen map entry.
         // Written even at phase 0 so the counter survives restarts between
-        // lifecycles (P001/R001). Returns boolean so callers can enforce the
-        // NFR002 atomicity contract: revert in-memory :gen when save fails.
+        // lifecycles (R003). Returns boolean so callers can enforce the NFR001
+        // atomicity contract: revert in-memory :gen when save fails.
         const generation = sessionPhaseMap.get(`${sessionID}:gen`) || 0;
         // Fix M4: Omit sid from state JSON when it's null/undefined (deleted after REPORT).
         // Previously, sid: null was serialized, causing loadState to skip phase restoration
@@ -823,94 +877,142 @@ export default {
         if (sid) state.sid = sid;
         const stateDir = join(PLUGIN_DIR, ".state");
         mkdirSync(stateDir, { recursive: true });
-        writeFileSync(getStatePath(sessionID), JSON.stringify(state));
-        return true;
-      } catch (e) { debug(`saveState error: ${e.message}`); return false; }
-    }
-
-    function loadState(sessionID) {
-      const statePath = getStatePath(sessionID);
-      debug(`loadState: checking ${statePath}`);
-      try {
-        const data = JSON.parse(readFileSync(statePath, "utf8"));
-        // Generation restoration happens for ANY phase, including phase 0.
-        // After REPORT→PROTOCOL_NOT_LOADED the file is {phase:0, generation:N}
-        // and the counter must survive process restarts between lifecycles.
-        if (data.generation !== undefined) {
-          sessionPhaseMap.set(`${sessionID}:gen`, data.generation);
-          debug(`loadState: restored generation=${data.generation} for ${sessionID}`);
+        // NFR001/R005: atomic durable write — tmp file + fsync + rename. A
+        // failure (disk full, permissions) surfaces to the caller as false +
+        // stderr so the in-memory phase never silently diverges from disk.
+        atomicWriteFileSync(statePath, JSON.stringify(state));
+        // R004: keep the workspace-level active-session pointer current so a
+        // restart that mints a fresh session ID can continue this lifecycle.
+        if (!writeActiveSession(sessionID)) {
+          debug(`saveState: state persisted but active-session pointer update failed for ${sessionID}`);
         }
-        if (data.phase !== undefined && data.phase > STATES.PROTOCOL_NOT_LOADED) {
-          sessionPhaseMap.set(sessionID, data.phase);
-          if (data.sid) {
-            sessionPhaseMap.set(`${sessionID}:sid`, data.sid);
-          }
-          overseerSessions.add(sessionID);
-          lastSeenSession = sessionID;
-          debug(`loadState: restored phase=${getPhaseName(data.phase)} sid=${data.sid}`);
-          return true;
-        }
-      } catch (e) { debug(`loadState: failed for ${sessionID}: ${e.message}`); }
-      return false;
-    }
-
-    // --- Phase override (M3, R005/AC-R006) ---
-    // Two paths set a phase override for a session:
-    //   1. The /phase command (command.execute.before hook) sets the phase
-    //      directly in memory and persists it via saveState — deterministic,
-    //      no filesystem round-trip.
-    //   2. A signal file `.state/.override-{sessionID}.json` written by the
-    //      command template (commands/phase.md) — fallback for runtimes where
-    //      the hook is not invoked. Consumed exactly once by chat.params.
-    // The file path carries a 5-minute TTL and refuses forward jumps larger
-    // than 3 phases (defense against a stale or miswritten file; the explicit
-    // /phase command bypasses this limit because the user typed it directly).
-    function getOverridePath(sessionID) {
-      return join(PLUGIN_DIR, ".state", `.override-${sessionID}.json`);
-    }
-
-    function applyPhaseOverride(sessionID) {
-      const overridePath = getOverridePath(sessionID);
-      let raw;
-      try {
-        raw = readFileSync(overridePath, "utf8");
-      } catch (_) {
-        return false; // no override file
-      }
-      try {
-        const data = JSON.parse(raw);
-        if (data.createdAt && Date.now() - new Date(data.createdAt).getTime() > OVERRIDE_TTL_MS) {
-          debug(`Phase override: dropped expired override for session ${sessionID} (TTL ${OVERRIDE_TTL_MS}ms)`);
-          rmSync(overridePath, { force: true });
-          return false;
-        }
-        const n = Number(data.phase);
-        if (!Number.isInteger(n) || n < STATES.PROTOCOL_NOT_LOADED || n > STATES.REPORT) {
-          debug(`Phase override: invalid phase value ${data.phase} in override file for session ${sessionID}`);
-          rmSync(overridePath, { force: true });
-          return false;
-        }
-        const current = sessionPhaseMap.get(sessionID);
-        if (current !== undefined && n > current + 3) {
-          debug(`Phase override: REJECTED forward jump ${getPhaseName(current)}(${current}) → ${getPhaseName(n)}(${n}) for session ${sessionID} (max +3)`);
-          rmSync(overridePath, { force: true });
-          return false;
-        }
-        sessionPhaseMap.set(sessionID, n);
-        // Re-capture the session ID so checkDiskAdvancement can filter KDs by
-        // session — required when the override starts a fresh lifecycle.
-        if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
-          sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
-        }
-        saveState(sessionID);
-        rmSync(overridePath, { force: true }); // consumed once
-        debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
         return true;
       } catch (e) {
-        debug(`Phase override: malformed override file for session ${sessionID}: ${e.message}`);
-        rmSync(overridePath, { force: true });
+        debug(`saveState error: ${e.message}`);
+        process.stderr.write(`[protocol-gate] saveState error for session ${sessionID}: ${e.message}\n`);
         return false;
       }
+    }
+
+    // Reads + parses the session's state file. Returns the parsed state object,
+    // "missing" when no file exists, or "corrupt" when the file exists but
+    // cannot be parsed. On corruption the original file is preserved via a
+    // backup rename (R006) — never silently clobbered with phase 0.
+    function readStateFile(sessionID) {
+      const statePath = getStatePath(sessionID);
+      if (!statePath) return "missing"; // unsafe session ID — nothing to read (NFR004)
+      try {
+        return JSON.parse(readFileSync(statePath, "utf8"));
+      } catch (e) {
+        if (e.code === "ENOENT") return "missing";
+        try {
+          const backupPath = join(PLUGIN_DIR, ".state", `.protocol-state-${sanitizeSessionID(sessionID)}.corrupt-${Date.now()}.json`);
+          renameSync(statePath, backupPath);
+          debug(`loadState: corrupt state file backed up to ${backupPath} (${e.message})`);
+          process.stderr.write(`[protocol-gate] Corrupt state file for session ${sessionID} — backed up to ${basename(backupPath)}; initializing PROTOCOL_NOT_LOADED (R006)\n`);
+        } catch (be) {
+          debug(`loadState: failed to back up corrupt state file for ${sessionID}: ${be.message}`);
+        }
+        return "corrupt";
+      }
+    }
+
+    // Spec contract: returns the parsed {phase, generation, sid} object or null
+    // when no valid file exists. reconcileSessionState drives the map mutation;
+    // this keeps the documented loadState contract testable.
+    function loadState(sessionID) {
+      const state = readStateFile(sessionID);
+      return state === "missing" || state === "corrupt" || state === null ? null : state;
+    }
+
+    // --- Active-session pointer (R004) ---
+    // Workspace-level file recording the most recently active lifecycle. A
+    // fresh session ID with no own state file restores the pointed-to phase and
+    // adopts that lifecycle, covering opencode restarting with a new session ID.
+    function getActiveSessionPath() {
+      return join(PLUGIN_DIR, ".state", ".active-session.json");
+    }
+
+    function readActiveSession() {
+      try {
+        const data = JSON.parse(readFileSync(getActiveSessionPath(), "utf8"));
+        if (data && typeof data.sessionID === "string" && data.sessionID.length > 0) {
+          return data;
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    function writeActiveSession(sessionID) {
+      const safe = sanitizeSessionID(sessionID);
+      if (!safe) return false;
+      try {
+        mkdirSync(join(PLUGIN_DIR, ".state"), { recursive: true });
+        atomicWriteFileSync(getActiveSessionPath(), JSON.stringify({ sessionID: safe, lastUpdated: new Date().toISOString() }));
+        return true;
+      } catch (e) {
+        debug(`writeActiveSession error: ${e.message}`);
+        return false;
+      }
+    }
+
+    // P002/R001: the file is the runtime SSOT — reconcile the in-memory cache
+    // on every overseer message so manual file edits are honored mid-session.
+    // Priority: valid own file (R003) > active-session pointer adoption (R004)
+    // > fresh PROTOCOL_NOT_LOADED init. Corrupt files back up + fresh init (R006).
+    function reconcileSessionState(sessionID) {
+      const state = readStateFile(sessionID);
+
+      if (state === "missing") {
+        // R004: no own state file — continue the pointed-to lifecycle when a
+        // workspace-level active-session pointer exists for a different session.
+        const pointer = readActiveSession();
+        if (pointer && pointer.sessionID && pointer.sessionID !== sessionID) {
+          const pointed = readStateFile(pointer.sessionID);
+          if (pointed !== "missing" && pointed !== "corrupt" && pointed !== null) {
+            const gen = pointed.generation !== undefined ? pointed.generation : 0;
+            sessionPhaseMap.set(`${sessionID}:gen`, gen);
+            sessionPhaseMap.set(`${sessionID}:sid`, pointed.sid || pointer.sessionID);
+            const phase = typeof pointed.phase === "number" ? pointed.phase : STATES.PROTOCOL_NOT_LOADED;
+            sessionPhaseMap.set(sessionID, phase);
+            debug(`reconcile: adopted phase=${getPhaseName(phase)} from active-session ${pointer.sessionID} for ${sessionID} (R004)`);
+            // The current session now owns the lifecycle — persist its own
+            // state file and move the pointer so the adoption is durable.
+            saveState(sessionID);
+            return;
+          }
+        }
+        // Fresh session — initialize PROTOCOL_NOT_LOADED and persist (R004).
+        sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+        sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+        saveState(sessionID);
+        debug(`reconcile: initialized PROTOCOL_NOT_LOADED for ${sessionID}`);
+        return;
+      }
+
+      if (state === "corrupt") {
+        // R006: the corrupt file was backed up by readStateFile — initialize
+        // fresh rather than trusting a half-written state. The next valid
+        // transition overwrites the original path with valid JSON.
+        sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
+        sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+        saveState(sessionID);
+        debug(`reconcile: initialized PROTOCOL_NOT_LOADED after corrupt state file for ${sessionID} (R006)`);
+        return;
+      }
+
+      // Valid own file — restore phase, generation, and sid (R001/R003).
+      if (state.generation !== undefined) {
+        sessionPhaseMap.set(`${sessionID}:gen`, state.generation);
+      }
+      if (state.sid) {
+        sessionPhaseMap.set(`${sessionID}:sid`, state.sid);
+      } else if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
+        sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
+      }
+      const phase = typeof state.phase === "number" ? state.phase : STATES.PROTOCOL_NOT_LOADED;
+      sessionPhaseMap.set(sessionID, phase);
+      debug(`reconcile: restored phase=${getPhaseName(phase)} sid=${state.sid} for ${sessionID} (R001)`);
     }
 
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
@@ -987,21 +1089,61 @@ export default {
       return true;
     }
 
-    // M4 (R009/R010): When the artisan writes its milestone-scoped impl KD,
+    // R013/P014: restart-proof check-off — the impl KD filename is the ONLY
+    // source of the parent lifecycle. Candidate parent sessions are collected
+    // from the on-disk .state files (which survive restart) plus the in-memory
+    // overseer cache; the filename's embedded `-{sessionID}-gen{N}` suffix
+    // selects the parent via matchesSessionKD. A fresh instance with an empty
+    // overseerSessions set still checks the milestone off (AC013).
+    function collectParentSessionCandidates() {
+      const candidates = new Set(overseerSessions);
+      try {
+        const stateDir = join(PLUGIN_DIR, ".state");
+        for (const f of readdirSync(stateDir)) {
+          const m = f.match(/^\.protocol-state-(.+)\.json$/);
+          if (m) candidates.add(m[1]);
+        }
+      } catch (_) {}
+      return [...candidates];
+    }
+
+    // Persisted generation for a session — reads the .state file so check-off
+    // matches the correct lifecycle after a restart when the in-memory map is
+    // empty (the file is the SSOT, R014). Returns null when no valid file
+    // exists so callers can fall back to the in-memory value.
+    function getPersistedGeneration(sessionID) {
+      const statePath = getStatePath(sessionID);
+      if (!statePath) return null;
+      try {
+        const data = JSON.parse(readFileSync(statePath, "utf8"));
+        return typeof data.generation === "number" ? data.generation : 0;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    // M3 (R012/R013): When the artisan writes its milestone-scoped impl KD,
     // advance that milestone to checked-off in the parent lifecycle's registry.
-    // The impl KD on disk IS the verifiable evidence of completion — the M5
-    // all-checked-off gate reads it back via checkMilestoneCheckedOff. Only a
-    // matching overseer session in SWARM is touched; the impl KD filename carries
-    // the parent session ID, which maps the artifact back to its lifecycle.
+    // The impl KD on disk IS the verifiable evidence of completion — the
+    // SWARM→VERIFY gate reads it back via checkMilestoneCheckedOff. Only a row
+    // in-progress in the registry can complete (R012); the parent session and
+    // generation come from the filename + on-disk state, never from in-memory
+    // session state alone.
     function autoCheckOffMilestone(relPath) {
       const milestoneId = extractMilestoneIdFromImplKD(relPath);
       if (!milestoneId) return;
-      for (const overseerID of overseerSessions) {
-        if (sessionPhaseMap.get(overseerID) !== STATES.SWARM) continue;
-        const generation = getCurrentGeneration(sessionPhaseMap, overseerID);
-        if (matchesSessionKD(relPath, overseerID, generation)) {
-          const result = updateMilestoneRegistry(overseerID, sessionPhaseMap, milestoneId, ["checked-off"]);
-          debug(`M4 auto check-off: impl KD for milestone ${milestoneId} → ${JSON.stringify(result)}`);
+      for (const candidate of collectParentSessionCandidates()) {
+        // Disk generation is the SSOT (restart-proof); the map is a fallback.
+        const generation = getPersistedGeneration(candidate) ?? getCurrentGeneration(sessionPhaseMap, candidate);
+        if (matchesSessionKD(relPath, candidate, generation)) {
+          // Seed the in-memory generation so the generation-scoped registry
+          // lookup (locateMilestoneRegistry) finds the same lifecycle after a
+          // restart when the map is empty.
+          if (!sessionPhaseMap.has(`${candidate}:gen`)) {
+            sessionPhaseMap.set(`${candidate}:gen`, generation);
+          }
+          const result = updateMilestoneRegistry(candidate, sessionPhaseMap, milestoneId, ["checked-off"]);
+          debug(`M3 auto check-off: impl KD for milestone ${milestoneId} (parent ${candidate}) → ${JSON.stringify(result)}`);
           break;
         }
       }
@@ -1018,25 +1160,11 @@ export default {
 
       if (agent === "overseer") {
         overseerSessions.add(sessionID);
-        // M3: consume any pending /phase override file first. Runs before the
-        // entry check so a file is honored even mid-lifecycle (the hook already
-        // applied the value in memory — the file then re-applies the same value
-        // and is deleted, which is idempotent).
-        applyPhaseOverride(sessionID);
-        // Only initialize when session isn't already tracked (opencode calls
-        // chat.params on every tool invocation cycle, not once per session).
-        if (!sessionPhaseMap.has(sessionID)) {
-          if (!loadState(sessionID)) {
-            debug(`chat.params: initializing overseer session ${sessionID}`);
-            sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
-            // BUG-004: Capture session ID at initialization, not at intent KD write.
-            // checkDiskAdvancement requires :sid to filter KD files by session.
-            sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
-            // saveState re-persists any :gen restored by loadState — a phase-0
-            // post-REPORT state file's generation survives this re-initialization.
-            saveState(sessionID);
-          }
-        }
+        // P002/R001: the state file is the runtime SSOT — reconcile the
+        // in-memory cache on every overseer message so manual file edits are
+        // honored mid-session. The old `!sessionPhaseMap.has` one-shot load
+        // guard is deliberately removed: the file always wins.
+        reconcileSessionState(sessionID);
       } else {
         // Non-overseer sessions pass through unaffected — don't touch the maps.
         // Protocol-gate is Overseer-only; subagent tool calls must not be blocked.
@@ -1045,12 +1173,13 @@ export default {
       }
     }
 
-    // --- Hook: command.execute.before (M3, R005) ---
-    // Implements the /phase slash command. Validates the argument against
-    // STATES (AC-R006 rejection cases: 99, INVALID, empty) and applies the
-    // override in memory + on disk. Registered alongside commands/phase.md;
-    // the hook is the deterministic path and the command template's override
-    // file is the fallback for runtimes that never invoke this hook.
+    // --- Hook: command.execute.before (R008) ---
+    // Implements the /phase slash command — the single user-facing override
+    // path. Validates the argument against STATES (rejections: 99, INVALID,
+    // empty), sets the phase in memory, persists via saveState, and replies
+    // with a deterministic confirmation. Any valid phase 0-12 is accepted with
+    // no forward-jump cap (R009); the command template is confirmation-only —
+    // the LLM never hand-writes state files (R007/NFR005).
     async function commandExecuteBefore(input, output) {
       const commandName = String(input.command || "").replace(/^\/+/, "");
       if (commandName !== "phase") return;
@@ -1423,6 +1552,36 @@ export default {
         }
       }
 
+      // R016/P017: a SWARM re-dispatch must re-open its checked-off milestone
+      // BEFORE the all-checked-off gate runs. The gate is checked on the same
+      // task call (below); without the re-open first, an all-done registry would
+      // advance SWARM→VERIFY and the re-dispatch would be blocked as a wrong
+      // agent before the task handler ever runs. Only genuine artisan dispatches
+      // to SWARM's agent advance the registry; every other task call passes
+      // through untouched.
+      // R017/P019 (issue-7): MILESTONE_ID cardinality is validated BEFORE any
+      // registry mutation. A MULTI_MILESTONE rejection must leave the registry
+      // byte-identical — without this check, first-line-wins extraction would
+      // advance the first row before delegation-gate rejected the dispatch
+      // (phantom in-progress row). Mirrors delegation-gate's collectMilestoneIds
+      // semantics so both gates agree on cardinality.
+      if (tool === "task" && phase === STATES.SWARM) {
+        let dispatchAgent = extractAgentFromPrompt(args?.prompt || "");
+        if (!dispatchAgent && args?.subagent_type) dispatchAgent = String(args.subagent_type).toLowerCase();
+        const swarmAgent = PHASE_AGENT_MAP[getPhaseName(STATES.SWARM)]?.toLowerCase();
+        if (dispatchAgent && swarmAgent && dispatchAgent === swarmAgent) {
+          const milestoneIds = collectMilestoneIds(args?.prompt || "");
+          if (milestoneIds.length > 1 || (milestoneIds.length === 1 && /,/.test(milestoneIds[0]))) {
+            debug(`MULTI_MILESTONE: multiple milestones in single swarm dispatch: ${JSON.stringify(milestoneIds)}`);
+            throw new ProtocolGateError(ERROR_TEMPLATES.MULTI_MILESTONE.code, ERROR_TEMPLATES.MULTI_MILESTONE.message, ERROR_TEMPLATES.MULTI_MILESTONE.guidance);
+          }
+          if (milestoneIds.length === 1) {
+            const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneIds[0], ["assigned", "in-progress"], { reopen: true });
+            debug(`SWARM registry update (pre-gate) for ${milestoneIds[0]}: ${JSON.stringify(regResult)}`);
+          }
+        }
+      }
+
       // --- disk-based advancement for lifecycle tools (R009) ---
       // Runs BEFORE the task handler so the phase is current when agent routing
       // validates the dispatched agent. Without this, task calls in PREFLIGHT
@@ -1669,15 +1828,10 @@ export default {
               // M5 (R011-R014): MILESTONE_COUNT is no longer extracted or
               // stored — the all-checked-off registry gate replaces count-based
               // advancement, so count signals have no gating effect (AC024).
-              // M3: per-milestone registry tracking — parse the MILESTONE ID from
-              // the raw dispatch prompt and advance that milestone's row in the
-              // milestone registry (pending → assigned → in-progress). Runs here
-              // (not delegation-gate) so the registry is the live state SSOT.
-              const milestoneId = extractMilestoneIdFromPrompt(prompt);
-              if (milestoneId) {
-                const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, ["assigned", "in-progress"]);
-                debug(`SWARM registry update for ${milestoneId}: ${JSON.stringify(regResult)}`);
-              }
+              // M3: per-milestone registry tracking runs in the pre-gate block
+              // above (R016 re-open must precede the all-checked-off gate).
+              // swarmDispatchCount remains a pure counter — it has no gating
+              // effect (M5: the all-checked-off registry gate replaces it).
               debug(`SWARM dispatch count for ${sessionID}: ${count}`);
             }
             // Track re-dispatches per phase to cap retries
@@ -1790,6 +1944,19 @@ export default {
           systemMsg += `\nUse this session ID and generation in the intent KD filename: knowledge/intent-{name}-${sessionID}-gen${generation}.md`;
         }
 
+        // R010 (AC010): during SWARM, surface the milestone list (IDs + live
+        // states) so the Overseer knows the plan's milestones and dispatches
+        // exactly one MILESTONE ID per artisan. The registry KD is the SSOT —
+        // the list is read fresh from disk, never from in-memory caches.
+        if (phase === STATES.SWARM && sessionID) {
+          const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+          if (registry && registry.rows.length > 0) {
+            const list = registry.rows.map(r => `${r.id}=${r.state}`).join(", ");
+            systemMsg += `\n\nMilestone registry (live state SSOT): ${list}`;
+            systemMsg += `\nInclude exactly one "MILESTONE ID: <id>" matching the registry row you are dispatching.`;
+          }
+        }
+
         output.system.push(systemMsg);
       }
       debug(`systemTransform: injected phase constraint for phase=${phaseName}`);
@@ -1820,6 +1987,7 @@ export default {
       checkDiskAdvancement,
       cleanupLifecycleKDs,
       extractMilestoneIdFromPrompt,
+      collectMilestoneIds,
       updateMilestoneRegistry,
       extractMilestoneIdFromImplKD,
       findMilestoneImplKD,
@@ -1828,10 +1996,18 @@ export default {
       readMilestoneRegistry,
       checkAllMilestonesCheckedOff,
       markStuckMilestonesFailed,
+      collectParentSessionCandidates,
+      getPersistedGeneration,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
-      applyPhaseOverride,
-      getOverridePath,
+      saveState,
+      loadState,
+      getStatePath,
+      sanitizeSessionID,
+      getActiveSessionPath,
+      readActiveSession,
+      writeActiveSession,
+      reconcileSessionState,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
       get lastSeenSession() { return lastSeenSession; }
