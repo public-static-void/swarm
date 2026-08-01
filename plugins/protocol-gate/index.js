@@ -77,7 +77,7 @@ const PHASE_INSTRUCTIONS = {
   INVESTIGATE: "Dispatch the Analyzer agent.",
   ALIGN: "Dispatch the Spec Weaver agent.",
   DECOMPOSE: "Dispatch the Pathfinder agent.",
-  SWARM: "Dispatch the Artisan agent. Read the plan and milestone registry KDs to track milestone state before each dispatch. Include exactly one MILESTONE ID: matching the registry row you are dispatching.",
+  SWARM: "Dispatch the Artisan agent. Read the plan and milestone registry KDs to track milestone state before each dispatch. Include exactly one MILESTONE ID: matching the registry row you are dispatching. Name the dispatch's RESULT KD milestone-scoped — knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md — so the impl KD checks that milestone off on write.",
   VERIFY: "Dispatch the Inspector agent.",
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
@@ -315,46 +315,122 @@ function extractMilestoneIdFromPrompt(prompt) {
 // human-readable Milestone Details table stays untouched. A row already at the
 // final state or in checked-off is left alone: completed milestones must not
 // regress via re-dispatch (backward transitions belong to the M5 gate).
+// M4 (R009/R010): reaching checked-off is restricted to in-progress milestones —
+// the artisan checks off only after its impl KD lands, so pending/assigned/failed
+// rows are rejected with invalid-transition. Row matching is case-insensitive
+// (impl KDs may carry any casing for the milestone token, e.g. impl-m3 vs row M3)
+// and the replacement preserves the registry row's own casing.
 // Returns { ok, path, changed } on success or { ok: false, reason } otherwise.
 function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states) {
-  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
-  const knowledgeDir = join(process.cwd(), "knowledge");
-  let files = [];
-  try { files = readdirSync(knowledgeDir); } catch (_) { return { ok: false, reason: "no-registry" }; }
-  const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKD(f, sessionID, generation));
-  if (!registry) return { ok: false, reason: "no-registry" };
+  const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!located) return { ok: false, reason: "no-registry" };
 
-  const path = join(knowledgeDir, registry);
-  let content;
-  try { content = readFileSync(path, "utf8"); } catch (_) { return { ok: false, reason: "no-registry" }; }
-
-  const blockStart = content.search(/^##\s*Milestone States\s*$/m);
-  if (blockStart === -1) return { ok: false, reason: "no-yaml-block" };
-  const fenceStart = content.indexOf("```yaml", blockStart);
-  const fenceEnd = content.indexOf("```", fenceStart + 7);
-  if (fenceStart === -1 || fenceEnd === -1) return { ok: false, reason: "no-yaml-block" };
-
-  const block = content.slice(fenceStart, fenceEnd);
-  const rowPattern = new RegExp(`^\\s*${escapeRegExp(milestoneId)}:\\s*([A-Za-z-]+)\\s*$`, "m");
-  const rowMatch = block.match(rowPattern);
+  const rowPattern = new RegExp(`^\\s*${escapeRegExp(milestoneId)}:\\s*([A-Za-z-]+)\\s*$`, "mi");
+  const rowMatch = located.block.match(rowPattern);
   if (!rowMatch) return { ok: false, reason: "milestone-not-found" };
 
   const current = rowMatch[1];
   const finalState = Array.isArray(states) && states.length > 0 ? states[states.length - 1] : "in-progress";
-  if (current === finalState || current === "checked-off") {
-    return { ok: true, path, changed: false };
+  if (current === finalState) {
+    return { ok: true, path: located.path, changed: false };
+  }
+  if (finalState === "checked-off" && current !== "in-progress") {
+    return { ok: false, reason: "invalid-transition" };
+  }
+  if (current === "checked-off") {
+    return { ok: true, path: located.path, changed: false };
   }
 
-  const newBlock = block.replace(rowPattern, `  ${milestoneId}: ${finalState}`);
-  const newContent = content.slice(0, fenceStart) + newBlock + content.slice(fenceEnd);
+  const rowId = rowMatch[0].slice(0, rowMatch[0].indexOf(":")).trim();
+  const newBlock = located.block.replace(rowPattern, `  ${rowId}: ${finalState}`);
+  const newContent = located.content.slice(0, located.fenceStart) + newBlock + located.content.slice(located.fenceEnd);
   try {
-    writeFileSync(path, newContent);
-    debug(`Registry ${registry}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
-    return { ok: true, path, changed: true };
+    writeFileSync(located.path, newContent);
+    debug(`Registry ${located.path}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
+    return { ok: true, path: located.path, changed: true };
   } catch (e) {
-    debug(`Registry write failed for ${registry}: ${e.message}`);
+    debug(`Registry write failed for ${located.path}: ${e.message}`);
     return { ok: false, reason: "write-failed" };
   }
+}
+
+// M4 (R009/R010): Locates and parses the session's milestone registry KD.
+// Shared by updateMilestoneRegistry and readMilestoneState so both helpers agree
+// on the machine-readable `## Milestone States` YAML block as the SSOT.
+// Returns { path, content, block, fenceStart, fenceEnd } or null when the
+// registry file or YAML block is missing.
+function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const knowledgeDir = join(process.cwd(), "knowledge");
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
+  const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKD(f, sessionID, generation));
+  if (!registry) return null;
+
+  const path = join(knowledgeDir, registry);
+  let content;
+  try { content = readFileSync(path, "utf8"); } catch (_) { return null; }
+
+  const blockStart = content.search(/^##\s*Milestone States\s*$/m);
+  if (blockStart === -1) return null;
+  const fenceStart = content.indexOf("```yaml", blockStart);
+  const fenceEnd = content.indexOf("```", fenceStart + 7);
+  if (fenceStart === -1 || fenceEnd === -1) return null;
+  return { path, content, block: content.slice(fenceStart, fenceEnd), fenceStart, fenceEnd };
+}
+
+// M4 (R009/R010): Reads the current state of a milestone row from the registry
+// YAML block. Returns the state string or null when the registry/row is missing.
+function readMilestoneState(sessionID, sessionPhaseMap, milestoneId) {
+  const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!located) return null;
+  const rowPattern = new RegExp(`^\\s*${escapeRegExp(milestoneId)}:\\s*([A-Za-z-]+)\\s*$`, "mi");
+  const rowMatch = located.block.match(rowPattern);
+  return rowMatch ? rowMatch[1] : null;
+}
+
+// M4 (R009/R010): Finds the milestone-scoped impl KD on disk for a milestone.
+// Mirrors matchesSessionKD generation scoping: gen 0 matches the legacy
+// `-<session>.md` suffix; gen N matches only `-<session>-genN.md`. The milestone
+// prefix match is case-insensitive. Returns the filename or null.
+function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
+  if (!milestoneId) return null;
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const knowledgeDir = join(process.cwd(), "knowledge");
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
+  const prefix = `impl-${milestoneId}-`;
+  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKD(f, sessionID, generation));
+  return found || null;
+}
+
+// M4 (R009/R010): Cross-checks a milestone's registry state against its impl KD
+// on disk — the verifiable check-off semantics the M5 all-checked-off gate will
+// consume. A row is genuinely checked-off only when BOTH the registry row says
+// checked-off AND the milestone-scoped impl KD exists on disk.
+function checkMilestoneCheckedOff(sessionID, sessionPhaseMap, milestoneId) {
+  const state = readMilestoneState(sessionID, sessionPhaseMap, milestoneId);
+  const implKD = findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId);
+  return {
+    checkedOff: state === "checked-off" && implKD !== null,
+    implKDOnDisk: implKD !== null,
+    state,
+    implKD
+  };
+}
+
+// M4 (R009/R010): Extracts the milestone ID from an impl KD filename per the
+// milestone-scoped naming contract `impl-<milestone-id>-<name>-<session>[-gen{N}].md`.
+// The first token after the `impl-` prefix is the milestone ID. Returns null for
+// non-impl filenames (other KD types) and invalid input — a legacy unscoped
+// impl KD yields its first name token, which never matches a registry row.
+function extractMilestoneIdFromImplKD(filename) {
+  if (typeof filename !== "string") return null;
+  const base = filename.replace(/\\/g, "/").split("/").pop();
+  if (!/^impl-/i.test(base)) return null;
+  const name = base.replace(/\.md$/, "");
+  const token = name.replace(/^impl-/i, "").split("-")[0];
+  return token || null;
 }
 
 function escapeRegExp(str) {
@@ -859,6 +935,26 @@ export default {
       return true;
     }
 
+    // M4 (R009/R010): When the artisan writes its milestone-scoped impl KD,
+    // advance that milestone to checked-off in the parent lifecycle's registry.
+    // The impl KD on disk IS the verifiable evidence of completion — the M5
+    // all-checked-off gate reads it back via checkMilestoneCheckedOff. Only a
+    // matching overseer session in SWARM is touched; the impl KD filename carries
+    // the parent session ID, which maps the artifact back to its lifecycle.
+    function autoCheckOffMilestone(relPath) {
+      const milestoneId = extractMilestoneIdFromImplKD(relPath);
+      if (!milestoneId) return;
+      for (const overseerID of overseerSessions) {
+        if (sessionPhaseMap.get(overseerID) !== STATES.SWARM) continue;
+        const generation = getCurrentGeneration(sessionPhaseMap, overseerID);
+        if (matchesSessionKD(relPath, overseerID, generation)) {
+          const result = updateMilestoneRegistry(overseerID, sessionPhaseMap, milestoneId, ["checked-off"]);
+          debug(`M4 auto check-off: impl KD for milestone ${milestoneId} → ${JSON.stringify(result)}`);
+          break;
+        }
+      }
+    }
+
     // --- Hook: chat.params ---
     async function chatParams(input, output) {
       const { sessionID, agent } = input;
@@ -1007,6 +1103,14 @@ export default {
                 }
               }
             }
+          }
+          // M4 (R009/R010): the artisan's milestone-scoped impl KD write is the
+          // check-off signal — advance that milestone in the parent SWARM
+          // lifecycle's registry. Only the artisan (the intended writer of impl
+          // KDs) triggers it; other agents' writes never touch milestone state.
+          const isImplKD = /^knowledge\/impl-/i.test(relPath) || /\/knowledge\/impl-/i.test(relPath);
+          if (isImplKD && (sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown") === "artisan") {
+            autoCheckOffMilestone(relPath);
           }
         }
         // Session never identified as overseer via chat.params — pass through.
@@ -1626,6 +1730,10 @@ export default {
       cleanupLifecycleKDs,
       extractMilestoneIdFromPrompt,
       updateMilestoneRegistry,
+      extractMilestoneIdFromImplKD,
+      findMilestoneImplKD,
+      readMilestoneState,
+      checkMilestoneCheckedOff,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
       applyPhaseOverride,
