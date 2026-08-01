@@ -40,7 +40,8 @@ const ERRORS = {
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },
   MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
-  INVALID_MILESTONE_ID: { code: "INVALID_MILESTONE_ID", message: "Invalid MILESTONE ID format", guidance: "MILESTONE ID must match /^[A-Za-z0-9][A-Za-z0-9_-]*$/" }
+  INVALID_MILESTONE_ID: { code: "INVALID_MILESTONE_ID", message: "Invalid MILESTONE ID format", guidance: "MILESTONE ID must match /^[A-Za-z0-9][A-Za-z0-9_-]*$/" },
+  RESULT_KD_MILESTONE_MISMATCH: { code: "RESULT_KD_MILESTONE_MISMATCH", message: "Swarm result KD does not match the MILESTONE ID", guidance: "Name the impl KD knowledge/impl-<milestone-id>-<name>-<session-id>[-gen{N}].md with the dispatched MILESTONE ID as the first token after impl-" }
 };
 
 // All recognized delegation modes — used for template lookup and natural-language inference.
@@ -290,6 +291,17 @@ function containsPlaceholder(value) {
   return /^\{[a-zA-Z_][a-zA-Z0-9_]*\}$/.test(value.trim());
 }
 
+// M4 (R009/R010): Extracts the milestone token from a swarm result KD path per
+// the milestone-scoped impl naming contract — the first token after `impl-`.
+// Returns null when the path is not an impl KD at all.
+function extractMilestoneTokenFromResultKd(resultKd) {
+  if (typeof resultKd !== "string") return null;
+  const base = resultKd.replace(/\\/g, "/").split("/").pop();
+  if (!/^impl-/i.test(base)) return null;
+  const name = base.replace(/\.md$/, "");
+  return name.replace(/^impl-/i, "").split("-")[0] || null;
+}
+
 function renderTemplate(template, fields) {
   let result = template;
   for (const [key, value] of Object.entries(fields)) {
@@ -314,8 +326,12 @@ function injectToolDocs(output, agentName, mode, generation) {
   // MODE_TO_KD_PREFIXES maps current mode to its KD type prefix(es) — only the relevant
   // entry is injected so the LLM sees only the naming convention for this dispatch.
   const modePrefixes = MODE_TO_KD_PREFIXES[displayMode] || ["<type>"];
+  // M4 (R009/R010): swarm result KDs carry the dispatched milestone as the
+  // first token after impl- — knowledge/impl-<milestone-id>-<name>-... Only
+  // injected for swarm so other modes don't see the contract they must not use.
+  const milestoneToken = displayMode === "swarm" ? "<milestone-id>-" : "";
   const resultKdExamples = modePrefixes
-    .map(p => `knowledge/${p}-<name>-<session_id>${genSuffix}.md`)
+    .map(p => `knowledge/${p}-${milestoneToken}<name>-<session_id>${genSuffix}.md`)
     .join(", ");
   // M3 (R006): swarm dispatches carry exactly one MILESTONE ID — the structural
   // field the protocol-gate registry transition keys on. Only injected for swarm
@@ -506,6 +522,19 @@ export default {
         }
         fields["milestone_id"] = milestoneId;
         debug(`ALLOW swarm dispatch for milestone: ${milestoneId}`);
+
+        // M4 (R009/R010): the swarm result KD must be milestone-scoped — the
+        // first token after impl- is the dispatched milestone ID. This naming
+        // is the check-off contract the protocol-gate reads back: the impl KD
+        // on disk is the verifiable evidence of the milestone's completion.
+        // Matching is case-insensitive so impl-m3-... satisfies MILESTONE ID: M3.
+        if (fields.result_kd) {
+          const resultToken = extractMilestoneTokenFromResultKd(fields.result_kd);
+          if (!resultToken || resultToken.toLowerCase() !== milestoneId.toLowerCase()) {
+            debug(`VALIDATION FAILED: swarm result KD '${fields.result_kd}' does not carry milestone '${milestoneId}'`);
+            throw new DelegationGateError(ERRORS.RESULT_KD_MILESTONE_MISMATCH.code, ERRORS.RESULT_KD_MILESTONE_MISMATCH.message, ERRORS.RESULT_KD_MILESTONE_MISMATCH.guidance);
+          }
+        }
       }
 
       debug(`Rendering template for mode='${fields.mode}', agent='${fields.agent}'`);
