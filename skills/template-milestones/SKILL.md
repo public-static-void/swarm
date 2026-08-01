@@ -47,9 +47,13 @@ milestones:
 | pending / in-progress / failed | assigned | protocol-gate | SWARM task dispatch with matching MILESTONE_ID |
 | assigned | in-progress | protocol-gate | SWARM task dispatch fires — same pass as assigned (M3) |
 | in-progress | checked-off | protocol-gate | Artisan writes the milestone-scoped impl KD `impl-<milestone_id>-<name>-<session_id>[-gen{N}].md` — the KD on disk is the verifiable evidence; only in-progress rows can complete (M4) |
-| assigned / in-progress | failed | protocol-gate | automatic safety trigger during SWARM |
+| assigned / in-progress | failed | protocol-gate | automatic safety trigger during SWARM (M5): 15-failure force-advance, 5-redispatch cap, or pendingVerification timeout marks the stuck row(s) failed, logs SAFETY_STUCK, and STAYS in SWARM — no automatic advance to VERIFY |
 | assigned / in-progress | failed | Artisan | escalation without completion |
-| checked-off | pending | protocol-gate | backward transition to SWARM when impl KD missing |
+| checked-off | (no transition) | protocol-gate | checked-off rows are never regressed by re-dispatch; a backward transition to SWARM (BACKWARD: true) resets dispatch counters but keeps checked-off rows checked-off |
+
+## SWARM→VERIFY Gate (M5)
+
+SWARM advances to VERIFY ONLY when every milestone row is `checked-off` AND each row has its milestone-scoped impl KD on disk (`checkAllMilestonesCheckedOff` — registry state cross-checked against `checkMilestoneCheckedOff` disk evidence). The gate fails closed on missing/empty/unparsable registries (logs `REGISTRY_MISSING`/`REGISTRY_EMPTY`). Count signals (`MILESTONE_COUNT`, dispatch counts) have no gating effect. The only escape hatch from a stuck SWARM is the user's `/phase` override, which logs `SAFETY_ESCAPE`.
 
 ## Parsing Contract
 
