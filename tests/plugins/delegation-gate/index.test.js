@@ -1048,11 +1048,14 @@ RESULT KD: knowledge/investigation-foo.md`;
       const kdModes = ["preflight", "explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve", "checkpoint", "cleanup"];
       for (const mode of modes) {
         const needsResultKd = kdModes.includes(mode);
+        // M3: swarm dispatches require exactly one MILESTONE ID — include it for
+        // the swarm case so the inference test stays focused on mode detection.
+        const milestoneLine = mode === "swarm" ? "MILESTONE ID: M1\n" : "";
         const prompt = `AGENT: artisan
 Run the ${mode} now.
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
-SCOPE: Test ${mode} mode
+${milestoneLine}SCOPE: Test ${mode} mode
 ${needsResultKd ? `RESULT KD: knowledge/${mode}-foo.md` : ""}`;
 
         const output = { args: { prompt, subagent_type: "artisan" } };
@@ -1109,6 +1112,7 @@ SCOPE: ${scope}`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+MILESTONE ID: M1
 SCOPE: Execute implementation
 RESULT KD: knowledge/impl-foo.md`;
 
@@ -1289,18 +1293,18 @@ RESULT KD: knowledge/exploration-foo.md`;
         { mode: "investigate", agent: "analyzer", kd: "knowledge/analysis-foo.md" },
         { mode: "align", agent: "spec-weaver", kd: "knowledge/spec-foo.md" },
         { mode: "decompose", agent: "pathfinder", kd: "knowledge/plan-foo.md" },
-        { mode: "swarm", agent: "artisan", kd: "knowledge/impl-foo.md" },
+        { mode: "swarm", agent: "artisan", kd: "knowledge/impl-foo.md", milestoneId: "M1" },
         { mode: "verify", agent: "inspector", kd: "knowledge/review-foo.md" },
         { mode: "extract", agent: "scribe", kd: "knowledge/composed-foo.md" },
         { mode: "evolve", agent: "habit-builder", kd: "knowledge/process-foo.md" },
       ];
 
-      for (const { mode, agent, kd } of modes) {
+      for (const { mode, agent, kd, milestoneId } of modes) {
         const prompt = `AGENT: ${agent}
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
-SCOPE: Test ${mode}
+${milestoneId ? `MILESTONE ID: ${milestoneId}\n` : ""}SCOPE: Test ${mode}
 RESULT KD: ${kd}`;
 
         const output = { args: { prompt } };
@@ -1324,6 +1328,7 @@ INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SESSION ID: ses_gen
 GENERATION: 2
+MILESTONE ID: M1
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo-ses_gen-gen2.md`;
 
@@ -1347,6 +1352,7 @@ MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SESSION ID: ses_fbk
+MILESTONE ID: M1
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo-ses_fbk.md`;
 
@@ -1397,6 +1403,133 @@ RESULT KD: knowledge/checkpoint-step1-ses_ckpt-gen1.md`;
 
       expect(output.args.prompt).toContain("GENERATION: 1");
       expect(output.args.prompt).toContain("knowledge/checkpoint-step1-ses_ckpt-gen1.md");
+    });
+  });
+
+  describe("M3: MILESTONE ID enforcement (R006–R008)", () => {
+    it("extracts MILESTONE ID and preserves it through the rendered swarm template", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-31
+MILESTONE ID: M3
+SCOPE: Implement milestone M3
+RESULT KD: knowledge/impl-m3-ses_m3-gen0.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_m3", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("MILESTONE ID: M3");
+    });
+
+    it("requires MILESTONE ID in swarm mode", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-31
+SCOPE: Execute implementation
+RESULT KD: knowledge/impl-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Missing required structured fields");
+    });
+
+    it("rejects a comma-separated MILESTONE ID list (MULTI_MILESTONE)", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-31
+MILESTONE ID: M1, M2
+SCOPE: Execute implementation
+RESULT KD: knowledge/impl-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Multiple milestones in single dispatch");
+    });
+
+    it("rejects repeated MILESTONE ID lines (MULTI_MILESTONE)", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-31
+MILESTONE ID: M1
+MILESTONE ID: M2
+SCOPE: Execute implementation
+RESULT KD: knowledge/impl-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Multiple milestones in single dispatch");
+    });
+
+    it("rejects malformed MILESTONE ID values", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-31
+MILESTONE ID: !bad
+SCOPE: Execute implementation
+RESULT KD: knowledge/impl-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Invalid MILESTONE ID format");
+    });
+
+    it("accepts exactly one MILESTONE ID for swarm mode", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-31
+MILESTONE ID: M3
+SCOPE: Execute implementation
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("MILESTONE ID: M3");
+    });
+
+    it("does not require MILESTONE ID in non-swarm modes", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-31
+SCOPE: Explore
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("explore");
+    });
+
+    it("injects the MILESTONE ID requirement into the swarm tool doc", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-31
+MILESTONE ID: M3
+SCOPE: Execute implementation
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.description).toContain("MILESTONE ID:");
+      expect(output.args.description).toContain("exactly one");
+    });
+
+    it("keeps the MILESTONE ID hint out of non-swarm tool docs", async () => {
+      const prompt = `AGENT: committer
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-31
+SCOPE: Commit X
+RESULT KD: knowledge/checkpoint-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.description).not.toContain("MILESTONE ID:");
     });
   });
 });
