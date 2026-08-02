@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 
@@ -448,7 +449,7 @@ ${table}
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
-  it("AC-R004: REPORT write deletes all session KDs (legacy + gen variants) and retains other sessions' KDs", async () => {
+  it("AC-R004: REPORT write deletes only the ending generation's KDs (generation-aware) and retains other generations + other sessions", async () => {
     const s = sid("reset-r004");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
@@ -458,20 +459,136 @@ ${table}
     createKD(`intent-old-${s}.md`);
     createKD(`intent-stale-${s}-gen1.md`);
     createKD(`intent-fresh-${s}-gen2.md`);
-    createKD(`report-final-${s}.md`);
+    createKD(`report-final-${s}-gen2.md`);
     createKD("intent-other-other-session.md"); // different session — must survive
 
     await hooks["tool.execute.before"](
       { tool: "write", sessionID: s, callID: "c1" },
-      { args: { filePath: `knowledge/report-final-${s}.md`, content: "report" } }
+      { args: { filePath: `knowledge/report-final-${s}-gen2.md`, content: "report" } }
     );
 
-    expect(existsSync(join(knowledgeDir, `intent-old-${s}.md`))).toBe(false);
-    expect(existsSync(join(knowledgeDir, `intent-stale-${s}-gen1.md`))).toBe(false);
+    // Ending generation is 2 (R101): only gen2 KDs are deleted. Legacy and
+    // gen1 files belong to prior lifecycles — generation-scoped reads already
+    // ignore them (R104/EC-007), and deleting them would wipe a reused
+    // session's history.
+    expect(existsSync(join(knowledgeDir, `intent-old-${s}.md`))).toBe(true);
+    expect(existsSync(join(knowledgeDir, `intent-stale-${s}-gen1.md`))).toBe(true);
     expect(existsSync(join(knowledgeDir, `intent-fresh-${s}-gen2.md`))).toBe(false);
-    expect(existsSync(join(knowledgeDir, `report-final-${s}.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, `report-final-${s}-gen2.md`))).toBe(false);
     expect(existsSync(join(knowledgeDir, "intent-other-other-session.md"))).toBe(true);
     removeKD("intent-other-other-session.md");
+  });
+
+  it("AC101: cleanupLifecycleKDs(sid, 0) removes legacy and gen0 variants only, returns 2", () => {
+    const s = sid("ac101");
+    createKD(`intent-a-${s}.md`);
+    createKD(`intent-b-${s}-gen0.md`);
+    createKD(`spec-c-${s}-gen1.md`);
+    createKD(`spec-d-${s}-gen2.md`);
+
+    const removed = hooks.cleanupLifecycleKDs(s, 0);
+
+    expect(removed).toBe(2);
+    expect(existsSync(join(knowledgeDir, `intent-a-${s}.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, `intent-b-${s}-gen0.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, `spec-c-${s}-gen1.md`))).toBe(true);
+    expect(existsSync(join(knowledgeDir, `spec-d-${s}-gen2.md`))).toBe(true);
+  });
+
+  it("AC102: cleanupLifecycleKDs(sid, 2) removes only the gen2 variant, returns 1", () => {
+    const s = sid("ac102");
+    createKD(`intent-a-${s}.md`);
+    createKD(`intent-b-${s}-gen0.md`);
+    createKD(`spec-c-${s}-gen1.md`);
+    createKD(`spec-d-${s}-gen2.md`);
+
+    const removed = hooks.cleanupLifecycleKDs(s, 2);
+
+    expect(removed).toBe(1);
+    expect(existsSync(join(knowledgeDir, `intent-a-${s}.md`))).toBe(true);
+    expect(existsSync(join(knowledgeDir, `intent-b-${s}-gen0.md`))).toBe(true);
+    expect(existsSync(join(knowledgeDir, `spec-c-${s}-gen1.md`))).toBe(true);
+    expect(existsSync(join(knowledgeDir, `spec-d-${s}-gen2.md`))).toBe(false);
+  });
+
+  it("AC103 (write): stray REPORT write with ending generation 1 deletes only gen1 KDs — gen2 KDs survive byte-identical", async () => {
+    const s = sid("ac103-write");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    hooks.sessionPhaseMap.set(`${s}:gen`, 1);
+
+    // Reused session: gen1 belongs to the ENDING lifecycle, gen2 to the next.
+    // A stray/duplicate REPORT write must not wipe the newer lifecycle (AC103).
+    const gen2Content = "gen2 payload — must survive byte-identical";
+    createKD(`intent-a-${s}-gen1.md`, "gen1 content");
+    createKD(`spec-b-${s}-gen1.md`, "gen1 spec");
+    createKD(`intent-a-${s}-gen2.md`, gen2Content);
+
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: s, callID: "c1" },
+      { args: { filePath: `knowledge/report-final-${s}-gen1.md`, content: "report" } }
+    );
+
+    expect(existsSync(join(knowledgeDir, `intent-a-${s}-gen1.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, `spec-b-${s}-gen1.md`))).toBe(false);
+    expect(readFileSync(join(knowledgeDir, `intent-a-${s}-gen2.md`), "utf8")).toBe(gen2Content);
+    expect(hooks.getCurrentGeneration(s)).toBe(2);
+  });
+
+  it("AC103 (edit): stray REPORT edit with ending generation 1 deletes only gen1 KDs — gen2 KDs survive byte-identical", async () => {
+    const s = sid("ac103-edit");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    hooks.sessionPhaseMap.set(`${s}:gen`, 1);
+
+    const gen2Content = "gen2 payload — must survive byte-identical";
+    createKD(`intent-a-${s}-gen1.md`, "gen1 content");
+    createKD(`spec-b-${s}-gen1.md`, "gen1 spec");
+    createKD(`intent-a-${s}-gen2.md`, gen2Content);
+
+    await hooks["tool.execute.before"](
+      { tool: "edit", sessionID: s, callID: "c1" },
+      { args: { filePath: `knowledge/report-final-${s}-gen1.md` } }
+    );
+
+    expect(existsSync(join(knowledgeDir, `intent-a-${s}-gen1.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, `spec-b-${s}-gen1.md`))).toBe(false);
+    expect(readFileSync(join(knowledgeDir, `intent-a-${s}-gen2.md`), "utf8")).toBe(gen2Content);
+    expect(hooks.getCurrentGeneration(s)).toBe(2);
+  });
+
+  it("AC105/EC-008: a cleanup that throws does not block the REPORT phase reset to PROTOCOL_NOT_LOADED", async () => {
+    // A malformed session ID makes cleanupLifecycleKDs throw while building
+    // its filename pattern — the call site's try/catch must still reset the
+    // phase (R103/EC-008). The session must be an overseer session for the
+    // REPORT reset to fire, so initOverseer runs with the same malformed ID.
+    await initOverseer("bad(");
+    hooks.sessionPhaseMap.set("bad(", hooks.STATES.REPORT);
+    hooks.sessionPhaseMap.set("bad(:sid", "bad(");
+
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: "bad(", callID: "c1" },
+      { args: { filePath: `knowledge/report-ec008-bad.md`, content: "report" } }
+    );
+
+    expect(hooks.sessionPhaseMap.get("bad(")).toBeUndefined();
+    expect(hooks.getCurrentGeneration("bad(")).toBe(1);
+    try { rmSync(statePath("bad(")); } catch (_) {}
+  });
+
+  it("AC106/EC-005: cleanupLifecycleKDs on a missing knowledge dir returns 0 without throwing", () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "protocol-gate-ec005-"));
+    const prevCwd = process.cwd();
+    try {
+      process.chdir(tmpRoot);
+      expect(hooks.cleanupLifecycleKDs("ghost-session", 0)).toBe(0);
+      expect(hooks.cleanupLifecycleKDs("ghost-session", 2)).toBe(0);
+    } finally {
+      process.chdir(prevCwd);
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it("AC-R005: after REPORT the phase entry is deleted so a manual state edit is honored on the next message", async () => {
