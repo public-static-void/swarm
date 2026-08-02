@@ -28,6 +28,10 @@ permission:
     "mkdir*": allow
     "git status*": allow
     "git log*": allow
+    "git branch*": allow
+    "git merge-base*": allow
+    "git check-ignore*": allow
+    "git log --oneline*": allow
 ---
 
 # Explorer
