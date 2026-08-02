@@ -5,17 +5,20 @@ import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 import delegationPlugin from "../../../plugins/delegation-gate/index.js";
 
-// Consolidated protocol-gate suite (P305): 78 → 67 tests. Parallel one-off
-// accepts (AC101/AC102, AC103 write+edit, AC013 gen0+genN, M4 AC017 variants,
-// AC019 force-advance paths, tool.definition phases, system.transform phases,
-// R003 dual-KD+generation, milestone-ID parsers, AC016 reopen+immutability,
-// todowrite advancement pair) are merged into parameterized tests; the
-// duplicated "saves state after advancement" test was removed (covered by
-// AC002/AC003/AC006). The M1 GENERATION-fallback test relocated here from the
-// delegation-gate suite (R306) — it reads the delegation-gate fallback through
-// this suite's temp PROTOCOL_GATE_STATE_DIR. One session-scoped describe with a
-// single setUp/tearDown: knowledge and state dirs are real temp dirs (P302),
-// recreated before each test, so no test touches the real knowledge/ or
+// Consolidated protocol-gate suite (P305 + P402): 78 → 70 tests. Parallel
+// one-off accepts (AC101/AC102, AC103 write+edit, AC013 gen0+genN, M4 AC017
+// variants, AC019 force-advance paths, tool.definition phases, system.transform
+// phases, R003 dual-KD+generation, milestone-ID parsers, AC016
+// reopen+immutability, todowrite advancement pair) are merged into
+// parameterized tests; the duplicated "saves state after advancement" test was
+// removed (covered by AC002/AC003/AC006). The M1 GENERATION-fallback test
+// relocated here from the delegation-gate suite (R306) — it reads the
+// delegation-gate fallback through this suite's temp PROTOCOL_GATE_STATE_DIR.
+// M4 anchored-fence tests (R310–R311/AC310) added in P402: glued heading+fence,
+// well-formed whitespace-gap fixture, fail-closed for foreign content between
+// heading and YAML block. One session-scoped describe with a single
+// setUp/tearDown: knowledge and state dirs are real temp dirs (P302), recreated
+// before each test, so no test touches the real knowledge/ or
 // plugins/protocol-gate/.state (NFR004/AC307). Session IDs are unique per test
 // (sid()) and the dirs are wiped between tests, so fixtures never collide.
 describe("Protocol-Gate Plugin", () => {
@@ -1654,6 +1657,98 @@ ${table}
       // A comma inside one field is a single collected entry — the call site
       // rejects it as MULTI_MILESTONE (mirrors delegation-gate's /,/.test).
       expect(hooks.collectMilestoneIds("MILESTONE ID: M1, M2")).toEqual(["M1, M2"]);
+    });
+  });
+
+  describe("M4: anchored fence parsing (R310–R311, AC310)", () => {
+    it("AC310a: a registry with the Milestone States heading glued to the opening ```yaml fence is located and updated", async () => {
+      const s = sid("ac310-glued");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // A glued `## Milestone States` + ```yaml line — the regression fixture
+      // that made the old unanchored indexOf search silently return no-registry.
+      createKD(`milestones-feature-${s}.md`, `## Milestone States\`\`\`yaml
+milestones:
+  M1: pending
+\`\`\`
+
+## Milestone Details
+
+| Milestone ID | Description | State |
+| ------------ | ----------- | ----- |
+| M1 | desc | pending |
+`);
+
+      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["assigned", "in-progress"]);
+      expect(result.ok).toBe(true);
+      expect(result.changed).toBe(true);
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: in-progress");
+      // The human-readable details table stays untouched.
+      expect(content).toContain("| M1 | desc | pending |");
+    });
+
+    it("AC310c: the existing well-formed registry fixture (whitespace-only gap before the opening fence) still parses and updates", async () => {
+      const s = sid("ac310-wellformed");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
+
+      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["assigned", "in-progress"]);
+      expect(result.ok).toBe(true);
+      expect(result.changed).toBe(true);
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: in-progress");
+      expect(content).toContain("  M2: pending");
+      expect(content).toContain("| M1 | desc | pending |");
+    });
+
+    it("AC310b: a foreign fence or embedded content between the heading and the YAML block fails closed with a byte-identical registry", async () => {
+      const variants = [
+        // A foreign json fence between the heading and the YAML block — the
+        // old unanchored parser silently skipped it and parsed the later block.
+        `## Milestone States
+
+\`\`\`json
+{"note": "embedded"}
+\`\`\`
+
+\`\`\`yaml
+milestones:
+  M1: pending
+\`\`\`
+
+## Milestone Details
+`,
+        // Plain embedded content between the heading and the YAML block.
+        `## Milestone States
+
+This registry section is malformed.
+
+\`\`\`yaml
+milestones:
+  M1: pending
+\`\`\`
+
+## Milestone Details
+`,
+      ];
+      for (let i = 0; i < variants.length; i++) {
+        const s = sid(`ac310-malformed-${i}`);
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createKD(`milestones-feature-${s}.md`, variants[i]);
+        const before = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+
+        const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["assigned", "in-progress"]);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toBe("no-registry");
+        // Fails closed — no row mutation, registry file byte-identical.
+        expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toBe(before);
+      }
     });
   });
 
