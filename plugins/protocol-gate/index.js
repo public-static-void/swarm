@@ -427,6 +427,15 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
 // on the machine-readable `## Milestone States` YAML block as the SSOT.
 // Returns { path, content, block, fenceStart, fenceEnd } or null when the
 // registry file or YAML block is missing.
+// Anchored fence parsing (R310): the heading is accepted either bare
+// (`^## Milestone States$`) or glued to the opening fence
+// (`^## Milestone States```yaml`). In the non-glued form the opening ```yaml
+// fence is accepted only when the lines between the heading and the fence are
+// empty/whitespace-only — a foreign fence or embedded content there fails
+// closed (null) instead of being silently skipped. The closing ``` fence must
+// occur before the next `## ` heading — an embedded or late fence fails closed
+// rather than mis-parsing. Failure surfaces as { ok:false, reason:"no-registry" }
+// from updateMilestoneRegistry (fails closed, never wrong-advances).
 function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
   const knowledgeDir = getKnowledgeDir();
@@ -439,11 +448,34 @@ function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
   let content;
   try { content = readFileSync(path, "utf8"); } catch (_) { return null; }
 
-  const blockStart = content.search(/^##\s*Milestone States\s*$/m);
-  if (blockStart === -1) return null;
-  const fenceStart = content.indexOf("```yaml", blockStart);
+  // [ \t]* (not \s*) keeps the match on one line: `\s` would cross the newline
+  // and mis-classify the non-glued form (fence on a later line) as glued,
+  // bypassing the whitespace-only-gap rule below.
+  const headingMatch = content.match(/^##[ \t]*Milestone States[ \t]*(```yaml)?[ \t]*$/m);
+  if (!headingMatch) return null;
+  const heading = headingMatch.index;
+
+  let fenceStart;
+  if (headingMatch[1]) {
+    // Glued form: the opening fence is on the heading line itself.
+    fenceStart = content.indexOf("```yaml", heading);
+  } else {
+    // Non-glued form: the first ```yaml after the heading, accepted only when
+    // the intervening lines are empty/whitespace-only (R310b).
+    fenceStart = content.indexOf("```yaml", heading + headingMatch[0].length);
+    if (fenceStart === -1) return null;
+    const gap = content.slice(heading + headingMatch[0].length, fenceStart);
+    if (!/^\s*$/.test(gap)) return null;
+  }
+
+  // Closing fence: the next ``` after the opening fence, located before the
+  // next `## ` heading (R310c).
   const fenceEnd = content.indexOf("```", fenceStart + 7);
-  if (fenceStart === -1 || fenceEnd === -1) return null;
+  if (fenceEnd === -1) return null;
+  const afterOpening = content.slice(fenceStart + 7);
+  const nextHeading = afterOpening.search(/^##[ \t]/m);
+  if (nextHeading !== -1 && fenceEnd > fenceStart + 7 + nextHeading) return null;
+
   return { path, content, block: content.slice(fenceStart, fenceEnd), fenceStart, fenceEnd };
 }
 
