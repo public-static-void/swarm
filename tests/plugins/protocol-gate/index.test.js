@@ -706,6 +706,50 @@ ${table}
       expect(hooks.readActiveSession().sessionID).toBe(bare);
     });
 
+    it("BUGFIX (off-by-one): R004 never adopts a stale INTENT or PROTOCOL_NOT_LOADED pointer — fresh session starts at 0 and the first todowrite advances 0→1; phase ≥ 2 adoption preserved", async () => {
+      // A prior process stalled at INTENT: its state file was persisted at
+      // phase 1 with no intent KD on disk (R009 advances INTENT→PREFLIGHT
+      // once the KD is written, so an INTENT pointer is always stale).
+      const stalled = sid("adopt-intent");
+      await initOverseer(stalled);
+      hooks.sessionPhaseMap.set(stalled, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${stalled}:sid`, stalled);
+      hooks.sessionPhaseMap.set(`${stalled}:gen`, 2);
+      expect(hooks.saveState(stalled)).toBe(true);
+      expect(hooks.readActiveSession().sessionID).toBe(stalled);
+
+      // Fresh session must NOT inherit the stale INTENT phase — it starts at
+      // PROTOCOL_NOT_LOADED (0) so the mandatory todowrite gate still runs.
+      const fresh = sid("adopt-fresh");
+      await initOverseer(fresh);
+      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(JSON.parse(readFileSync(statePath(fresh), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+
+      // The FIRST todowrite performs the intended 0→1 advance — exactly one
+      // round-trip, no INTENT→PROTOCOL_NOT_LOADED consistency regression.
+      await todo(fresh, "c1");
+      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.INTENT);
+
+      // A PROTOCOL_NOT_LOADED pointer (unstarted lifecycle) is also not
+      // adopted — nothing to resume, so the new session starts fresh.
+      hooks.sessionPhaseMap.set(stalled, hooks.STATES.PROTOCOL_NOT_LOADED);
+      hooks.sessionPhaseMap.set(`${stalled}:gen`, 2);
+      expect(hooks.saveState(stalled)).toBe(true);
+      const fresh0 = sid("adopt-fresh0");
+      await initOverseer(fresh0);
+      expect(hooks.sessionPhaseMap.get(fresh0)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+
+      // A pointer at a KD-producing phase (≥ PREFLIGHT) is still adopted —
+      // the legitimate R004 restart-continuation behavior is preserved.
+      hooks.sessionPhaseMap.set(stalled, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${stalled}:sid`, stalled);
+      expect(hooks.saveState(stalled)).toBe(true);
+      const fresh7 = sid("adopt-fresh7");
+      await initOverseer(fresh7);
+      expect(hooks.sessionPhaseMap.get(fresh7)).toBe(hooks.STATES.SWARM);
+      expect(hooks.readActiveSession().sessionID).toBe(fresh7);
+    });
+
     it("AC005: forced write failure — saveState returns false and logs to stderr; no silent divergence", async () => {
       const s = sid("ac005");
       await initOverseer(s);
