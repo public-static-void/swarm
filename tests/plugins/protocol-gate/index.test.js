@@ -1,20 +1,45 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
+import delegationPlugin from "../../../plugins/delegation-gate/index.js";
 
-// Consolidated protocol-gate suite. One session-scoped describe with a single
-// setUp/tearDown: state files are wiped before each test, and every KD/state
-// fixture created for a tracked session ID is removed after each test. Session
-// IDs are unique per test (sid()) so cleanup never touches real knowledge/ KDs.
+// Consolidated protocol-gate suite (P305): 78 → 67 tests. Parallel one-off
+// accepts (AC101/AC102, AC103 write+edit, AC013 gen0+genN, M4 AC017 variants,
+// AC019 force-advance paths, tool.definition phases, system.transform phases,
+// R003 dual-KD+generation, milestone-ID parsers, AC016 reopen+immutability,
+// todowrite advancement pair) are merged into parameterized tests; the
+// duplicated "saves state after advancement" test was removed (covered by
+// AC002/AC003/AC006). The M1 GENERATION-fallback test relocated here from the
+// delegation-gate suite (R306) — it reads the delegation-gate fallback through
+// this suite's temp PROTOCOL_GATE_STATE_DIR. One session-scoped describe with a
+// single setUp/tearDown: knowledge and state dirs are real temp dirs (P302),
+// recreated before each test, so no test touches the real knowledge/ or
+// plugins/protocol-gate/.state (NFR004/AC307). Session IDs are unique per test
+// (sid()) and the dirs are wiped between tests, so fixtures never collide.
 describe("Protocol-Gate Plugin", () => {
-  const knowledgeDir = join(process.cwd(), "knowledge");
-  const stateDir = join(process.cwd(), "plugins", "protocol-gate", ".state");
+  let tempRoot;
+  let knowledgeDir;
+  let stateDir;
   const logPath = join(process.cwd(), "plugins", "logs", "protocol-gate.log");
   const KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
   const usedSids = new Set();
   let hooks;
+
+  beforeAll(() => {
+    tempRoot = mkdtempSync(join(tmpdir(), "pg-test-"));
+    knowledgeDir = join(tempRoot, "knowledge");
+    stateDir = join(tempRoot, "state");
+    process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = knowledgeDir;
+    process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+  });
+
+  afterAll(() => {
+    delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+    delete process.env.PROTOCOL_GATE_STATE_DIR;
+    rmSync(tempRoot, { recursive: true, force: true });
+  });
 
   function sid(name) {
     usedSids.add(name);
@@ -72,43 +97,18 @@ ${table}
   }
 
   beforeEach(async () => {
-    // Wipe protocol state so no loadState leak from prior tests
-    try {
-      const files = readdirSync(stateDir);
-      for (const f of files) {
-        if (f.endsWith(".json")) {
-          try { rmSync(join(stateDir, f)); } catch (_) {}
-        }
-      }
-    } catch (_) {}
+    // Reset the temp dirs so each test starts from empty state (P302 — the
+    // destructive wipe of the REAL .state dir is gone; only our temp dirs reset).
+    rmSync(knowledgeDir, { recursive: true, force: true });
+    rmSync(stateDir, { recursive: true, force: true });
+    mkdirSync(knowledgeDir, { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
     hooks = await pluginModule.server({}, {});
   });
 
   afterEach(() => {
-    // Remove session-scoped fixtures (KDs + state files) only. The state-file
-    // sweep (f.includes(s)) also removes corrupt backups and any pointer that
-    // references a used session; the pointer is removed outright so the real
-    // workspace is never left pointing at a test session.
-    for (const s of usedSids) {
-      try {
-        const files = readdirSync(knowledgeDir);
-        for (const f of files) {
-          if (f.endsWith(`-${s}.md`) || f.includes(`-${s}-gen`)) {
-            try { rmSync(join(knowledgeDir, f)); } catch (_) {}
-          }
-        }
-      } catch (_) {}
-      try { rmSync(statePath(s)); } catch (_) {}
-      try {
-        const files = readdirSync(stateDir);
-        for (const f of files) {
-          if (f.includes(s)) {
-            try { rmSync(join(stateDir, f)); } catch (_) {}
-          }
-        }
-      } catch (_) {}
-    }
-    try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
+    // Temp dirs are recreated in beforeEach, so no per-session fixture sweep is
+    // needed; the .active-session pointer lives in the temp state dir.
     usedSids.clear();
   });
 
@@ -205,26 +205,23 @@ ${table}
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
   });
 
-  it("does not advance past INTENT when no KD exists on disk (todowrite content alone never drives advancement)", async () => {
-    const s = sid("jump-1");
-    await initOverseer(s);
-    await todo(s, "c1");
-    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
-
-    // Second todowrite fires a disk check; with no intent KD on disk the phase
-    // stays at INTENT (or regresses to PROTOCOL_NOT_LOADED) — never beyond.
-    await todo(s, "c2");
-    expect(hooks.sessionPhaseMap.get(s)).toBeLessThanOrEqual(hooks.STATES.INTENT);
-  });
-
-  it("advances INTENT → PREFLIGHT only after an intent KD appears on disk (BUG-008 guard)", async () => {
+  it("todowrite disk checks drive INTENT advancement only once an intent KD appears on disk (BUG-008 guard)", async () => {
     const s = sid("adv-1");
     await initOverseer(s);
     await todo(s, "c1");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-    createKD(`intent-a-${s}.md`);
+    // Second todowrite fires a disk check; with no intent KD on disk the phase
+    // regresses to PROTOCOL_NOT_LOADED — todowrite content alone never drives
+    // advancement past INTENT.
     await todo(s, "c2");
+    expect(hooks.sessionPhaseMap.get(s)).toBeLessThanOrEqual(hooks.STATES.INTENT);
+
+    // Re-kickoff (a real session reaches INTENT again via the keyword gate),
+    // then the disk check advances INTENT → PREFLIGHT once a KD is on disk.
+    hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+    createKD(`intent-a-${s}.md`);
+    await todo(s, "c3");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
   });
 
@@ -361,36 +358,6 @@ ${table}
     expect(hooks.sessionPhaseMap.get(s2)).toBe(hooks.STATES.EXPLORE);
   });
 
-  it("saves state after advancement and restores it via loadState on restart; corrupt state files are ignored", async () => {
-    const s = sid("persist-1");
-    await initOverseer(s);
-    await todo(s, "c1");
-    hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
-    hooks.sessionPhaseMap.set(`${s}:sid`, s);
-    await hooks["tool.execute.before"](
-      { tool: "write", sessionID: s, callID: "c2" },
-      { args: { filePath: `knowledge/intent-feature-${s}.md` } }
-    );
-
-    // State file persisted for the session
-    const saved = JSON.parse(readFileSync(statePath(s), "utf8"));
-    expect(saved.phase).toBe(hooks.STATES.INTENT);
-    expect(saved.sid).toBe(s);
-
-    // Fresh server instance restores phase + session ID from disk
-    hooks = await pluginModule.server({}, {});
-    await initOverseer(s);
-    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
-    expect(hooks.sessionPhaseMap.get(`${s}:sid`)).toBe(s);
-
-    // Corrupt state file must not crash loadState — session falls back to
-    // PROTOCOL_NOT_LOADED
-    const corrupt = sid("persist-2");
-    writeFileSync(statePath(corrupt), "{not json");
-    await initOverseer(corrupt);
-    expect(hooks.sessionPhaseMap.get(corrupt)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
-  });
-
   it("AC-R001: generation increments monotonically across lifecycle ends", async () => {
     const s = sid("gen-r001");
     await initOverseer(s);
@@ -479,84 +446,53 @@ ${table}
     removeKD("intent-other-other-session.md");
   });
 
-  it("AC101: cleanupLifecycleKDs(sid, 0) removes legacy and gen0 variants only, returns 2", () => {
-    const s = sid("ac101");
-    createKD(`intent-a-${s}.md`);
-    createKD(`intent-b-${s}-gen0.md`);
-    createKD(`spec-c-${s}-gen1.md`);
-    createKD(`spec-d-${s}-gen2.md`);
+  it("AC101/AC102: cleanupLifecycleKDs removes only the ending generation's variants", () => {
+    const cases = [
+      { generation: 0, removed: 2, survivors: ["spec-c-{s}-gen1.md", "spec-d-{s}-gen2.md"] },
+      { generation: 2, removed: 1, survivors: ["intent-a-{s}.md", "intent-b-{s}-gen0.md", "spec-c-{s}-gen1.md"] },
+    ];
+    for (const c of cases) {
+      const s = sid(`ac101-${c.generation}`);
+      createKD(`intent-a-${s}.md`);
+      createKD(`intent-b-${s}-gen0.md`);
+      createKD(`spec-c-${s}-gen1.md`);
+      createKD(`spec-d-${s}-gen2.md`);
 
-    const removed = hooks.cleanupLifecycleKDs(s, 0);
+      const removed = hooks.cleanupLifecycleKDs(s, c.generation);
 
-    expect(removed).toBe(2);
-    expect(existsSync(join(knowledgeDir, `intent-a-${s}.md`))).toBe(false);
-    expect(existsSync(join(knowledgeDir, `intent-b-${s}-gen0.md`))).toBe(false);
-    expect(existsSync(join(knowledgeDir, `spec-c-${s}-gen1.md`))).toBe(true);
-    expect(existsSync(join(knowledgeDir, `spec-d-${s}-gen2.md`))).toBe(true);
+      expect(removed).toBe(c.removed);
+      for (const f of ["intent-a-{s}.md", "intent-b-{s}-gen0.md", "spec-c-{s}-gen1.md", "spec-d-{s}-gen2.md"]) {
+        const file = f.replace("{s}", s);
+        expect(existsSync(join(knowledgeDir, file))).toBe(c.survivors.includes(f));
+      }
+    }
   });
 
-  it("AC102: cleanupLifecycleKDs(sid, 2) removes only the gen2 variant, returns 1", () => {
-    const s = sid("ac102");
-    createKD(`intent-a-${s}.md`);
-    createKD(`intent-b-${s}-gen0.md`);
-    createKD(`spec-c-${s}-gen1.md`);
-    createKD(`spec-d-${s}-gen2.md`);
+  it("AC103: a stray REPORT write or edit with ending generation 1 deletes only gen1 KDs — gen2 KDs survive byte-identical", async () => {
+    for (const tool of ["write", "edit"]) {
+      const s = sid(`ac103-${tool}`);
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      hooks.sessionPhaseMap.set(`${s}:gen`, 1);
 
-    const removed = hooks.cleanupLifecycleKDs(s, 2);
+      // Reused session: gen1 belongs to the ENDING lifecycle, gen2 to the next.
+      // A stray/duplicate REPORT write must not wipe the newer lifecycle (AC103).
+      const gen2Content = "gen2 payload — must survive byte-identical";
+      createKD(`intent-a-${s}-gen1.md`, "gen1 content");
+      createKD(`spec-b-${s}-gen1.md`, "gen1 spec");
+      createKD(`intent-a-${s}-gen2.md`, gen2Content);
 
-    expect(removed).toBe(1);
-    expect(existsSync(join(knowledgeDir, `intent-a-${s}.md`))).toBe(true);
-    expect(existsSync(join(knowledgeDir, `intent-b-${s}-gen0.md`))).toBe(true);
-    expect(existsSync(join(knowledgeDir, `spec-c-${s}-gen1.md`))).toBe(true);
-    expect(existsSync(join(knowledgeDir, `spec-d-${s}-gen2.md`))).toBe(false);
-  });
+      await hooks["tool.execute.before"](
+        { tool, sessionID: s, callID: "c1" },
+        { args: { filePath: `knowledge/report-final-${s}-gen1.md`, content: "report" } }
+      );
 
-  it("AC103 (write): stray REPORT write with ending generation 1 deletes only gen1 KDs — gen2 KDs survive byte-identical", async () => {
-    const s = sid("ac103-write");
-    await initOverseer(s);
-    hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
-    hooks.sessionPhaseMap.set(`${s}:sid`, s);
-    hooks.sessionPhaseMap.set(`${s}:gen`, 1);
-
-    // Reused session: gen1 belongs to the ENDING lifecycle, gen2 to the next.
-    // A stray/duplicate REPORT write must not wipe the newer lifecycle (AC103).
-    const gen2Content = "gen2 payload — must survive byte-identical";
-    createKD(`intent-a-${s}-gen1.md`, "gen1 content");
-    createKD(`spec-b-${s}-gen1.md`, "gen1 spec");
-    createKD(`intent-a-${s}-gen2.md`, gen2Content);
-
-    await hooks["tool.execute.before"](
-      { tool: "write", sessionID: s, callID: "c1" },
-      { args: { filePath: `knowledge/report-final-${s}-gen1.md`, content: "report" } }
-    );
-
-    expect(existsSync(join(knowledgeDir, `intent-a-${s}-gen1.md`))).toBe(false);
-    expect(existsSync(join(knowledgeDir, `spec-b-${s}-gen1.md`))).toBe(false);
-    expect(readFileSync(join(knowledgeDir, `intent-a-${s}-gen2.md`), "utf8")).toBe(gen2Content);
-    expect(hooks.getCurrentGeneration(s)).toBe(2);
-  });
-
-  it("AC103 (edit): stray REPORT edit with ending generation 1 deletes only gen1 KDs — gen2 KDs survive byte-identical", async () => {
-    const s = sid("ac103-edit");
-    await initOverseer(s);
-    hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
-    hooks.sessionPhaseMap.set(`${s}:sid`, s);
-    hooks.sessionPhaseMap.set(`${s}:gen`, 1);
-
-    const gen2Content = "gen2 payload — must survive byte-identical";
-    createKD(`intent-a-${s}-gen1.md`, "gen1 content");
-    createKD(`spec-b-${s}-gen1.md`, "gen1 spec");
-    createKD(`intent-a-${s}-gen2.md`, gen2Content);
-
-    await hooks["tool.execute.before"](
-      { tool: "edit", sessionID: s, callID: "c1" },
-      { args: { filePath: `knowledge/report-final-${s}-gen1.md` } }
-    );
-
-    expect(existsSync(join(knowledgeDir, `intent-a-${s}-gen1.md`))).toBe(false);
-    expect(existsSync(join(knowledgeDir, `spec-b-${s}-gen1.md`))).toBe(false);
-    expect(readFileSync(join(knowledgeDir, `intent-a-${s}-gen2.md`), "utf8")).toBe(gen2Content);
-    expect(hooks.getCurrentGeneration(s)).toBe(2);
+      expect(existsSync(join(knowledgeDir, `intent-a-${s}-gen1.md`))).toBe(false);
+      expect(existsSync(join(knowledgeDir, `spec-b-${s}-gen1.md`))).toBe(false);
+      expect(readFileSync(join(knowledgeDir, `intent-a-${s}-gen2.md`), "utf8")).toBe(gen2Content);
+      expect(hooks.getCurrentGeneration(s)).toBe(2);
+    }
   });
 
   it("AC105/EC-008: a cleanup that throws does not block the REPORT phase reset to PROTOCOL_NOT_LOADED", async () => {
@@ -917,7 +853,7 @@ ${table}
     }
   });
 
-  it("R003: DECOMPOSE advances only when BOTH plan- and milestones- KDs exist (dual-KD gate)", async () => {
+  it("R003: DECOMPOSE advances only when BOTH current-generation plan- and milestones- KDs exist (dual-KD gate)", async () => {
     const s = sid("decomp-dual");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
@@ -935,21 +871,15 @@ ${table}
     // both plan- + milestones-: advancement
     createKD(`plan-both-${s}.md`);
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
-  });
 
-  it("R003: stale-generation milestones registry does not advance DECOMPOSE (generation scoping)", async () => {
-    const s = sid("decomp-gen");
-    await initOverseer(s);
-    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
-    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    // Generation scoping: a current-gen plan with a stale prior-gen registry is
+    // still blocked (only the plan matches) until a current-gen registry lands.
+    removeKD(`plan-both-${s}.md`);
+    removeKD(`milestones-only-${s}.md`);
     hooks.sessionPhaseMap.set(`${s}:gen`, 2);
-
-    // Current-gen plan but stale gen-1 registry → blocked (only the plan matches)
     createKD(`plan-cur-${s}-gen2.md`);
     createKD(`milestones-stale-${s}-gen1.md`);
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
-
-    // Current-gen registry completes the pair → advancement
     createKD(`milestones-cur-${s}-gen2.md`);
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
@@ -1065,13 +995,21 @@ ${table}
       expect(result.changed).toBe(false);
     });
 
-    it("extractMilestoneIdFromImplKD parses the milestone-scoped impl KD naming contract", async () => {
+    it("milestone ID parsing helpers cover impl-KD filenames and prompt field variants", async () => {
+      // extractMilestoneIdFromImplKD parses the milestone-scoped impl KD naming contract
       expect(hooks.extractMilestoneIdFromImplKD("impl-M4-milestone-tracking-ses_x-gen0.md")).toBe("M4");
       expect(hooks.extractMilestoneIdFromImplKD("impl-m3-foo-ses_x-gen0.md")).toBe("m3");
       // legacy unscoped impl KD — no milestone contract token
       expect(hooks.extractMilestoneIdFromImplKD("impl-fix-auth-flow-ses_123-gen2.md")).toBe("fix");
       expect(hooks.extractMilestoneIdFromImplKD("milestones-feature-ses_x.md")).toBeNull();
       expect(hooks.extractMilestoneIdFromImplKD(null)).toBeNull();
+
+      // extractMilestoneIdFromPrompt parses field variants and returns null when absent
+      expect(hooks.extractMilestoneIdFromPrompt("AGENT: artisan\nMILESTONE ID: M3\nMODE: swarm")).toBe("M3");
+      expect(hooks.extractMilestoneIdFromPrompt("MILESTONE_ID: M3\nMODE: swarm")).toBe("M3");
+      expect(hooks.extractMilestoneIdFromPrompt("**MILESTONE ID:** **M3**")).toBe("M3");
+      expect(hooks.extractMilestoneIdFromPrompt("AGENT: artisan\nMODE: swarm")).toBeNull();
+      expect(hooks.extractMilestoneIdFromPrompt(null)).toBeNull();
     });
 
     it("findMilestoneImplKD locates the milestone-scoped impl KD on disk (generation-scoped)", async () => {
@@ -1191,14 +1129,6 @@ ${table}
       expect(hooks.swarmDispatchCount.get(s)).toBe(1);
     });
 
-    it("extractMilestoneIdFromPrompt parses field variants and returns null when absent", async () => {
-      expect(hooks.extractMilestoneIdFromPrompt("AGENT: artisan\nMILESTONE ID: M3\nMODE: swarm")).toBe("M3");
-      expect(hooks.extractMilestoneIdFromPrompt("MILESTONE_ID: M3\nMODE: swarm")).toBe("M3");
-      expect(hooks.extractMilestoneIdFromPrompt("**MILESTONE ID:** **M3**")).toBe("M3");
-      expect(hooks.extractMilestoneIdFromPrompt("AGENT: artisan\nMODE: swarm")).toBeNull();
-      expect(hooks.extractMilestoneIdFromPrompt(null)).toBeNull();
-    });
-
     it("updateMilestoneRegistry skips without throwing when no registry file exists", async () => {
       const s = sid("m3-reg-3");
       await initOverseer(s);
@@ -1212,7 +1142,8 @@ ${table}
   });
 
   describe("M3: persistent milestone tracking (R010–R016, AC010–AC016)", () => {
-    it("AC010: surfaces the live milestone list to the Overseer in the SWARM system transform", async () => {
+    it("AC010: system.transform injects phase-appropriate guidance — SWARM milestone registry and INTENT generation-scoped naming", async () => {
+      // SWARM: the live milestone list is surfaced to the Overseer
       const s = sid("m3-vis-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -1232,48 +1163,44 @@ ${table}
       const output2 = { system: [] };
       await hooks["experimental.chat.system.transform"]({}, output2);
       expect(output2.system.join("\n")).not.toContain("Milestone registry");
+
+      // INTENT: phase guidance carries the generation-scoped KD naming
+      const s2 = sid("sys-1");
+      await initOverseer(s2);
+      hooks.sessionPhaseMap.set(s2, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${s2}:sid`, s2);
+      hooks.sessionPhaseMap.set(`${s2}:gen`, 2);
+      const output3 = { system: ["base"] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: s2 }, output3);
+      expect(output3.system[1]).toContain(`knowledge/intent-{name}-${s2}-gen2.md`);
+      expect(output3.system).toHaveLength(2); // appended, existing entries untouched
     });
 
-    it("AC013: checks off a milestone after restart — parent session derived from the impl KD filename, empty overseerSessions", async () => {
+    it("AC013: checks off a milestone after restart — parent session and generation derived from the impl KD filename + on-disk state", async () => {
       // Simulate a restart: the fresh plugin instance has an EMPTY
       // overseerSessions set. Only the persisted .state file and the registry
       // on disk remain — autoCheckOffMilestone must derive the parent session
       // and generation from the impl KD filename + on-disk state.
-      const s = sid("m3-restart-1");
-      createRegistry(s, [["M1", "in-progress"]]);
-      mkdirSync(stateDir, { recursive: true });
-      writeFileSync(statePath(s), JSON.stringify({ phase: 7, generation: 0, sid: s }));
-      expect(hooks.overseerSessions.size).toBe(0);
+      for (const gen of [0, 3]) {
+        const s = sid(`m3-restart-${gen}`);
+        // Registry and impl KD carry the generation suffix for gen > 0; the
+        // state file (the SSOT) records the lifecycle generation.
+        const suffix = gen === 0 ? "" : `-gen${gen}`;
+        createKD(`milestones-feature-${s}${suffix}.md`, registryContent([["M1", "in-progress"]]));
+        mkdirSync(stateDir, { recursive: true });
+        writeFileSync(statePath(s), JSON.stringify({ phase: 7, generation: gen, sid: s }));
+        expect(hooks.overseerSessions.size).toBe(0);
 
-      const artisan = sid("m3-restart-art");
-      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
-      await hooks["tool.execute.before"](
-        { tool: "write", sessionID: artisan, callID: "c1" },
-        { args: { filePath: `knowledge/impl-M1-restart-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY" } }
-      );
+        const artisan = sid(`m3-restart-art-${gen}`);
+        await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+        await hooks["tool.execute.before"](
+          { tool: "write", sessionID: artisan, callID: "c1" },
+          { args: { filePath: `knowledge/impl-M1-restart-${s}${suffix}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+        );
 
-      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      expect(content).toContain("  M1: checked-off");
-    });
-
-    it("AC013: restart check-off works for generation N via the on-disk generation", async () => {
-      const s = sid("m3-restart-2");
-      // Generation-scoped lifecycle: registry + impl KD carry the -gen3 suffix,
-      // and the state file (the SSOT) records generation 3. The in-memory map
-      // is EMPTY after restart — autoCheckOffMilestone must read gen 3 from disk.
-      createKD(`milestones-feature-${s}-gen3.md`, registryContent([["M2", "in-progress"]]));
-      mkdirSync(stateDir, { recursive: true });
-      writeFileSync(statePath(s), JSON.stringify({ phase: 7, generation: 3, sid: s }));
-
-      const artisan = sid("m3-restart-art2");
-      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
-      await hooks["tool.execute.before"](
-        { tool: "write", sessionID: artisan, callID: "c1" },
-        { args: { filePath: `knowledge/impl-M2-gen3-${s}-gen3.md`, content: "# IMPLEMENTATION SUMMARY" } }
-      );
-
-      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen3.md`), "utf8");
-      expect(content).toContain("  M2: checked-off");
+        const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}${suffix}.md`), "utf8");
+        expect(content).toContain("  M1: checked-off");
+      }
     });
 
     it("AC014: reconstructs every row state from disk after restart — no in-memory data required", async () => {
@@ -1327,7 +1254,7 @@ ${table}
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("| M1 | desc | pending |");
     });
 
-    it("AC016: re-dispatch of a checked-off milestone re-opens it; the gate re-blocks until the fix is re-checked-off", async () => {
+    it("AC016: checked-off rows re-open on re-dispatch but stay immutable otherwise (evidence preserved)", async () => {
       const s = sid("m3-reopen-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -1359,31 +1286,24 @@ ${table}
       content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: checked-off");
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
-    });
 
-    it("AC016: a non-reopen write leaves a checked-off row immutable (evidence preserved)", async () => {
-      const s = sid("m3-reopen-2");
-      await initOverseer(s);
-      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      createRegistry(s, [["M1", "checked-off"]]);
-
-      // markStuckMilestonesFailed-style call (no reopen) must not regress the row.
+      // A non-reopen write (e.g. markStuckMilestonesFailed) never regresses a
+      // checked-off row — the completion evidence stays immutable.
       const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["failed"]);
       expect(result.ok).toBe(true);
       expect(result.changed).toBe(false);
-      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: checked-off");
     });
   });
 
-  it("M2: SWARM allowlist includes read and tool.definition shows the read restriction", async () => {
+  it("tool.definition respects the phase allowlist — read restricted during SWARM, non-allowlisted tools blocked elsewhere, task always passes", async () => {
+    // SWARM: read is allowlisted and carries the plan/registry restriction
     const s = sid("swarm-def-1");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
     hooks.sessionPhaseMap.set(`${s}:sid`, s);
 
-    // read is in the SWARM allowlist and carries the plan/registry restriction
     const readOut = { description: "Test read", parameters: {} };
     await hooks["tool.definition"]({ toolID: "read" }, readOut);
     expect(readOut.description).not.toContain("⛔");
@@ -1393,6 +1313,19 @@ ${table}
     const editOut = { description: "Test edit", parameters: {} };
     await hooks["tool.definition"]({ toolID: "edit" }, editOut);
     expect(editOut.description).toContain("⛔");
+
+    // INTENT: edit/glob/grep get the ⛔ prefix, task always passes
+    const s2 = sid("def-1");
+    await initOverseer(s2);
+    hooks.sessionPhaseMap.set(s2, hooks.STATES.INTENT);
+    for (const tool of ["edit", "glob", "grep"]) {
+      const output = { description: `Test ${tool}`, parameters: {} };
+      await hooks["tool.definition"]({ toolID: tool }, output);
+      expect(output.description).toContain("⛔");
+    }
+    const taskOut = { description: "Test task", parameters: {} };
+    await hooks["tool.definition"]({ toolID: "task" }, taskOut);
+    expect(taskOut.description).not.toContain("⛔");
   });
 
   it("enforces checkpoint-KD ownership: artisan blocked, committer allowed (R100)", async () => {
@@ -1418,36 +1351,6 @@ ${table}
         { args: { filePath: `knowledge/checkpoint-test-${overseer}.md`, content: "# Checkpoint" } }
       )
     ).resolves.toBeUndefined();
-  });
-
-  it("blocks non-allowlisted tools in tool.definition while task always passes", async () => {
-    const s = sid("def-1");
-    await initOverseer(s);
-    hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
-
-    // INTENT allowlist is todowrite, write, read, skill, bash — every other
-    // tool (except task) gets the ⛔ blocking prefix.
-    for (const tool of ["edit", "glob", "grep"]) {
-      const output = { description: `Test ${tool}`, parameters: {} };
-      await hooks["tool.definition"]({ toolID: tool }, output);
-      expect(output.description).toContain("⛔");
-    }
-    const taskOut = { description: "Test task", parameters: {} };
-    await hooks["tool.definition"]({ toolID: "task" }, taskOut);
-    expect(taskOut.description).not.toContain("⛔");
-  });
-
-  it("injects phase guidance with generation-scoped naming into system.transform during INTENT", async () => {
-    const s = sid("sys-1");
-    await initOverseer(s);
-    hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
-    hooks.sessionPhaseMap.set(`${s}:sid`, s);
-    hooks.sessionPhaseMap.set(`${s}:gen`, 2);
-    const output = { system: ["base"] };
-    await hooks["experimental.chat.system.transform"]({ sessionID: s }, output);
-
-    expect(output.system[1]).toContain(`knowledge/intent-{name}-${s}-gen2.md`);
-    expect(output.system).toHaveLength(2); // appended, existing entries untouched
   });
 
   it("AC-R007: debug logs capture generation increment, stale-KD cleanup, and generation-scoped disk checks", async () => {
@@ -1563,33 +1466,47 @@ ${table}
       }
     });
 
-    it("AC019: 15-failure force-advance during SWARM marks failed, stays in SWARM, logs SAFETY_STUCK", async () => {
-      const s = sid("m5-safety-15");
-      await initOverseer(s);
-      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      // M1 genuinely checked-off (registry row + impl KD); M2 in-progress blocks the gate
-      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
-      createKD(`impl-M1-feature-${s}.md`);
-
+    it("AC019: force-advance paths during SWARM mark the stuck milestone failed, stay in SWARM, and log SAFETY_STUCK", async () => {
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
-        // 14 failed disk checks (glob creates no impl KD) → phase stays SWARM
+        // Path 1: 15 failed disk checks fire the force-advance safety.
+        const s = sid("m5-safety-15");
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        // M1 genuinely checked-off (registry row + impl KD); M2 in-progress blocks the gate
+        createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
+        createKD(`impl-M1-feature-${s}.md`);
+
         for (let i = 0; i < 14; i++) {
           await hooks["tool.execute.before"]({ tool: "glob", sessionID: s, callID: `g${i}` }, { args: { pattern: "knowledge/*.md" } });
           expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
         }
-        // 15th failure fires the force-advance safety — M5 repurposes it
         await hooks["tool.execute.before"]({ tool: "glob", sessionID: s, callID: "g15" }, { args: { pattern: "knowledge/*.md" } });
 
-        // Never advances to VERIFY — stays in SWARM, M2 marked failed
         expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
-        const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        let content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
         expect(content).toContain("  M1: checked-off");
         expect(content).toContain("  M2: failed");
-        const log = readFileSync(logPath, "utf8");
-        expect(log).toContain("SAFETY_STUCK");
+        expect(readFileSync(logPath, "utf8")).toContain("SAFETY_STUCK");
+
+        // Path 2: a pendingVerification session seeded one call short of the
+        // threshold fires the same safety on its next tool call.
+        const s2 = sid("m5-safety-pv");
+        await initOverseer(s2);
+        hooks.sessionPhaseMap.set(s2, hooks.STATES.SWARM);
+        hooks.sessionPhaseMap.set(`${s2}:sid`, s2);
+        createRegistry(s2, [["M1", "in-progress"]]);
+        hooks.pendingVerification.set(s2, { expectedPrefixes: ["impl"], toolType: "write", timestamp: Date.now(), toolCalls: 0 });
+        hooks.pendingVerificationToolCount.set(s2, 14);
+
+        await hooks["tool.execute.before"]({ tool: "glob", sessionID: s2, callID: "pv1" }, { args: { pattern: "knowledge/*.md" } });
+
+        expect(hooks.sessionPhaseMap.get(s2)).toBe(hooks.STATES.SWARM);
+        content = readFileSync(join(knowledgeDir, `milestones-feature-${s2}.md`), "utf8");
+        expect(content).toContain("  M1: failed");
+        expect(readFileSync(logPath, "utf8")).toContain("SAFETY_STUCK");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
@@ -1615,32 +1532,6 @@ ${table}
         ).rejects.toThrow("SAFETY_STUCK");
 
         // Stays in SWARM, the stuck milestone is marked failed
-        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
-        const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-        expect(content).toContain("  M1: failed");
-        const log = readFileSync(logPath, "utf8");
-        expect(log).toContain("SAFETY_STUCK");
-      } finally {
-        delete process.env.PROTOCOL_GATE_DEBUG;
-        try { rmSync(logPath); } catch (_) {}
-      }
-    });
-
-    it("AC019: pendingVerification force-advance during SWARM marks failed, stays in SWARM, logs SAFETY_STUCK", async () => {
-      const s = sid("m5-safety-pv");
-      await initOverseer(s);
-      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      createRegistry(s, [["M1", "in-progress"]]);
-      // Seed a pendingVerification session one tool call short of the force-advance threshold
-      hooks.pendingVerification.set(s, { expectedPrefixes: ["impl"], toolType: "write", timestamp: Date.now(), toolCalls: 0 });
-      hooks.pendingVerificationToolCount.set(s, 14);
-
-      try { rmSync(logPath); } catch (_) {}
-      process.env.PROTOCOL_GATE_DEBUG = "1";
-      try {
-        await hooks["tool.execute.before"]({ tool: "glob", sessionID: s, callID: "pv1" }, { args: { pattern: "knowledge/*.md" } });
-
         expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
         const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
         expect(content).toContain("  M1: failed");
@@ -1700,46 +1591,32 @@ ${table}
   });
 
   describe("M4: registry write ordering fix (R017, AC017, issue-7)", () => {
-    it("AC017: a multi-milestone dispatch (repeated MILESTONE ID lines) is rejected before any registry write — registry byte-identical", async () => {
-      const s = sid("m4-card-1");
-      await initOverseer(s);
-      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
-      const before = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+    it("AC017: a multi-milestone dispatch (repeated lines or comma list) is rejected before any registry write — registry byte-identical", async () => {
+      const variants = [
+        "AGENT: artisan\nMILESTONE ID: M1\nMILESTONE ID: M2\nMODE: swarm",
+        "AGENT: artisan\nMILESTONE ID: M1, M2\nMODE: swarm",
+      ];
+      for (let i = 0; i < variants.length; i++) {
+        const s = sid(`m4-card-${i}`);
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
+        const before = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
 
-      await expect(
-        hooks["tool.execute.before"](
-          { tool: "task", sessionID: s, callID: "c1" },
-          { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMILESTONE ID: M2\nMODE: swarm" } }
-        )
-      ).rejects.toThrow(/MULTI_MILESTONE|Multiple milestones/);
+        await expect(
+          hooks["tool.execute.before"](
+            { tool: "task", sessionID: s, callID: "c1" },
+            { args: { subagent_type: "artisan", prompt: variants[i] } }
+          )
+        ).rejects.toThrow(/MULTI_MILESTONE|Multiple milestones/);
 
-      const after = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      expect(after).toBe(before);
-      expect(after).toContain("  M1: pending");
-      expect(after).toContain("  M2: pending");
-    });
-
-    it("AC017: a comma-separated MILESTONE ID list is rejected before any registry write — no phantom row", async () => {
-      const s = sid("m4-card-2");
-      await initOverseer(s);
-      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
-      hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      createRegistry(s, [["M1", "pending"], ["M2", "pending"]]);
-      const before = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-
-      await expect(
-        hooks["tool.execute.before"](
-          { tool: "task", sessionID: s, callID: "c1" },
-          { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1, M2\nMODE: swarm" } }
-        )
-      ).rejects.toThrow(/MULTI_MILESTONE|Multiple milestones/);
-
-      const after = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      expect(after).toBe(before);
-      expect(after).toContain("  M1: pending");
-      expect(after).toContain("  M2: pending");
+        // No phantom row, no partial write — the registry is byte-identical.
+        const after = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(after).toBe(before);
+        expect(after).toContain("  M1: pending");
+        expect(after).toContain("  M2: pending");
+      }
     });
 
     it("AC017: a single-milestone dispatch still advances its row exactly once (no phantom advancement)", async () => {
@@ -1778,5 +1655,31 @@ ${table}
       // rejects it as MULTI_MILESTONE (mirrors delegation-gate's /,/.test).
       expect(hooks.collectMilestoneIds("MILESTONE ID: M1, M2")).toEqual(["M1, M2"]);
     });
+  });
+
+  it("R306 (relocated from delegation-gate M1): GENERATION falls back to the protocol-gate state file when the prompt omits GENERATION", async () => {
+    // The delegation-gate GENERATION fallback reads PROTOCOL_GATE_STATE_DIR at
+    // call time — this suite's temp stateDir (P302) is that dir, so the real
+    // plugins/protocol-gate/.state is never touched and the two suites cannot
+    // race on it (AC306).
+    const delegationHooks = await delegationPlugin.server({}, {});
+    const s = sid("dg-fbk");
+    writeFileSync(statePath(s), JSON.stringify({ phase: 3, generation: 4, sid: s, timestamp: Date.now() }));
+
+    const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SESSION ID: ${s}
+MILESTONE ID: M1
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-M1-foo-${s}.md`;
+
+    const output = { args: { prompt } };
+    await delegationHooks["tool.execute.before"]({ tool: "task", sessionID: s, callID: "c1" }, output);
+
+    expect(output.args.prompt).toContain("GENERATION: 4");
+    expect(output.args.prompt).toContain("knowledge/impl-<milestone-id>-<descriptive-name>-<session_id>-gen4.md");
+    expect(output.args.description).toContain("knowledge/impl-<milestone-id>-<name>-<session_id>-gen4.md");
   });
 });
