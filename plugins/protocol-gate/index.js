@@ -10,11 +10,27 @@
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
 import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "fs";
-import { basename, dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
+
+// Directory seams (P302): call-time helpers, not module-load constants, so
+// tests can flip PROTOCOL_GATE_STATE_DIR / PROTOCOL_GATE_KNOWLEDGE_DIR between
+// tests without re-importing the module. Defaults mirror the pre-M3 layout:
+// state lives under the plugin dir, knowledge is project-relative (cwd).
+function getStateDir() {
+  return process.env.PROTOCOL_GATE_STATE_DIR
+    ? resolve(process.env.PROTOCOL_GATE_STATE_DIR)
+    : join(PLUGIN_DIR, ".state");
+}
+
+function getKnowledgeDir() {
+  return process.env.PROTOCOL_GATE_KNOWLEDGE_DIR
+    ? resolve(process.env.PROTOCOL_GATE_KNOWLEDGE_DIR)
+    : join(process.cwd(), "knowledge");
+}
 
 const STATES = {
   PROTOCOL_NOT_LOADED: 0,
@@ -178,7 +194,7 @@ function matchesSessionKD(filename, sessionID, generation) {
 // EC-005: a missing knowledge/ dir is not an error — returns 0.
 // R6: logs the count of removed files.
 function cleanupLifecycleKDs(sessionID, generation = 0) {
-  const knowledgeDir = join(process.cwd(), "knowledge");
+  const knowledgeDir = getKnowledgeDir();
   let files = [];
   try {
     files = readdirSync(knowledgeDir);
@@ -413,7 +429,7 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
 // registry file or YAML block is missing.
 function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
-  const knowledgeDir = join(process.cwd(), "knowledge");
+  const knowledgeDir = getKnowledgeDir();
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
   const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKD(f, sessionID, generation));
@@ -448,7 +464,7 @@ function readMilestoneState(sessionID, sessionPhaseMap, milestoneId) {
 function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   if (!milestoneId) return null;
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
-  const knowledgeDir = join(process.cwd(), "knowledge");
+  const knowledgeDir = getKnowledgeDir();
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
   const prefix = `impl-${milestoneId}-`;
@@ -579,9 +595,10 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     return false;
   }
 
-  // Knowledge directory is project-relative (cwd), not plugin-relative.
-  // PLUGIN_DIR stays for log paths which ARE relative to plugin location.
-  const knowledgeDir = join(process.cwd(), "knowledge");
+  // Knowledge directory is project-relative by default (cwd), overridable via
+  // PROTOCOL_GATE_KNOWLEDGE_DIR (P302 seam). PLUGIN_DIR stays for log paths
+  // which ARE relative to plugin location.
+  const knowledgeDir = getKnowledgeDir();
   let files = [];
   try {
     files = readdirSync(knowledgeDir);
@@ -677,7 +694,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
   if (!storedSID) return false;
 
-  const knowledgeDir = join(process.cwd(), "knowledge");
+  const knowledgeDir = getKnowledgeDir();
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return false; }
 
@@ -857,7 +874,7 @@ export default {
     function getStatePath(sessionID) {
       const safe = sanitizeSessionID(sessionID);
       if (!safe) return null;
-      return join(PLUGIN_DIR, ".state", `.protocol-state-${safe}.json`);
+      return join(getStateDir(), `.protocol-state-${safe}.json`);
     }
 
     function saveState(sessionID) {
@@ -883,7 +900,7 @@ export default {
         // and producing artifacts in the state file.
         const state = { phase, generation, timestamp: Date.now() };
         if (sid) state.sid = sid;
-        const stateDir = join(PLUGIN_DIR, ".state");
+        const stateDir = getStateDir();
         mkdirSync(stateDir, { recursive: true });
         // NFR001/R005: atomic durable write — tmp file + fsync + rename. A
         // failure (disk full, permissions) surfaces to the caller as false +
@@ -914,7 +931,7 @@ export default {
       } catch (e) {
         if (e.code === "ENOENT") return "missing";
         try {
-          const backupPath = join(PLUGIN_DIR, ".state", `.protocol-state-${sanitizeSessionID(sessionID)}.corrupt-${Date.now()}.json`);
+          const backupPath = join(getStateDir(), `.protocol-state-${sanitizeSessionID(sessionID)}.corrupt-${Date.now()}.json`);
           renameSync(statePath, backupPath);
           debug(`loadState: corrupt state file backed up to ${backupPath} (${e.message})`);
           process.stderr.write(`[protocol-gate] Corrupt state file for session ${sessionID} — backed up to ${basename(backupPath)}; initializing PROTOCOL_NOT_LOADED (R006)\n`);
@@ -938,7 +955,7 @@ export default {
     // fresh session ID with no own state file restores the pointed-to phase and
     // adopts that lifecycle, covering opencode restarting with a new session ID.
     function getActiveSessionPath() {
-      return join(PLUGIN_DIR, ".state", ".active-session.json");
+      return join(getStateDir(), ".active-session.json");
     }
 
     function readActiveSession() {
@@ -955,7 +972,7 @@ export default {
       const safe = sanitizeSessionID(sessionID);
       if (!safe) return false;
       try {
-        mkdirSync(join(PLUGIN_DIR, ".state"), { recursive: true });
+        mkdirSync(getStateDir(), { recursive: true });
         atomicWriteFileSync(getActiveSessionPath(), JSON.stringify({ sessionID: safe, lastUpdated: new Date().toISOString() }));
         return true;
       } catch (e) {
@@ -1038,7 +1055,7 @@ export default {
     // marker (post-REPORT state) — it must survive restarts so the counter is
     // not lost between lifecycles (R4).
     try {
-      const stateDir = join(PLUGIN_DIR, ".state");
+      const stateDir = getStateDir();
       const stateFiles = readdirSync(stateDir).filter(f => f.startsWith(".protocol-state-") && f.endsWith(".json"));
       for (const sf of stateFiles) {
         try {
@@ -1081,7 +1098,7 @@ export default {
       // and allows fresh tracking of re-dispatches for the new phase entry.
       // T-R004-1: Reset swarmDispatchCount when regressing TO SWARM
       if (targetPhase === STATES.SWARM) {
-        const knowledgeDir = join(process.cwd(), "knowledge");
+        const knowledgeDir = getKnowledgeDir();
         let implFiles = [];
         try {
           const files = readdirSync(knowledgeDir);
@@ -1106,7 +1123,7 @@ export default {
     function collectParentSessionCandidates() {
       const candidates = new Set(overseerSessions);
       try {
-        const stateDir = join(PLUGIN_DIR, ".state");
+        const stateDir = getStateDir();
         for (const f of readdirSync(stateDir)) {
           const m = f.match(/^\.protocol-state-(.+)\.json$/);
           if (m) candidates.add(m[1]);
@@ -1786,7 +1803,7 @@ export default {
                   } else {
                     // Stuck warning at 10 failures (informational, not a safety mechanism)
                     if (currentFailures === 10) {
-                      const knowledgeDir = join(process.cwd(), "knowledge");
+                      const knowledgeDir = getKnowledgeDir();
                       let foundFiles = [];
                       try { foundFiles = readdirSync(knowledgeDir).filter(f => matchesSessionKD(f, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID))); } catch (_) {}
                       debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${currentFailures} disk checks. Expected prefixes: ${JSON.stringify(currentPhasePrefixes)}. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
