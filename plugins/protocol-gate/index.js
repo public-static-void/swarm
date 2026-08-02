@@ -1028,15 +1028,28 @@ export default {
           const pointed = readStateFile(pointer.sessionID);
           if (pointed !== "missing" && pointed !== "corrupt" && pointed !== null) {
             const gen = pointed.generation !== undefined ? pointed.generation : 0;
-            sessionPhaseMap.set(`${sessionID}:gen`, gen);
-            sessionPhaseMap.set(`${sessionID}:sid`, pointed.sid || pointer.sessionID);
             const phase = typeof pointed.phase === "number" ? pointed.phase : STATES.PROTOCOL_NOT_LOADED;
-            sessionPhaseMap.set(sessionID, phase);
-            debug(`reconcile: adopted phase=${getPhaseName(phase)} from active-session ${pointer.sessionID} for ${sessionID} (R004)`);
-            // The current session now owns the lifecycle — persist its own
-            // state file and move the pointer so the adoption is durable.
-            saveState(sessionID);
-            return;
+            // BUGFIX (phase init off-by-one): only resume lifecycles that
+            // reached a KD-producing phase (phase > INTENT, i.e. ≥ PREFLIGHT).
+            // A pointer at INTENT means the prior lifecycle never wrote its
+            // intent KD — R009 advances INTENT→PREFLIGHT once the KD is on
+            // disk, so an INTENT pointer can only be a stalled entry, never a
+            // legitimate resume. Adopting it skips the mandatory todowrite gate
+            // and the first todowrite triggers a consistency regression
+            // INTENT→PROTOCOL_NOT_LOADED instead of advancing (off-by-one). A
+            // PROTOCOL_NOT_LOADED pointer is an unstarted lifecycle — there is
+            // nothing to resume either. Both fall through to fresh init below.
+            if (phase > STATES.INTENT) {
+              sessionPhaseMap.set(`${sessionID}:gen`, gen);
+              sessionPhaseMap.set(`${sessionID}:sid`, pointed.sid || pointer.sessionID);
+              sessionPhaseMap.set(sessionID, phase);
+              debug(`reconcile: adopted phase=${getPhaseName(phase)} from active-session ${pointer.sessionID} for ${sessionID} (R004)`);
+              // The current session now owns the lifecycle — persist its own
+              // state file and move the pointer so the adoption is durable.
+              saveState(sessionID);
+              return;
+            }
+            debug(`reconcile: active-session ${pointer.sessionID} at phase=${getPhaseName(phase)} (no KD on disk) — not adopting; fresh PROTOCOL_NOT_LOADED (R004)`);
           }
         }
         // Fresh session — initialize PROTOCOL_NOT_LOADED and persist (R004).
