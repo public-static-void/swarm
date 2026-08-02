@@ -167,13 +167,17 @@ function matchesSessionKD(filename, sessionID, generation) {
   return filename.endsWith(`-${sessionID}.md`);
 }
 
-// Deletes all knowledge KDs belonging to a session — both naming variants
-// (legacy `-${sessionID}.md` and any `-${sessionID}-gen${N}.md`). Called at
-// lifecycle end (REPORT→reset) so stale prior-lifecycle KDs cannot confuse a
-// new generation (BUG-008). Single readdirSync + batch rmSync loop (NFR003 —
-// no per-file glob). EC-005: a missing knowledge/ dir is not an error.
+// Deletes ONLY the knowledge KDs of a session's ENDING lifecycle generation
+// (R101): for generation 0 the legacy `-${sessionID}.md` variant plus the
+// `-gen0.md` suffix; for generation N only the `-gen${N}.md` variant. Files of
+// any other generation are never touched — a reused session ID spans lifecycles
+// (opencode --continue), so a stray/duplicate REPORT write or edit fired after
+// the next lifecycle began must not wipe the new lifecycle's KDs (BUG-008).
+// Semantics mirror the generation-scoped read path matchesSessionKD (R104).
+// Single readdirSync + batch rmSync loop (NFR007 — no per-file glob).
+// EC-005: a missing knowledge/ dir is not an error — returns 0.
 // R6: logs the count of removed files.
-function cleanupLifecycleKDs(sessionID) {
+function cleanupLifecycleKDs(sessionID, generation = 0) {
   const knowledgeDir = join(process.cwd(), "knowledge");
   let files = [];
   try {
@@ -182,8 +186,12 @@ function cleanupLifecycleKDs(sessionID) {
     debug(`cleanupLifecycleKDs: knowledge/ dir not found for session ${sessionID} — nothing to clean (EC-005)`);
     return 0;
   }
-  const genPattern = new RegExp(`-${sessionID}-gen\\d+\\.md$`, "i");
-  const stale = files.filter(f => f.endsWith(`-${sessionID}.md`) || genPattern.test(f));
+  const gen = Number(generation) || 0;
+  // Regex construction over the raw session ID keeps the historical failure
+  // mode: a malformed ID throws, and the REPORT call sites' try/catch turns it
+  // into a logged, non-blocking cleanup (EC-008).
+  const genPattern = new RegExp(`-${sessionID}-gen${gen}\\.md$`, "i");
+  const stale = files.filter(f => (gen === 0 && f.endsWith(`-${sessionID}.md`)) || genPattern.test(f));
   for (const f of stale) {
     try {
       rmSync(join(knowledgeDir, f));
@@ -191,7 +199,7 @@ function cleanupLifecycleKDs(sessionID) {
       debug(`cleanupLifecycleKDs: failed to remove ${f}: ${e.message}`);
     }
   }
-  debug(`Cleanup of ${stale.length} stale KDs for session ${sessionID}`);
+  debug(`Cleanup of ${stale.length} stale KDs for session ${sessionID} (generation ${gen})`);
   return stale.length;
 }
 
@@ -1412,12 +1420,14 @@ export default {
             debug(`Generation ${currentGen} → ${nextGen} for session ${sessionID}`);
           }
           // R003/P008: remove this lifecycle's KDs so stale files can never
-          // advance or suppress the next generation. EC-008: cleanup failure
-          // must not block the phase reset — wrapped in try-catch. EC-004
-          // accepted race: any KD written between the REPORT trigger and this
-          // cleanup belongs to the ending lifecycle; deletion is safe.
+          // advance or suppress the next generation. R102: pass the ENDING
+          // generation (currentGen, captured before the increment) so a reused
+          // session ID never deletes the new lifecycle's KDs. EC-008: cleanup
+          // failure must not block the phase reset — wrapped in try-catch.
+          // EC-004 accepted race: any KD written between the REPORT trigger and
+          // this cleanup belongs to the ending lifecycle; deletion is safe.
           try {
-            cleanupLifecycleKDs(sessionID);
+            cleanupLifecycleKDs(sessionID, currentGen);
           } catch (e) {
             debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message} (EC-008)`);
           }
@@ -1538,9 +1548,11 @@ export default {
           } else {
             debug(`Generation ${currentGen} → ${nextGen} for session ${sessionID}`);
           }
-          // R003/P008: cleanup stale session KDs; EC-008 try-catch (see write handler).
+          // R003/P008: cleanup the ending lifecycle's KDs. R102: pass the
+          // ENDING generation (currentGen) so newer generations survive a
+          // reused session ID; EC-008 try-catch (see write handler).
           try {
-            cleanupLifecycleKDs(sessionID);
+            cleanupLifecycleKDs(sessionID, currentGen);
           } catch (e) {
             debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message} (EC-008)`);
           }
