@@ -29,11 +29,16 @@ permission:
     "git status*": allow
     "git diff*": allow
     "git log*": allow
+    "git branch*": allow
+    "git merge-base*": allow
+    "git check-ignore*": allow
+    "git log --oneline*": allow
     "npm test*": allow
     "npm run lint*": allow
     "npx eslint*": allow
     "npx prettier*": allow
     "npx tsc --noEmit*": allow
+    "npx vitest*": allow
     "bun test*": allow
     "cargo test*": allow
     "cargo check*": allow

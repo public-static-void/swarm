@@ -413,9 +413,12 @@ export default {
       // generation from protocol-gate state file — fills {generation} when the
       // prompt omits GENERATION: (P004). Mirrors the SESSION ID fallback above;
       // saveState always writes generation, so an active session has a value.
+      // The state dir follows protocol-gate's PROTOCOL_GATE_STATE_DIR seam (P302)
+      // so isolated test runs never race on the real .state dir.
       if (!fields["generation"] && sessionID) {
         try {
-          const statePath = join(PLUGIN_DIR, "..", "protocol-gate", ".state", `.protocol-state-${sessionID}.json`);
+          const stateDir = process.env.PROTOCOL_GATE_STATE_DIR || join(PLUGIN_DIR, "..", "protocol-gate", ".state");
+          const statePath = join(stateDir, `.protocol-state-${sessionID}.json`);
           const stateData = JSON.parse(readFileSync(statePath, "utf8"));
           if (stateData.generation !== undefined) {
             fields["generation"] = String(stateData.generation);

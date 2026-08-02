@@ -55,130 +55,6 @@ function debug(msg) {
   }
 }
 
-// --- In-memory cache ---
-
-/**
- * In-memory cache for parsed memory entries with TTL.
- * Reduces disk I/O on repeated searchMemory calls within the TTL window.
- * TTL is configurable via MEMORY_CACHE_TTL_MS env var (default 30000ms).
- */
-const memoryCache = {
-  entries: null,
-  lastLoaded: null,
-  ttlMs: parseInt(process.env.MEMORY_CACHE_TTL_MS || "30000", 10),
-  isLoading: false,
-  fileCount: 0
-};
-
-function isCacheValid() {
-  if (memoryCache.entries === null || memoryCache.lastLoaded === null) return false;
-  if ((Date.now() - memoryCache.lastLoaded) >= memoryCache.ttlMs) return false;
-  // Detect external file changes by comparing file count
-  // Uses readdirSync but avoids re-parsing all entries when count is unchanged
-  try {
-    const currentCount = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json")).length;
-    if (currentCount !== memoryCache.fileCount) {
-      memoryCache.entries = null;
-      memoryCache.lastLoaded = null;
-      return false;
-    }
-  } catch (_) {
-    return false;
-  }
-  return true;
-}
-
-function loadEntriesFromDisk() {
-  if (!existsSync(MEMORY_DIR)) {
-    debug("loadEntriesFromDisk: memory dir does not exist");
-    return [];
-  }
-
-  let files;
-  try {
-    files = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"));
-  } catch (e) {
-    debug(`loadEntriesFromDisk: failed to read memory dir: ${e.message}`);
-    return [];
-  }
-
-  // Detect file count change — invalidates cache
-  if (memoryCache.entries !== null && files.length !== memoryCache.fileCount) {
-    debug(`loadEntriesFromDisk: file count changed (${memoryCache.fileCount} → ${files.length}), cache invalidated`);
-    memoryCache.entries = null;
-    memoryCache.lastLoaded = null;
-  }
-
-  const entries = [];
-  for (const file of files) {
-    try {
-      const raw = readFileSync(join(MEMORY_DIR, file), "utf8");
-      const entry = JSON.parse(raw);
-      entries.push(entry);
-    } catch (e) {
-      debug(`loadEntriesFromDisk: skipping malformed ${file}: ${e.message}`);
-    }
-  }
-
-  memoryCache.entries = entries;
-  memoryCache.lastLoaded = Date.now();
-  memoryCache.fileCount = files.length;
-  return entries;
-}
-
-// --- Memory search ---
-
-/**
- * Scans knowledge/memory/ for JSON entries matching query parameters.
- * Uses in-memory cache with configurable TTL to reduce disk I/O.
- * Returns entries sorted by tag-match count (descending), then recency.
- */
-function searchMemory(query) {
-  const { tags = [], topic = "", limit = 5 } = query;
-
-  // Load from cache or disk
-  let entries;
-  if (isCacheValid()) {
-    entries = memoryCache.entries;
-    debug(`searchMemory: cache hit (${entries.length} entries)`);
-  } else {
-    entries = loadEntriesFromDisk();
-    debug(`searchMemory: cache miss, loaded ${entries.length} entries from disk`);
-  }
-
-  if (entries.length === 0) return [];
-
-  // Score each entry by tag overlap count
-  const scored = entries.map(entry => {
-    const entryTags = entry.tags || [];
-    const tagOverlap = tags.filter(t => entryTags.includes(t)).length;
-    // Topic match: substring check, case-insensitive
-    const topicMatch = topic && entry.topic
-      ? entry.topic.toLowerCase().includes(topic.toLowerCase()) ? 1 : 0
-      : 0;
-    return { entry, score: tagOverlap + topicMatch * 2 };
-  });
-
-  // Sort by score descending, then by created timestamp descending (newest first)
-  scored.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    const aTime = new Date(a.entry.created || 0).getTime();
-    const bTime = new Date(b.entry.created || 0).getTime();
-    return bTime - aTime;
-  });
-
-  return scored
-    .filter(s => s.score > 0 || (tags.length === 0 && !topic))
-    .slice(0, limit)
-    .map(s => ({
-      id: s.entry.id,
-      source_kd: s.entry.source_kd,
-      tags: s.entry.tags || [],
-      topic: s.entry.topic || "",
-      insight: s.entry.insight || ""
-    }));
-}
-
 // --- Memory validation ---
 
 /**
@@ -248,92 +124,6 @@ const NOISE_WORDS = new Set([
 const VALID_TYPES = ["fact", "decision", "pattern", "warning", "context"];
 
 /**
- * Derives search tags from dispatch context and generates hint lines.
- * Implements the Library Model: derive context → search → hint if relevant.
- * Mechanical modes (preflight, checkpoint, cleanup) always return no hint.
- *
- * @param {Object} context - Dispatch context { mode, agentType, phase, scope }
- * @returns {{ hints: string[], shouldHint: boolean }}
- */
-function deriveSearchHints(context) {
-  const { mode = "", agentType = "", phase = "", scope = "" } = context || {};
-
-  // Mechanical modes skip entirely — no hint overhead for trivial dispatches
-  if (["preflight", "checkpoint", "cleanup"].includes(mode)) {
-    return { hints: [], shouldHint: false };
-  }
-
-  // Collect tags from MODE mapping
-  const tags = [...(MODE_TAG_MAP[mode] || [])];
-
-  // Add agent-type tags
-  const agentTags = AGENT_TAG_MAP[agentType] || [];
-  tags.push(...agentTags);
-
-  // Extract noun keywords from SCOPE (top 3)
-  if (scope) {
-    const keywords = scope
-      .toLowerCase()
-      .replace(/[^a-zA-Z0-9\s-]/g, " ")
-      .split(/\s+/)
-      .filter(w => w.length >= 3 && !STOP_WORDS.has(w) && !NOISE_WORDS.has(w));
-    // Remove duplicates while preserving order, take top 3
-    const unique = [...new Set(keywords)];
-    tags.push(...unique.slice(0, 3));
-  }
-
-  // Deduplicate all tags
-  const uniqueTags = [...new Set(tags)];
-
-  if (uniqueTags.length === 0) {
-    return { hints: [], shouldHint: false };
-  }
-
-  // Search memory with derived tags — call searchMemory directly (internal function)
-  const results = searchMemory({ tags: uniqueTags, limit: 5 });
-  if (results.length === 0) {
-    return { hints: [], shouldHint: false };
-  }
-
-  // Generate hint lines from results
-  const primaryTags = uniqueTags.slice(0, 2);
-  const hints = generateHintLines(results, primaryTags);
-
-  return { hints, shouldHint: hints.length > 0 };
-}
-
-/**
- * Generates hint lines from search results grouped by primary tag.
- * Max 3 lines, each ≤300 bytes.
- * Format: [Memory: N entries match "TAG". Use memory_search("TAG") to retrieve.]
- */
-function generateHintLines(results, primaryTags) {
-  const lines = [];
-
-  for (const tag of primaryTags) {
-    if (lines.length >= 3) break;
-    const count = results.filter(r => (r.tags || []).includes(tag)).length;
-    if (count > 0) {
-      const line = `[Memory: ${count} entries match "${tag}". Use memory_search("${tag}") to retrieve.]`;
-      // Enforce byte limit — skip if line exceeds 300 bytes (hint must be compact)
-      if (Buffer.byteLength(line, "utf8") <= 300) {
-        lines.push(line);
-      }
-    }
-  }
-
-  // Fallback: if no tag-grouping worked, use generic line
-  if (lines.length === 0 && results.length > 0) {
-    const line = `[Memory: ${results.length} entries match current context. Use memory_search(tags=[...]) to retrieve.]`;
-    if (Buffer.byteLength(line, "utf8") <= 300) {
-      lines.push(line);
-    }
-  }
-
-  return lines.slice(0, 3);
-}
-
-/**
  * Gets the next sequential memory ID by scanning existing entries.
  * Mirrors getNextIssueId() pattern.
  */
@@ -357,30 +147,6 @@ function getNextMemoryId() {
   }
 
   return `MEM-${String(maxNum + 1).padStart(3, "0")}`;
-}
-
-/**
- * Checks if a memory entry is a duplicate of an existing entry.
- * Uses searchMemory with topic match, returns existing entry if score ≥ threshold.
- */
-function checkDuplicateMemory(entry, threshold = 3) {
-  if (!entry || !entry.topic) return null;
-
-  const results = searchMemory({ tags: entry.tags || [], topic: entry.topic, limit: 5 });
-  for (const r of results) {
-    // Calculate overlap score: tag match + topic match
-    const tagOverlap = (entry.tags || []).filter(t => (r.tags || []).includes(t)).length;
-    const topicMatch = r.topic && entry.topic
-      ? r.topic.toLowerCase().includes(entry.topic.toLowerCase()) ||
-        entry.topic.toLowerCase().includes(r.topic.toLowerCase()) ? 2 : 0
-      : 0;
-    const score = tagOverlap + topicMatch;
-    if (score >= threshold) {
-      return r;
-    }
-  }
-
-  return null;
 }
 
 /**
@@ -570,6 +336,222 @@ export default {
   id: "knowledge-gate",
   server: async function knowledgeGateServer(input, options) {
     const sessionAgentMap = new Map(); // sessionID → agent name
+
+    // --- In-memory cache (per server instance) ---
+    // The cache lives in the server closure, not module scope, so every
+    // server() call yields a fresh cache — tests get clean state without
+    // re-importing the module (bun's equivalent of vi.resetModules).
+    const memoryCache = {
+      entries: null,
+      lastLoaded: null,
+      ttlMs: parseInt(process.env.MEMORY_CACHE_TTL_MS || "30000", 10),
+      isLoading: false,
+      fileCount: 0
+    };
+
+    function isCacheValid() {
+      if (memoryCache.entries === null || memoryCache.lastLoaded === null) return false;
+      if ((Date.now() - memoryCache.lastLoaded) >= memoryCache.ttlMs) return false;
+      // Detect external file changes by comparing file count
+      // Uses readdirSync but avoids re-parsing all entries when count is unchanged
+      try {
+        const currentCount = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json")).length;
+        if (currentCount !== memoryCache.fileCount) {
+          memoryCache.entries = null;
+          memoryCache.lastLoaded = null;
+          return false;
+        }
+      } catch (_) {
+        return false;
+      }
+      return true;
+    }
+
+    function loadEntriesFromDisk() {
+      if (!existsSync(MEMORY_DIR)) {
+        debug("loadEntriesFromDisk: memory dir does not exist");
+        return [];
+      }
+
+      let files;
+      try {
+        files = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"));
+      } catch (e) {
+        debug(`loadEntriesFromDisk: failed to read memory dir: ${e.message}`);
+        return [];
+      }
+
+      // Detect file count change — invalidates cache
+      if (memoryCache.entries !== null && files.length !== memoryCache.fileCount) {
+        debug(`loadEntriesFromDisk: file count changed (${memoryCache.fileCount} → ${files.length}), cache invalidated`);
+        memoryCache.entries = null;
+        memoryCache.lastLoaded = null;
+      }
+
+      const entries = [];
+      for (const file of files) {
+        try {
+          const raw = readFileSync(join(MEMORY_DIR, file), "utf8");
+          const entry = JSON.parse(raw);
+          entries.push(entry);
+        } catch (e) {
+          debug(`loadEntriesFromDisk: skipping malformed ${file}: ${e.message}`);
+        }
+      }
+
+      memoryCache.entries = entries;
+      memoryCache.lastLoaded = Date.now();
+      memoryCache.fileCount = files.length;
+      return entries;
+    }
+
+    // --- Memory search ---
+
+    /**
+     * Scans knowledge/memory/ for JSON entries matching query parameters.
+     * Uses in-memory cache with configurable TTL to reduce disk I/O.
+     * Returns entries sorted by tag-match count (descending), then recency.
+     */
+    function searchMemory(query) {
+      const { tags = [], topic = "", limit = 5 } = query;
+
+      // Load from cache or disk
+      let entries;
+      if (isCacheValid()) {
+        entries = memoryCache.entries;
+        debug(`searchMemory: cache hit (${entries.length} entries)`);
+      } else {
+        entries = loadEntriesFromDisk();
+        debug(`searchMemory: cache miss, loaded ${entries.length} entries from disk`);
+      }
+
+      if (entries.length === 0) return [];
+
+      // Score each entry by tag overlap count
+      const scored = entries.map(entry => {
+        const entryTags = entry.tags || [];
+        const tagOverlap = tags.filter(t => entryTags.includes(t)).length;
+        // Topic match: substring check, case-insensitive
+        const topicMatch = topic && entry.topic
+          ? entry.topic.toLowerCase().includes(topic.toLowerCase()) ? 1 : 0
+          : 0;
+        return { entry, score: tagOverlap + topicMatch * 2 };
+      });
+
+      // Sort by score descending, then by created timestamp descending (newest first)
+      scored.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        const aTime = new Date(a.entry.created || 0).getTime();
+        const bTime = new Date(b.entry.created || 0).getTime();
+        return bTime - aTime;
+      });
+
+      return scored
+        .filter(s => s.score > 0 || (tags.length === 0 && !topic))
+        .slice(0, limit)
+        .map(s => ({
+          id: s.entry.id,
+          source_kd: s.entry.source_kd,
+          tags: s.entry.tags || [],
+          topic: s.entry.topic || "",
+          insight: s.entry.insight || ""
+        }));
+    }
+
+    // --- Hint derivation + dedup (depend on the per-server searchMemory) ---
+
+    function deriveSearchHints(context) {
+      const { mode = "", agentType = "", phase = "", scope = "" } = context || {};
+
+      // Mechanical modes skip entirely — no hint overhead for trivial dispatches
+      if (["preflight", "checkpoint", "cleanup"].includes(mode)) {
+        return { hints: [], shouldHint: false };
+      }
+
+      // Collect tags from MODE mapping
+      const tags = [...(MODE_TAG_MAP[mode] || [])];
+
+      // Add agent-type tags
+      const agentTags = AGENT_TAG_MAP[agentType] || [];
+      tags.push(...agentTags);
+
+      // Extract noun keywords from SCOPE (top 3)
+      if (scope) {
+        const keywords = scope
+          .toLowerCase()
+          .replace(/[^a-zA-Z0-9\s-]/g, " ")
+          .split(/\s+/)
+          .filter(w => w.length >= 3 && !STOP_WORDS.has(w) && !NOISE_WORDS.has(w));
+        // Remove duplicates while preserving order, take top 3
+        const unique = [...new Set(keywords)];
+        tags.push(...unique.slice(0, 3));
+      }
+
+      // Deduplicate all tags
+      const uniqueTags = [...new Set(tags)];
+
+      if (uniqueTags.length === 0) {
+        return { hints: [], shouldHint: false };
+      }
+
+      // Search memory with derived tags — call searchMemory directly (internal function)
+      const results = searchMemory({ tags: uniqueTags, limit: 5 });
+      if (results.length === 0) {
+        return { hints: [], shouldHint: false };
+      }
+
+      // Generate hint lines from results
+      const primaryTags = uniqueTags.slice(0, 2);
+      const hints = generateHintLines(results, primaryTags);
+
+      return { hints, shouldHint: hints.length > 0 };
+    }
+
+    function generateHintLines(results, primaryTags) {
+      const lines = [];
+
+      for (const tag of primaryTags) {
+        if (lines.length >= 3) break;
+        const count = results.filter(r => (r.tags || []).includes(tag)).length;
+        if (count > 0) {
+          const line = `[Memory: ${count} entries match "${tag}". Use memory_search("${tag}") to retrieve.]`;
+          // Enforce byte limit — skip if line exceeds 300 bytes (hint must be compact)
+          if (Buffer.byteLength(line, "utf8") <= 300) {
+            lines.push(line);
+          }
+        }
+      }
+
+      // Fallback: if no tag-grouping worked, use generic line
+      if (lines.length === 0 && results.length > 0) {
+        const line = `[Memory: ${results.length} entries match current context. Use memory_search(tags=[...]) to retrieve.]`;
+        if (Buffer.byteLength(line, "utf8") <= 300) {
+          lines.push(line);
+        }
+      }
+
+      return lines.slice(0, 3);
+    }
+
+    function checkDuplicateMemory(entry, threshold = 3) {
+      if (!entry || !entry.topic) return null;
+
+      const results = searchMemory({ tags: entry.tags || [], topic: entry.topic, limit: 5 });
+      for (const r of results) {
+        // Calculate overlap score: tag match + topic match
+        const tagOverlap = (entry.tags || []).filter(t => (r.tags || []).includes(t)).length;
+        const topicMatch = r.topic && entry.topic
+          ? r.topic.toLowerCase().includes(entry.topic.toLowerCase()) ||
+            entry.topic.toLowerCase().includes(r.topic.toLowerCase()) ? 2 : 0
+          : 0;
+        const score = tagOverlap + topicMatch;
+        if (score >= threshold) {
+          return r;
+        }
+      }
+
+      return null;
+    }
 
     debug("Knowledge Gate loaded");
 

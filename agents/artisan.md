@@ -35,11 +35,16 @@ permission:
     "git pull*": allow
     "git log*": allow
     "git rm*": allow
-    "npm*": allow
-    "bun*": allow
-    "npx*": allow
-    "yarn*": allow
-    "pnpm*": allow
+    "npm test*": allow
+    "npm run build*": allow
+    "npm run lint*": allow
+    "npm ci*": allow
+    "bun install*": allow
+    "bun test*": allow
+    "npx vitest*": allow
+    "npx eslint*": allow
+    "npx prettier*": allow
+    "npx tsc --noEmit*": allow
     "poetry*": allow
     "pytest*": allow
     "cargo*": allow

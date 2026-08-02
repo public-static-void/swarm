@@ -23,13 +23,12 @@ permission:
   todowrite: allow
   bash:
     "*": deny
-    "npm*": allow
-    "bun*": allow
+    "npm test*": allow
+    "npm run lint*": allow
+    "bun test*": allow
     "cargo*": allow
     "pip*": allow
     "poetry*": allow
-    "yarn*": allow
-    "pnpm*": allow
     "mvn*": allow
     "gradle*": allow
     "cmake*": allow
@@ -61,7 +60,14 @@ permission:
     "git diff*": allow
     "git show*": allow
     "git log*": allow
-    "npx*": allow
+    "git branch*": allow
+    "git merge-base*": allow
+    "git check-ignore*": allow
+    "git log --oneline*": allow
+    "npx vitest*": allow
+    "npx eslint*": allow
+    "npx prettier*": allow
+    "npx tsc --noEmit*": allow
     "pytest*": allow
     "go test*": allow
     "make*": allow

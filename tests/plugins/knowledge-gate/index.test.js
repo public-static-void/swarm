@@ -14,7 +14,6 @@ let MEMORY_DIR;
 let ISSUES_DIR;
 let pluginModule;
 let hooks;
-let importSeq = 0;
 
 // Helper to populate the real temp memory/issues dirs
 function writeEntries(dir, entries) {
@@ -60,12 +59,16 @@ function addIssueFile(id, overrides = {}) {
 }
 
 describe("Knowledge-Gate Plugin", () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     tempRoot = mkdtempSync(join(tmpdir(), "kg-test-"));
     MEMORY_DIR = join(tempRoot, "memory");
     ISSUES_DIR = join(tempRoot, "issues");
     process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
     process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+    // Single static import — no query-string module-identity hack. Each
+    // server() call owns a fresh memory cache (the cache lives in the server
+    // closure), so per-test module re-imports are unnecessary.
+    pluginModule = await import("../../../plugins/knowledge-gate/index.js");
   });
 
   beforeEach(async () => {
@@ -74,10 +77,7 @@ describe("Knowledge-Gate Plugin", () => {
     rmSync(ISSUES_DIR, { recursive: true, force: true });
     mkdirSync(MEMORY_DIR, { recursive: true });
     mkdirSync(ISSUES_DIR, { recursive: true });
-    // Query-string cache bust gives a fresh module instance — and a fresh
-    // module-level memory cache — per test (bun equivalent of vi.resetModules).
-    importSeq += 1;
-    pluginModule = await import(`../../../plugins/knowledge-gate/index.js?test=${importSeq}`);
+    // A fresh server instance carries a fresh in-server memory cache
     hooks = await pluginModule.default.server({}, {});
   });
 
