@@ -183,6 +183,30 @@ function matchesSessionKD(filename, sessionID, generation) {
   return filename.endsWith(`-${sessionID}.md`);
 }
 
+// F5 (R004): resolves the session IDs whose KDs belong to the current lifecycle
+// for READ/scan purposes. An adopted session stores the pointed-to lifecycle's
+// session in `:sid` — the prior lifecycle's KDs are named under THAT id and the
+// resume must see them — but a resumed session also writes NEW KDs under its
+// own id going forward, and the gate must see those too. So the lookup set is
+// [`:sid`, current sessionID]. For a non-adopted session `:sid` equals the
+// current id, so the set collapses to a single entry — behavior is identical
+// to the pre-F5 code (zero regression).
+// IMPORTANT: this is ONLY for READING/scanning existing KDs. New state writes
+// and new KD path generation always use the CURRENT sessionID — a resumed
+// session owns its own KDs from the moment it adopts.
+function getKDLookupSIDs(sessionPhaseMap, sessionID) {
+  const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
+  if (storedSID && storedSID !== sessionID) return [storedSID, sessionID];
+  return [sessionID];
+}
+
+// F5 (R004): generation-scoped KD matcher against the session's full lookup
+// set (adopted `:sid` + current sessionID). True when the file belongs to the
+// lifecycle at the given generation under either id.
+function matchesSessionKDForSession(filename, sessionPhaseMap, sessionID, generation) {
+  return getKDLookupSIDs(sessionPhaseMap, sessionID).some(sid => matchesSessionKD(filename, sid, generation));
+}
+
 // Deletes ONLY the knowledge KDs of a session's ENDING lifecycle generation
 // (R101): for generation 0 the legacy `-${sessionID}.md` variant plus the
 // `-gen0.md` suffix; for generation N only the `-gen${N}.md` variant. Files of
@@ -441,7 +465,11 @@ function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
   const knowledgeDir = getKnowledgeDir();
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
-  const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKD(f, sessionID, generation));
+  // F5 (R004): an adopted SWARM session's registry is the pointed-to lifecycle's
+  // file (named under `:sid`) — the M5 gate must read that SSOT, and a
+  // post-adoption DECOMPOSE resume may have a fresh registry under the current
+  // session id. The lookup set covers both.
+  const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
   if (!registry) return null;
 
   const path = join(knowledgeDir, registry);
@@ -500,7 +528,11 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
   const prefix = `impl-${milestoneId}-`;
-  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKD(f, sessionID, generation));
+  // F5 (R004): impl-KD evidence for an adopted milestone may be the prior
+  // lifecycle's file (under `:sid`, e.g. a row already checked-off before the
+  // interruption) OR a post-adoption dispatch's file (under the current
+  // session id). Both count as disk evidence for the M5 check-off gate.
+  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
   return found || null;
 }
 
@@ -646,12 +678,16 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // different `-genN-` suffix and must not advance the new lifecycle (BUG-008).
   // NFR005: generation defaults to 0 when the state was never loaded or the
   // file carried no generation field — session-ID-only matching is the fallback.
+  // F5 (R004): an ADOPTED session must see the pointed-to lifecycle's KDs
+  // (named under the stored `:sid`) AND its own post-adoption KDs (named under
+  // the current sessionID). Reads scan the full lookup set; writes never do.
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const lookupSIDs = getKDLookupSIDs(sessionPhaseMap, sessionID);
   const sessionFiles = [];
   for (const f of files) {
-    if (matchesSessionKD(f, sessionID, generation)) {
+    if (matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation)) {
       sessionFiles.push(f);
-    } else if (f.endsWith(`-${sessionID}.md`) || f.includes(`-${sessionID}-gen`)) {
+    } else if (lookupSIDs.some(sid => f.endsWith(`-${sid}.md`) || f.includes(`-${sid}-gen`))) {
       // Same session but different generation — stale prior-lifecycle KD.
       // Log the skip so generation mismatches are diagnosable (R006/R5).
       const fileGenMatch = f.match(/-gen(\d+)\.md$/);
@@ -712,7 +748,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   }
 
   const result = sessionFiles.some(f => pattern.test(f));
-  debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID} → ${result}`);
+  debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID}, lookupSIDs=${JSON.stringify(lookupSIDs)} → ${result}`);
   return result;
 }
 
@@ -732,8 +768,12 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
 
   // Generation-scoped (P003): stale gen-N KDs from a prior lifecycle must not
   // suppress legitimate phase regression in the current lifecycle (R3 gap fix).
+  // F5 (R004): an adopted session scans the pointed-to lifecycle's KDs (`:sid`)
+  // plus its own post-adoption KDs — an adopted phase must NOT regress for
+  // missing KDs under the current session's own id when the prior lifecycle's
+  // KDs (under `:sid`) are present on disk.
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
-  const sessionFiles = files.filter(f => matchesSessionKD(f, sessionID, generation));
+  const sessionFiles = files.filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
 
   const patterns = {
     [STATES.INTENT]: /^intent-/i,
@@ -1147,7 +1187,10 @@ export default {
         let implFiles = [];
         try {
           const files = readdirSync(knowledgeDir);
-          implFiles = files.filter(f => matchesSessionKD(f, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID)) && /^impl-/i.test(f));
+          // F5 (R004): count impl KDs across the full lifecycle lookup set —
+          // an adopted session resuming into SWARM may have prior impl KDs
+          // under `:sid` and post-adoption ones under the current session id.
+          implFiles = files.filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID)) && /^impl-/i.test(f));
         } catch (_) {}
         const reconciliedCount = Math.max(1, implFiles.length);
         swarmDispatchCount.set(sessionID, reconciliedCount);
@@ -1850,7 +1893,10 @@ export default {
                     if (currentFailures === 10) {
                       const knowledgeDir = getKnowledgeDir();
                       let foundFiles = [];
-                      try { foundFiles = readdirSync(knowledgeDir).filter(f => matchesSessionKD(f, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID))); } catch (_) {}
+                      // F5 (R004): the stuck diagnostic scans the lifecycle's
+                      // full lookup set (`:sid` + current) so adopted-session
+                      // diagnostics show the pointed-to lifecycle's KDs too.
+                      try { foundFiles = readdirSync(knowledgeDir).filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID))); } catch (_) {}
                       debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${currentFailures} disk checks. Expected prefixes: ${JSON.stringify(currentPhasePrefixes)}. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
                     }
                   }
