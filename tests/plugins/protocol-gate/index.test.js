@@ -706,6 +706,169 @@ ${table}
       expect(hooks.readActiveSession().sessionID).toBe(bare);
     });
 
+    it("BUGFIX (off-by-one): R004 never adopts a stale INTENT or PROTOCOL_NOT_LOADED pointer — fresh session starts at 0 and the first todowrite advances 0→1; phase ≥ 2 adoption preserved", async () => {
+      // A prior process stalled at INTENT: its state file was persisted at
+      // phase 1 with no intent KD on disk (R009 advances INTENT→PREFLIGHT
+      // once the KD is written, so an INTENT pointer is always stale).
+      const stalled = sid("adopt-intent");
+      await initOverseer(stalled);
+      hooks.sessionPhaseMap.set(stalled, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${stalled}:sid`, stalled);
+      hooks.sessionPhaseMap.set(`${stalled}:gen`, 2);
+      expect(hooks.saveState(stalled)).toBe(true);
+      expect(hooks.readActiveSession().sessionID).toBe(stalled);
+
+      // Fresh session must NOT inherit the stale INTENT phase — it starts at
+      // PROTOCOL_NOT_LOADED (0) so the mandatory todowrite gate still runs.
+      const fresh = sid("adopt-fresh");
+      await initOverseer(fresh);
+      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(JSON.parse(readFileSync(statePath(fresh), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+
+      // The FIRST todowrite performs the intended 0→1 advance — exactly one
+      // round-trip, no INTENT→PROTOCOL_NOT_LOADED consistency regression.
+      await todo(fresh, "c1");
+      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.INTENT);
+
+      // A PROTOCOL_NOT_LOADED pointer (unstarted lifecycle) is also not
+      // adopted — nothing to resume, so the new session starts fresh.
+      hooks.sessionPhaseMap.set(stalled, hooks.STATES.PROTOCOL_NOT_LOADED);
+      hooks.sessionPhaseMap.set(`${stalled}:gen`, 2);
+      expect(hooks.saveState(stalled)).toBe(true);
+      const fresh0 = sid("adopt-fresh0");
+      await initOverseer(fresh0);
+      expect(hooks.sessionPhaseMap.get(fresh0)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+
+      // A pointer at a KD-producing phase (≥ PREFLIGHT) is still adopted —
+      // the legitimate R004 restart-continuation behavior is preserved.
+      hooks.sessionPhaseMap.set(stalled, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${stalled}:sid`, stalled);
+      expect(hooks.saveState(stalled)).toBe(true);
+      const fresh7 = sid("adopt-fresh7");
+      await initOverseer(fresh7);
+      expect(hooks.sessionPhaseMap.get(fresh7)).toBe(hooks.STATES.SWARM);
+      expect(hooks.readActiveSession().sessionID).toBe(fresh7);
+    });
+
+    it("F5 (R004): an adopted session's gate scans the pointed-to session's KDs via :sid — ALIGN resume advances and consistency does not regress", async () => {
+      // Session A reached ALIGN with its full KD chain on disk (intent → spec).
+      const a = sid("f5-adopt-a");
+      await initOverseer(a);
+      hooks.sessionPhaseMap.set(a, hooks.STATES.ALIGN);
+      hooks.sessionPhaseMap.set(`${a}:sid`, a);
+      hooks.sessionPhaseMap.set(`${a}:gen`, 0);
+      expect(hooks.saveState(a)).toBe(true);
+      expect(hooks.readActiveSession().sessionID).toBe(a);
+      createKD(`intent-f5-${a}.md`);
+      createKD(`preflight-f5-${a}.md`);
+      createKD(`exploration-f5-${a}.md`);
+      createKD(`analysis-f5-${a}.md`);
+      createKD(`spec-f5-${a}.md`);
+
+      // Session B adopts A's lifecycle via the active-session pointer (R004).
+      const b = sid("f5-adopt-b");
+      await initOverseer(b);
+      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.ALIGN);
+      expect(hooks.sessionPhaseMap.get(`${b}:sid`)).toBe(a);
+      expect(hooks.readActiveSession().sessionID).toBe(b);
+
+      // B has zero KDs of its own — the gate can only see ALIGN's spec KD
+      // through the stored :sid. Pre-F5, this scan used B and found nothing.
+      expect(readdirSync(knowledgeDir).filter(f => f.includes(`-${b}`))).toHaveLength(0);
+      expect(hooks.checkDiskAdvancement(b, hooks.STATES.ALIGN, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+
+      // Consistency check confirms ALIGN is consistent via A's spec KD — the
+      // missing KDs under B's own id must NOT trigger a regression.
+      const didRegress = hooks.checkPhaseStateConsistency(
+        b, hooks.STATES.ALIGN, hooks.sessionPhaseMap,
+        hooks.saveState, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.freshAdvancement
+      );
+      expect(didRegress).toBe(false);
+      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.ALIGN);
+
+      // End-to-end: a real disk-check tool call advances the adopted session
+      // ALIGN → DECOMPOSE because A's spec KD is found via :sid.
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: b, callID: "g1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.DECOMPOSE);
+    });
+
+    it("F5 (R004): an adopted SWARM session reads the pointed-to milestone registry and impl-KD evidence via :sid; new impl KDs under the adopting session count too", async () => {
+      // Session A stalled at SWARM with a completed milestone: registry row M1
+      // checked-off and its impl KD on disk, all named under A.
+      const a = sid("f5-swarm-a");
+      await initOverseer(a);
+      hooks.sessionPhaseMap.set(a, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${a}:sid`, a);
+      hooks.sessionPhaseMap.set(`${a}:gen`, 0);
+      expect(hooks.saveState(a)).toBe(true);
+      createKD(`plan-f5-${a}.md`);
+      createRegistry(a, [["M1", "checked-off"]]);
+      createKD(`impl-M1-f5-${a}.md`);
+
+      // Session B adopts A's SWARM lifecycle.
+      const b = sid("f5-swarm-b");
+      await initOverseer(b);
+      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.get(`${b}:sid`)).toBe(a);
+
+      // The M5 all-checked-off gate reads A's registry AND A's impl KD through
+      // :sid — pre-F5 the registry lookup was scoped to B and found nothing.
+      expect(hooks.readMilestoneState(b, hooks.sessionPhaseMap, "M1")).toBe("checked-off");
+      expect(hooks.findMilestoneImplKD(b, hooks.sessionPhaseMap, "M1")).toBe(`impl-M1-f5-${a}.md`);
+      expect(hooks.checkDiskAdvancement(b, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+
+      // A post-adoption impl KD named under B is honored as check-off evidence
+      // (the resumed session writes its own KDs going forward).
+      createKD(`impl-M1-f5-${b}.md`);
+      expect(hooks.checkMilestoneCheckedOff(b, hooks.sessionPhaseMap, "M1").checkedOff).toBe(true);
+      removeKD(`impl-M1-f5-${a}.md`);
+      expect(hooks.findMilestoneImplKD(b, hooks.sessionPhaseMap, "M1")).toBe(`impl-M1-f5-${b}.md`);
+    });
+
+    it("F5 (R004): control — a fresh session matches only its own KDs; post-adoption DECOMPOSE resume finds new KDs under the adopting session's id", async () => {
+      // Prior-session KDs on disk (named under A) with no pointer: a fresh
+      // session C must NOT see them — zero cross-session leakage.
+      const a = sid("f5-ctrl-a");
+      createKD(`intent-f5-${a}.md`);
+      createKD(`spec-f5-${a}.md`);
+      try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
+      const c = sid("f5-ctrl-c");
+      await initOverseer(c);
+      expect(hooks.sessionPhaseMap.get(c)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(`${c}:sid`)).toBe(c);
+      await todo(c, "c1");
+      expect(hooks.sessionPhaseMap.get(c)).toBe(hooks.STATES.INTENT);
+      expect(hooks.checkDiskAdvancement(c, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+      createKD(`intent-own-${c}.md`);
+      expect(hooks.checkDiskAdvancement(c, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+
+      // A stalled at DECOMPOSE with plan under A but no milestones; B adopts
+      // and its Pathfinder writes plan + milestones under B. The dual-KD gate
+      // must see B's new KDs (current session id) alongside A's prior plan.
+      const a2 = sid("f5-decomp-a");
+      await initOverseer(a2);
+      hooks.sessionPhaseMap.set(a2, hooks.STATES.DECOMPOSE);
+      hooks.sessionPhaseMap.set(`${a2}:sid`, a2);
+      hooks.sessionPhaseMap.set(`${a2}:gen`, 0);
+      expect(hooks.saveState(a2)).toBe(true);
+      createKD(`plan-f5-${a2}.md`);
+
+      const b = sid("f5-decomp-b");
+      await initOverseer(b);
+      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.DECOMPOSE);
+      expect(hooks.sessionPhaseMap.get(`${b}:sid`)).toBe(a2);
+
+      createKD(`plan-f5-${b}.md`);
+      createRegistry(b, [["M1", "checked-off"]]);
+      expect(hooks.checkDiskAdvancement(b, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+      // The registry located for the resumed lifecycle is B's own new file.
+      expect(hooks.readMilestoneRegistry(b, hooks.sessionPhaseMap).path).toBe(join(knowledgeDir, `milestones-feature-${b}.md`));
+    });
+
     it("AC005: forced write failure — saveState returns false and logs to stderr; no silent divergence", async () => {
       const s = sid("ac005");
       await initOverseer(s);
