@@ -120,8 +120,8 @@ function loadTemplates(config) {
     extract: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd}.",
     evolve: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Evolve the process per the scope above. Produce a PROCESS KD at {result_kd}.",
     checkpoint: "Load the kd-system skill. Load the committer-checkpoint skill. Create a checkpoint commit per the scope above. Write a CHECKPOINT KD at the RESULT KD path.",
-    cleanup: "Load the kd-system skill. Load the committer-cleanup skill. Read the INTENT KD at {intent_kd}. Commit and push remaining changes per the scope above. Write a CLEANUP KD at {result_kd} using the template-cleanup.md template to signal completion.",
-    preflight: "Load the kd-system skill and the committer-preflight skill. Read the INTENT KD at {intent_kd}. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
+    cleanup: "Load the kd-system skill. Load the committer-cleanup skill. Commit and push remaining changes per the scope above. Write a CLEANUP KD at {result_kd} using the template-cleanup.md template to signal completion.",
+    preflight: "Load the kd-system skill and the committer-preflight skill. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
@@ -430,11 +430,13 @@ export default {
       }
 
       // scope is optional — provides domain context but doesn't block delegation
-      // R009: intent_kd is not required for checkpoint mode — the checkpoint
-      // template doesn't render intent_kd, so requiring it serves no purpose.
-      // Only non-checkpoint modes need intent_kd to identify the upstream KD.
+      // R009/R014: intent_kd is not required for the committer-owned modes
+      // (checkpoint, cleanup) — their templates render no INTENT KD reference
+      // (the committer's read:allow denies knowledge/intent-*.md), so requiring
+      // the field serves no purpose. Only non-committer modes need intent_kd
+      // to identify the upstream KD.
       const requiredFields = ["agent", "mode", "session_date"];
-      if (fields.mode?.toLowerCase() !== "checkpoint") {
+      if (fields.mode?.toLowerCase() !== "checkpoint" && fields.mode?.toLowerCase() !== "cleanup") {
         requiredFields.push("intent_kd");
       }
 
