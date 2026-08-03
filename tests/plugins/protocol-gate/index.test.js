@@ -1679,34 +1679,222 @@ ${table}
       }
     });
 
-    it("AC019: 5-redispatch cap during SWARM blocks the dispatch, marks failed, stays in SWARM, logs SAFETY_STUCK", async () => {
-      const s = sid("m5-safety-redisp");
+    it("F1 AC001: a fresh milestone never trips the cap even when another milestone in the same session has consumed 5+ redispatches (M4 false-positive regression guard)", async () => {
+      const s = sid("f1-ac001");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"], ["M2", "in-progress"]]);
+      // M1 has genuinely burned its 5-redispatch budget; M2 has zero prior attempts.
+      hooks.phaseRedispatchCount.set(`${s}:M1`, 5);
+
+      // M2's first dispatch must be allowed — a missing key reads 0 and can
+      // never satisfy `>= 5` (R003). Pre-F1 this tripped SAFETY_STUCK because
+      // the cap read the lifecycle-global phase key.
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "f1-ac001-1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M2\nMODE: swarm" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      // M2's own counter starts fresh and increments; M1's budget is untouched.
+      expect(hooks.phaseRedispatchCount.get(`${s}:M2`)).toBe(1);
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(5);
+    });
+
+    it("F1 AC003: after exactly 5 attempts on the SAME milestone, the 6th dispatch throws SAFETY_STUCK", async () => {
+      const s = sid("f1-ac003");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
       createRegistry(s, [["M1", "in-progress"]]);
-      hooks.phaseRedispatchCount.set(`${s}:${hooks.STATES.SWARM}`, 5);
+
+      for (let i = 1; i <= 5; i++) {
+        await hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID: `f1-ac003-${i}` },
+          { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+        );
+      }
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(5);
 
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         await expect(
           hooks["tool.execute.before"](
-            { tool: "task", sessionID: s, callID: "r1" },
+            { tool: "task", sessionID: s, callID: "f1-ac003-6" },
             { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
           )
         ).rejects.toThrow("SAFETY_STUCK");
-
-        // Stays in SWARM, the stuck milestone is marked failed
+        // Stays in SWARM — the cap marks the milestone failed, no auto-advance.
         expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
         const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
         expect(content).toContain("  M1: failed");
-        const log = readFileSync(logPath, "utf8");
-        expect(log).toContain("SAFETY_STUCK");
+        expect(readFileSync(logPath, "utf8")).toContain("SAFETY_STUCK");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
+    });
+
+    it("F1 AC006/AC004: when the cap fires for A, only A's row fails and a fresh milestone B dispatches normally", async () => {
+      const s = sid("f1-ac006");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"], ["M2", "in-progress"]]);
+      hooks.phaseRedispatchCount.set(`${s}:M1`, 5);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await expect(
+          hooks["tool.execute.before"](
+            { tool: "task", sessionID: s, callID: "f1-ac006-1" },
+            { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+          )
+        ).rejects.toThrow("SAFETY_STUCK");
+
+        // AC006: only the offending milestone's row is marked failed; other
+        // in-progress rows stay in-progress.
+        const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(content).toContain("  M1: failed");
+        expect(content).toContain("  M2: in-progress");
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+
+      // AC004: milestone B is unaffected by A's exhausted budget — no throw.
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "f1-ac006-2" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M2\nMODE: swarm" } }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M2`)).toBe(1);
+    });
+
+    it("F1 AC002: M3 and m3 increment the same normalized key; 5 mixed-case attempts trip the cap", async () => {
+      const s = sid("f1-ac002");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M3", "in-progress"]]);
+
+      // 2 upper-case + 3 lower-case dispatches — one shared, case-normalized key
+      const attempts = [
+        ["M3", "f1-ac002-1"],
+        ["M3", "f1-ac002-2"],
+        ["m3", "f1-ac002-3"],
+        ["m3", "f1-ac002-4"],
+        ["m3", "f1-ac002-5"]
+      ];
+      for (const [id, callID] of attempts) {
+        await hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID },
+          { args: { subagent_type: "artisan", prompt: `AGENT: artisan\nMILESTONE ID: ${id}\nMODE: swarm` } }
+        );
+      }
+      // NFR005: the key is case-normalized to uppercase — m3 maps onto M3.
+      expect(hooks.phaseRedispatchCount.get(`${s}:M3`)).toBe(5);
+      expect(hooks.phaseRedispatchCount.get(`${s}:m3`)).toBeUndefined();
+
+      // The 6th dispatch, in mixed case, still trips the shared cap.
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID: "f1-ac002-6" },
+          { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: m3\nMODE: swarm" } }
+        )
+      ).rejects.toThrow("SAFETY_STUCK");
+    });
+
+    it("F1 AC005: a successful check-off resets the per-milestone budget; re-dispatch starts fresh", async () => {
+      const s = sid("f1-ac005");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      hooks.phaseRedispatchCount.set(`${s}:M1`, 5);
+
+      // Artisan writes its milestone-scoped impl KD → auto check-off resets the budget.
+      const artisan = sid("f1-ac005-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "f1-ac005-w" },
+        { args: { filePath: `knowledge/impl-M1-feature-${s}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: checked-off");
+      // R004: the per-milestone counter is deleted on successful check-off.
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
+
+      // Re-dispatch (R016 re-open) starts a fresh budget — zero prior attempts.
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "f1-ac005-r" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(1);
+    });
+
+    it("F1 AC007/AC008: SWARM FORCE ADVANCE stays global and clears all per-milestone keys", async () => {
+      const s = sid("f1-ac008");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+      hooks.phaseRedispatchCount.set(`${s}:M1`, 3);
+      hooks.phaseRedispatchCount.set(`${s}:M2`, 2);
+      hooks.phaseRedispatchCount.set(`${s}:${hooks.STATES.SWARM}`, 4);
+
+      for (let i = 0; i < 15; i++) {
+        await hooks["tool.execute.before"]({ tool: "glob", sessionID: s, callID: `g${i}` }, { args: { pattern: "knowledge/*.md" } });
+      }
+
+      // AC007: FORCE ADVANCE fails ALL non-checked-off, non-failed rows; M1's
+      // checked-off evidence stays immutable (global lifecycle deadlock escape).
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: checked-off");
+      expect(content).toContain("  M2: failed");
+      // R006: per-milestone keys are cleared alongside the phase key.
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
+      expect(hooks.phaseRedispatchCount.get(`${s}:M2`)).toBeUndefined();
+      expect(hooks.phaseRedispatchCount.get(`${s}:${hooks.STATES.SWARM}`)).toBeUndefined();
+    });
+
+    it("F1 AC008: regression to SWARM clears all per-milestone keys", async () => {
+      const s = sid("f1-ac008-regress");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      hooks.phaseRedispatchCount.set(`${s}:M1`, 3);
+      hooks.phaseRedispatchCount.set(`${s}:M2`, 2);
+      hooks.phaseRedispatchCount.set(`${s}:${hooks.STATES.SWARM}`, 1);
+
+      // Artisan re-dispatch with BACKWARD: true from VERIFY → SWARM.
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "f1-ac008-r" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nBACKWARD: true\nMILESTONE ID: M1\nMODE: swarm" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
+      expect(hooks.phaseRedispatchCount.get(`${s}:M2`)).toBeUndefined();
+      expect(hooks.phaseRedispatchCount.get(`${s}:${hooks.STATES.SWARM}`)).toBeUndefined();
+    });
+
+    it("F1 AC009: non-SWARM phases keep the phase-keyed counter behavior", async () => {
+      const s = sid("f1-ac009");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.CLEANUP);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "f1-ac009-1" },
+        { args: { subagent_type: "committer", prompt: "AGENT: committer\nMODE: cleanup" } }
+      );
+      // R002: the phase key is incremented; no per-milestone key is created.
+      expect(hooks.phaseRedispatchCount.get(`${s}:${hooks.STATES.CLEANUP}`)).toBe(1);
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
+      expect(hooks.phaseRedispatchCount.get(`${s}:${hooks.STATES.SWARM}`)).toBeUndefined();
     });
 
     it("AC021: /phase override from SWARM logs SAFETY_ESCAPE — the only automatic escape hatch removed", async () => {
