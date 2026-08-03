@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
+import { readFileSync, mkdtempSync, rmSync, existsSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import pluginModule from "../../../plugins/delegation-gate/index.js";
 
 // Consolidated delegation-gate suite (P304): 106 → 53 tests. Issue-labeled
@@ -12,9 +14,38 @@ import pluginModule from "../../../plugins/delegation-gate/index.js";
 // PROTOCOL_GATE_STATE_DIR and never writes the real .state dir (AC306).
 describe("Delegation-Gate Plugin", () => {
   let hooks;
+  let logDir;
+  let priorLogDir;
+  let priorDebug;
+
+  beforeAll(() => {
+    // Log isolation (AC018): point DELEGATION_GATE_LOG_DIR at a per-run temp
+    // dir BEFORE the first server() call so the module-level _logFile cache
+    // binds to the temp path. Test runs then never append to the real
+    // plugins/logs/delegation-gate.log — even when DELEGATION_GATE_DEBUG is
+    // set in the environment (.env sets it). The flag is also asserted here
+    // so every server() call in this suite deterministically exercises the
+    // debug path (AC020) and proves the redirect (AC019).
+    priorLogDir = process.env.DELEGATION_GATE_LOG_DIR;
+    priorDebug = process.env.DELEGATION_GATE_DEBUG;
+    logDir = mkdtempSync(join(tmpdir(), "delegation-gate-test-"));
+    process.env.DELEGATION_GATE_LOG_DIR = logDir;
+    process.env.DELEGATION_GATE_DEBUG = "1";
+  });
 
   beforeEach(async () => {
+    // Re-assert the suite seam after any test that temporarily overrides it —
+    // getLogFile() re-resolves the cached path when the env dir differs.
+    process.env.DELEGATION_GATE_LOG_DIR = logDir;
     hooks = await pluginModule.server({}, {});
+  });
+
+  afterAll(() => {
+    if (priorLogDir === undefined) delete process.env.DELEGATION_GATE_LOG_DIR;
+    else process.env.DELEGATION_GATE_LOG_DIR = priorLogDir;
+    if (priorDebug === undefined) delete process.env.DELEGATION_GATE_DEBUG;
+    else process.env.DELEGATION_GATE_DEBUG = priorDebug;
+    rmSync(logDir, { recursive: true, force: true });
   });
 
   describe("Default Export", () => {
@@ -1041,6 +1072,91 @@ RESULT KD: knowledge/exploration-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_pt", callID: "c1" }, output);
       expect(output.args.prompt).toContain("INTENT KD: knowledge/intent-foo.md");
       expect(output.args.prompt).not.toContain("intent-foo-ses_pt");
+    });
+  });
+
+  describe("Log Isolation (F3)", () => {
+    const promptFor = (mode, overrides = {}) => `AGENT: ${overrides.agent || "artisan"}
+MODE: ${mode}
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-03
+SCOPE: Log isolation test
+RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
+
+    it("writes debug output to the env-seam directory when DELEGATION_GATE_LOG_DIR is set (AC016, AC020)", async () => {
+      const altDir = mkdtempSync(join(tmpdir(), "delegation-gate-alt-"));
+      try {
+        process.env.DELEGATION_GATE_LOG_DIR = altDir;
+        process.env.DELEGATION_GATE_DEBUG = "1";
+        const output = { args: { prompt: promptFor("explore") } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+        const logFile = join(altDir, "delegation-gate.log");
+        expect(existsSync(logFile)).toBe(true);
+        expect(readFileSync(logFile, "utf8")).toContain("[delegation-gate]");
+      } finally {
+        process.env.DELEGATION_GATE_LOG_DIR = logDir;
+        rmSync(altDir, { recursive: true, force: true });
+      }
+    });
+
+    it("honors a runtime DELEGATION_GATE_LOG_DIR change with no stale-cache writes (AC017)", async () => {
+      const dirA = mkdtempSync(join(tmpdir(), "delegation-gate-a-"));
+      const dirB = mkdtempSync(join(tmpdir(), "delegation-gate-b-"));
+      try {
+        process.env.DELEGATION_GATE_DEBUG = "1";
+        process.env.DELEGATION_GATE_LOG_DIR = dirA;
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt: promptFor("explore") } });
+        const logA = join(dirA, "delegation-gate.log");
+        expect(existsSync(logA)).toBe(true);
+        const sizeA = statSync(logA).size;
+
+        process.env.DELEGATION_GATE_LOG_DIR = dirB;
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c2" }, { args: { prompt: promptFor("explore") } });
+
+        const logB = join(dirB, "delegation-gate.log");
+        expect(existsSync(logB)).toBe(true);
+        expect(readFileSync(logB, "utf8")).toContain("[delegation-gate]");
+        // The module-level _logFile cache must rebind — no write may land in A.
+        expect(statSync(logA).size).toBe(sizeA);
+      } finally {
+        process.env.DELEGATION_GATE_LOG_DIR = logDir;
+        rmSync(dirA, { recursive: true, force: true });
+        rmSync(dirB, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps the real plugins/logs log untouched and writes to the suite temp dir (AC018, AC019)", async () => {
+      const realLog = new URL("../../../plugins/logs/delegation-gate.log", import.meta.url);
+      const realSize = existsSync(realLog) ? statSync(realLog).size : null;
+
+      // beforeAll bound the module cache to the suite temp dir; assert the
+      // seam so this test can never silently fall back to the real path.
+      expect(process.env.DELEGATION_GATE_LOG_DIR).toBe(logDir);
+      process.env.DELEGATION_GATE_DEBUG = "1";
+      const output = { args: { prompt: promptFor("explore") } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      const suiteLog = join(logDir, "delegation-gate.log");
+      expect(existsSync(suiteLog)).toBe(true);
+      expect(readFileSync(suiteLog, "utf8")).toContain("[delegation-gate]");
+      if (realSize !== null) {
+        expect(statSync(realLog).size).toBe(realSize);
+      }
+    });
+
+    it("does not write debug output when DELEGATION_GATE_DEBUG is unset (R023)", async () => {
+      const quietDir = mkdtempSync(join(tmpdir(), "delegation-gate-quiet-"));
+      try {
+        delete process.env.DELEGATION_GATE_DEBUG;
+        process.env.DELEGATION_GATE_LOG_DIR = quietDir;
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt: promptFor("explore") } });
+        expect(existsSync(join(quietDir, "delegation-gate.log"))).toBe(false);
+      } finally {
+        process.env.DELEGATION_GATE_DEBUG = "1";
+        process.env.DELEGATION_GATE_LOG_DIR = logDir;
+        rmSync(quietDir, { recursive: true, force: true });
+      }
     });
   });
 });
