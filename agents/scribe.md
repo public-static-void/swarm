@@ -29,6 +29,8 @@ permission:
     "*": deny
   doom_loop: deny
   todowrite: allow
+  memory_search: allow
+  memory_write: allow
   bash:
     "*": deny
     "ls*": allow
