@@ -405,8 +405,9 @@ RESULT KD: knowledge/preflight-foo.md`,
       const cases = [
         // Preflight must not instruct reading the INTENT KD (no read:allow on committer)
         { mode: "preflight", result: "knowledge/preflight-foo.md", expectMatch: /Load the kd-system skill and the committer-preflight skill/, expectNoMatch: /Read the INTENT KD at/ },
-        // Checkpoint reads KDs from KD PATHS only
-        { mode: "checkpoint", result: "knowledge/checkpoint-foo.md", expectMatch: /Read KDs from KD PATHS/, expectNoMatch: /Read the INTENT KD at/ },
+        // Checkpoint reads KDs from KD PATHS only — kd_paths supplied so the
+        // sentence renders (F4 strips it when kd_paths is absent)
+        { mode: "checkpoint", result: "knowledge/checkpoint-foo.md", kdPaths: "knowledge/intent-foo.md", expectMatch: /Read KDs from KD PATHS/, expectNoMatch: /Read the INTENT KD at/ },
         // Cleanup must not instruct reading the INTENT KD (no read:allow on committer)
         { mode: "cleanup", result: "knowledge/cleanup-foo.md", expectMatch: /Load the kd-system skill. Load the committer-cleanup skill/, expectNoMatch: /Read the INTENT KD at/ },
         // Explore (read:allow) reads the INTENT KD
@@ -418,7 +419,8 @@ MODE: ${c.mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 SCOPE: Test ${c.mode}
-RESULT KD: ${c.result}`;
+RESULT KD: ${c.result}
+${c.kdPaths ? `KD PATHS: ${c.kdPaths}` : ""}`;
 
         const output = { args: { prompt } };
         await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -495,6 +497,67 @@ RESULT KD: knowledge/cleanup-foo.md`;
       for (const line of fallbackLines) {
         expect(line).not.toMatch(/Read the INTENT KD at/);
       }
+    });
+  });
+
+  describe("Conditional KD PATHS Rendering (F4)", () => {
+    it("omits the KD PATHS header line and body sentence when kd_paths is absent (AC021)", async () => {
+      const cases = [
+        { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md" },
+        { mode: "checkpoint", agent: "committer", result: "knowledge/checkpoint-foo.md" },
+        { mode: "cleanup", agent: "committer", result: "knowledge/cleanup-foo.md" },
+      ];
+      for (const { mode, agent, result } of cases) {
+        const prompt = `AGENT: ${agent}
+MODE: ${mode}
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-03
+SCOPE: Test conditional KD PATHS
+RESULT KD: ${result}`;
+
+        const output = { args: { prompt } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+        expect(output.args.prompt).not.toMatch(/^KD PATHS:.*$/m);
+        expect(output.args.prompt).not.toContain("Read KDs from KD PATHS");
+      }
+    });
+
+    it("renders the KD PATHS header line and body sentence when kd_paths is supplied (AC022)", async () => {
+      const cases = [
+        { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md" },
+        { mode: "checkpoint", agent: "committer", result: "knowledge/checkpoint-foo.md" },
+        { mode: "cleanup", agent: "committer", result: "knowledge/cleanup-foo.md" },
+      ];
+      for (const { mode, agent, result } of cases) {
+        const prompt = `AGENT: ${agent}
+MODE: ${mode}
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-03
+SCOPE: Test conditional KD PATHS
+RESULT KD: ${result}
+KD PATHS: knowledge/upstream-foo.md`;
+
+        const output = { args: { prompt } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+        expect(output.args.prompt).toContain("KD PATHS: knowledge/upstream-foo.md");
+        expect(output.args.prompt).toContain("Read KDs from KD PATHS");
+      }
+    });
+
+    it("renders KD PATHS unchanged for legitimate modes with kd_paths supplied (AC023)", async () => {
+      const swarmPrompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-03
+MILESTONE ID: M1
+SCOPE: Execute milestone M1
+RESULT KD: knowledge/impl-M1-foo.md
+KD PATHS: knowledge/plan-foo.md`;
+
+      const output = { args: { prompt: swarmPrompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("KD PATHS: knowledge/plan-foo.md");
+      expect(output.args.prompt).toContain("Read SPEC KDs and PLAN KDs from KD PATHS.");
     });
   });
 
