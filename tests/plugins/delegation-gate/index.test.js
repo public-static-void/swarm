@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import pluginModule from "../../../plugins/delegation-gate/index.js";
 
 // Consolidated delegation-gate suite (P304): 106 → 53 tests. Issue-labeled
@@ -375,8 +376,8 @@ RESULT KD: knowledge/preflight-foo.md`,
         { mode: "preflight", result: "knowledge/preflight-foo.md", expectMatch: /Load the kd-system skill and the committer-preflight skill/, expectNoMatch: /Read the INTENT KD at/ },
         // Checkpoint reads KDs from KD PATHS only
         { mode: "checkpoint", result: "knowledge/checkpoint-foo.md", expectMatch: /Read KDs from KD PATHS/, expectNoMatch: /Read the INTENT KD at/ },
-        // Cleanup reads the INTENT KD
-        { mode: "cleanup", result: "knowledge/cleanup-foo.md", expectMatch: /Read the INTENT KD at/, expectNoMatch: null },
+        // Cleanup must not instruct reading the INTENT KD (no read:allow on committer)
+        { mode: "cleanup", result: "knowledge/cleanup-foo.md", expectMatch: /Load the kd-system skill. Load the committer-cleanup skill/, expectNoMatch: /Read the INTENT KD at/ },
         // Explore (read:allow) reads the INTENT KD
         { mode: "explore", result: "knowledge/exploration-foo.md", expectMatch: /Read the INTENT KD at/, expectNoMatch: null },
       ];
@@ -419,6 +420,49 @@ RESULT KD: ${kd}`;
         await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
         expect(output.args.prompt).toContain(`RESULT KD: ${kd}`);
         expect(output.args.prompt).toContain(kd);
+      }
+    });
+  });
+
+  describe("Cleanup INTENT-KD Exemption (M2)", () => {
+    it("exempts cleanup from the intent_kd required-field check like checkpoint (AC015)", async () => {
+      // Cleanup dispatch without intent_kd passes validation — the cleanup
+      // template renders no INTENT KD reference for the committer to read.
+      const withoutIntent = `AGENT: committer
+MODE: cleanup
+SESSION DATE: 2026-07-21
+SCOPE: Commit and push remaining changes
+RESULT KD: knowledge/cleanup-foo.md`;
+
+      const out1 = { args: { prompt: withoutIntent } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, out1);
+      expect(out1.args.prompt).toContain("MODE: cleanup");
+      expect(out1.args.prompt).not.toContain("{intent_kd}");
+      expect(out1.args.prompt).not.toMatch(/Read the INTENT KD at/);
+
+      // A cleanup dispatch that does include intent_kd also passes.
+      const withIntent = `AGENT: committer
+MODE: cleanup
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-21
+SCOPE: Commit and push remaining changes
+RESULT KD: knowledge/cleanup-foo.md`;
+
+      const out2 = { args: { prompt: withIntent } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c2" }, out2);
+      expect(out2.args.prompt).toContain("MODE: cleanup");
+      expect(out2.args.prompt).not.toContain("Read the INTENT KD at");
+    });
+
+    it("keeps the cleanup and preflight fallback templates free of the INTENT-KD read instruction (AC012, AC013)", async () => {
+      // Fallback templates are embedded strings in index.js, reachable only
+      // when the disk template fails to load — assert absence directly on the
+      // source so the fallback path can't reintroduce the denied read.
+      const src = readFileSync(new URL("../../../plugins/delegation-gate/index.js", import.meta.url), "utf8");
+      const fallbackLines = src.split("\n").filter(l => /^    (cleanup|preflight): /.test(l));
+      expect(fallbackLines).toHaveLength(2);
+      for (const line of fallbackLines) {
+        expect(line).not.toMatch(/Read the INTENT KD at/);
       }
     });
   });
