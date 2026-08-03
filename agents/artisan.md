@@ -65,7 +65,6 @@ permission:
     "uv*": allow
     "pip*": allow
     "php -l *": allow
-    "deno*": allow
     "head*": allow
     "tail*": allow
 ---
