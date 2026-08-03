@@ -36,7 +36,7 @@ const ERRORS = {
   CODE_BLOCK: { code: "CODE_BLOCK", message: "Code blocks detected in prompt", guidance: "Remove all code blocks from delegation prompt" },
   FOREIGN_PATH: { code: "FOREIGN_PATH", message: "Foreign paths detected", guidance: "Use only knowledge/*.md paths" },
   BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include required fields: agent, mode, intent_kd, session_date" },
-  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Include agent, mode, intent_kd, session_date" },
+  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Put the delegation fields as KEY: value lines in the prompt parameter, one per line: DISPATCH TO / MODE / SESSION DATE / SESSION ID / GENERATION / SCOPE / RESULT KD" },
   INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope should not contain code blocks (security) or absolute /home/ paths (info leak)" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },
@@ -328,6 +328,26 @@ function renderTemplate(template, fields) {
   return result;
 }
 
+// Dispatcher-visible delegation format hint (R303). The tool.definition hook
+// annotates the task tool description so the dispatching agent sees the
+// KEY: value-in-prompt rule BEFORE composing — closing the audience/timing
+// gap where injectToolDocs' hint lands only in the subagent-facing description
+// after compose. Mirrors protocol-gate's tool.definition pattern.
+function dispatcherFormatHint() {
+  return `
+Delegation Prompt Format:
+Put delegation fields as KEY: value lines INSIDE the prompt parameter, one per line:
+DISPATCH TO: <agent>
+MODE: <mode>
+SESSION DATE: <YYYY-MM-DD>
+SESSION ID: <session-id>
+GENERATION: <generation>
+SCOPE: <optional context>
+RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
+KD PATHS: <upstream KD paths> (optional)
+`;
+}
+
 function injectToolDocs(output, agentName, mode, generation) {
   const today = new Date().toISOString().slice(0, 10);
   const displayAgent = agentName || "explorer";
@@ -462,7 +482,7 @@ export default {
       for (const [key, value] of Object.entries(fields)) {
         if (containsPlaceholder(value)) {
           debug(`VALIDATION FAILED: field '${key}' contains unresolved placeholder '${value}'`);
-          throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, `Field '${key}' contains unresolved placeholder '${value}'`, `Provide actual values for all delegation fields`);
+          throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, `Field '${key}' contains unresolved placeholder '${value}'`, `Replace placeholder values with actual values — fields are KEY: value lines in the prompt parameter`);
         }
       }
 
@@ -563,8 +583,22 @@ export default {
       debug(`Prompt rendered successfully (${rendered.length} chars)`);
     }
 
+    // --- Hook: tool.definition ---
+    // R303: annotate the task tool definition so the format hint is visible to
+    // the dispatcher before composing. Dedupe guard (FM04): never show the hint
+    // twice on one surface — injectToolDocs applies the same includes() guard
+    // to the subagent-facing description after compose.
+    async function toolDefinition(input, output) {
+      const { toolID } = input;
+      if (toolID !== "task") return;
+      if (output.description?.includes("Delegation Prompt Format:")) return;
+      output.description = (output.description || "") + dispatcherFormatHint();
+      debug(`tool.definition: annotated task tool description with delegation format hint`);
+    }
+
     return {
       "tool.execute.before": toolExecuteBefore,
+      "tool.definition": toolDefinition,
       // Test-access properties
       DelegationGateError,
       ERRORS,
