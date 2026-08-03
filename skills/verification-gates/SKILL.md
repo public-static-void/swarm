@@ -95,7 +95,6 @@ Phase Output ──► Gate ──► Next Phase
 - [ ] Steps are the smallest independently verifiable unit
 - [ ] Dependency graph is explicit
 - [ ] Each step has completion criteria
-- [ ] Knowledge Checkpoint committed
 
 ### Implementation Gate (after SWARM)
 
