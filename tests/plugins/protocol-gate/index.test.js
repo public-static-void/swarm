@@ -25,6 +25,9 @@ describe("Protocol-Gate Plugin", () => {
   let tempRoot;
   let knowledgeDir;
   let stateDir;
+  let delegationLogDir;
+  let priorDelegationLogDir;
+  let priorDelegationDebug;
   const logPath = join(process.cwd(), "plugins", "logs", "protocol-gate.log");
   const KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
   const usedSids = new Set();
@@ -36,11 +39,29 @@ describe("Protocol-Gate Plugin", () => {
     stateDir = join(tempRoot, "state");
     process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = knowledgeDir;
     process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+    // Log isolation (F001): the R306 cross-plugin test invokes the
+    // delegation-gate server() + hooks, whose debug writes would append to the
+    // real plugins/logs/delegation-gate.log whenever DELEGATION_GATE_DEBUG is
+    // set (.env sets it). Point DELEGATION_GATE_LOG_DIR at a per-run temp dir
+    // BEFORE the first delegationPlugin.server() call so the delegation-gate
+    // module cache binds to the temp path — the same seam the delegation-gate
+    // suite uses (M3/P202). The debug flag is asserted here so the redirect is
+    // proven deterministically, not only when the flag happens to be absent.
+    priorDelegationLogDir = process.env.DELEGATION_GATE_LOG_DIR;
+    priorDelegationDebug = process.env.DELEGATION_GATE_DEBUG;
+    delegationLogDir = mkdtempSync(join(tmpdir(), "pg-dg-log-"));
+    process.env.DELEGATION_GATE_LOG_DIR = delegationLogDir;
+    process.env.DELEGATION_GATE_DEBUG = "1";
   });
 
   afterAll(() => {
     delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
     delete process.env.PROTOCOL_GATE_STATE_DIR;
+    if (priorDelegationLogDir === undefined) delete process.env.DELEGATION_GATE_LOG_DIR;
+    else process.env.DELEGATION_GATE_LOG_DIR = priorDelegationLogDir;
+    if (priorDelegationDebug === undefined) delete process.env.DELEGATION_GATE_DEBUG;
+    else process.env.DELEGATION_GATE_DEBUG = priorDelegationDebug;
+    rmSync(delegationLogDir, { recursive: true, force: true });
     rmSync(tempRoot, { recursive: true, force: true });
   });
 
@@ -2123,6 +2144,11 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
 
     const output = { args: { prompt } };
     await delegationHooks["tool.execute.before"]({ tool: "task", sessionID: s, callID: "c1" }, output);
+
+    // F001: the debug writes from this cross-plugin invocation (DELEGATION_GATE_DEBUG
+    // is asserted in beforeAll) must land in the suite's temp log dir — never in
+    // plugins/logs/delegation-gate.log. If the temp log exists, the redirect held.
+    expect(existsSync(join(delegationLogDir, "delegation-gate.log"))).toBe(true);
 
     expect(output.args.prompt).toContain("GENERATION: 4");
     expect(output.args.prompt).toContain("knowledge/impl-<milestone-id>-<descriptive-name>-<session_id>-gen4.md");
