@@ -14,6 +14,8 @@
 // breaking the other.
 //
 // Debug logging: set DELEGATION_GATE_DEBUG=1 in environment to enable.
+// Log directory: set DELEGATION_GATE_LOG_DIR to override plugins/logs — the
+// seam the test suite uses to isolate debug writes from the real log.
 import { appendFileSync, mkdirSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -78,8 +80,10 @@ const MODE_TO_KD_PREFIXES = {
 let _logFile = null;
 
 function getLogFile() {
-  if (!_logFile) {
-    const logDir = join(PLUGIN_DIR, "..", "logs");
+  const logDir = process.env.DELEGATION_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
+  // Re-bind the cached path when the env seam moves the log directory — a
+  // stale cache would keep appending to the previously resolved path (AC017).
+  if (!_logFile || dirname(_logFile) !== logDir) {
     try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
     _logFile = join(logDir, "delegation-gate.log");
   }
