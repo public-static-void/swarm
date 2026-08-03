@@ -314,6 +314,17 @@ function renderTemplate(template, fields) {
   }
   // Strip unresolved placeholders (e.g. {scope} when scope wasn't provided)
   result = result.replace(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, "");
+  // F4 (R030–R032): KD PATHS is optional — when kd_paths is falsy, drop the
+  // `KD PATHS:` header line and the "Read ... from KD PATHS." body sentence so
+  // preflight/checkpoint/cleanup dispatches without upstream paths render no
+  // empty header and no dangling read instruction. When kd_paths is present,
+  // no post-processing — legitimate modes (swarm, verify, investigate, ...)
+  // keep the header and sentence unchanged. One generic path, no per-template
+  // text forks.
+  if (!fields.kd_paths) {
+    result = result.replace(/^KD PATHS:.*$/m, "");
+    result = result.replace(/Read [^.]*KD PATHS[^.]*\./g, "");
+  }
   return result;
 }
 
