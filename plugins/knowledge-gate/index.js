@@ -16,6 +16,10 @@
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+// tool() registers custom tools with the runtime via the plugin `tool` hook
+// map — the documented mechanism (Hooks.tool) that puts memory_search and
+// memory_write into the agent's callable tool list.
+import { tool } from "@opencode-ai/plugin";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -555,6 +559,102 @@ export default {
 
     debug("Knowledge Gate loaded");
 
+    // --- Registered tools: memory_search + memory_write ---
+    // Custom tools are registered through the plugin `tool` hook map so they
+    // appear in the agent's callable tool list. The tool.execute.before
+    // interception previously handled them invisibly (never exposed to the
+    // LLM); the logic now lives in each tool's execute. Scribe-only gating
+    // uses ToolContext.agent (the runtime passes it per call), falling back
+    // to the session map when the context omits it.
+    const memoryTools = {
+      memory_search: tool({
+        description: "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5). Returns JSON array of matching entries.",
+        args: {
+          tags: tool.schema.array(tool.schema.string()).optional().describe("Tags to match against entry tags"),
+          topic: tool.schema.string().optional().describe("Topic substring to match"),
+          limit: tool.schema.number().int().optional().describe("Maximum number of results (default 5)")
+        },
+        async execute(args) {
+          const query = {
+            tags: args.tags || [],
+            topic: args.topic || "",
+            limit: args.limit || 5
+          };
+          const results = searchMemory(query);
+          return JSON.stringify(results, null, 2);
+        }
+      }),
+      memory_write: tool({
+        description: "Write a validated memory entry to knowledge/memory/. Only Scribe may write. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk.",
+        args: {
+          entry: tool.schema.object({
+            id: tool.schema.string().optional().describe("Auto-assigned if omitted"),
+            source_kd: tool.schema.string().describe("Source KD path"),
+            tags: tool.schema.array(tool.schema.string()).describe("2-8 tags from controlled vocabulary"),
+            topic: tool.schema.string().describe("Topic ≤100 chars"),
+            insight: tool.schema.string().describe("Insight ≤500 chars"),
+            type: tool.schema.enum(["fact", "decision", "pattern", "warning", "context"]).describe("Entry type"),
+            created: tool.schema.string().describe("ISO 8601 timestamp"),
+            session: tool.schema.string().describe("Session ID"),
+            version: tool.schema.string().describe("Schema version (1.0.0)")
+          })
+        },
+        async execute(args, context) {
+          const entry = args.entry;
+          const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // Permission check: only Scribe can write memory entries
+          if (agent !== "scribe") {
+            debug(`memory_write: rejected — called by non-Scribe agent "${agent}"`);
+            return JSON.stringify({ error: "Only Scribe agent has permission to write memory entries. Called by: " + (agent || "unknown") });
+          }
+
+          // Ensure memory directory exists
+          try { mkdirSync(MEMORY_DIR, { recursive: true }); } catch (_) {}
+
+          // Auto-assign ID before validation — so validateMemoryEntry sees a valid ID
+          if (!entry.id || entry.id === "MEM-XXX") {
+            entry.id = getNextMemoryId();
+          }
+
+          // Validate entry against canonical schema
+          const validation = validateMemoryEntry(entry);
+          if (!validation.valid) {
+            debug(`memory_write: validation failed — ${validation.error}`);
+            return JSON.stringify({ error: validation.error });
+          }
+
+          // Validate tags against controlled vocabulary (warn on unknown, still accept)
+          const unknownTags = (entry.tags || []).filter(t => !ALL_VALID_TAGS.has(t));
+          if (unknownTags.length > 0) {
+            debug(`memory_write: unknown tags detected: ${unknownTags.join(", ")} — accepted with warning`);
+          }
+
+          // Check for duplicates (search memory excluding this entry's own ID if already known)
+          const duplicate = checkDuplicateMemory(entry);
+          if (duplicate && duplicate.id !== entry.id) {
+            debug(`memory_write: duplicate detected — existing=${duplicate.id}, skipped`);
+            return JSON.stringify({ message: "Duplicate entry detected, skipped", existing: duplicate.id });
+          }
+
+          // Write entry to disk
+          const entryId = entry.id.replace("MEM-", "");
+          const filePath = join(MEMORY_DIR, `entry-${entryId}.json`);
+          try {
+            writeFileSync(filePath, JSON.stringify(entry, null, 2), "utf8");
+            // Invalidate cache so next search picks up the new entry
+            memoryCache.entries = null;
+            memoryCache.lastLoaded = null;
+            debug(`memory_write: written ${filePath}`);
+            return JSON.stringify({ message: "Memory entry written", id: entry.id });
+          } catch (e) {
+            debug(`memory_write: write failed — ${e.message}`);
+            return JSON.stringify({ error: `Failed to write memory entry: ${e.message}` });
+          }
+        }
+      })
+    };
+
     // --- Hook: chat.params ---
     // Track which agent is running in each session for memory_search routing.
     async function chatParams(input, output) {
@@ -565,91 +665,11 @@ export default {
     }
 
     // --- Hook: tool.execute.before ---
-    // Intercept memory_search calls and handle them directly.
+    // memory_search/memory_write are registered tools now (see memoryTools) —
+    // their logic runs in the tool's execute, so no interception here.
+    // This hook only scans for high-severity issues after EVOLVE.
     async function toolExecuteBefore(input, output) {
       const { tool, sessionID } = input;
-
-      if (tool === "memory_search") {
-        const args = output.args || {};
-        const query = {
-          tags: args.tags || [],
-          topic: args.topic || "",
-          limit: args.limit || 5
-        };
-
-        debug(`memory_search: query=${JSON.stringify(query)} session=${sessionID}`);
-        const results = searchMemory(query);
-        debug(`memory_search: found ${results.length} results`);
-
-        // Return results via the output — the agent receives this as tool output
-        output.result = JSON.stringify(results, null, 2);
-        // Prevent actual tool execution by marking as handled
-        output.handled = true;
-      }
-
-      if (tool === "memory_write") {
-        const args = output.args || {};
-        const entry = args.entry || args;
-        const agent = sessionAgentMap.get(sessionID)?.toLowerCase();
-
-        // Permission check: only Scribe can write memory entries
-        if (agent !== "scribe") {
-          output.result = JSON.stringify({ error: "Only Scribe agent has permission to write memory entries. Called by: " + (agent || "unknown") });
-          output.handled = true;
-          debug(`memory_write: rejected — called by non-Scribe agent "${agent}"`);
-          return;
-        }
-
-        // Ensure memory directory exists
-        try { mkdirSync(MEMORY_DIR, { recursive: true }); } catch (_) {}
-
-        // Auto-assign ID before validation — so validateMemoryEntry sees a valid ID
-        if (!entry.id || entry.id === "MEM-XXX") {
-          entry.id = getNextMemoryId();
-        }
-
-        // Validate entry against canonical schema
-        const validation = validateMemoryEntry(entry);
-        if (!validation.valid) {
-          output.result = JSON.stringify({ error: validation.error });
-          output.handled = true;
-          debug(`memory_write: validation failed — ${validation.error}`);
-          return;
-        }
-
-        // Validate tags against controlled vocabulary (warn on unknown, still accept)
-        const unknownTags = (entry.tags || []).filter(t => !ALL_VALID_TAGS.has(t));
-        if (unknownTags.length > 0) {
-          debug(`memory_write: unknown tags detected: ${unknownTags.join(", ")} — accepted with warning`);
-        }
-
-        // Check for duplicates (search memory excluding this entry's own ID if already known)
-        const duplicate = checkDuplicateMemory(entry);
-        if (duplicate && duplicate.id !== entry.id) {
-          output.result = JSON.stringify({ message: "Duplicate entry detected, skipped", existing: duplicate.id });
-          output.handled = true;
-          debug(`memory_write: duplicate detected — existing=${duplicate.id}, skipped`);
-          return;
-        }
-
-        // Write entry to disk
-        const entryId = entry.id.replace("MEM-", "");
-        const filePath = join(MEMORY_DIR, `entry-${entryId}.json`);
-        try {
-          writeFileSync(filePath, JSON.stringify(entry, null, 2), "utf8");
-          // Invalidate cache so next search picks up the new entry
-          memoryCache.entries = null;
-          memoryCache.lastLoaded = null;
-          output.result = JSON.stringify({ message: "Memory entry written", id: entry.id });
-          output.handled = true;
-          debug(`memory_write: written ${filePath}`);
-        } catch (e) {
-          output.result = JSON.stringify({ error: `Failed to write memory entry: ${e.message}` });
-          output.handled = true;
-          debug(`memory_write: write failed — ${e.message}`);
-        }
-        return;
-      }
 
       // After EVOLVE phase (habit-builder), scan for high-severity issues.
       // Detect by checking if a process-*.md KD was just written (EVOLVE output).
@@ -668,9 +688,9 @@ export default {
     }
 
     // --- Hook: tool.definition ---
-    // Register memory_search tool so the LLM sees it in its available tools list.
-    // Without this, agents receive the system prompt instruction but cannot generate
-    // a tool call to an unknown tool name.
+    // Re-assert the memory tool descriptions on every LLM call. The tools are
+    // registered via the tool hook (memoryTools above); this hook keeps the
+    // LLM-facing description stable across tool.definition passes.
     async function toolDefinition(input, output) {
       const { toolID } = input;
 
@@ -752,6 +772,8 @@ export default {
       "tool.execute.before": toolExecuteBefore,
       "tool.definition": toolDefinition,
       "experimental.chat.system.transform": systemTransform,
+      // Registered custom tools — exposed to the agent's callable tool list
+      tool: memoryTools,
       // Test-accessible internals
       searchMemory,
       scanHighSeverityIssues,

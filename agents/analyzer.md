@@ -33,7 +33,6 @@ permission:
     "gradle*": allow
     "cmake*": allow
     "composer*": allow
-    "deno*": allow
     "rustc*": allow
     "rustup*": allow
     "uv*": allow

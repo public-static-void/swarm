@@ -7,7 +7,7 @@ import { join } from "path";
 // wildcard that enables arbitrary code execution, and the scoped commands
 // mandated by the SPEC must stay present.
 
-const FORBIDDEN_BARE = ["node", "bun", "npm", "npx", "yarn", "pnpm"];
+const FORBIDDEN_BARE = ["node", "bun", "npm", "npx", "yarn", "pnpm", "deno"];
 const VITEST_AGENTS = ["inspector.md", "artisan.md", "analyzer.md"];
 const GIT_AGENTS = ["inspector.md", "explorer.md", "analyzer.md"];
 const GIT_COMMANDS = ["git branch*", "git merge-base*", "git check-ignore*", "git log --oneline*"];

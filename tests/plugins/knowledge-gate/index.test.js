@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { join } from "path";
 import { tmpdir } from "os";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
 
 // The plugin reads its data dirs from KNOWLEDGE_GATE_MEMORY_DIR /
 // KNOWLEDGE_GATE_ISSUES_DIR env overrides (test seam in the plugin). We point
@@ -598,39 +598,50 @@ Body text`;
     });
   });
 
-  describe("memory_write tool", () => {
-    it("rejects writes from non-Scribe agents", async () => {
-      const output = { args: { entry: { id: "MEM-020", type: "fact", source_kd: "test.md", tags: ["test", "sample"], topic: "Test", insight: "X", created: "2026-07-29T00:00:00.000Z", session: "s1", version: "1.0.0" } } };
-      await hooks["tool.execute.before"]({ tool: "memory_write", sessionID: "artisan-session" }, output);
-      expect(output.handled).toBe(true);
-      expect(output.result).toContain("permission");
+  describe("tool registration surface", () => {
+    it("exposes memory_search with description, args, and execute", () => {
+      expect(hooks.tool.memory_search).toBeTruthy();
+      expect(typeof hooks.tool.memory_search.description).toBe("string");
+      expect(hooks.tool.memory_search.args).toBeTruthy();
+      expect(typeof hooks.tool.memory_search.execute).toBe("function");
     });
 
-    it("writes valid entry from Scribe agent", async () => {
-      // Register scribe in sessionAgentMap first (only session mapping is used)
-      await hooks["chat.params"]({ sessionID: "scribe-session", agent: "scribe" }, {});
+    it("exposes memory_write with description, args, and execute", () => {
+      expect(hooks.tool.memory_write).toBeTruthy();
+      expect(typeof hooks.tool.memory_write.description).toBe("string");
+      expect(hooks.tool.memory_write.args).toBeTruthy();
+      expect(typeof hooks.tool.memory_write.execute).toBe("function");
+    });
+  });
 
+  describe("memory_write tool (registered execute)", () => {
+    it("rejects writes from non-Scribe agents with no file written", async () => {
+      const entry = { id: "MEM-020", type: "fact", source_kd: "test.md", tags: ["test", "sample"], topic: "Test", insight: "X", created: "2026-07-29T00:00:00.000Z", session: "s1", version: "1.0.0" };
+      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "artisan", sessionID: "artisan-session" });
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("permission");
+      expect(readdirSync(MEMORY_DIR)).toHaveLength(0);
+    });
+
+    it("writes exactly one file and returns { message, id } from Scribe agent", async () => {
       const entry = { id: "MEM-020", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight for tool write.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const output = { args: { entry } };
-      await hooks["tool.execute.before"]({ tool: "memory_write", sessionID: "scribe-session" }, output);
-      expect(output.handled).toBe(true);
-      expect(output.result).toContain("written");
-      expect(output.result).toContain("MEM-020");
+      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("written");
+      expect(parsed.id).toBe("MEM-020");
+      const files = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"));
+      expect(files).toHaveLength(1);
+      expect(files[0]).toBe("entry-020.json");
     });
 
     it("auto-assigns ID when not provided", async () => {
-      await hooks["chat.params"]({ sessionID: "scribe-session", agent: "scribe" }, {});
-
       const entry = { type: "fact", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight for auto-id.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const output = { args: { entry } };
-      await hooks["tool.execute.before"]({ tool: "memory_write", sessionID: "scribe-session" }, output);
-      expect(output.handled).toBe(true);
-      expect(output.result).toContain("MEM-001"); // First entry gets MEM-001
+      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      const parsed = JSON.parse(result);
+      expect(parsed.id).toBe("MEM-001"); // First entry gets MEM-001
     });
 
     it("detects duplicate entries and skips write", async () => {
-      await hooks["chat.params"]({ sessionID: "scribe-session", agent: "scribe" }, {});
-
       // Pre-populate the temp dir with an entry — simulates an existing entry on disk
       writeEntries(MEMORY_DIR, [
         addMemoryEntry(50, { tags: ["test", "duplicate"], topic: "Duplicate test" })
@@ -638,9 +649,70 @@ Body text`;
 
       // Try writing a similar entry (same tags, overlapping topic)
       const entry2 = { id: "MEM-051", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "duplicate"], topic: "Duplicate test content", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const output2 = { args: { entry: entry2 } };
-      await hooks["tool.execute.before"]({ tool: "memory_write", sessionID: "scribe-session" }, output2);
-      expect(output2.result).toContain("Duplicate");
+      const result = await hooks.tool.memory_write.execute({ entry: entry2 }, { agent: "scribe", sessionID: "scribe-session" });
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("Duplicate");
+      // No second file written
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"))).toHaveLength(1);
+    });
+
+    it("rejects invalid schema entry with no write", async () => {
+      const entry = { id: "MEM-020", type: "not-a-valid-type", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
+      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toBeTruthy();
+      expect(readdirSync(MEMORY_DIR)).toHaveLength(0);
+    });
+
+    it("detects duplicates against existing seeded entries on disk (readability + dedup)", async () => {
+      // Simulates a seeded MEM-* file already present in knowledge/memory/
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(33, { tags: ["permissions", "glob"], topic: "Permission glob patterns" })
+      ]);
+
+      // Registered search still reads the seeded entry
+      const search = await hooks.tool.memory_search.execute({ tags: ["permissions"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(search)).toHaveLength(1);
+
+      // And dedup still detects a duplicate against it
+      const entry = { id: "MEM-034", type: "fact", source_kd: "knowledge/test.md", tags: ["permissions", "glob"], topic: "Permission glob patterns — cross-workspace", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
+      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("Duplicate");
+    });
+  });
+
+  describe("memory_search tool (registered execute)", () => {
+    it("returns matching entries for a known tag", async () => {
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { tags: ["target-tag", "mock", "sample"], topic: "Alpha" }),
+        addMemoryEntry(2, { tags: ["other", "unrelated"], topic: "Beta" })
+      ]);
+
+      const result = await hooks.tool.memory_search.execute({ tags: ["target-tag"] }, { agent: "artisan", sessionID: "s" });
+      const parsed = JSON.parse(result);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].id).toBe("MEM-001");
+      expect(parsed[0].tags).toContain("target-tag");
+    });
+
+    it("returns matching entries for a topic substring", async () => {
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { topic: "Authentication flow design", tags: ["auth"] }),
+        addMemoryEntry(2, { topic: "Cache invalidation strategy", tags: ["cache"] })
+      ]);
+
+      const result = await hooks.tool.memory_search.execute({ topic: "auth" }, { agent: "artisan", sessionID: "s" });
+      const parsed = JSON.parse(result);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].topic).toContain("Authentication");
+    });
+
+    it("returns empty array when nothing matches", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { tags: ["database"], topic: "SQL queries" })]);
+
+      const result = await hooks.tool.memory_search.execute({ tags: ["nonexistent"], topic: "zzzzz" }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(result)).toEqual([]);
     });
   });
 

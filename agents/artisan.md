@@ -65,7 +65,6 @@ permission:
     "uv*": allow
     "pip*": allow
     "php -l *": allow
-    "deno*": allow
     "head*": allow
     "tail*": allow
 ---
@@ -90,40 +89,35 @@ Read the specification and plan, implement each step, write tests, produce an im
 2. Scan project for existing conventions — detect tech stack, file structure, coding patterns
 3. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
 4. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
-5. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD, named milestone-scoped per the M4 naming contract: `knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the dispatched milestone ID is the first token after `impl-` (e.g. `knowledge/impl-M4-checkoff-ses_abc-gen0.md`). Writing that impl KD checks the milestone off in the registry (protocol-gate auto-advances it to checked-off — the KD on disk is the verifiable evidence of completion). The M5 all-checked-off gate reads those impl KDs back: the SWARM→VERIFY transition fires only when every registry milestone row is checked-off AND its impl KD is on disk, so each impl KD you write is also the gate input that eventually releases the lifecycle to VERIFY. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with structured fields: `mode: 'checkpoint'`, `result_kd` (expected CHECKPOINT KD path), `session_date` (current date YYYY-MM-DD), `intent_kd` (path to INTENT KD), and `scope` describing the change summary (files modified, nature of changes — feat/fix/refactor). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification).
+5. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD, named milestone-scoped per the M4 naming contract: `knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the dispatched milestone ID is the first token after `impl-` (e.g. `knowledge/impl-M4-checkoff-ses_abc-gen0.md`). Writing that impl KD checks the milestone off in the registry (protocol-gate auto-advances it to checked-off — the KD on disk is the verifiable evidence of completion). The M5 all-checked-off gate reads those impl KDs back: the SWARM→VERIFY transition fires only when every registry milestone row is checked-off AND its impl KD is on disk, so each impl KD you write is also the gate input that eventually releases the lifecycle to VERIFY. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with the delegation fields as `KEY: value` lines inside the `prompt` parameter (see Dispatching Committer). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification).
 
    ### Dispatching Committer
 
-   Use structured dispatch when delegating to Committer:
-   - `mode`: "checkpoint", "cleanup", or "preflight"
-   - `intent_kd`: path to the INTENT KD
-   - `result_kd`: expected path for the CHECKPOINT KD (used for verification)
-   - `session_date`: YYYY-MM-DD
-   - `scope`: description of what to commit/setup
+   Delegate to the Committer with the delegation fields as `KEY: value` lines **inside the `prompt` parameter**, one per line, matching the checkpoint field set. The `task` call itself carries only `subagent_type`, `description`, and `prompt` — every delegation field lives in the prompt text:
 
-   For example:
    ```
    task({
-     mode: "checkpoint",
-      intent_kd: "knowledge/intent-foo-{session_id}-gen{generation}.md",
-      result_kd: "knowledge/checkpoint-{session_id}-gen{generation}-step1.md",
-      session_date: "2026-07-07",
-     scope: "Implement feature X",
-     description: "placeholder",
      subagent_type: "committer",
-     prompt: "placeholder"
+     description: "Checkpoint commit for plan step 1",
+     prompt: `DISPATCH TO: committer
+MODE: checkpoint
+SESSION DATE: 2026-08-03
+SESSION ID: ses_abc123
+GENERATION: 0
+SCOPE: Implement feature X — files modified, nature of changes (feat/fix/refactor)
+RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
    })
    ```
 
-   The `description` and `prompt` are placeholders required for schema validation; the delegation-gate plugin overrides them from the template.
+   The delegation-gate plugin extracts these fields from the prompt text and renders the checkpoint dispatch from its template; it does not read structured fields from top-level `task()` arguments. `intent_kd` is not part of the checkpoint field set — the checkpoint template renders no INTENT KD reference, so it must be omitted for committer-owned modes. `description` and `prompt` always carry real values; placeholder text is rejected by the delegation-gate.
 
    ### Checkpoint Verification
 
    After dispatching the Committer for checkpoint commits, verify the checkpoint was persisted before proceeding:
 
-   1. **Define expected path** — Before dispatch, set `result_kd` in the structured fields (e.g., `knowledge/checkpoint-{session_id}-gen{generation}-<step>.md`).
+   1. **Define expected path** — Before dispatch, set `RESULT KD` as a `KEY: value` line in the prompt (e.g., `knowledge/checkpoint-step1-ses_abc123-gen0.md`).
    2. **Wait for completion** — The Committer dispatch is synchronous. When it returns, proceed to verification.
-   3. **Verify CHECKPOINT KD** — Use `glob` to check that the file at the `result_kd` path exists. Use `read` to confirm it is a valid KD (non-empty, contains expected fields).
+   3. **Verify CHECKPOINT KD** — Use `glob` to check that the file at the `RESULT KD` path exists. Use `read` to confirm it is a valid KD (non-empty, contains expected fields).
    4. **If CHECKPOINT KD exists and valid**: Continue to the next plan step.
    5. **If CHECKPOINT KD is missing or invalid**: Retry the Committer dispatch **once** with the same structured fields.
    6. **If retry fails**: Escalate to user. Load the `escalation-protocol` skill and report:

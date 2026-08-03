@@ -19,7 +19,7 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 2. **Survey repo** — `git log --oneline -30`. Filter out non-representative commits (merge commits, reverts, automated, initial commits). Analyze language, scope usage (`type(scope):` consistency), style (imperative present tense, capitalization, period). If fewer than 3 representative commits, fall back to: English, conventional commits with scope, imperative present tense. Subject line omits trailing period.
 
-3. **Analyze diff** — `git diff --stat` for file-level overview, then `git diff` for content. Classify each changed file by type (feat/fix/refactor/docs/test/chore).
+3. **Classify changes (lightweight)** — `git status --porcelain` for the changed-file list and state, `git diff --stat` for the file-level change overview, and `git diff --name-only` for the changed-file names. Classify each changed file by type (feat/fix/refactor/docs/test/chore) from names and stats. Do not load full diff content for grouping — full content is read only per batch at stage time.
 
 4. **Group into batches** — Split by module/scope and functional concern:
    - One module/scope per batch; one type per batch where possible
@@ -34,7 +34,7 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 6. **Edge cases**:
    - **Empty commit**: If the filtered set is empty, report "no changes to commit" and exit cleanly.
-   - **Ambiguity**: If change fits multiple types, classify by dominant change. If still ambiguous, check paths and diff. Only commit if a legitimate type is determinable. If truly unable, report back to the dispatching agent for guidance.
+   - **Ambiguity**: If change fits multiple types, classify by dominant change. If still ambiguous, inspect only the ambiguous file via `git diff -- <file>`. Only commit if a legitimate type is determinable. If truly unable, report back to the dispatching agent for guidance.
    - **Uncertainty**: If unresolvable, report back to dispatching agent.
 
 7. **Enforce commit conventions** — All commits MUST use:
@@ -45,9 +45,9 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
    - Subject line ≤72 characters
    - **Internal references**: Describe code changes exclusively.
 
-8. **Stage** — Select one coherent group, verify clean working tree, `git add <files>`.
+8. **Stage** — Select one coherent group, verify clean working tree, review the batch's full content with `git diff -- <files>` limited to the batch's files, then `git add <files>`.
 
-9. **Commit** — Check off TODO item, verify staged diff non-empty, write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled.
+9. **Commit** — Check off TODO item, verify staged diff non-empty (`git diff --cached --stat`), write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled.
 
 10. **Verify** — `git show --stat -1` to confirm.
 

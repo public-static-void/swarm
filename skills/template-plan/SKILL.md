@@ -60,10 +60,6 @@ Every milestone is an independently dispatchable unit: one Artisan dispatch comp
 - **Completion**: {{condition}}
 - **Output**: {{artifacts}}
 
-## Knowledge Checkpoint
-
-This PLAN KD is the checkpoint. Commit it before any implementation starts.
-
 ## Process Friction
 
 _This section is optional — include only if friction was encountered during work._

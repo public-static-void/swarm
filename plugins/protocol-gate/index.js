@@ -391,6 +391,34 @@ function extractMilestoneIdFromPrompt(prompt) {
   return ids.length > 0 ? ids[0] : null;
 }
 
+// F1 (R001/NFR005): per-milestone redispatch counter key. The SAFETY_STUCK
+// 5-redispatch cap counts a milestone's OWN attempts, not the whole lifecycle —
+// one milestone's transient retries must never consume another milestone's
+// budget (the M4 false-positive root cause). The key is case-normalized to
+// uppercase so `M3` and `m3` map to the same budget, matching the registry's
+// case-insensitive row matching (an `impl-m3` check-off resets the same key
+// that `MILESTONE ID: M3` dispatches increment).
+function milestoneRedispatchKey(sessionID, milestoneId) {
+  return `${sessionID}:${String(milestoneId).toUpperCase()}`;
+}
+
+// F1 (R006/NFR004): clears every per-milestone redispatch key for a session.
+// Per-milestone keys are `${sessionID}:<milestone-id>` (e.g. `sid:M3`) while
+// phase keys are `${sessionID}:<phase-constant>` (a number) — deleting the
+// non-numeric suffixes removes all milestone budgets without touching phase
+// counters. Called on regress-to-SWARM and SWARM FORCE ADVANCE so milestone
+// budgets never accumulate unboundedly across lifecycle transitions.
+function clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID) {
+  const prefix = `${sessionID}:`;
+  for (const key of [...phaseRedispatchCount.keys()]) {
+    if (!key.startsWith(prefix)) continue;
+    const suffix = key.slice(prefix.length);
+    if (!/^\d+$/.test(suffix)) {
+      phaseRedispatchCount.delete(key);
+    }
+  }
+}
+
 // Advances a milestone row in the session's milestone registry KD through the
 // given state chain (e.g. ["assigned", "in-progress"]) on a SWARM dispatch.
 // Only the machine-readable `## Milestone States` YAML block is rewritten — the
@@ -598,16 +626,26 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
 }
 
 // M5 (R011-R014): Repurposes the legacy SWARM safety force-advances. A stuck
-// SWARM session never auto-advances to VERIFY — it marks every non-checked-off
-// milestone failed in the registry, logs SAFETY_STUCK, and stays in SWARM.
+// SWARM session never auto-advances to VERIFY — it marks stuck milestone(s)
+// failed in the registry, logs SAFETY_STUCK, and stays in SWARM.
 // The only escape hatch is the user's /phase override (SAFETY_ESCAPE).
-function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger) {
+// F1 (R005): the optional milestoneId scopes the failure to ONE registry row —
+// the REDISPATCH CAP path fails only the offending milestone (AC006), while
+// the FORCE ADVANCE path omits it and keeps the legacy global all-rows
+// behavior (AC007). The two mechanisms guard different failure modes: the cap
+// is a milestone-level "genuinely attempted ≥5 times" guard; FORCE ADVANCE is
+// the lifecycle-level deadlock escape. Row matching is case-insensitive to
+// mirror registry semantics (M3/m3).
+function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger, milestoneId) {
   const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
     debug(`SAFETY_STUCK: ${trigger} for session ${sessionID} — no registry to mark`);
     return;
   }
-  for (const row of registry.rows) {
+  const rows = milestoneId
+    ? registry.rows.filter(r => r.id.toUpperCase() === String(milestoneId).toUpperCase())
+    : registry.rows;
+  for (const row of rows) {
     if (row.state !== "checked-off" && row.state !== "failed") {
       const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["failed"]);
       debug(`SAFETY_STUCK: marked ${row.id} failed (${trigger}) — ${JSON.stringify(result)}`);
@@ -1198,6 +1236,9 @@ export default {
       }
       // T-R004-2: Reset phaseRedispatchCount for the target phase
       phaseRedispatchCount.delete(`${sessionID}:${targetPhase}`);
+      // F1 (R006): regression to SWARM also clears every per-milestone
+      // redispatch budget — re-entering the swarm starts each milestone fresh.
+      clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       debug(`COUNTER_RESET: phaseRedispatchCount deleted for ${getPhaseName(targetPhase)} (session ${sessionID})`);
       return true;
     }
@@ -1257,6 +1298,15 @@ export default {
           }
           const result = updateMilestoneRegistry(candidate, sessionPhaseMap, milestoneId, ["checked-off"]);
           debug(`M3 auto check-off: impl KD for milestone ${milestoneId} (parent ${candidate}) → ${JSON.stringify(result)}`);
+          // F1 (R004): only a SUCCESSFUL check-off resets the per-milestone
+          // redispatch budget. A failed registry update keeps the counter so
+          // retries still count toward the cap; a re-opened milestone (R016)
+          // starts fresh because its budget was cleared at the earlier
+          // check-off — the desired re-open semantics.
+          if (result.ok) {
+            phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, milestoneId));
+            debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${milestoneId} (session ${candidate})`);
+          }
           break;
         }
       }
@@ -1792,6 +1842,9 @@ export default {
                   markStuckMilestonesFailed(sessionID, sessionPhaseMap, `FORCE ADVANCE at ${currentFailures} failures`);
                   diskCheckFailures.set(sessionID, 0);
                   phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                  // F1 (R006): SWARM FORCE ADVANCE clears every per-milestone
+                  // redispatch budget too — no stale caps after the escape hatch.
+                  clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
                   pendingVerification.delete(sessionID);
                   pendingVerificationToolCount.delete(sessionID);
                   inFlightDispatches.delete(sessionID);
@@ -1809,16 +1862,35 @@ export default {
                 safetyTriggered = true;
               } else {
                 // R003: Check re-dispatch cap BEFORE pendingVerification guard
-                const redispatchKey = `${sessionID}:${currentPhase}`;
+                // F1 (R001/R003): in SWARM the cap reads the offending
+                // milestone's own key — a missing key returns 0, so a fresh
+                // milestone (zero prior attempts) can never satisfy `>= 5` and
+                // never throws SAFETY_STUCK on its first dispatch. Non-SWARM
+                // phases keep the phase-keyed counter (R002); a malformed
+                // SWARM prompt with no extractable milestone ID falls back to
+                // the phase key (prior behavior preserved, no crash).
+                let redispatchKey = `${sessionID}:${currentPhase}`;
+                let capMilestoneId = null;
+                if (currentPhase === STATES.SWARM) {
+                  capMilestoneId = extractMilestoneIdFromPrompt(args?.prompt || "");
+                  if (capMilestoneId) {
+                    redispatchKey = milestoneRedispatchKey(sessionID, capMilestoneId);
+                  }
+                }
                 const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
                 if (redispatches >= 5 && tool === "task") {
                   if (currentPhase === STATES.SWARM) {
                     // M5 (R011-R014): repurposed — the redispatch cap during
                     // SWARM blocks the dispatch, marks the stuck milestone
                     // failed, and throws SAFETY_STUCK (no auto-advance).
-                    markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`);
+                    // F1 (R005): only the offending milestone's row fails.
+                    if (capMilestoneId) {
+                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`, capMilestoneId);
+                    } else {
+                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`);
+                    }
                     diskCheckFailures.set(sessionID, 0);
-                    phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+                    phaseRedispatchCount.delete(redispatchKey);
                     pendingVerification.delete(sessionID);
                     pendingVerificationToolCount.delete(sessionID);
                     inFlightDispatches.delete(sessionID);
@@ -1954,8 +2026,18 @@ export default {
               // effect (M5: the all-checked-off registry gate replaces it).
               debug(`SWARM dispatch count for ${sessionID}: ${count}`);
             }
-            // Track re-dispatches per phase to cap retries
-            const redispatchKey = `${sessionID}:${phase}`;
+            // Track re-dispatches per phase to cap retries. F1 (R001/R002):
+            // in SWARM the counter increments the dispatched milestone's own
+            // key (case-normalized) so each milestone caps independently; a
+            // malformed prompt with no milestone ID falls back to the phase key
+            // (prior behavior preserved). Non-SWARM phases stay phase-keyed.
+            let redispatchKey = `${sessionID}:${phase}`;
+            if (phase === STATES.SWARM) {
+              const milestoneId = extractMilestoneIdFromPrompt(args?.prompt || "");
+              if (milestoneId) {
+                redispatchKey = milestoneRedispatchKey(sessionID, milestoneId);
+              }
+            }
             phaseRedispatchCount.set(redispatchKey, (phaseRedispatchCount.get(redispatchKey) || 0) + 1);
             // BUG-003: Trigger pendingVerification when task dispatches the current phase's
             // expected agent. The expected KD will be produced by the subagent.
@@ -2108,6 +2190,8 @@ export default {
       cleanupLifecycleKDs,
       extractMilestoneIdFromPrompt,
       collectMilestoneIds,
+      milestoneRedispatchKey,
+      clearPerMilestoneRedispatchKeys,
       updateMilestoneRegistry,
       extractMilestoneIdFromImplKD,
       findMilestoneImplKD,

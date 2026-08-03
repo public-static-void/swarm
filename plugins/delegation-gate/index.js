@@ -14,6 +14,8 @@
 // breaking the other.
 //
 // Debug logging: set DELEGATION_GATE_DEBUG=1 in environment to enable.
+// Log directory: set DELEGATION_GATE_LOG_DIR to override plugins/logs — the
+// seam the test suite uses to isolate debug writes from the real log.
 import { appendFileSync, mkdirSync, readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -34,7 +36,7 @@ const ERRORS = {
   CODE_BLOCK: { code: "CODE_BLOCK", message: "Code blocks detected in prompt", guidance: "Remove all code blocks from delegation prompt" },
   FOREIGN_PATH: { code: "FOREIGN_PATH", message: "Foreign paths detected", guidance: "Use only knowledge/*.md paths" },
   BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include required fields: agent, mode, intent_kd, session_date" },
-  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Include agent, mode, intent_kd, session_date" },
+  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Put the delegation fields as KEY: value lines in the prompt parameter, one per line: DISPATCH TO / MODE / SESSION DATE / SESSION ID / GENERATION / SCOPE / RESULT KD" },
   INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope should not contain code blocks (security) or absolute /home/ paths (info leak)" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },
@@ -78,8 +80,10 @@ const MODE_TO_KD_PREFIXES = {
 let _logFile = null;
 
 function getLogFile() {
-  if (!_logFile) {
-    const logDir = join(PLUGIN_DIR, "..", "logs");
+  const logDir = process.env.DELEGATION_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
+  // Re-bind the cached path when the env seam moves the log directory — a
+  // stale cache would keep appending to the previously resolved path (AC017).
+  if (!_logFile || dirname(_logFile) !== logDir) {
     try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
     _logFile = join(logDir, "delegation-gate.log");
   }
@@ -120,8 +124,8 @@ function loadTemplates(config) {
     extract: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd}.",
     evolve: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Evolve the process per the scope above. Produce a PROCESS KD at {result_kd}.",
     checkpoint: "Load the kd-system skill. Load the committer-checkpoint skill. Create a checkpoint commit per the scope above. Write a CHECKPOINT KD at the RESULT KD path.",
-    cleanup: "Load the kd-system skill. Load the committer-cleanup skill. Read the INTENT KD at {intent_kd}. Commit and push remaining changes per the scope above. Write a CLEANUP KD at {result_kd} using the template-cleanup.md template to signal completion.",
-    preflight: "Load the kd-system skill and the committer-preflight skill. Read the INTENT KD at {intent_kd}. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
+    cleanup: "Load the kd-system skill. Load the committer-cleanup skill. Commit and push remaining changes per the scope above. Write a CLEANUP KD at {result_kd} using the template-cleanup.md template to signal completion.",
+    preflight: "Load the kd-system skill and the committer-preflight skill. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
@@ -310,7 +314,38 @@ function renderTemplate(template, fields) {
   }
   // Strip unresolved placeholders (e.g. {scope} when scope wasn't provided)
   result = result.replace(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, "");
+  // F4 (R030–R032): KD PATHS is optional — when kd_paths is falsy, drop the
+  // `KD PATHS:` header line and the "Read ... from KD PATHS." body sentence so
+  // preflight/checkpoint/cleanup dispatches without upstream paths render no
+  // empty header and no dangling read instruction. When kd_paths is present,
+  // no post-processing — legitimate modes (swarm, verify, investigate, ...)
+  // keep the header and sentence unchanged. One generic path, no per-template
+  // text forks.
+  if (!fields.kd_paths) {
+    result = result.replace(/^KD PATHS:.*$/m, "");
+    result = result.replace(/Read [^.]*KD PATHS[^.]*\./g, "");
+  }
   return result;
+}
+
+// Dispatcher-visible delegation format hint (R303). The tool.definition hook
+// annotates the task tool description so the dispatching agent sees the
+// KEY: value-in-prompt rule BEFORE composing — closing the audience/timing
+// gap where injectToolDocs' hint lands only in the subagent-facing description
+// after compose. Mirrors protocol-gate's tool.definition pattern.
+function dispatcherFormatHint() {
+  return `
+Delegation Prompt Format:
+Put delegation fields as KEY: value lines INSIDE the prompt parameter, one per line:
+DISPATCH TO: <agent>
+MODE: <mode>
+SESSION DATE: <YYYY-MM-DD>
+SESSION ID: <session-id>
+GENERATION: <generation>
+SCOPE: <optional context>
+RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
+KD PATHS: <upstream KD paths> (optional)
+`;
 }
 
 function injectToolDocs(output, agentName, mode, generation) {
@@ -430,11 +465,13 @@ export default {
       }
 
       // scope is optional — provides domain context but doesn't block delegation
-      // R009: intent_kd is not required for checkpoint mode — the checkpoint
-      // template doesn't render intent_kd, so requiring it serves no purpose.
-      // Only non-checkpoint modes need intent_kd to identify the upstream KD.
+      // R009/R014: intent_kd is not required for the committer-owned modes
+      // (checkpoint, cleanup) — their templates render no INTENT KD reference
+      // (the committer's read:allow denies knowledge/intent-*.md), so requiring
+      // the field serves no purpose. Only non-committer modes need intent_kd
+      // to identify the upstream KD.
       const requiredFields = ["agent", "mode", "session_date"];
-      if (fields.mode?.toLowerCase() !== "checkpoint") {
+      if (fields.mode?.toLowerCase() !== "checkpoint" && fields.mode?.toLowerCase() !== "cleanup") {
         requiredFields.push("intent_kd");
       }
 
@@ -445,7 +482,7 @@ export default {
       for (const [key, value] of Object.entries(fields)) {
         if (containsPlaceholder(value)) {
           debug(`VALIDATION FAILED: field '${key}' contains unresolved placeholder '${value}'`);
-          throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, `Field '${key}' contains unresolved placeholder '${value}'`, `Provide actual values for all delegation fields`);
+          throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, `Field '${key}' contains unresolved placeholder '${value}'`, `Replace placeholder values with actual values — fields are KEY: value lines in the prompt parameter`);
         }
       }
 
@@ -546,8 +583,22 @@ export default {
       debug(`Prompt rendered successfully (${rendered.length} chars)`);
     }
 
+    // --- Hook: tool.definition ---
+    // R303: annotate the task tool definition so the format hint is visible to
+    // the dispatcher before composing. Dedupe guard (FM04): never show the hint
+    // twice on one surface — injectToolDocs applies the same includes() guard
+    // to the subagent-facing description after compose.
+    async function toolDefinition(input, output) {
+      const { toolID } = input;
+      if (toolID !== "task") return;
+      if (output.description?.includes("Delegation Prompt Format:")) return;
+      output.description = (output.description || "") + dispatcherFormatHint();
+      debug(`tool.definition: annotated task tool description with delegation format hint`);
+    }
+
     return {
       "tool.execute.before": toolExecuteBefore,
+      "tool.definition": toolDefinition,
       // Test-access properties
       DelegationGateError,
       ERRORS,
