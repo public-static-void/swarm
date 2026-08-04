@@ -93,7 +93,7 @@ const PHASE_INSTRUCTIONS = {
   INVESTIGATE: "Dispatch the Analyzer agent.",
   ALIGN: "Dispatch the Spec Weaver agent.",
   DECOMPOSE: "Dispatch the Pathfinder agent.",
-  SWARM: "Dispatch the Artisan agent. Read the plan and milestone registry KDs to track milestone state before each dispatch. Include exactly one MILESTONE ID: matching the registry row you are dispatching. Name the dispatch's RESULT KD milestone-scoped — knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md — so the impl KD checks that milestone off on write.",
+  SWARM: "Dispatch the Artisan agent. Read the milestone registry KD to track milestone state before each dispatch. Include exactly one MILESTONE ID: matching the registry row you are dispatching. Name the dispatch's RESULT KD milestone-scoped — knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md — so the impl KD checks that milestone off on write.",
   VERIFY: "Dispatch the Inspector agent.",
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
@@ -126,7 +126,7 @@ const TOOL_ALLOWLIST = {
 // tool to skill files + phase KDs; neither string instructs reading templates.
 const TOOL_RESTRICTIONS = {
   INTENT: { read: "ONLY skill files and intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", bash: "ONLY mkdir for knowledge directory creation" },
-  SWARM: { read: "ONLY plan and milestone registry KDs" },
+  SWARM: { read: "ONLY milestone registry KDs" },
   REPORT: { read: "ONLY skill files and knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
 };
 
@@ -807,7 +807,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   // Session ID is required to filter out stale KDs from prior sessions.
   // KD filenames embed the session ID (e.g. intent-foo-ses_abc123.md).
-  // Without this, a plan-*.md from a different session instantly advances PREFLIGHT.
+  // Without this, a plan KD from a different session instantly advances PREFLIGHT.
   const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
   if (!storedSID) {
     debug(`Disk check: no session ID set for ${sessionID} — skipping`);
@@ -1775,14 +1775,13 @@ export default {
         const isSkillFile = relPath.endsWith("/SKILL.md") || relPath.includes("/skills/");
 
         if (phase === STATES.SWARM) {
-          // SWARM phase: dispatcher visibility — the Overseer reads the plan and
-          // the milestone registry to track milestone state and drive
+          // SWARM phase: dispatcher visibility — the Overseer reads the
+          // milestone registry to track milestone state and drive
           // per-milestone artisan dispatches. All other reads stay blocked.
-          const isPlanKD = /^knowledge\/plan-/i.test(relPath) || /\/knowledge\/plan-/i.test(relPath);
           const isMilestonesKD = /^knowledge\/milestones-/i.test(relPath) || /\/knowledge\/milestones-/i.test(relPath);
-          if (!isPlanKD && !isMilestonesKD) {
-            debug(`read: BLOCKED phase=${phaseName} path=${path} (SWARM reads restricted to plan and milestone registry KDs)`);
-            throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/plan-*.md or knowledge/milestones-*.md", "Read from knowledge/plan-*.md or knowledge/milestones-*.md only");
+          if (!isMilestonesKD) {
+            debug(`read: BLOCKED phase=${phaseName} path=${path} (SWARM reads restricted to milestone registry KDs)`);
+            throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/milestones-*.md only", "Read from knowledge/milestones-*.md only");
           }
         } else if (phase === STATES.INTENT || phase === STATES.REPORT) {
           if (phase === STATES.INTENT) {

@@ -1131,21 +1131,14 @@ ${table}
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
-  it("M2: SWARM phase reads are restricted to plan and milestone registry KDs (dispatcher visibility)", async () => {
+  it("M2: SWARM phase reads are restricted to milestone registry KDs (dispatcher visibility)", async () => {
     const s = sid("swarm-read-1");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
     hooks.sessionPhaseMap.set(`${s}:sid`, s);
 
-    // plan- and milestones- KDs are readable — the Overseer can see the plan
-    // and milestone state to drive per-milestone artisan dispatches.
-    await expect(
-      hooks["tool.execute.before"](
-        { tool: "read", sessionID: s, callID: "c1" },
-        { args: { filePath: `knowledge/plan-feature-${s}.md` } }
-      )
-    ).resolves.toBeUndefined();
-
+    // milestones- KDs are readable — the Overseer can see milestone state to
+    // drive per-milestone artisan dispatches.
     await expect(
       hooks["tool.execute.before"](
         { tool: "read", sessionID: s, callID: "c2" },
@@ -1153,16 +1146,11 @@ ${table}
       )
     ).resolves.toBeUndefined();
 
-    // Absolute path form is normalized to project-relative and accepted
-    await expect(
-      hooks["tool.execute.before"](
-        { tool: "read", sessionID: s, callID: "c3" },
-        { args: { filePath: `/home/user/project/knowledge/plan-feature-${s}.md` } }
-      )
-    ).resolves.toBeUndefined();
-
-    // Other KDs and non-KD files stay blocked during SWARM
+    // Plan KDs (relative and absolute), other KDs, and non-KD files stay
+    // blocked during SWARM
     for (const bad of [
+      `knowledge/plan-feature-${s}.md`,
+      `/home/user/project/knowledge/plan-feature-${s}.md`,
       `knowledge/impl-feature-${s}.md`,
       `knowledge/spec-feature-${s}.md`,
       `knowledge/review-feature-${s}.md`,
@@ -1174,7 +1162,7 @@ ${table}
           { tool: "read", sessionID: s, callID: "c4" },
           { args: { filePath: bad } }
         )
-      ).rejects.toThrow("Read from knowledge/plan-*.md or knowledge/milestones-*.md");
+      ).rejects.toThrow("Read from knowledge/milestones-*.md");
     }
   });
 
@@ -1545,7 +1533,7 @@ ${table}
   });
 
   it("tool.definition respects the phase allowlist — read restricted during SWARM, non-allowlisted tools blocked elsewhere, task always passes", async () => {
-    // SWARM: read is allowlisted and carries the plan/registry restriction
+    // SWARM: read is allowlisted and carries the milestone-registry restriction
     const s = sid("swarm-def-1");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -1554,7 +1542,7 @@ ${table}
     const readOut = { description: "Test read", parameters: {} };
     await hooks["tool.definition"]({ toolID: "read" }, readOut);
     expect(readOut.description).not.toContain("⛔");
-    expect(readOut.description).toContain("SWARM phase restriction: ONLY plan and milestone registry KDs");
+    expect(readOut.description).toContain("SWARM phase restriction: ONLY milestone registry KDs");
 
     // A tool still outside the SWARM allowlist keeps the blocking notice
     const editOut = { description: "Test edit", parameters: {} };

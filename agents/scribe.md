@@ -31,6 +31,8 @@ permission:
   todowrite: allow
   memory_search: allow
   memory_write: allow
+  memory_update: allow
+  memory_delete: allow
   bash:
     "*": deny
     "ls*": allow
@@ -63,7 +65,7 @@ After verification passes, read all knowledge documents produced during the life
 8. Update cross-references between related documents
 9. Compress verbose documentation to essential content
 10. Update `AGENTS.md` and `README.md` if warranted
-11. Extract 3-5 distilled insights from the COMPOSED KD and write each as a JSON entry via the `memory_write` tool. The tool validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns the next sequential ID, and writes to disk. Pass the entry object as a JSON argument to the tool with fields: id (optional), source_kd, tags, topic, insight, type (fact|decision|pattern|warning|context), created, session, version.
+11. Curation first, then extraction. Before finalizing new insights, search memory over the composed KD's topics; refresh drifted entries via `memory_update`; tombstone entries superseded by a new insight via `memory_update` with `superseded_by` set to the new entry's ID (write the new entry first so the ID exists); delete wrong or duplicate entries via `memory_delete`. Then extract 3-5 distilled insights from the COMPOSED KD and write each as a JSON entry via the `memory_write` tool. The tool validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns the next sequential ID, and writes to disk. Pass the entry object as a JSON argument to the tool with fields: id (optional), source_kd, tags, topic, insight, type (fact|decision|pattern|warning|context), created, session, version.
 
 ## Principles
 
