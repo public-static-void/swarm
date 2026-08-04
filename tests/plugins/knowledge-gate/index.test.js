@@ -290,6 +290,35 @@ Body text`;
       const hintLines = output.system.filter(s => s.includes("Memory:"));
       expect(hintLines).toHaveLength(0);
     });
+
+    it("surfaces open issues and prompts the Close Issues step for habit-builder", async () => {
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(1, { severity: "medium", title: "Open issue A" }),
+        addIssueFile(2, { status: "resolved", severity: "high", title: "Closed issue B" })
+      ]);
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"](
+        { sessionID: "test-session", agent: "habit-builder" },
+        output
+      );
+
+      // Issue creation hint (existing behavior) is preserved
+      const createHint = output.system.find(s => s.includes("create issue files directly"));
+      expect(createHint).toBeTruthy();
+
+      // Open issues are surfaced; resolved issues are not
+      const closeHint = output.system.find(s => s.includes("Open issues detected"));
+      expect(closeHint).toBeTruthy();
+      expect(closeHint).toContain("ISSUE-001");
+      expect(closeHint).toContain("Open issue A");
+      expect(closeHint).not.toContain("Closed issue B");
+
+      // The Close Issues step is prompted with the evidence requirement
+      expect(closeHint).toContain("Close Issues");
+      expect(closeHint).toContain("Resolution");
+      expect(closeHint).toContain("evidence");
+    });
   });
 
   describe("validateMemoryEntry — with type field", () => {
