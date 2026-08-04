@@ -10,6 +10,8 @@ permission:
     "knowledge/preflight-*.md": allow
     "knowledge/checkpoint-*.md": allow
     "knowledge/cleanup-*.md": allow
+    "knowledge/intent-*.md": allow
+    "knowledge/impl-*.md": allow
     ".ignore": allow
     ".gitignore": allow
     ".gitkeep": allow

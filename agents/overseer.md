@@ -51,7 +51,7 @@ Your first mandatory action at the very start of every new user interaction is i
 ### 12-Phase Lifecycle (serial — verify before advance)
 
 - **Phase 1 (INTENT)**: Create fresh INTENT KD.
-  - **Tool usage**: Use the `skill` tool to load `kd-system` skill, then use `read` to read the KD templates.
+   - **Tool usage**: Use the `skill` tool to load the `kd-system` skill, then use the `skill` tool to load the KD-format template skill (e.g., `template-intent`); use `read` for the intent KD itself, not for templates.
 - **Phase 2 (PREFLIGHT)**: Dispatch Committer (MODE: PREFLIGHT).
 - **Phase 3 (EXPLORE)**: Dispatch Explorer → exploration KD.
 - **Phase 4 (INVESTIGATE)**: Dispatch Analyzer → ANALYSIS KD.
