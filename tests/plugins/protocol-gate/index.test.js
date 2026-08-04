@@ -1999,6 +1999,44 @@ ${table}
       }
     });
 
+    it("AC011: /phase SAFETY_ESCAPE from SWARM clears per-milestone keys but preserves phase counters", async () => {
+      const s = sid("m2-escape-clear");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      hooks.phaseRedispatchCount.set(`${s}:M1`, 3);
+      hooks.phaseRedispatchCount.set(`${s}:M2`, 2);
+      hooks.phaseRedispatchCount.set(`${s}:${hooks.STATES.SWARM}`, 4);
+
+      // User override escapes the stuck SWARM — the only automatic escape hatch.
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "VERIFY" }, output);
+
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      // R007 (issue-18): an escaped-and-continued lifecycle restarts each
+      // milestone with a fresh budget, while the numeric phase counter stays.
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
+      expect(hooks.phaseRedispatchCount.get(`${s}:M2`)).toBeUndefined();
+      expect(hooks.phaseRedispatchCount.get(`${s}:${hooks.STATES.SWARM}`)).toBe(4);
+    });
+
+    it("AC011/EC-003: same-phase /phase override (SWARM → SWARM) clears nothing", async () => {
+      const s = sid("m2-same-phase");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      hooks.phaseRedispatchCount.set(`${s}:M1`, 2);
+      hooks.phaseRedispatchCount.set(`${s}:${hooks.STATES.SWARM}`, 3);
+
+      // A same-phase override is not an escape — budgets and counters are preserved.
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "SWARM" }, output);
+
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(2);
+      expect(hooks.phaseRedispatchCount.get(`${s}:${hooks.STATES.SWARM}`)).toBe(3);
+    });
+
     it("AC024: MILESTONE_COUNT is no longer extracted or stored; counts have no gating effect", async () => {
       const s = sid("m5-nomc");
       await initOverseer(s);
