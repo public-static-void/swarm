@@ -1493,6 +1493,11 @@ export default {
       // from a stuck SWARM — the automatic safety mechanisms never advance it.
       if (prevPhase === STATES.SWARM && n !== STATES.SWARM) {
         debug(`SAFETY_ESCAPE: /phase override ${getPhaseName(prevPhase)} → ${getPhaseName(n)} for session ${sessionID} — manual escape from SWARM`);
+        // R007 (issue-18): an escaped-and-continued lifecycle must restart
+        // each milestone with a fresh redispatch budget, or stale caps from
+        // before the escape could deny legitimate retries. Numeric phase-key
+        // counters are preserved — only non-numeric per-milestone keys clear.
+        clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       }
       debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
       output.parts = [{ type: "text", text: `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
