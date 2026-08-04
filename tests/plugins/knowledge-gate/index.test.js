@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { join } from "path";
 import { tmpdir } from "os";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 
 // The plugin reads its data dirs from KNOWLEDGE_GATE_MEMORY_DIR /
 // KNOWLEDGE_GATE_ISSUES_DIR env overrides (test seam in the plugin). We point
@@ -178,6 +178,19 @@ describe("Knowledge-Gate Plugin", () => {
       const results = hooks.searchMemory({ tags: ["permissions"] });
       expect(results).toHaveLength(1);
       expect(results[0].id).toBe("MEM-001");
+    });
+  });
+
+  describe("searchMemory — Superseded exclusion", () => {
+    it("excludes superseded entries (truthy superseded_by) before scoring", () => {
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design", superseded_by: "MEM-002" }),
+        addMemoryEntry(2, { tags: ["auth", "permissions"], topic: "Auth token design v2" })
+      ]);
+
+      const results = hooks.searchMemory({ tags: ["auth"], topic: "", limit: 5 });
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("MEM-002");
     });
   });
 
@@ -625,6 +638,36 @@ Body text`;
       expect(result).not.toBeNull();
       expect(result.id).toBe("MEM-001");
     });
+
+    it("does not dedup-skip a write with 3 shared tags but unrelated topics (issue-20)", async () => {
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { tags: ["permissions", "testing", "cache"], topic: "Permission glob patterns" })
+      ]);
+
+      // Direct checkDuplicateMemory call: tag-only overlap (score 3) must NOT declare a duplicate
+      const dup = hooks.checkDuplicateMemory({ tags: ["permissions", "testing", "cache"], topic: "Cache invalidation strategy" });
+      expect(dup).toBeNull();
+
+      // memory_write writes the new file instead of skipping
+      const result = await hooks.tool.memory_write.execute(
+        { entry: { id: "MEM-002", type: "fact", source_kd: "knowledge/test.md", tags: ["permissions", "testing", "cache"], topic: "Cache invalidation strategy", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("written");
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"))).toHaveLength(2);
+    });
+
+    it("still dedups a genuine duplicate (1 shared tag + overlapping topic)", () => {
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { tags: ["permissions"], topic: "Permission glob patterns" })
+      ]);
+
+      const entry = { tags: ["permissions", "auth"], topic: "Permission glob patterns — cross-workspace" };
+      const result = hooks.checkDuplicateMemory(entry);
+      expect(result).not.toBeNull();
+      expect(result.id).toBe("MEM-001");
+    });
   });
 
   describe("tool registration surface", () => {
@@ -640,6 +683,20 @@ Body text`;
       expect(typeof hooks.tool.memory_write.description).toBe("string");
       expect(hooks.tool.memory_write.args).toBeTruthy();
       expect(typeof hooks.tool.memory_write.execute).toBe("function");
+    });
+
+    it("exposes memory_update with description, args, and execute", () => {
+      expect(hooks.tool.memory_update).toBeTruthy();
+      expect(typeof hooks.tool.memory_update.description).toBe("string");
+      expect(hooks.tool.memory_update.args).toBeTruthy();
+      expect(typeof hooks.tool.memory_update.execute).toBe("function");
+    });
+
+    it("exposes memory_delete with description, args, and execute", () => {
+      expect(hooks.tool.memory_delete).toBeTruthy();
+      expect(typeof hooks.tool.memory_delete.description).toBe("string");
+      expect(hooks.tool.memory_delete.args).toBeTruthy();
+      expect(typeof hooks.tool.memory_delete.execute).toBe("function");
     });
   });
 
@@ -708,6 +765,136 @@ Body text`;
       const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
       const parsed = JSON.parse(result);
       expect(parsed.message).toContain("Duplicate");
+    });
+  });
+
+  describe("memory_update tool (registered execute)", () => {
+    it("rejects updates from non-Scribe agents with no file modified", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(7, { topic: "Original topic" })]);
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-007", entry: { topic: "Changed topic" } },
+        { agent: "artisan", sessionID: "artisan-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("permission");
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-007.json"), "utf8"));
+      expect(onDisk.topic).toBe("Original topic");
+    });
+
+    it("persists a partial patch while preserving id/created/session/version and the same file", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(7, { created: "2026-07-27T00:00:00.000Z", session: "ses_test_7" })]);
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-007", entry: { topic: "Updated topic", insight: "Updated insight.", tags: ["test", "mock", "cache"] } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("updated");
+      expect(parsed.id).toBe("MEM-007");
+
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-007.json"), "utf8"));
+      expect(onDisk.topic).toBe("Updated topic");
+      expect(onDisk.insight).toBe("Updated insight.");
+      expect(onDisk.tags).toEqual(["test", "mock", "cache"]);
+      expect(onDisk.id).toBe("MEM-007");
+      expect(onDisk.created).toBe("2026-07-27T00:00:00.000Z");
+      expect(onDisk.session).toBe("ses_test_7");
+      expect(onDisk.version).toBe("1.0.0");
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"))).toHaveLength(1);
+    });
+
+    it("returns not found for an unknown ID and writes nothing", async () => {
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-999", entry: { topic: "New topic" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("not found");
+      expect(readdirSync(MEMORY_DIR)).toHaveLength(0);
+    });
+
+    it("rejects an invalid merged entry (tags length 1) with no write", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(7)]);
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-007", entry: { tags: ["onlyone"] } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("tags");
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-007.json"), "utf8"));
+      expect(onDisk.tags).toHaveLength(3);
+    });
+
+    it("returns Nothing to update for an empty patch", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(7)]);
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-007", entry: {} },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("Nothing to update");
+    });
+
+    it("persists a superseded_by tombstone; search excludes it and write does not dedup-skip", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-001", entry: { superseded_by: "MEM-002" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      expect(JSON.parse(result).message).toContain("updated");
+
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-001.json"), "utf8"));
+      expect(onDisk.superseded_by).toBe("MEM-002");
+
+      // Superseded entry is excluded from search
+      const search = await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(search)).toEqual([]);
+
+      // A similar write is no longer dedup-skipped against the tombstoned entry
+      const write = await hooks.tool.memory_write.execute(
+        { entry: { id: "MEM-003", type: "fact", source_kd: "knowledge/test.md", tags: ["auth", "permissions"], topic: "Auth token design", insight: "Fresh insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsedWrite = JSON.parse(write);
+      expect(parsedWrite.message).toContain("written");
+      expect(parsedWrite.id).toBe("MEM-003");
+    });
+  });
+
+  describe("memory_delete tool (registered execute)", () => {
+    it("rejects deletes from non-Scribe agents with no change", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(9)]);
+      const result = await hooks.tool.memory_delete.execute(
+        { id: "MEM-009" },
+        { agent: "artisan", sessionID: "artisan-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("permission");
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"))).toHaveLength(1);
+    });
+
+    it("removes the file and the entry disappears from search", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(9, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      const result = await hooks.tool.memory_delete.execute(
+        { id: "MEM-009" },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("deleted");
+      expect(parsed.id).toBe("MEM-009");
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"))).toHaveLength(0);
+
+      const search = await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(search)).toEqual([]);
+    });
+
+    it("returns not found for an unknown ID with no change", async () => {
+      const result = await hooks.tool.memory_delete.execute(
+        { id: "MEM-999" },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("not found");
+      expect(readdirSync(MEMORY_DIR)).toHaveLength(0);
     });
   });
 
