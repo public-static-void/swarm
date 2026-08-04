@@ -98,11 +98,15 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 
 ## Verdict Rules
 
-| Verdict            | Meaning          | Action                                 |
-| ------------------ | ---------------- | -------------------------------------- |
-| PASS               | All criteria met | Advance to next phase                  |
-| FAIL (fixable)     | Specific issues  | Return to Artisan with findings        |
-| FAIL (fundamental) | Design flaw      | Escalate to Overseer → Happy to Delete |
+Write the verdict into the REVIEW/AUDIT KD **frontmatter** (`verdict: PASS | FAIL | FUNDAMENTAL`) — it is the machine source the protocol-gate VERIFY gate reads. Keep the body Verdict section for human readability.
+
+| Verdict     | Meaning          | Machine behavior                                                                        |
+| ----------- | ---------------- | --------------------------------------------------------------------------------------- |
+| PASS        | All criteria met | VERIFY advances to the next phase (presence-based)                                      |
+| FAIL        | Specific issues  | protocol-gate auto-regresses VERIFY→SWARM, reopens checked-off milestone rows, and the Artisan fixes the findings |
+| FUNDAMENTAL | Design flaw      | protocol-gate blocks VERIFY advancement and escalates to the user; it never regresses — Happy to Delete |
+
+A `FAIL` verdict machine-triggers the VERIFY→SWARM regression — no explicit dispatch and no `BACKWARD: true` flag is required. The regression fires once per review/audit KD filename; a re-review with a new filename may trigger the next cycle, bounded by the lifecycle's cycle cap.
 
 ## Constraints
 

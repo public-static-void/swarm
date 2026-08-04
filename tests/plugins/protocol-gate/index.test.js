@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
@@ -2120,6 +2120,210 @@ milestones:
         expect(result.reason).toBe("no-registry");
         // Fails closed — no row mutation, registry file byte-identical.
         expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toBe(before);
+      }
+    });
+  });
+
+  describe("F1: verdict-aware VERIFY gate (R101-R107, AC101-AC109)", () => {
+    // Builds a REVIEW/AUDIT KD with the machine-readable verdict frontmatter
+    // field the VERIFY gate reads (R101). Content beyond the frontmatter is
+    // irrelevant to the gate — the body Verdict section is human-readable only.
+    function verdictKD(verdict) {
+      return `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: ${verdict}
+---
+
+# REVIEW: test
+
+## Verdict
+
+${verdict}
+`;
+    }
+
+    it("F1 AC101: a FAIL review/audit KD auto-regresses VERIFY→SWARM without BACKWARD: true", async () => {
+      for (const prefix of ["review", "audit"]) {
+        const s = sid(`f1-ac101-${prefix}`);
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createKD(`${prefix}-fail-${s}.md`, verdictKD("FAIL"));
+
+        // The next lifecycle tool call evaluates the gate — no BACKWARD flag,
+        // no explicit dispatch, in any prompt.
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        expect(hooks.verdictRegressedKDs.get(s)).toContain(`${prefix}-fail-${s}.md`);
+      }
+    });
+
+    it("F1 AC102: re-evaluating the same FAIL review KD does not regress again (once-per-KD guard)", async () => {
+      const s = sid("f1-ac102");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`review-fail-${s}.md`, verdictKD("FAIL"));
+
+      // First evaluation regresses VERIFY→SWARM.
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+
+      // A later re-advance to VERIFY re-evaluates the SAME filename — the
+      // once-per-KD guard must suppress a second regression (no infinite loop).
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      // Exactly one KD filename recorded.
+      expect(hooks.verdictRegressedKDs.get(s).size).toBe(1);
+    });
+
+    it("F1 AC103: FAIL regression reopens checked-off milestone rows and the SWARM gate stays closed", async () => {
+      const s = sid("f1-ac103");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+      createKD(`impl-M2-feature-${s}.md`);
+      // All rows checked-off with impl KDs on disk — the SWARM→VERIFY gate
+      // would advance if the lifecycle were still in SWARM.
+      expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+
+      createKD(`review-fail-${s}.md`, verdictKD("FAIL"));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+
+      // Rows re-opened to in-progress (R104) — the gate fails closed until
+      // fresh impl KDs are on disk.
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: in-progress");
+      expect(content).toContain("  M2: in-progress");
+      expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+    });
+
+    it("F1 AC104: a FUNDAMENTAL verdict blocks VERIFY advancement and escalates without regressing", async () => {
+      const s = sid("f1-ac104");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`review-fund-${s}.md`, verdictKD("FUNDAMENTAL"));
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Blocked — stays in VERIFY, never regresses (R105).
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
+        // Escalation signal names the KD.
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("FUNDAMENTAL_ESCALATION");
+        expect(log).toContain(`review-fund-${s}.md`);
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("F1 AC105: PASS and legacy (no-verdict) KDs keep presence-based advancement", async () => {
+      for (const [name, content] of [
+        ["pass", verdictKD("PASS")],
+        ["legacy", "test content"],
+      ]) {
+        const s = sid(`f1-ac105-${name}`);
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createKD(`review-${name}-${s}.md`, content);
+
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+      }
+    });
+
+    it("F1 AC106: more than 3 FAIL regression cycles surface CYCLE_LIMIT_EXCEEDED instead of looping", async () => {
+      const s = sid("f1-ac106");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+      for (let i = 1; i <= 3; i++) {
+        createKD(`review-cycle${i}-${s}.md`, verdictKD("FAIL"));
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: `c${i}` },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        // Drive the phase back to VERIFY for the next fix cycle.
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      }
+
+      // The 4th distinct FAIL KD exceeds the 3-cycle cap (NFR001/FM01).
+      createKD(`review-cycle4-${s}.md`, verdictKD("FAIL"));
+      const err = await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c4" },
+        { args: { pattern: "knowledge/*.md" } }
+      ).then(() => null, e => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.code).toBe("CYCLE_LIMIT_EXCEEDED");
+    });
+
+    it("F1 EC01: the newest review/audit KD wins; a missing verdict is treated as PASS with a warning", async () => {
+      const s = sid("f1-ec01");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`review-older-${s}.md`, verdictKD("FAIL"));
+      createKD(`review-newer-${s}.md`, "no verdict frontmatter");
+      // Make the newer KD decisively newest via mtime so the filename
+      // tie-break is not load-bearing (EC01: newest wins).
+      utimesSync(join(knowledgeDir, `review-newer-${s}.md`), new Date(), new Date(Date.now() + 5000));
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Newest has no verdict → treated as PASS → advances to EXTRACT.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+        expect(readFileSync(logPath, "utf8")).toContain("VERDICT_MISSING");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("F1 AC107: REVIEW and AUDIT templates carry the verdict frontmatter field", async () => {
+      for (const tplPath of ["skills/template-review/SKILL.md", "skills/template-audit/SKILL.md"]) {
+        const tpl = readFileSync(join(process.cwd(), tplPath), "utf8");
+        expect(tpl).toMatch(/^verdict\s*:\s*\{\{PASS \| FAIL \| FUNDAMENTAL\}\}\s*$/m);
       }
     });
   });
