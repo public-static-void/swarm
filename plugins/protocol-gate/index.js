@@ -120,10 +120,14 @@ const TOOL_ALLOWLIST = {
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
 // tool.definition appends these to the description so the LLM sees the restriction
 // instead of treating the tool as fully available.
+// Delegation templates are JSON files auto-injected by delegation-gate at
+// dispatch — never read by the Overseer. KD-format templates are auto-loaded
+// skills loaded via the skill tool. The read restrictions below scope the read
+// tool to skill files + phase KDs; neither string instructs reading templates.
 const TOOL_RESTRICTIONS = {
-  INTENT: { read: "ONLY templates and intent KDs", bash: "ONLY mkdir for knowledge directory creation" },
+  INTENT: { read: "ONLY skill files and intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", bash: "ONLY mkdir for knowledge directory creation" },
   SWARM: { read: "ONLY plan and milestone registry KDs" },
-  REPORT: { read: "ONLY templates and knowledge KDs" }
+  REPORT: { read: "ONLY skill files and knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
 };
 
 class ProtocolGateError extends Error {
@@ -1489,6 +1493,11 @@ export default {
       // from a stuck SWARM — the automatic safety mechanisms never advance it.
       if (prevPhase === STATES.SWARM && n !== STATES.SWARM) {
         debug(`SAFETY_ESCAPE: /phase override ${getPhaseName(prevPhase)} → ${getPhaseName(n)} for session ${sessionID} — manual escape from SWARM`);
+        // R007 (issue-18): an escaped-and-continued lifecycle must restart
+        // each milestone with a fresh redispatch budget, or stale caps from
+        // before the escape could deny legitimate retries. Numeric phase-key
+        // counters are preserved — only non-numeric per-milestone keys clear.
+        clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       }
       debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
       output.parts = [{ type: "text", text: `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
@@ -1759,7 +1768,10 @@ export default {
       else if (tool === "read") {
         const path = args?.filePath || "";
         const relPath = toProjectRelative(path);
-        const isTemplate = relPath.includes("templates");
+        // Skill files cover the auto-loaded KD-format template skills. There is
+        // deliberately no generic "templates" allowance: delegation templates
+        // are JSON files auto-injected by delegation-gate at dispatch, never
+        // read by the Overseer.
         const isSkillFile = relPath.endsWith("/SKILL.md") || relPath.includes("/skills/");
 
         if (phase === STATES.SWARM) {
@@ -1774,20 +1786,24 @@ export default {
           }
         } else if (phase === STATES.INTENT || phase === STATES.REPORT) {
           if (phase === STATES.INTENT) {
-            // INTENT phase: only allow templates, skill files, and the current session's intent KDs.
-            // Restricting to intent KDs prevents the Overseer from reading prior-session
-            // reports or other KDs and falling back to self-execution.
+            // INTENT phase: only skill files (auto-loaded template skills) and
+            // the current session's intent KDs. Restricting to intent KDs
+            // prevents the Overseer from reading prior-session reports or other
+            // KDs and falling back to self-execution. Delegation templates are
+            // auto-injected by delegation-gate at dispatch — not read here.
             const isIntentKD = /knowledge\/intent-/i.test(relPath);
-            if (!isTemplate && !isSkillFile && !isIntentKD) {
-              debug(`read: BLOCKED phase=${phaseName} path=${path} (INTENT reads restricted to templates, skills, and intent KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from template, skill, or knowledge/intent-*.md", "Read from template, skill, or knowledge/intent-*.md only");
+            if (!isSkillFile && !isIntentKD) {
+              debug(`read: BLOCKED phase=${phaseName} path=${path} (INTENT reads restricted to skill files and intent KDs)`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from skill files or knowledge/intent-*.md only — delegation templates are auto-injected by delegation-gate at dispatch, never read", "Read from skill files or knowledge/intent-*.md only");
             }
           } else {
-            // REPORT phase: allow templates and any knowledge KD (needed to compose report)
+            // REPORT phase: allow skill files (auto-loaded template skills) and
+            // any knowledge KD (needed to compose report). Delegation templates
+            // are auto-injected by delegation-gate at dispatch — not read here.
             const isKnowledge = relPath.startsWith("knowledge/") || relPath.includes("/knowledge/");
-            if (!isTemplate && !isKnowledge) {
-              debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to templates and knowledge KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from template or knowledge directory", "Read from template or knowledge directory only");
+            if (!isSkillFile && !isKnowledge) {
+              debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to skill files and knowledge KDs)`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from skill files or knowledge KDs only — delegation templates are auto-injected by delegation-gate at dispatch, never read", "Read from skill files or knowledge KDs only");
             }
           }
         }

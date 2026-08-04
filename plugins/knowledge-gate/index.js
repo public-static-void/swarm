@@ -739,7 +739,8 @@ export default {
         );
       }
 
-      // During EVOLVE phase, inject issue creation instructions for habit-builder
+      // During EVOLVE phase, inject issue tracking instructions for habit-builder:
+      // creation (step 5 "Track Issues") and closing (step 6 "Close Issues").
       if (agent === "habit-builder") {
         output.system.push(
           `[Knowledge Gate] When process friction requires tracking, create issue files directly. ` +
@@ -747,6 +748,24 @@ export default {
           `Include body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria. ` +
           `Use the next sequential issue ID from existing files in knowledge/issues/.`
         );
+
+        // Surface open issues so the habit-builder can close ones whose fix is
+        // already demonstrated in lifecycle KDs — mirrors the INTENT loop below.
+        const openIssues = scanOpenIssues();
+        if (openIssues.length > 0) {
+          const issueSummary = openIssues.map(i =>
+            `- [${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
+          ).join("\n");
+          output.system.push(
+            `[Knowledge Gate] Open issues detected:\n${issueSummary}\n` +
+            `Apply the Close Issues step (agents/habit-builder.md step 6): for each open issue ` +
+            `whose Recommended Fix is verified addressed in lifecycle KDs (impl/review/audit/composed) ` +
+            `— no heavy investigation needed — flip status to resolved and append a ` +
+            `## Resolution (YYYY-MM-DD) section referencing the closing evidence. ` +
+            `Closing without evidence is prohibited; keep the issue schema intact.`
+          );
+          debug(`EVOLVE: surfaced ${openIssues.length} open issues to habit-builder`);
+        }
       }
 
       // During INTENT phase (Overseer), scan for open issues from prior sessions

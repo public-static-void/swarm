@@ -333,18 +333,24 @@ function renderTemplate(template, fields) {
 // KEY: value-in-prompt rule BEFORE composing — closing the audience/timing
 // gap where injectToolDocs' hint lands only in the subagent-facing description
 // after compose. Mirrors protocol-gate's tool.definition pattern.
+// R009 (issue-9 remainder): the hint is mode-agnostic — it is injected before
+// the dispatch mode is known — so the swarm MILESTONE ID line carries the
+// "(swarm mode only)" qualifier (mirroring injectToolDocs' swarm-only line
+// placement right after MODE), and the KD PATHS line documents the
+// comma-separated convention the validation split() expects.
 function dispatcherFormatHint() {
   return `
 Delegation Prompt Format:
 Put delegation fields as KEY: value lines INSIDE the prompt parameter, one per line:
 DISPATCH TO: <agent>
 MODE: <mode>
+MILESTONE ID: <milestone-id> — swarm mode only, exactly one, required
 SESSION DATE: <YYYY-MM-DD>
 SESSION ID: <session-id>
 GENERATION: <generation>
 SCOPE: <optional context>
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
-KD PATHS: <upstream KD paths> (optional)
+KD PATHS: <upstream KD paths, comma-separated> (optional)
 `;
 }
 

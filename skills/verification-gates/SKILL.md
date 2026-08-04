@@ -153,6 +153,15 @@ On FAIL with clear cause:
 4. Same Inspector re-reviews (consistency)
 5. Loop until PASS; abort on diminishing returns (2-3 cycles without progress) → escalate to fundamental flaw
 
+## /phase SAFETY_ESCAPE Counter Semantics
+
+The user's `/phase` slash-command override is the only escape hatch from a stuck SWARM phase — the automatic safety mechanisms never advance it (protocol-gate logs `SAFETY_ESCAPE` on the escape). Its effect on the redispatch counters (issue-18, R007):
+
+- **Resets per-milestone redispatch budgets.** Escaping SWARM → non-SWARM deletes every non-numeric `{sessionID}:{milestone}` key (e.g. `sid:M1`) in `phaseRedispatchCount`, so an escaped-and-continued lifecycle restarts each milestone with a fresh budget instead of inheriting stale pre-escape caps.
+- **Preserves phase counters.** Numeric `{sessionID}:{phase-constant}` keys (e.g. `sid:7` for SWARM) are untouched — the phase's own dispatch count is not reset by the escape.
+- **Same-phase override fires nothing.** `/phase SWARM → SWARM` is not an escape (`prevPhase === SWARM && n !== SWARM` is false); budgets and counters are preserved for the no-op override.
+- Other `/phase` transitions (into or between non-SWARM phases) do not touch redispatch counters.
+
 ## Security Audits
 
 Run separately from code reviews when:
