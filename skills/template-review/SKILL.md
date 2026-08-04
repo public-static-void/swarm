@@ -11,6 +11,7 @@ type: review
 session_id: "{{session_id}}"
 author: Inspector
 superseded_by: null
+verdict: {{PASS | FAIL | FUNDAMENTAL}}
 ---
 
 <!-- Filename: knowledge/review-{{artifact}}-{{session_id}}-gen{{generation}}.md -->
@@ -20,7 +21,11 @@ superseded_by: null
 
 ## Verdict
 
-{{PASS / FAIL}}
+{{PASS / FAIL / FUNDAMENTAL}}
+
+The `verdict` frontmatter field above is the machine source — protocol-gate
+reads it during VERIFY. `FAIL` auto-regresses VERIFY→SWARM; `FUNDAMENTAL`
+blocks advancement and escalates; `PASS` advances.
 
 ## Findings
 
