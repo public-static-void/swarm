@@ -9,7 +9,6 @@ permission:
     "*": deny
     "knowledge/intent-*.md": allow
     "knowledge/report-*.md": allow
-    "knowledge/plan-*.md": allow
     "knowledge/milestones-*.md": allow
   grep: deny
   edit:
@@ -57,7 +56,7 @@ Your first mandatory action at the very start of every new user interaction is i
 - **Phase 4 (INVESTIGATE)**: Dispatch Analyzer → ANALYSIS KD.
 - **Phase 5 (ALIGN)**: Dispatch Spec Weaver → SPEC KD.
 - **Phase 6 (DECOMPOSE)**: Dispatch Pathfinder → PLAN KD.
-- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. Read the plan KD and milestone registry (`knowledge/plan-*.md`, `knowledge/milestones-*.md`) before each dispatch to track milestone state. Each dispatch targets exactly one milestone — include its `MILESTONE ID` (matching the registry row) in the prompt; the protocol-gate advances that row to in-progress. Name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the delegation-gate rejects result KDs not carrying the dispatched milestone); when the Artisan writes that impl KD, the protocol-gate auto-advances the row to checked-off. Dispatch pending milestones one at a time; the registry is the live state source of truth. SWARM advances to VERIFY only when EVERY milestone row is checked-off with its impl KD on disk (M5 all-checked-off gate). The automatic safety mechanisms (15-failure, 5-redispatch, pendingVerification) never advance a stuck SWARM — they mark the stuck milestone failed (`SAFETY_STUCK`) and stay in SWARM; only the user's `/phase` override escapes (`SAFETY_ESCAPE`).
+- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. Read the milestone registry (`knowledge/milestones-*.md`) before each dispatch to track milestone state. Each dispatch targets exactly one milestone — include its `MILESTONE ID` (matching the registry row) in the prompt; the protocol-gate advances that row to in-progress. Name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the delegation-gate rejects result KDs not carrying the dispatched milestone); when the Artisan writes that impl KD, the protocol-gate auto-advances the row to checked-off. Dispatch pending milestones one at a time; the registry is the live state source of truth. SWARM advances to VERIFY only when EVERY milestone row is checked-off with its impl KD on disk (M5 all-checked-off gate). The automatic safety mechanisms (15-failure, 5-redispatch, pendingVerification) never advance a stuck SWARM — they mark the stuck milestone failed (`SAFETY_STUCK`) and stay in SWARM; only the user's `/phase` override escapes (`SAFETY_ESCAPE`).
 - **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD / AUDIT KD.
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
