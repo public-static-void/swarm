@@ -128,17 +128,20 @@ Phase Output ──► Gate ──► Next Phase
 2. Inspector iterates through each acceptance criterion
 3. For each criterion, record PASS or FAIL with evidence
 4. If FAIL, trace to specific requirement (R001, P001, file:line)
-5. Produce REVIEW KD
-6. On FAIL, return to producer with feedback loop: fix → re-review → repeat until PASS or diminishing returns
-7. On stalled progress (2-3 cycles without improvement), escalate to fundamental flaw → Happy to Delete
+5. Write the verdict into the REVIEW/AUDIT KD frontmatter (`verdict: PASS | FAIL | FUNDAMENTAL`) — the machine source for the VERIFY gate
+6. Produce REVIEW KD
+7. On FAIL, protocol-gate machine-regresses VERIFY→SWARM automatically (no `BACKWARD: true` flag, no explicit dispatch): the producer fixes the findings, re-submits, and the Inspector re-reviews — repeat until PASS or diminishing returns
+8. On stalled progress (2-3 cycles without improvement), the Inspector issues a FUNDAMENTAL verdict, which blocks VERIFY advancement and escalates to the user (Happy to Delete)
 
 ## Verdicts
 
-| Verdict            | Meaning                 | Next Action                       |
-| ------------------ | ----------------------- | --------------------------------- |
-| PASS               | All criteria met, clean | Advance to next phase             |
-| FAIL (clear cause) | Specific fixable issues | Return to producer for fix        |
-| FAIL (fundamental) | Design-level flaw       | Revert (Happy to Delete), re-spec |
+| Verdict     | Meaning                 | Machine behavior                                                                          |
+| ----------- | ----------------------- | ----------------------------------------------------------------------------------------- |
+| PASS        | All criteria met, clean | VERIFY advances to the next phase (presence-based)                                        |
+| FAIL        | Specific fixable issues | protocol-gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; producer fixes |
+| FUNDAMENTAL | Design-level flaw       | protocol-gate blocks VERIFY advancement and escalates to the user; it never regresses — Happy to Delete |
+
+A `FAIL` verdict in the newest review/audit KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). A `FUNDAMENTAL` verdict blocks advancement and escalates; it must never auto-regress.
 
 ## Feedback Loop
 
