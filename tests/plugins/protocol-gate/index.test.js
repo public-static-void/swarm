@@ -273,7 +273,7 @@ ${table}
     expect(hooks.sessionPhaseMap.get(bare)).toBe(hooks.STATES.INTENT);
   });
 
-  it("restricts INTENT-phase writes to knowledge/intent-*.md and reads to knowledge/intent-*, templates, and skills", async () => {
+  it("restricts INTENT-phase writes to knowledge/intent-*.md and reads to skill files and intent KDs", async () => {
     const s = sid("io-1");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
@@ -304,7 +304,67 @@ ${table}
         { tool: "read", sessionID: s, callID: "c4" },
         { args: { filePath: "src/main.js" } }
       )
-    ).rejects.toThrow("Read from template, skill, or knowledge/intent-*.md");
+    ).rejects.toThrow("Read from skill files or knowledge/intent-*.md only");
+  });
+
+  it("AC003: INTENT-phase read allows skill files and intent KDs, rejects delegation-gate template JSON", async () => {
+    const s = sid("ac003");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+
+    // Auto-loaded KD-format template skill resolves
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c1" },
+        { args: { filePath: "skills/template-intent/SKILL.md" } }
+      )
+    ).resolves.toBeUndefined();
+
+    // Current session intent KD resolves
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c2" },
+        { args: { filePath: `knowledge/intent-feature-${s}.md` } }
+      )
+    ).resolves.toBeUndefined();
+
+    // Delegation template JSON is auto-injected by delegation-gate, never read
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c3" },
+        { args: { filePath: "plugins/delegation-gate/templates/investigate.json" } }
+      )
+    ).rejects.toThrow("Read from skill files or knowledge/intent-*.md only");
+  });
+
+  it("AC004: REPORT-phase read allows skill files and knowledge KDs, rejects delegation-gate template JSON", async () => {
+    const s = sid("ac004");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+
+    // Auto-loaded KD-format template skill resolves (skill-file check added)
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c1" },
+        { args: { filePath: "skills/template-report/SKILL.md" } }
+      )
+    ).resolves.toBeUndefined();
+
+    // Knowledge KD resolves (needed to compose the report)
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c2" },
+        { args: { filePath: "knowledge/report-compose.md" } }
+      )
+    ).resolves.toBeUndefined();
+
+    // Delegation template JSON is auto-injected by delegation-gate, never read
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c3" },
+        { args: { filePath: "plugins/delegation-gate/templates/investigate.json" } }
+      )
+    ).rejects.toThrow("Read from skill files or knowledge KDs only");
   });
 
   it("normalizes backslash and absolute Windows paths to project-relative knowledge/ paths (AC001–AC003)", async () => {
