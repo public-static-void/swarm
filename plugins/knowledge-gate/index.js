@@ -13,7 +13,7 @@
 //    and injects them into the Overseer's system prompt for Triage Notes
 //
 // Debug logging: set KNOWLEDGE_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 // tool() registers custom tools with the runtime via the plugin `tool` hook
@@ -159,7 +159,9 @@ function getNextMemoryId() {
  * Canonical schema:
  *   id (MEM-\d{3}), source_kd (string), tags (array 2-8),
  *   topic (string ≤100), insight (string ≤500), type (enum),
- *   created (ISO 8601 with time), session (string), version ("1.0.0")
+ *   created (ISO 8601 with time), session (string), version ("1.0.0"),
+ *   superseded_by (string MEM-\d{3}, optional) — tombstone set via
+ *   memory_update; superseded entries are excluded from search results
  */
 function validateMemoryEntry(entry) {
   if (!entry || typeof entry !== "object") {
@@ -429,6 +431,11 @@ export default {
         debug(`searchMemory: cache miss, loaded ${entries.length} entries from disk`);
       }
 
+      // Exclude superseded entries (tombstoned via memory_update superseded_by)
+      // before scoring — a tombstoned entry no longer participates in search,
+      // dedup matching (checkDuplicateMemory), or hint derivation.
+      entries = entries.filter(e => !e.superseded_by);
+
       if (entries.length === 0) return [];
 
       // Score each entry by tag overlap count
@@ -549,7 +556,9 @@ export default {
             entry.topic.toLowerCase().includes(r.topic.toLowerCase()) ? 2 : 0
           : 0;
         const score = tagOverlap + topicMatch;
-        if (score >= threshold) {
+        // Duplicate only when topic overlaps AND score clears the threshold —
+        // shared tags alone (unrelated topics) must not skip a write (issue 20).
+        if (topicMatch && score >= threshold) {
           return r;
         }
       }
@@ -650,6 +659,126 @@ export default {
           } catch (e) {
             debug(`memory_write: write failed — ${e.message}`);
             return JSON.stringify({ error: `Failed to write memory entry: ${e.message}` });
+          }
+        }
+      }),
+      memory_update: tool({
+        description: "Update an existing memory entry in knowledge/memory/. Only Scribe may update. Args: id (string MEM-XXX), entry (object with any of: topic, insight, tags, source_kd, type, superseded_by). Preserves id/created/session/version. Setting superseded_by tombstones the entry: it is excluded from future memory_search results.",
+        args: {
+          id: tool.schema.string().describe("Memory entry ID to update (MEM-XXX)"),
+          entry: tool.schema.object({
+            topic: tool.schema.string().optional().describe("Topic ≤100 chars"),
+            insight: tool.schema.string().optional().describe("Insight ≤500 chars"),
+            tags: tool.schema.array(tool.schema.string()).optional().describe("2-8 tags from controlled vocabulary"),
+            source_kd: tool.schema.string().optional().describe("Source KD path"),
+            type: tool.schema.enum(["fact", "decision", "pattern", "warning", "context"]).optional().describe("Entry type"),
+            superseded_by: tool.schema.string().optional().describe("Optional tombstone: MEM-XXX ID of the replacing entry")
+          })
+        },
+        async execute(args, context) {
+          const { id, entry } = args;
+          const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // Permission check: only Scribe can update memory entries
+          if (agent !== "scribe") {
+            debug(`memory_update: rejected — called by non-Scribe agent "${agent}"`);
+            return JSON.stringify({ error: "Only Scribe agent has permission to update memory entries. Called by: " + (agent || "unknown") });
+          }
+
+          // id must match the canonical format (also guards path traversal)
+          if (typeof id !== "string" || !/^MEM-\d{3}$/.test(id)) {
+            debug(`memory_update: invalid or missing id — ${id}`);
+            return JSON.stringify({ error: "Memory entry not found: " + id });
+          }
+          const filePath = join(MEMORY_DIR, `entry-${id.replace("MEM-", "")}.json`);
+          if (!existsSync(filePath)) {
+            debug(`memory_update: entry not found — ${id}`);
+            return JSON.stringify({ error: "Memory entry not found: " + id });
+          }
+
+          // Empty patch — no updatable field supplied
+          const UPDATABLE_FIELDS = ["topic", "insight", "tags", "source_kd", "type", "superseded_by"];
+          if (!entry || typeof entry !== "object" || !UPDATABLE_FIELDS.some(f => f in entry)) {
+            return JSON.stringify({ error: "Nothing to update" });
+          }
+
+          // Tombstone format check (format-only; entries are self-contained)
+          if (entry.superseded_by !== undefined && !/^MEM-\d{3}$/.test(entry.superseded_by)) {
+            return JSON.stringify({ error: `superseded_by must match MEM-\\d{3}, got "${entry.superseded_by}"` });
+          }
+
+          // Load the existing entry and merge the partial patch
+          let existing;
+          try {
+            existing = JSON.parse(readFileSync(filePath, "utf8"));
+          } catch (e) {
+            debug(`memory_update: failed to read ${filePath} — ${e.message}`);
+            return JSON.stringify({ error: "Memory entry not found: " + id });
+          }
+
+          const merged = { ...existing, ...entry };
+          // Preserve immutable fields from the on-disk entry
+          merged.id = existing.id;
+          merged.created = existing.created;
+          merged.session = existing.session;
+          merged.version = existing.version;
+
+          // Validate the merged entry before writing
+          const validation = validateMemoryEntry(merged);
+          if (!validation.valid) {
+            debug(`memory_update: validation failed — ${validation.error}`);
+            return JSON.stringify({ error: validation.error });
+          }
+
+          try {
+            writeFileSync(filePath, JSON.stringify(merged, null, 2), "utf8");
+            // Invalidate cache so next search picks up the updated entry
+            memoryCache.entries = null;
+            memoryCache.lastLoaded = null;
+            debug(`memory_update: updated ${filePath}`);
+            return JSON.stringify({ message: "Memory entry updated", id: existing.id });
+          } catch (e) {
+            debug(`memory_update: write failed — ${e.message}`);
+            return JSON.stringify({ error: `Failed to update memory entry: ${e.message}` });
+          }
+        }
+      }),
+      memory_delete: tool({
+        description: "Delete a memory entry from knowledge/memory/. Only Scribe may delete. Args: id (string MEM-XXX). Removes entry-{num}.json permanently — there is no VCS recovery (knowledge/ is gitignored). Prefer memory_update with superseded_by for supersession.",
+        args: {
+          id: tool.schema.string().describe("Memory entry ID to delete (MEM-XXX)")
+        },
+        async execute(args, context) {
+          const { id } = args;
+          const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // Permission check: only Scribe can delete memory entries
+          if (agent !== "scribe") {
+            debug(`memory_delete: rejected — called by non-Scribe agent "${agent}"`);
+            return JSON.stringify({ error: "Only Scribe agent has permission to delete memory entries. Called by: " + (agent || "unknown") });
+          }
+
+          // id must match the canonical format (also guards path traversal)
+          if (typeof id !== "string" || !/^MEM-\d{3}$/.test(id)) {
+            debug(`memory_delete: invalid or missing id — ${id}`);
+            return JSON.stringify({ error: "Memory entry not found: " + id });
+          }
+          const filePath = join(MEMORY_DIR, `entry-${id.replace("MEM-", "")}.json`);
+          if (!existsSync(filePath)) {
+            debug(`memory_delete: entry not found — ${id}`);
+            return JSON.stringify({ error: "Memory entry not found: " + id });
+          }
+
+          try {
+            unlinkSync(filePath);
+            // Invalidate cache so next search drops the deleted entry
+            memoryCache.entries = null;
+            memoryCache.lastLoaded = null;
+            debug(`memory_delete: deleted ${filePath}`);
+            return JSON.stringify({ message: "Memory entry deleted", id });
+          } catch (e) {
+            debug(`memory_delete: delete failed — ${e.message}`);
+            return JSON.stringify({ error: `Failed to delete memory entry: ${e.message}` });
           }
         }
       })
