@@ -696,6 +696,22 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       expect(ckptOutput.args.description).not.toContain("<milestone-id>");
       expect(ckptOutput.args.description).toContain("RESULT KD: knowledge/checkpoint-<name>-<session_id>.md");
     });
+
+    // R009 / issue-9 remainder (AC014): dispatcherFormatHint() is mode-agnostic —
+    // injected via tool.definition before dispatch, when the mode is not yet known.
+    // The swarm MILESTONE ID line therefore carries the "(swarm mode only)"
+    // qualifier, and the KD PATHS line documents the comma-separated convention
+    // that the validation split() (index.js:516-517) expects.
+    it("annotates the task tool definition with the swarm MILESTONE ID and comma-separated KD PATHS conventions (AC014)", async () => {
+      const output = { description: "Delegate work to another agent." };
+      await hooks["tool.definition"]({ toolID: "task" }, output);
+
+      expect(output.description).toContain("Delegation Prompt Format:");
+      expect(output.description).toContain("MILESTONE ID: <milestone-id> — swarm mode only, exactly one, required");
+      expect(output.description).toContain("swarm mode only");
+      expect(output.description).toContain("KD PATHS: <upstream KD paths, comma-separated> (optional)");
+      expect(output.description).toContain("comma-separated");
+    });
   });
 
   describe("Subagent Type Fallback", () => {
