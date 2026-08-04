@@ -9,7 +9,7 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "fs";
+import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
@@ -685,7 +685,120 @@ function toProjectRelative(filePath) {
   return normalized;
 }
 
-function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCount) {
+// F1 (R101): Reads the `verdict` field from a KD file's YAML frontmatter — the
+// machine source for the verdict-aware VERIFY gate. Only the first frontmatter
+// block (between the leading `---` and the next `---` line) is inspected; a
+// body Verdict section is human-readable and never read. Returns "PASS",
+// "FAIL", or "FUNDAMENTAL", or null when the field is absent or its value is
+// not one of the three valid verdicts (R106/FM02 — missing/invalid is treated
+// as PASS with a warning at the call site).
+function readVerdictFrontmatter(filePath) {
+  try {
+    const content = readFileSync(filePath, "utf8");
+    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!frontmatter) return null;
+    const verdictMatch = frontmatter[1].match(/^verdict\s*:\s*([A-Za-z]+)\s*$/m);
+    if (!verdictMatch) return null;
+    const verdict = verdictMatch[1].toUpperCase();
+    return ["PASS", "FAIL", "FUNDAMENTAL"].includes(verdict) ? verdict : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// F1 (R102/EC01): Finds the newest review/audit KD among the session's KDs.
+// "Newest" is deterministic: greatest file mtime, tie-break by greatest
+// filename. Returns { filename, verdict } (verdict read from the newest KD's
+// frontmatter) or null when no review/audit KD exists — the caller then falls
+// back to the presence-based result (false).
+function findNewestVerdictKD(sessionFiles) {
+  const reviewAuditFiles = sessionFiles.filter(f => /^review-|^audit-/i.test(f));
+  if (reviewAuditFiles.length === 0) return null;
+  const knowledgeDir = getKnowledgeDir();
+  reviewAuditFiles.sort((a, b) => {
+    let mtimeDiff = 0;
+    try { mtimeDiff = statSync(join(knowledgeDir, b)).mtimeMs - statSync(join(knowledgeDir, a)).mtimeMs; } catch (_) {}
+    if (mtimeDiff !== 0) return mtimeDiff;
+    return b > a ? 1 : b < a ? -1 : 0;
+  });
+  const filename = reviewAuditFiles[0];
+  return { filename, verdict: readVerdictFrontmatter(join(knowledgeDir, filename)) };
+}
+
+// F1 (R104/AC103/EC02/EC07): On a FAIL auto-regression every checked-off
+// milestone row of the session registry re-opens to in-progress, so the M5
+// all-checked-off gate cannot re-advance SWARM→VERIFY before fresh impl KDs
+// land. Idempotent for rows already in-progress (EC02); a missing/empty
+// registry is a no-op and the SWARM gate fails closed on REGISTRY_EMPTY/MISSING
+// (EC07). updateMilestoneRegistry's reopen semantics preserve the registry
+// row's own casing.
+function reopenCheckedOffMilestones(sessionID, sessionPhaseMap) {
+  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!registry) {
+    debug(`F1 reopen: no milestone registry for session ${sessionID} — nothing to reopen (EC07)`);
+    return;
+  }
+  for (const row of registry.rows) {
+    if (row.state === "checked-off") {
+      const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"], { reopen: true });
+      debug(`F1 reopen: milestone ${row.id} checked-off → in-progress (${JSON.stringify(result)})`);
+    }
+  }
+}
+
+// F1 (R102/R103): FAIL-verdict auto-regression. Regresses VERIFY→SWARM via the
+// existing backward-transition path — no `BACKWARD: true` flag and no explicit
+// dispatch — then re-opens checked-off milestone rows (R104). The once-per-KD
+// guard records the KD filename that fired the regression so re-evaluating the
+// same KD never regresses again (R103). The cycle cap in backwardTransition
+// bounds repeated fix cycles (NFR001). Returns true when a regression fired,
+// false when this KD filename was already seen.
+function regressVerifyOnFail(sessionID, kdFilename, sessionPhaseMap, verdictRegressedKDs, backwardTransition) {
+  let seen = verdictRegressedKDs.get(sessionID);
+  if (!seen) {
+    seen = new Set();
+    verdictRegressedKDs.set(sessionID, seen);
+  }
+  if (seen.has(kdFilename)) return false;
+  seen.add(kdFilename);
+  debug(`VERDICT_FAIL: KD ${kdFilename} verdict=FAIL — auto-regressing VERIFY→SWARM (R102, no BACKWARD flag)`);
+  backwardTransition(sessionID, STATES.VERIFY, STATES.SWARM);
+  reopenCheckedOffMilestones(sessionID, sessionPhaseMap);
+  return true;
+}
+
+// F1 (R102-R106): module-level verdict-aware VERIFY gate body. checkDiskAdvancement
+// delegates the FAIL verdict here; f1Options carries the server-local regression
+// dependencies ({ verdictRegressedKDs, backwardTransition }) so direct unit-test
+// calls without a handler stay blocked-but-safe (no regression side effect).
+function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options) {
+  const hasReview = sessionFiles.some(f => /^review-/i.test(f));
+  const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
+  const verdictInfo = findNewestVerdictKD(sessionFiles);
+  if (verdictInfo && verdictInfo.verdict === "FAIL") {
+    let regressed = false;
+    if (f1Options && f1Options.verdictRegressedKDs && typeof f1Options.backwardTransition === "function") {
+      regressed = regressVerifyOnFail(sessionID, verdictInfo.filename, sessionPhaseMap, f1Options.verdictRegressedKDs, f1Options.backwardTransition);
+    }
+    debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} verdict=FAIL → ${regressed ? "regressed to SWARM" : "blocked (once-per-KD guard or no regression handler)"}`);
+    return false;
+  }
+  if (verdictInfo && verdictInfo.verdict === "FUNDAMENTAL") {
+    const escalation = `FUNDAMENTAL_ESCALATION: review/audit KD ${verdictInfo.filename} carries verdict FUNDAMENTAL — VERIFY advancement blocked; escalate to user (Happy to Delete) or override with /phase (R105)`;
+    debug(escalation);
+    process.stderr.write(`[protocol-gate] ${escalation}\n`);
+    debug(`Disk check VERIFY: blocked by FUNDAMENTAL verdict on ${verdictInfo.filename}`);
+    return false;
+  }
+  if (verdictInfo && !verdictInfo.verdict) {
+    debug(`VERDICT_MISSING: newest review/audit KD ${verdictInfo.filename} lacks a valid verdict field — treated as PASS (R106/FM02)`);
+  }
+  const result = hasReview || hasAudit;
+  debug(`Disk check VERIFY: review=${hasReview}, audit=${hasAudit} → ${result}`);
+  return result;
+}
+
+function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCount, f1Options) {
   if (phase === undefined) return false;
 
   // Session ID is required to filter out stale KDs from prior sessions.
@@ -766,12 +879,11 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   if (!pattern) return false;
 
+  // F1 (R102-R106): the verdict-aware VERIFY gate — see evaluateVerifyVerdict.
+  // The newest review/audit KD's frontmatter verdict decides advancement; only
+  // the newest KD's frontmatter is read (NFR007).
   if (phase === STATES.VERIFY) {
-    const hasReview = sessionFiles.some(f => /^review-/i.test(f));
-    const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
-    const result = hasReview || hasAudit;
-    debug(`Disk check VERIFY: review=${hasReview}, audit=${hasAudit} → ${result}`);
-    return result;
+    return evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options);
   }
 
   // M5 (R011-R014): SWARM advancement requires ALL registry milestones to be
@@ -971,6 +1083,13 @@ export default {
     // R100: Track agent type for ALL sessions (including subagents) to enforce
     // checkpoint KD restrictions. Populated in chatParams for every session.
     const sessionAgentMap = new Map();
+    // F1 (R103): once-per-KD regression guard — per-session set of review/audit
+    // KD filenames that already triggered a FAIL auto-regression. Re-evaluating
+    // the same KD must not regress again (no infinite FAIL→SWARM→VERIFY loop);
+    // a re-review writes a new filename which may trigger the next regression.
+    // In-memory only (like freshAdvancement) — the cap is re-established from
+    // disk on restart via the cycle counter semantics.
+    const verdictRegressedKDs = new Map(); // sessionID → Set<filename>
     // tool.definition doesn't receive sessionID — track the most recent session
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
@@ -1566,6 +1685,7 @@ export default {
           sessionPhaseMap.delete(`${sessionID}:sid`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
+          verdictRegressedKDs.delete(sessionID);
           pendingVerification.delete(sessionID);
           pendingVerificationToolCount.delete(sessionID);
           if (!saveState(sessionID)) {
@@ -1695,6 +1815,7 @@ export default {
           sessionPhaseMap.delete(`${sessionID}:sid`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
+          verdictRegressedKDs.delete(sessionID);
           pendingVerification.delete(sessionID);
           pendingVerificationToolCount.delete(sessionID);
           if (!saveState(sessionID)) {
@@ -1764,7 +1885,7 @@ export default {
         } else {
           const currentPhase = sessionPhaseMap.get(sessionID);
           const currentPhaseName = getPhaseName(currentPhase);
-          if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount)) {
+          if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount, { verdictRegressedKDs, backwardTransition: handleBackwardTransition })) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
             diskCheckFailures.set(sessionID, 0);
             // R005: Clear in-flight tracking — KD appeared on disk, dispatch is complete
@@ -2200,6 +2321,11 @@ export default {
       readMilestoneRegistry,
       checkAllMilestonesCheckedOff,
       markStuckMilestonesFailed,
+      readVerdictFrontmatter,
+      findNewestVerdictKD,
+      reopenCheckedOffMilestones,
+      regressVerifyOnFail,
+      verdictRegressedKDs,
       collectParentSessionCandidates,
       getPersistedGeneration,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
