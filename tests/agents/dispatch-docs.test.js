@@ -97,6 +97,15 @@ describe("agents/*.md delegation dispatch docs", () => {
       expect(other.description).toBe("Read a file.");
     });
 
+    it("annotates the task tool definition with the BRANCH line for committer modes (AC104)", async () => {
+      const output = { description: "Delegate work to another agent." };
+      await hooks["tool.definition"]({ toolID: "task" }, output);
+      // The mode-agnostic tool.definition hint must teach the BRANCH field with
+      // its preflight/cleanup-only qualifier so dispatchers compose it upfront.
+      expect(output.description).toContain("BRANCH: <branch> — preflight/cleanup modes only, required");
+      expect(output.description).toContain("preflight/cleanup modes only");
+    });
+
     it("validates the corrected artisan.md checkpoint dispatch example (AC124)", async () => {
       const artisan = readAgent("artisan.md");
       const m = artisan.match(/prompt:\s*`([\s\S]*?)`/);
