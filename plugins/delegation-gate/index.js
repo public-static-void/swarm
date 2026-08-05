@@ -43,6 +43,7 @@ const ERRORS = {
   MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
   INVALID_MILESTONE_ID: { code: "INVALID_MILESTONE_ID", message: "Invalid MILESTONE ID format", guidance: "MILESTONE ID must match /^[A-Za-z0-9][A-Za-z0-9_-]*$/" },
+  INVALID_BRANCH: { code: "INVALID_BRANCH", message: "Invalid branch name", guidance: "Branch must start alphanumeric, contain only [A-Za-z0-9._/-], no '..', and no trailing '/' or '.'" },
   RESULT_KD_MILESTONE_MISMATCH: { code: "RESULT_KD_MILESTONE_MISMATCH", message: "Swarm result KD does not match the MILESTONE ID", guidance: "Name the impl KD knowledge/impl-<milestone-id>-<name>-<session-id>[-gen{N}].md with the dispatched MILESTONE ID as the first token after impl-" }
 };
 
@@ -128,20 +129,32 @@ function loadTemplates(config) {
     preflight: "Load the kd-system skill and the committer-preflight skill. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
   };
 
+  // R101 (M3): preflight/cleanup fallback headers carry `BRANCH: {branch}`
+  // between GENERATION and SCOPE, mirroring the disk templates. Cleanup keeps
+  // its no-INTENT-KD header shape (matches templates/cleanup.json); all other
+  // modes keep the shared header with INTENT KD and no BRANCH line. Both error
+  // paths render the same header so the fallback can never drift from the
+  // disk shape (the older fallback was also missing GENERATION entirely).
+  const fallbackHeader = (mode) => {
+    const intentKdLine = mode === "cleanup" ? "" : "INTENT KD: {intent_kd}\n";
+    const branchLine = mode === "preflight" || mode === "cleanup" ? "BRANCH: {branch}\n" : "";
+    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\n${branchLine}SCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n`;
+  };
+
   for (const [mode, content] of Object.entries(defaultTemplates)) {
     try {
       const templatePath = join(PLUGIN_DIR, templatesDir, `${mode}.json`);
       const templateData = JSON.parse(readFileSync(templatePath, "utf8"));
       if (!templateData.template || typeof templateData.template !== "string") {
         debug(`Template ${mode}: disk file missing 'template' field — using fallback`);
-        templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
+        templates[mode] = fallbackHeader(mode) + content;
       } else {
         debug(`Template ${mode}: loaded from disk`);
         templates[mode] = templateData.template;
       }
     } catch (e) {
       debug(`Template ${mode}: not found on disk — using fallback`);
-      templates[mode] = `DISPATCH TO: {agent}\nMODE: ${mode}\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n${content}`;
+      templates[mode] = fallbackHeader(mode) + content;
     }
   }
 
@@ -160,9 +173,11 @@ function extractFromText(text, fields, override = false) {
       if (override || !fields["agent"]) fields["agent"] = agentMatch[2].trim().replace(/\*\*/g, "").trim();
       continue;
     }
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BRANCH[. _]NAME|BRANCH|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
-      const key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
+      let key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
+      // R102 (M3): BRANCH_NAME / BRANCH.NAME / BRANCH NAME all normalize to `branch`
+      if (key === "branch_name") key = "branch";
       if (override || !fields[key]) fields[key] = match[2].trim().replace(/\*\*/g, "").trim();
     }
   }
@@ -246,6 +261,18 @@ function validateKDPath(path) {
   return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(normalized);
 }
 
+// R102 (M3): git-ref-safe branch contract (spec interface contract #7) —
+// starts alphanumeric, then only [A-Za-z0-9._/-], no `..`, no trailing `/` or
+// `.`. Rejecting unsafe values here (EC04) keeps them from ever reaching a
+// `git checkout -b` invocation in the committer.
+function validateBranch(branch) {
+  if (typeof branch !== "string" || branch.trim() === "") return false;
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(branch)) return false;
+  if (branch.includes("..")) return false;
+  if (/[./]$/.test(branch)) return false;
+  return true;
+}
+
 function detectCodeBlocks(prompt) {
   return /```[\s\S]*?```|~~~[\s\S]*?~~~/.test(prompt);
 }
@@ -254,7 +281,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim().replace(/\\/g, "/");
-    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BRANCH[. _]NAME|BRANCH|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
@@ -348,6 +375,7 @@ MILESTONE ID: <milestone-id> — swarm mode only, exactly one, required
 SESSION DATE: <YYYY-MM-DD>
 SESSION ID: <session-id>
 GENERATION: <generation>
+BRANCH: <branch> — preflight/cleanup modes only, required
 SCOPE: <optional context>
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
 KD PATHS: <upstream KD paths, comma-separated> (optional)
@@ -378,6 +406,10 @@ function injectToolDocs(output, agentName, mode, generation) {
   // field the protocol-gate registry transition keys on. Only injected for swarm
   // so other modes don't see a field they must not include.
   const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: <milestone-id> (exactly one, required for swarm)\n" : "";
+  // R102 (M3): committer-owned modes carry the dispatch BRANCH — the branch the
+  // committer creates at preflight and verifies at cleanup. Only injected for
+  // preflight/cleanup so other modes don't see a field they must not include.
+  const branchLine = displayMode === "preflight" || displayMode === "cleanup" ? "BRANCH: <branch> (required for preflight/cleanup)\n" : "";
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
@@ -386,7 +418,7 @@ ${milestoneLine}INTENT KD: knowledge/intent-<name>.md
 SESSION DATE: ${today}
 SESSION ID: <session-id>
 GENERATION: <generation>
-SCOPE: <optional context>
+${branchLine}SCOPE: <optional context>
 RESULT KD: ${resultKdExamples} (when subagent produces a KD)
 
 RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
@@ -480,6 +512,13 @@ export default {
       if (fields.mode?.toLowerCase() !== "checkpoint" && fields.mode?.toLowerCase() !== "cleanup") {
         requiredFields.push("intent_kd");
       }
+      // R102 (M3): committer-owned modes carry a branch field — the committer
+      // creates/verifies the dispatch BRANCH, so an absent branch is a hard
+      // rejection before template rendering (spec matrix: preflight + cleanup
+      // require branch; checkpoint and all other modes do not).
+      if (fields.mode?.toLowerCase() === "preflight" || fields.mode?.toLowerCase() === "cleanup") {
+        requiredFields.push("branch");
+      }
 
       debug(`Extracted fields: ${Object.keys(fields).join(", ")}`);
 
@@ -497,6 +536,14 @@ export default {
           debug(`VALIDATION FAILED: missing required field '${field}'`);
           throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, ERRORS.MISSING_STRUCTURED_FIELDS.message, ERRORS.MISSING_STRUCTURED_FIELDS.guidance);
         }
+      }
+
+      // R102 (M3): validate any branch value present — required for
+      // preflight/cleanup, but a stray BRANCH line in other modes is still
+      // checked so unsafe values can never reach a git command (EC04).
+      if (fields.branch !== undefined && !validateBranch(fields.branch)) {
+        debug(`VALIDATION FAILED: invalid branch '${fields.branch}'`);
+        throw new DelegationGateError(ERRORS.INVALID_BRANCH.code, ERRORS.INVALID_BRANCH.message, ERRORS.INVALID_BRANCH.guidance);
       }
 
       // Scope validation — advisory only, never blocks delegation
