@@ -2614,4 +2614,280 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     expect(output.args.prompt).toContain("knowledge/impl-<milestone-id>-<descriptive-name>-<session_id>-gen4.md");
     expect(output.args.description).toContain("knowledge/impl-<milestone-id>-<name>-<session_id>-gen4.md");
   });
+
+  describe("M2: sticky /phase override (R006, AC006–AC010b)", () => {
+    // Ages a KD so its mtime predates a subsequent /phase override — stale
+    // evidence must never satisfy the override freshness contract (mtime >= since).
+    // utimesSync treats numeric timestamps as SECONDS since epoch, so Date
+    // objects are required for millisecond-precision backdating (EINVAL-adjacent
+    // far-future mtimes would otherwise make every KD look fresh).
+    function ageKD(filename, msBack = 10000) {
+      const when = new Date(Date.now() - msBack);
+      utimesSync(join(knowledgeDir, filename), when, when);
+    }
+
+    it("AC006 (R006): a pre-existing same-session preflight KD does not advance a /phase PREFLIGHT override", async () => {
+      const s = sid("ac006-override");
+      await initOverseer(s);
+      // Pre-existing preflight + exploration KDs (same session, gen 0) — the
+      // exact stale-evidence scenario that used to undo the override.
+      createKD(`preflight-old-${s}.md`);
+      createKD(`exploration-old-${s}.md`);
+      ageKD(`preflight-old-${s}.md`);
+      ageKD(`exploration-old-${s}.md`);
+
+      // At INVESTIGATE (4), override to PREFLIGHT (2).
+      hooks.sessionPhaseMap.set(s, hooks.STATES.INVESTIGATE);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "PREFLIGHT" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phase).toBe(hooks.STATES.PREFLIGHT);
+      expect(typeof marker.since).toBe("number");
+      // The marker is persisted in the state file (P007).
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toEqual({ phase: hooks.STATES.PREFLIGHT, since: marker.since });
+
+      // The next disk-check cycle must NOT advance — the preflight KD predates
+      // the override and is not fresh evidence (R006b).
+      await todo(s, "o1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+    });
+
+    it("AC007 (R006): a fresh post-override KD advances and clears the marker; pre-existing later-phase KDs then advance normally", async () => {
+      const s = sid("ac007-override");
+      await initOverseer(s);
+      createKD(`preflight-old-${s}.md`);
+      createKD(`exploration-old-${s}.md`);
+      ageKD(`preflight-old-${s}.md`);
+      ageKD(`exploration-old-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "PREFLIGHT" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      await todo(s, "o1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+
+      // A NEW preflight KD (mtime >= since) advances PREFLIGHT → EXPLORE and
+      // clears the override marker (P010 advance-away).
+      createKD(`preflight-fresh-${s}.md`);
+      await todo(s, "o2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
+
+      // The pre-existing exploration KD (written before the override) now
+      // advances EXPLORE → INVESTIGATE normally — R009 semantics resume once
+      // the marker clears (A2 minimal contract).
+      await todo(s, "o3");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+    });
+
+    it("AC008 (R006): /phase EXPLORE from INTENT holds EXPLORE until a matching exploration KD is written", async () => {
+      const s = sid("ac008-override");
+      await initOverseer(s);
+      await todo(s, "k1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "EXPLORE" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.EXPLORE);
+
+      // No exploration KD exists — the gate must not advance earlier.
+      await todo(s, "k2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+
+      // A matching exploration KD for the current session advances and clears.
+      createKD(`exploration-override-${s}.md`);
+      await todo(s, "k3");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("AC009 (R006): consistency never regresses the phase while the override is active", async () => {
+      const s = sid("ac009-override");
+      await initOverseer(s);
+      // Earlier-lifecycle evidence (spec KD at ALIGN=5) so a regression WOULD
+      // fire without the override — the walk-back matches phase-5 evidence.
+      createKD(`spec-evidence-${s}.md`);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "SWARM" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+
+      // With the override active at SWARM, a missing impl KD logs but never
+      // regresses (R006a).
+      const regressed = hooks.checkPhaseStateConsistency(
+        s, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        hooks.saveState, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.freshAdvancement
+      );
+      expect(regressed).toBe(false);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+
+      // Control: WITHOUT the override the same scan regresses to ALIGN —
+      // proving the override is what prevents regression.
+      hooks.sessionPhaseMap.delete(`${s}:overrideUntil`);
+      const regressedWithout = hooks.checkPhaseStateConsistency(
+        s, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        hooks.saveState, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.freshAdvancement
+      );
+      expect(regressedWithout).toBe(true);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+    });
+
+    it("AC010b (R006): the override marker survives a mid-session restart and honors fresh evidence", async () => {
+      const s = sid("ac010b-override");
+      await initOverseer(s);
+      createKD(`exploration-old-${s}.md`);
+      ageKD(`exploration-old-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "EXPLORE" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+
+      // Simulated mid-session restart: a fresh plugin instance restores the
+      // phase AND the marker from the state file (P007 reconcile restore).
+      hooks = await pluginModule.server({}, {});
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`)).toEqual({ phase: hooks.STATES.EXPLORE, since: marker.since });
+
+      // The aged exploration KD still cannot advance the restored override.
+      await todo(s, "r1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+
+      // A fresh exploration KD advances and clears the restored marker.
+      createKD(`exploration-fresh-${s}.md`);
+      await todo(s, "r2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("R006 (contract #5): a /phase DECOMPOSE override requires BOTH fresh plan and fresh milestones KDs", async () => {
+      const s = sid("override-decompose");
+      await initOverseer(s);
+      createKD(`plan-old-${s}.md`);
+      createKD(`milestones-old-${s}.md`, registryContent([["M1", "checked-off"]]));
+      ageKD(`plan-old-${s}.md`);
+      ageKD(`milestones-old-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "DECOMPOSE" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+
+      // Both KDs pre-exist but are stale — no advancement under the override.
+      await todo(s, "d1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+
+      // A fresh plan alone still does not satisfy the dual-KD gate.
+      createKD(`plan-fresh-${s}.md`);
+      await todo(s, "d2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+
+      // A fresh milestones KD completes the dual-KD gate → advance + clear.
+      createKD(`milestones-fresh-${s}.md`, registryContent([["M1", "checked-off"]]));
+      await todo(s, "d3");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("R006 (contract #5): a /phase SWARM override requires a FRESH milestone registry as evidence", async () => {
+      const s = sid("override-swarm");
+      await initOverseer(s);
+      // Registry with all milestones checked-off + matching impl KD would
+      // normally advance — but the registry predates the override.
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-old-${s}.md`);
+      ageKD(`milestones-feature-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "SWARM" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+
+      // The all-checked-off gate passes but the registry is stale → no advance.
+      await todo(s, "sw1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+
+      // A fresh registry write advances SWARM → VERIFY and clears the marker.
+      createRegistry(s, [["M1", "checked-off"]]);
+      await todo(s, "sw2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("R006 (contract #5): a /phase VERIFY override requires the NEWEST review/audit KD to be fresh", async () => {
+      const s = sid("override-verify");
+      await initOverseer(s);
+      createKD(`review-old-${s}.md`);
+      ageKD(`review-old-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "VERIFY" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+
+      // The review KD is stale → the override holds VERIFY.
+      await todo(s, "v1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+
+      // A fresh review KD (no verdict → treated as PASS) advances + clears.
+      createKD(`review-fresh-${s}.md`);
+      await todo(s, "v2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("R006 (P010): a new /phase invocation replaces the prior override marker", async () => {
+      const s = sid("override-replace");
+      await initOverseer(s);
+      let out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "SWARM" }, out);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.SWARM);
+      const firstSince = hooks.sessionPhaseMap.get(`${s}:overrideUntil`).since;
+
+      out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "EXPLORE" }, out);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phase).toBe(hooks.STATES.EXPLORE);
+      expect(marker.since).toBeGreaterThanOrEqual(firstSince);
+      const persisted = JSON.parse(readFileSync(statePath(s), "utf8"));
+      expect(persisted.overrideUntil).toEqual({ phase: hooks.STATES.EXPLORE, since: marker.since });
+    });
+
+    it("R006 (P010): a backward transition clears the override marker", async () => {
+      const s = sid("override-backward");
+      await initOverseer(s);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "VERIFY" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.VERIFY);
+
+      // VERIFY → SWARM via an artisan dispatch with BACKWARD: true.
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "b1" },
+        { args: { prompt: "DISPATCH TO: artisan\nBACKWARD: true\nSCOPE: fix something", subagent_type: "artisan" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
+    });
+
+    it("R006 (P010): the REPORT lifecycle-end reset clears the override marker", async () => {
+      const s = sid("override-report");
+      await initOverseer(s);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "REPORT" }, out);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.REPORT);
+
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: s, callID: "r1" },
+        { args: { filePath: `knowledge/report-override-${s}.md`, content: "report" } }
+      );
+      expect(hooks.sessionPhaseMap.has(s)).toBe(false);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      const persisted = JSON.parse(readFileSync(statePath(s), "utf8"));
+      expect(persisted.overrideUntil).toBeUndefined();
+    });
+  });
 });
