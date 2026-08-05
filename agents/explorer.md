@@ -25,8 +25,14 @@ permission:
     "*": deny
     "ls*": allow
     "find*": allow
+    "cat*": allow
+    "head*": allow
+    "tail*": allow
+    "wc*": allow
     "mkdir*": allow
     "git status*": allow
+    "git show*": allow
+    "git status -sb*": allow
     "git log*": allow
     "git branch*": allow
     "git merge-base*": allow

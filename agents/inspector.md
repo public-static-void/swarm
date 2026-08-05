@@ -25,9 +25,15 @@ permission:
   bash:
     "*": deny
     "ls*": allow
+    "cat*": allow
+    "head*": allow
+    "tail*": allow
+    "wc*": allow
     "mkdir*": allow
     "git status*": allow
     "git diff*": allow
+    "git show*": allow
+    "git status -sb*": allow
     "git log*": allow
     "git branch*": allow
     "git merge-base*": allow
@@ -43,7 +49,7 @@ permission:
     "cargo test*": allow
     "cargo check*": allow
     "cargo clippy*": allow
-    "pytest*": allow
+    "pytest tests*": allow
     "go test*": allow
     "php -l *": allow
 ---

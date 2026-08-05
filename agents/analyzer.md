@@ -26,16 +26,24 @@ permission:
     "npm test*": allow
     "npm run lint*": allow
     "bun test*": allow
-    "cargo*": allow
-    "pip*": allow
-    "poetry*": allow
-    "mvn*": allow
-    "gradle*": allow
-    "cmake*": allow
-    "composer*": allow
-    "rustc*": allow
-    "rustup*": allow
-    "uv*": allow
+    "cargo test*": allow
+    "cargo check*": allow
+    "cargo clippy*": allow
+    "pip install*": allow
+    "poetry run*": allow
+    "poetry install*": allow
+    "mvn test*": allow
+    "mvn verify*": allow
+    "gradle build*": allow
+    "gradle test*": allow
+    "cmake --build*": allow
+    "composer install*": allow
+    "rustc --version*": allow
+    "rustc --edition*": allow
+    "rustup show*": allow
+    "rustup toolchain*": allow
+    "uv run*": allow
+    "uv sync*": allow
     "php -l *": allow
     "go fmt*": allow
     "go vet*": allow
@@ -67,9 +75,10 @@ permission:
     "npx eslint*": allow
     "npx prettier*": allow
     "npx tsc --noEmit*": allow
-    "pytest*": allow
+    "pytest tests*": allow
     "go test*": allow
-    "make*": allow
+    "make test*": allow
+    "make build*": allow
 ---
 
 # Analyzer
