@@ -187,26 +187,19 @@ function matchesSessionKD(filename, sessionID, generation) {
   return filename.endsWith(`-${sessionID}.md`);
 }
 
-// F5 (R004): resolves the session IDs whose KDs belong to the current lifecycle
-// for READ/scan purposes. An adopted session stores the pointed-to lifecycle's
-// session in `:sid` — the prior lifecycle's KDs are named under THAT id and the
-// resume must see them — but a resumed session also writes NEW KDs under its
-// own id going forward, and the gate must see those too. So the lookup set is
-// [`:sid`, current sessionID]. For a non-adopted session `:sid` equals the
-// current id, so the set collapses to a single entry — behavior is identical
-// to the pre-F5 code (zero regression).
-// IMPORTANT: this is ONLY for READING/scanning existing KDs. New state writes
-// and new KD path generation always use the CURRENT sessionID — a resumed
-// session owns its own KDs from the moment it adopts.
+// R002/R004 (M1): resolves the session IDs whose KDs belong to the current
+// lifecycle for READ/scan purposes. Cross-session adoption was removed — a
+// session never inherits another lifecycle's phase or `:sid` — and stale `:sid`
+// entries are healed at reconcile (R002), so the lookup set is exactly
+// [current sessionID]. No read path can ever scan a prior lifecycle's KDs.
 function getKDLookupSIDs(sessionPhaseMap, sessionID) {
-  const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
-  if (storedSID && storedSID !== sessionID) return [storedSID, sessionID];
   return [sessionID];
 }
 
-// F5 (R004): generation-scoped KD matcher against the session's full lookup
-// set (adopted `:sid` + current sessionID). True when the file belongs to the
-// lifecycle at the given generation under either id.
+// R004 (M1): generation-scoped KD matcher against the session's single-session
+// lookup set ([current sessionID] only — cross-session adoption removed). True
+// when the file belongs to the lifecycle at the given generation under the
+// current session id.
 function matchesSessionKDForSession(filename, sessionPhaseMap, sessionID, generation) {
   return getKDLookupSIDs(sessionPhaseMap, sessionID).some(sid => matchesSessionKD(filename, sid, generation));
 }
@@ -497,10 +490,9 @@ function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
   const knowledgeDir = getKnowledgeDir();
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
-  // F5 (R004): an adopted SWARM session's registry is the pointed-to lifecycle's
-  // file (named under `:sid`) — the M5 gate must read that SSOT, and a
-  // post-adoption DECOMPOSE resume may have a fresh registry under the current
-  // session id. The lookup set covers both.
+  // R004 (M1): registry lookup is scoped to the current session only — no
+  // cross-session adoption means a prior lifecycle's registry never gates a
+  // fresh session's SWARM.
   const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
   if (!registry) return null;
 
@@ -560,10 +552,9 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
   const prefix = `impl-${milestoneId}-`;
-  // F5 (R004): impl-KD evidence for an adopted milestone may be the prior
-  // lifecycle's file (under `:sid`, e.g. a row already checked-off before the
-  // interruption) OR a post-adoption dispatch's file (under the current
-  // session id). Both count as disk evidence for the M5 check-off gate.
+  // R004 (M1): impl-KD evidence is scoped to the current session only — a
+  // prior lifecycle's impl KDs (under another session id) never check off a
+  // fresh session's milestone rows.
   const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
   return found || null;
 }
@@ -833,9 +824,9 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // different `-genN-` suffix and must not advance the new lifecycle (BUG-008).
   // NFR005: generation defaults to 0 when the state was never loaded or the
   // file carried no generation field — session-ID-only matching is the fallback.
-  // F5 (R004): an ADOPTED session must see the pointed-to lifecycle's KDs
-  // (named under the stored `:sid`) AND its own post-adoption KDs (named under
-  // the current sessionID). Reads scan the full lookup set; writes never do.
+  // R004 (M1): reads scan the current session's KDs only — cross-session
+  // adoption is removed, so a fresh session can never advance off another
+  // lifecycle's KDs. lookupSIDs stays single-session (diagnostic only).
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
   const lookupSIDs = getKDLookupSIDs(sessionPhaseMap, sessionID);
   const sessionFiles = [];
@@ -922,10 +913,8 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
 
   // Generation-scoped (P003): stale gen-N KDs from a prior lifecycle must not
   // suppress legitimate phase regression in the current lifecycle (R3 gap fix).
-  // F5 (R004): an adopted session scans the pointed-to lifecycle's KDs (`:sid`)
-  // plus its own post-adoption KDs — an adopted phase must NOT regress for
-  // missing KDs under the current session's own id when the prior lifecycle's
-  // KDs (under `:sid`) are present on disk.
+  // R004 (M1): the scan covers the current session's KDs only — a fresh
+  // session is never held up or regressed by another lifecycle's KDs.
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
   const sessionFiles = files.filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
 
@@ -1109,7 +1098,9 @@ export default {
     // in-memory sessionPhaseMap is a cache reconciled against the file on every
     // overseer message; every transition persists before it is considered
     // complete (R002); a restart restores from the file (R003); a fresh session
-    // ID continues the pointed-to lifecycle via the active-session pointer (R004).
+    // with no own state file starts at PROTOCOL_NOT_LOADED — no cross-session
+    // adoption (R001) — and the active-session pointer is deleted at lifecycle
+    // end and never re-created for a finished session (R003).
     function getStatePath(sessionID) {
       const safe = sanitizeSessionID(sessionID);
       if (!safe) return null;
@@ -1145,10 +1136,18 @@ export default {
         // failure (disk full, permissions) surfaces to the caller as false +
         // stderr so the in-memory phase never silently diverges from disk.
         atomicWriteFileSync(statePath, JSON.stringify(state));
-        // R004: keep the workspace-level active-session pointer current so a
-        // restart that mints a fresh session ID can continue this lifecycle.
-        if (!writeActiveSession(sessionID)) {
-          debug(`saveState: state persisted but active-session pointer update failed for ${sessionID}`);
+        // R003 (M1): the workspace-level pointer is only written while the
+        // lifecycle is ACTIVE (phase entry present). At lifecycle end (REPORT
+        // reset) the phase entry is deleted, so saveState must NOT re-create
+        // `.active-session.json` pointing at the finished session — the
+        // finished lifecycle is never a resume target (R001 makes the pointer
+        // inert for fresh sessions; R003 deletes it at REPORT).
+        if (sessionPhaseMap.has(sessionID)) {
+          if (!writeActiveSession(sessionID)) {
+            debug(`saveState: state persisted but active-session pointer update failed for ${sessionID}`);
+          }
+        } else {
+          debug(`saveState: phase entry absent for ${sessionID} — active-session pointer not updated (finished lifecycle, R003)`);
         }
         return true;
       } catch (e) {
@@ -1189,10 +1188,12 @@ export default {
       return state === "missing" || state === "corrupt" || state === null ? null : state;
     }
 
-    // --- Active-session pointer (R004) ---
-    // Workspace-level file recording the most recently active lifecycle. A
-    // fresh session ID with no own state file restores the pointed-to phase and
-    // adopts that lifecycle, covering opencode restarting with a new session ID.
+    // --- Active-session pointer (R003) ---
+    // Workspace-level file recording the most recently active lifecycle.
+    // R001 (M1): it is INERT for fresh sessions — a session with no own state
+    // file never adopts from it. It is deleted at lifecycle end (R003) and is
+    // never re-created for a finished session; it exists only as an audit
+    // marker for the currently active lifecycle.
     function getActiveSessionPath() {
       return join(getStateDir(), ".active-session.json");
     }
@@ -1220,50 +1221,42 @@ export default {
       }
     }
 
+    // R003 (M1): deletes the workspace-level active-session pointer at
+    // lifecycle end — a finished lifecycle must never be a resume target. The
+    // REPORT reset handlers call this before saveState; saveState itself never
+    // re-creates the pointer for a session whose phase entry is absent.
+    function deleteActiveSession() {
+      try {
+        rmSync(getActiveSessionPath(), { force: true });
+        debug(`deleteActiveSession: removed active-session pointer`);
+        return true;
+      } catch (e) {
+        debug(`deleteActiveSession error: ${e.message}`);
+        return false;
+      }
+    }
+
     // P002/R001: the file is the runtime SSOT — reconcile the in-memory cache
     // on every overseer message so manual file edits are honored mid-session.
-    // Priority: valid own file (R003) > active-session pointer adoption (R004)
-    // > fresh PROTOCOL_NOT_LOADED init. Corrupt files back up + fresh init (R006).
+    // Priority: valid own file (R003) > corrupt-file fresh init (R006) >
+    // missing-file fresh PROTOCOL_NOT_LOADED init (R001 — the active-session
+    // pointer is never adopted).
     function reconcileSessionState(sessionID) {
       const state = readStateFile(sessionID);
 
       if (state === "missing") {
-        // R004: no own state file — continue the pointed-to lifecycle when a
-        // workspace-level active-session pointer exists for a different session.
-        const pointer = readActiveSession();
-        if (pointer && pointer.sessionID && pointer.sessionID !== sessionID) {
-          const pointed = readStateFile(pointer.sessionID);
-          if (pointed !== "missing" && pointed !== "corrupt" && pointed !== null) {
-            const gen = pointed.generation !== undefined ? pointed.generation : 0;
-            const phase = typeof pointed.phase === "number" ? pointed.phase : STATES.PROTOCOL_NOT_LOADED;
-            // BUGFIX (phase init off-by-one): only resume lifecycles that
-            // reached a KD-producing phase (phase > INTENT, i.e. ≥ PREFLIGHT).
-            // A pointer at INTENT means the prior lifecycle never wrote its
-            // intent KD — R009 advances INTENT→PREFLIGHT once the KD is on
-            // disk, so an INTENT pointer can only be a stalled entry, never a
-            // legitimate resume. Adopting it skips the mandatory todowrite gate
-            // and the first todowrite triggers a consistency regression
-            // INTENT→PROTOCOL_NOT_LOADED instead of advancing (off-by-one). A
-            // PROTOCOL_NOT_LOADED pointer is an unstarted lifecycle — there is
-            // nothing to resume either. Both fall through to fresh init below.
-            if (phase > STATES.INTENT) {
-              sessionPhaseMap.set(`${sessionID}:gen`, gen);
-              sessionPhaseMap.set(`${sessionID}:sid`, pointed.sid || pointer.sessionID);
-              sessionPhaseMap.set(sessionID, phase);
-              debug(`reconcile: adopted phase=${getPhaseName(phase)} from active-session ${pointer.sessionID} for ${sessionID} (R004)`);
-              // The current session now owns the lifecycle — persist its own
-              // state file and move the pointer so the adoption is durable.
-              saveState(sessionID);
-              return;
-            }
-            debug(`reconcile: active-session ${pointer.sessionID} at phase=${getPhaseName(phase)} (no KD on disk) — not adopting; fresh PROTOCOL_NOT_LOADED (R004)`);
-          }
-        }
-        // Fresh session — initialize PROTOCOL_NOT_LOADED and persist (R004).
+        // R001 (M1): fresh-session-only lifecycle start — the workspace-level
+        // active-session pointer is INERT. A session with no own state file
+        // never adopts another session's phase, generation, or `:sid`; it
+        // always initializes at PROTOCOL_NOT_LOADED with `:sid` = current so
+        // the mandatory todowrite kickoff runs. A same-session restart
+        // restores via this session's own state file (R003); a restart that
+        // mints a NEW session id mid-lifecycle is recovered via the user's
+        // /phase override (SAFETY_ESCAPE), per plan assumption A1.
         sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
         sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
         saveState(sessionID);
-        debug(`reconcile: initialized PROTOCOL_NOT_LOADED for ${sessionID}`);
+        debug(`reconcile: initialized PROTOCOL_NOT_LOADED for ${sessionID} (R001 — no cross-session adoption)`);
         return;
       }
 
@@ -1282,14 +1275,22 @@ export default {
       if (state.generation !== undefined) {
         sessionPhaseMap.set(`${sessionID}:gen`, state.generation);
       }
-      if (state.sid) {
-        sessionPhaseMap.set(`${sessionID}:sid`, state.sid);
-      } else if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
-        sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
-      }
+      // R002 (M1): heal a stale `:sid` on restore — the stored sid may belong
+      // to a prior lifecycle (legacy adoption chain). Only the current
+      // session's KDs may be read/advanced off, so the map entry is refreshed
+      // to the current sessionID and the state file is persisted WITHOUT the
+      // stale sid, eliminating stale-sid chaining across pre-existing files.
+      // Legacy files without `sid` keep the current-session default (R005 —
+      // no migration step).
+      const healedSid = state.sid && state.sid !== sessionID ? sessionID : state.sid;
+      sessionPhaseMap.set(`${sessionID}:sid`, healedSid || sessionID);
       const phase = typeof state.phase === "number" ? state.phase : STATES.PROTOCOL_NOT_LOADED;
       sessionPhaseMap.set(sessionID, phase);
-      debug(`reconcile: restored phase=${getPhaseName(phase)} sid=${state.sid} for ${sessionID} (R001)`);
+      if (state.sid && state.sid !== sessionID) {
+        debug(`reconcile: healed stale sid ${state.sid} → ${sessionID} for ${sessionID} (R002)`);
+        saveState(sessionID);
+      }
+      debug(`reconcile: restored phase=${getPhaseName(phase)} sid=${healedSid || sessionID} for ${sessionID} (R001)`);
     }
 
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
@@ -1354,9 +1355,8 @@ export default {
         let implFiles = [];
         try {
           const files = readdirSync(knowledgeDir);
-          // F5 (R004): count impl KDs across the full lifecycle lookup set —
-          // an adopted session resuming into SWARM may have prior impl KDs
-          // under `:sid` and post-adoption ones under the current session id.
+          // R004 (M1): count impl KDs for the current session only — no
+          // cross-session lookup set after adoption removal.
           implFiles = files.filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID)) && /^impl-/i.test(f));
         } catch (_) {}
         const reconciliedCount = Math.max(1, implFiles.length);
@@ -1685,6 +1685,10 @@ export default {
         // Reset to phase 0 so the Overseer can start a new lifecycle with todowrite.
         if (phase === STATES.REPORT && isReportKD) {
           debug(`write: report KD written → transitioning lifecycle end`);
+          // R003 (M1): lifecycle end — the finished session must never be a
+          // resume target. Delete the pointer; saveState won't re-create it
+          // because the phase entry is deleted below (R003).
+          deleteActiveSession();
           // R001: increment generation on lifecycle end — the new generation
           // scopes all KDs written in the next lifecycle. NFR002/EC-003:
           // increment is atomic with saveState — revert on save failure.
@@ -1825,6 +1829,9 @@ export default {
 
         if (phase === STATES.REPORT && isReportKD) {
           debug(`edit: report KD edited → transitioning lifecycle end`);
+          // R003 (M1): lifecycle end — delete the active-session pointer; the
+          // finished session must never be a resume target (see write handler).
+          deleteActiveSession();
           // R001: generation increment — mirrors the write handler (see above
           // for the NFR002 atomicity rationale). R004/P009: delete the phase
           // entry so the next chat.params re-runs loadState() (BUG-009).
@@ -2124,9 +2131,8 @@ export default {
                     if (currentFailures === 10) {
                       const knowledgeDir = getKnowledgeDir();
                       let foundFiles = [];
-                      // F5 (R004): the stuck diagnostic scans the lifecycle's
-                      // full lookup set (`:sid` + current) so adopted-session
-                      // diagnostics show the pointed-to lifecycle's KDs too.
+                      // R004 (M1): the stuck diagnostic scans the current
+                      // session's KDs only (single-session lookup).
                       try { foundFiles = readdirSync(knowledgeDir).filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID))); } catch (_) {}
                       debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${currentFailures} disk checks. Expected prefixes: ${JSON.stringify(currentPhasePrefixes)}. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
                     }
@@ -2388,7 +2394,9 @@ export default {
       getActiveSessionPath,
       readActiveSession,
       writeActiveSession,
+      deleteActiveSession,
       reconcileSessionState,
+      getKDLookupSIDs,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
       get lastSeenSession() { return lastSeenSession; }
