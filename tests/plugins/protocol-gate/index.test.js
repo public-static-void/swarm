@@ -2414,6 +2414,83 @@ ${verdict}
     });
   });
 
+  describe("Finding 4: SWARM→VERIFY observability (R401–R404, AC401–AC405)", () => {
+    // Drives a SWARM→VERIFY disk advancement for a session with all milestones
+    // checked-off (registry rows + milestone-scoped impl KDs on disk).
+    async function advanceSwarmToVerify(s) {
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+      createKD(`impl-M2-feature-${s}.md`);
+      createKD(`impl-M3-feature-${s}.md`);
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+    }
+
+    it("AC401: the advancement site emits an explicit log line with the transition and SWARM gate evidence", async () => {
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        const s = sid("m4-log-401");
+        await advanceSwarmToVerify(s);
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("Disk advancement: SWARM → VERIFY (all milestones checked-off: 3/3)");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("AC402: the first systemTransform after advancement injects the phase-transition announcement", async () => {
+      const s = sid("m4-ann-402");
+      await advanceSwarmToVerify(s);
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, output);
+      const system = output.system.join("\n");
+      expect(system).toContain("[Protocol Gate]");
+      expect(system).toContain("Phase auto-advanced");
+      expect(system).toContain("SWARM → VERIFY");
+      expect(system).toContain("all milestones checked-off: 3/3");
+      // One-shot consumption — the recorded entry is deleted in the same transform
+      expect(hooks.advancementAnnouncements.has(s)).toBe(false);
+    });
+
+    it("AC403: the announcement is one-shot — never repeats across a second transform without a new advancement", async () => {
+      const s = sid("m4-ann-403");
+      await advanceSwarmToVerify(s);
+
+      const first = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, first);
+      expect(first.system.join("\n")).toContain("Phase auto-advanced");
+
+      const second = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, second);
+      expect(second.system.join("\n")).not.toContain("Phase auto-advanced");
+
+      const all = [...first.system, ...second.system].join("\n");
+      const occurrences = all.split("[Protocol Gate] Phase auto-advanced:").length - 1;
+      expect(occurrences).toBe(1);
+    });
+
+    it("AC405: no announcement is emitted for non-overseer sessions", async () => {
+      const artisan = sid("m4-ann-405");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      // Defense in depth: even a manually-seeded entry must never surface for a
+      // non-overseer session (systemTransform early-returns before reading it).
+      hooks.advancementAnnouncements.set(artisan, { from: "SWARM", to: "VERIFY", reason: "all milestones checked-off: 1/1" });
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, output);
+      expect(output.system.join("\n")).not.toContain("Phase auto-advanced");
+    });
+  });
+
   it("R306 (relocated from delegation-gate M1): GENERATION falls back to the protocol-gate state file when the prompt omits GENERATION", async () => {
     // The delegation-gate GENERATION fallback reads PROTOCOL_GATE_STATE_DIR at
     // call time — this suite's temp stateDir (P302) is that dir, so the real

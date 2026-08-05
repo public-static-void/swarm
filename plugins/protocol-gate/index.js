@@ -1094,6 +1094,12 @@ export default {
     // In-memory only (like freshAdvancement) — the cap is re-established from
     // disk on restart via the cycle counter semantics.
     const verdictRegressedKDs = new Map(); // sessionID → Set<filename>
+    // Finding 4 (R402): one-shot phase-transition announcements — sessionID →
+    // { from, to, reason }. Set at the disk-advancement site when the phase
+    // increments; consumed+deleted in the first systemTransform that runs after
+    // advancement. In-memory only — a restart loses it, which is correct (the
+    // event is in the past; the R401 log line remains the durable record).
+    const advancementAnnouncements = new Map();
     // tool.definition doesn't receive sessionID — track the most recent session
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
@@ -1633,7 +1639,7 @@ export default {
               // Fix M2: Re-initialize :sid when entering INTENT after REPORT→PROTOCOL_NOT_LOADED cycle.
               // Without this, checkDiskAdvancement lacks :sid to filter KDs by session, preventing progression.
               sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
-              debug("INTENT phase: write intent KD with raw user request. No file reading or exploration needed.");
+              debug("INTENT phase: write the intent KD with the raw user request; the Explorer handles codebase exploration after dispatch.");
               skipDiskCheckAfterTodo.set(sessionID, true);
               saveState(sessionID);
             } else {
@@ -1916,7 +1922,24 @@ export default {
             // allowing regression from the new phase back to the old one.
             freshAdvancement.set(sessionID, { phase: newPhase, diskCheckCount: 0 });
             debug(`FRESH_ADVANCEMENT: ${currentPhaseName} → ${getPhaseName(newPhase)} recorded for session ${sessionID}`);
-            debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}`);
+            // Finding 4 (R401): explicit advancement event. Diagnostic re-read of
+            // the already-returned gate result — the M5 gate semantics are
+            // unchanged (AC404); this only formats checkedOff/total as evidence
+            // for the log and the one-shot announcement below.
+            let advancementGateEvidence = "";
+            if (currentPhase === STATES.SWARM) {
+              const gateEvidence = checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap);
+              advancementGateEvidence = `all milestones checked-off: ${gateEvidence.checkedOff}/${gateEvidence.total}`;
+            }
+            debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}${advancementGateEvidence ? ` (${advancementGateEvidence})` : ""}`);
+            // Finding 4 (R402): record the transition for the one-shot
+            // LLM-visible announcement. The systemTransform consumes and deletes
+            // the entry on its next run for this session (R403).
+            advancementAnnouncements.set(sessionID, {
+              from: currentPhaseName,
+              to: getPhaseName(newPhase),
+              reason: advancementGateEvidence || null
+            });
             saveState(sessionID);
             // When entering PREFLIGHT, skip the next disk check to give the Overseer
             // time to dispatch the committer before advancement to EXPLORE.
@@ -2296,6 +2319,18 @@ export default {
         }
 
         output.system.push(systemMsg);
+
+        // Finding 4 (R402/R403): one-shot phase-transition announcement. The map
+        // entry is consumed in this same transform — deleted right after
+        // announcing — so multi-tool turns never repeat it (NFR003). No entry
+        // (e.g. non-disk advancements or a restart) → no announcement.
+        const announcement = advancementAnnouncements.get(sessionID);
+        if (announcement) {
+          const reasonSuffix = announcement.reason ? ` (${announcement.reason})` : "";
+          output.system.push(`[Protocol Gate] Phase auto-advanced: ${announcement.from} → ${announcement.to}${reasonSuffix}`);
+          advancementAnnouncements.delete(sessionID);
+          debug(`systemTransform: announced phase auto-advance ${announcement.from} → ${announcement.to} for session ${sessionID}`);
+        }
       }
       debug(`systemTransform: injected phase constraint for phase=${phaseName}`);
     }
@@ -2320,6 +2355,7 @@ export default {
       pendingVerification,
       pendingVerificationToolCount,
       freshAdvancement,
+      advancementAnnouncements,
       KD_TYPE_PREFIXES,
       checkPhaseStateConsistency,
       checkDiskAdvancement,

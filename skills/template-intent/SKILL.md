@@ -28,7 +28,6 @@ superseded_by: null
 
 - **Domain familiarity**: TBD — Explorer will assess after dispatch.
 - **Clarity**: TBD — Explorer will assess after dispatch.
-- **Explorer needed?**: yes (always — the Explorer verifies the request is actionable)
 - **Estimated scope**: TBD — Explorer will assess after dispatch.
 
 ## Next Steps
