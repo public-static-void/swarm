@@ -793,6 +793,27 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
   return result;
 }
 
+// R006 (M2): reads the active override marker for a session — null when
+// absent or malformed. The marker is authoritative only while the current
+// phase equals its target (R006a/b).
+function getOverrideUntil(sessionPhaseMap, sessionID) {
+  const overrideUntil = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
+  if (!overrideUntil || typeof overrideUntil.phase !== "number" || typeof overrideUntil.since !== "number") return null;
+  return overrideUntil;
+}
+
+// R006 (M2): bounded stat — returns the file's mtimeMs or -1 on failure.
+// Only candidate files that already match the phase prefix are stat'd, so the
+// override freshness check stays within NFR005 (single readdir + bounded stat
+// work, no per-file glob).
+function getFileMtimeMs(fullPath) {
+  try {
+    return statSync(fullPath).mtimeMs;
+  } catch (_) {
+    return -1;
+  }
+}
+
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCount, f1Options) {
   if (phase === undefined) return false;
 
@@ -860,15 +881,24 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   const pattern = patterns[phase];
 
+  // R006 (M2): while the override is active at this phase, only fresh evidence
+  // (KD mtime >= since) advances — pre-existing/stale KDs never undo the
+  // manual override (interface contract #5). KDs written before `since` are
+  // skipped; the marker clears on advance-away (P010), restoring normal
+  // R009 semantics for later phases.
+  const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
+  const overrideActive = overrideUntil && phase === overrideUntil.phase;
+
   // DECOMPOSE advancement requires BOTH the plan KD and the milestone registry
   // (R003 dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM must
   // not start until the registry (live state SSOT) is on disk. A plan- KD alone
-  // is the EC03 case — fail-closed, no advancement.
+  // is the EC03 case — fail-closed, no advancement. Under an override at
+  // DECOMPOSE, both KDs must be fresh (mtime >= since, contract #5).
   if (phase === STATES.DECOMPOSE) {
-    const hasPlan = sessionFiles.some(f => /^plan-/i.test(f));
-    const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f));
+    const hasPlan = sessionFiles.some(f => /^plan-/i.test(f) && (!overrideActive || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
+    const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f) && (!overrideActive || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
     const result = hasPlan && hasMilestones;
-    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones} → ${result}`);
+    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones} → ${result}${overrideActive ? ` (override fresh-evidence since ${overrideUntil.since})` : ""}`);
     return result;
   }
 
@@ -876,8 +906,24 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   // F1 (R102-R106): the verdict-aware VERIFY gate — see evaluateVerifyVerdict.
   // The newest review/audit KD's frontmatter verdict decides advancement; only
-  // the newest KD's frontmatter is read (NFR007).
+  // the newest KD's frontmatter is read (NFR007). Under an override at VERIFY,
+  // the newest review/audit KD's mtime is the evidence timestamp — a stale
+  // verdict KD never re-advances VERIFY (contract #5).
   if (phase === STATES.VERIFY) {
+    if (overrideActive) {
+      const verdictInfo = findNewestVerdictKD(sessionFiles);
+      if (!verdictInfo) {
+        debug(`Disk check VERIFY: no review/audit KD — cannot advance under override (since=${overrideUntil.since})`);
+        return false;
+      }
+      const mtime = getFileMtimeMs(join(knowledgeDir, verdictInfo.filename));
+      if (mtime < overrideUntil.since) {
+        debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} mtime=${mtime} < since=${overrideUntil.since} — not fresh (override)`);
+        return false;
+      }
+      debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} is fresh (mtime=${mtime} >= since=${overrideUntil.since}) — evaluating verdict`);
+      return evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options);
+    }
     return evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options);
   }
 
@@ -886,14 +932,30 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // The milestone registry is the live state SSOT — the legacy dispatch-count
   // gate (MILESTONE_COUNT, swarmDispatchCount) has no gating effect. Fails
   // closed on missing/empty/unparsable registries (REGISTRY_MISSING/EMPTY).
+  // Under an override at SWARM, the milestone registry file's mtime is the
+  // evidence timestamp — a stale registry never re-advances SWARM (contract #5).
   if (phase === STATES.SWARM) {
     const gate = checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap);
-    debug(`Disk check SWARM: all-checked-off gate → ${gate.ok} (${gate.checkedOff}/${gate.total})`);
-    return gate.ok;
+    let result = gate.ok;
+    let overrideNote = "";
+    if (result && overrideActive) {
+      const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+      const registryMtime = registry ? getFileMtimeMs(registry.path) : -1;
+      result = registryMtime >= overrideUntil.since;
+      overrideNote = `, override fresh-evidence: registry mtime=${registryMtime} >= since=${overrideUntil.since} → ${result}`;
+    }
+    debug(`Disk check SWARM: all-checked-off gate → ${gate.ok} (${gate.checkedOff}/${gate.total})${overrideNote}`);
+    return result;
   }
 
-  const result = sessionFiles.some(f => pattern.test(f));
-  debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID}, lookupSIDs=${JSON.stringify(lookupSIDs)} → ${result}`);
+  let result;
+  if (overrideActive) {
+    result = sessionFiles.some(f => pattern.test(f) && getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since);
+    debug(`Disk check ${getPhaseName(phase)}: override fresh-evidence (since=${overrideUntil.since}) → ${result}`);
+  } else {
+    result = sessionFiles.some(f => pattern.test(f));
+    debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID}, lookupSIDs=${JSON.stringify(lookupSIDs)} → ${result}`);
+  }
   return result;
 }
 
@@ -934,6 +996,17 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
 
   const currentPattern = patterns[currentPhase];
   if (!currentPattern) return false;
+
+  // R006a (M2): while the override is active at the target phase, the override
+  // is authoritative — a missing KD for the overridden phase is logged but
+  // never regresses the phase (AC009). The marker clears on advance-away,
+  // backward transition, new /phase, or REPORT reset (P010), after which
+  // normal regression resumes.
+  const overrideUntil = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
+  if (overrideUntil && currentPhase === overrideUntil.phase) {
+    debug(`Consistency check: skipped — /phase override pins ${getPhaseName(currentPhase)} (since=${overrideUntil.since}) for session ${sessionID} (R006a)`);
+    return false;
+  }
 
   // R004: Skip regression when a subagent dispatch is in-flight for this phase.
   // The KD is pending creation, not deleted — false regression would loop.
@@ -1130,6 +1203,13 @@ export default {
         // and producing artifacts in the state file.
         const state = { phase, generation, timestamp: Date.now() };
         if (sid) state.sid = sid;
+        // R006 (M2): serialize the /phase override marker so it survives a
+        // mid-session restart (AC010b). Omitted when absent — legacy state
+        // files without overrideUntil load unchanged (NFR003).
+        const overrideUntil = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
+        if (overrideUntil && typeof overrideUntil.phase === "number" && typeof overrideUntil.since === "number") {
+          state.overrideUntil = { phase: overrideUntil.phase, since: overrideUntil.since };
+        }
         const stateDir = getStateDir();
         mkdirSync(stateDir, { recursive: true });
         // NFR001/R005: atomic durable write — tmp file + fsync + rename. A
@@ -1286,6 +1366,13 @@ export default {
       sessionPhaseMap.set(`${sessionID}:sid`, healedSid || sessionID);
       const phase = typeof state.phase === "number" ? state.phase : STATES.PROTOCOL_NOT_LOADED;
       sessionPhaseMap.set(sessionID, phase);
+      // R006 (M2): restore the persistent override marker so a mid-session
+      // restart honors the override until fresh evidence (AC010b). Omitted
+      // when absent — legacy state files load unchanged (NFR003).
+      if (state.overrideUntil && typeof state.overrideUntil.phase === "number" && typeof state.overrideUntil.since === "number") {
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: state.overrideUntil.phase, since: state.overrideUntil.since });
+        debug(`reconcile: restored overrideUntil phase=${getPhaseName(state.overrideUntil.phase)} since=${state.overrideUntil.since} for ${sessionID} (R006)`);
+      }
       if (state.sid && state.sid !== sessionID) {
         debug(`reconcile: healed stale sid ${state.sid} → ${sessionID} for ${sessionID} (R002)`);
         saveState(sessionID);
@@ -1340,6 +1427,12 @@ export default {
 
       const prevPhase = sessionPhaseMap.get(sessionID);
       sessionPhaseMap.set(sessionID, targetPhase);
+      // R006 (P010): a backward transition clears the override marker — the
+      // user chose to move back, so the previous override no longer applies.
+      if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
+        sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+        debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)} (R006)`);
+      }
       debug(`Backward transition complete: ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
       saveState(sessionID);
       pendingVerification.delete(sessionID);
@@ -1488,6 +1581,13 @@ export default {
       }
       const prevPhase = sessionPhaseMap.get(sessionID);
       sessionPhaseMap.set(sessionID, n);
+      // R006 (M2): every /phase invocation persists an override marker
+      // { phase, since } — while the current phase equals the target, only
+      // fresh evidence (KD mtime >= since) advances and consistency never
+      // regresses. A new /phase replaces any prior marker (clear-on-new-
+      // override, P010); the marker clears on advance-away, backward
+      // transition, or REPORT reset.
+      sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since: Date.now() });
       // Re-capture the session ID so checkDiskAdvancement can filter KDs by
       // session — required when /phase starts a fresh lifecycle.
       if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
@@ -1505,7 +1605,7 @@ export default {
         // counters are preserved — only non-numeric per-milestone keys clear.
         clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       }
-      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID}`);
+      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — overrideUntil set (phase ${n}, since ${sessionPhaseMap.get(`${sessionID}:overrideUntil`).since}) (R006)`);
       output.parts = [{ type: "text", text: `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
     }
 
@@ -1702,6 +1802,12 @@ export default {
           sessionPhaseMap.delete(sessionID);
           diskCheckFailures.set(sessionID, 0);
           sessionPhaseMap.delete(`${sessionID}:sid`);
+          // R006 (P010): lifecycle end clears the override marker — a finished
+          // lifecycle is never pinned; the next lifecycle starts fresh.
+          if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
+            sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+            debug(`Override cleared: REPORT reset (R006)`);
+          }
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
           verdictRegressedKDs.delete(sessionID);
@@ -1841,6 +1947,12 @@ export default {
           sessionPhaseMap.delete(sessionID);
           diskCheckFailures.set(sessionID, 0);
           sessionPhaseMap.delete(`${sessionID}:sid`);
+          // R006 (P010): lifecycle end clears the override marker (see write
+          // handler for the rationale).
+          if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
+            sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+            debug(`Override cleared: REPORT reset via edit (R006)`);
+          }
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
           verdictRegressedKDs.delete(sessionID);
@@ -1915,6 +2027,14 @@ export default {
           const currentPhaseName = getPhaseName(currentPhase);
           if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount, { verdictRegressedKDs, backwardTransition: handleBackwardTransition })) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
+            // R006 (P010): the phase advanced away from the override target on
+            // fresh evidence — clear the marker so normal R009 advancement
+            // semantics resume for this and later phases (AC007).
+            const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
+            if (overrideUntil && currentPhase === overrideUntil.phase) {
+              sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+              debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence (R006)`);
+            }
             diskCheckFailures.set(sessionID, 0);
             // R005: Clear in-flight tracking — KD appeared on disk, dispatch is complete
             inFlightDispatches.delete(sessionID);
