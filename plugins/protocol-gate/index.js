@@ -788,7 +788,13 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
   if (verdictInfo && !verdictInfo.verdict) {
     debug(`VERDICT_MISSING: newest review/audit KD ${verdictInfo.filename} lacks a valid verdict field — treated as PASS (R106/FM02)`);
   }
-  const result = hasReview || hasAudit;
+  // R001 (dual-KD gate): advancement requires BOTH KDs because the Inspector
+  // produces both (verify.json:3, inspector.md:70) — EXTRACT must not start
+  // without the audit KD's security posture. The regression side stays OR
+  // (checkPhaseStateConsistency, lines 1042/1064) so a single-KD VERIFY holds
+  // instead of directly regressing to SWARM — otherwise the BUG-009 unbounded
+  // VERIFY⇄SWARM loop returns.
+  const result = hasReview && hasAudit;
   debug(`Disk check VERIFY: review=${hasReview}, audit=${hasAudit} → ${result}`);
   return result;
 }
@@ -1039,6 +1045,11 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   if (currentPhase === STATES.VERIFY) {
     const hasReview = sessionFiles.some(f => /^review-/i.test(f));
     const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
+    // VERIFY regression-side OR (R003): a single review/audit KD keeps VERIFY
+    // "phase is fine". MUST stay OR — an AND here would regress a single-KD
+    // VERIFY directly to SWARM via the set() below (bypassing the backward
+    // cycle cap), reintroducing the BUG-009 unbounded VERIFY⇄SWARM loop.
+    // Advancement is gated separately by the AND in evaluateVerifyVerdict.
     if (hasReview || hasAudit) return false; // current phase is fine
   } else {
     if (sessionFiles.some(f => currentPattern.test(f))) return false; // current phase is fine
@@ -1061,6 +1072,11 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     if (phase === STATES.VERIFY) {
       const hasReview = sessionFiles.some(f => /^review-/i.test(f));
       const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
+      // VERIFY backward-walk OR (R003): a surviving single review/audit KD
+      // anchors VERIFY during the backward walk. MUST stay OR — aligning it to
+      // AND would let a missing second KD regress VERIFY directly to SWARM via
+      // the set() below (bypassing handleBackwardTransition and the cycle cap),
+      // reintroducing the BUG-009 unbounded loop.
       if (hasReview || hasAudit) {
         regressedPhase = phase;
         foundEarlierKD = true;
