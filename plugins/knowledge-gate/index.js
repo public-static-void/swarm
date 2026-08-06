@@ -663,7 +663,7 @@ export default {
         }
       }),
       memory_update: tool({
-        description: "Update an existing memory entry in knowledge/memory/. Only Scribe may update. Args: id (string MEM-XXX), entry (object with any of: topic, insight, tags, source_kd, type, superseded_by). Preserves id/created/session/version. Setting superseded_by tombstones the entry: it is excluded from future memory_search results.",
+        description: "Update an existing memory entry in knowledge/memory/. Only Scribe may update. Args: id (string MEM-XXX), entry (object with any of: topic, insight, tags, source_kd, type, superseded_by). Preserves id/created/session/version. Setting superseded_by to a MEM-XXX ID tombstones the entry: it is excluded from future memory_search results. Passing \"\" or null as superseded_by clears the tombstone and restores the entry to search visibility.",
         args: {
           id: tool.schema.string().describe("Memory entry ID to update (MEM-XXX)"),
           entry: tool.schema.object({
@@ -672,7 +672,7 @@ export default {
             tags: tool.schema.array(tool.schema.string()).optional().describe("2-8 tags from controlled vocabulary"),
             source_kd: tool.schema.string().optional().describe("Source KD path"),
             type: tool.schema.enum(["fact", "decision", "pattern", "warning", "context"]).optional().describe("Entry type"),
-            superseded_by: tool.schema.string().optional().describe("Optional tombstone: MEM-XXX ID of the replacing entry")
+            superseded_by: tool.schema.string().optional().nullable().describe("Optional tombstone: MEM-XXX ID of the replacing entry; pass \"\" or null to clear")
           })
         },
         async execute(args, context) {
@@ -702,8 +702,15 @@ export default {
             return JSON.stringify({ error: "Nothing to update" });
           }
 
-          // Tombstone format check (format-only; entries are self-contained)
-          if (entry.superseded_by !== undefined && !/^MEM-\d{3}$/.test(entry.superseded_by)) {
+          // Tombstone format check (format-only; entries are self-contained).
+          // "" and null are explicit clear sentinels — they remove the tombstone
+          // instead of validating as replacement IDs (issue-23 un-supersede path).
+          if (
+            entry.superseded_by !== undefined &&
+            entry.superseded_by !== null &&
+            entry.superseded_by !== "" &&
+            !/^MEM-\d{3}$/.test(entry.superseded_by)
+          ) {
             return JSON.stringify({ error: `superseded_by must match MEM-\\d{3}, got "${entry.superseded_by}"` });
           }
 
