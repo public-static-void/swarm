@@ -858,6 +858,75 @@ Body text`;
       expect(parsedWrite.message).toContain("written");
       expect(parsedWrite.id).toBe("MEM-003");
     });
+
+    it("clears a superseded_by tombstone via empty string; entry reappears in search", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      await hooks.tool.memory_update.execute(
+        { id: "MEM-001", entry: { superseded_by: "MEM-002" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+
+      const cleared = await hooks.tool.memory_update.execute(
+        { id: "MEM-001", entry: { superseded_by: "" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      expect(JSON.parse(cleared).message).toContain("updated");
+
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-001.json"), "utf8"));
+      expect(onDisk.superseded_by).toBe("");
+
+      // Un-superseded entry is searchable again
+      const search = await hooks.tool.memory_search.execute({ tags: ["auth"], limit: 5 }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(search).map(e => e.id)).toContain("MEM-001");
+    });
+
+    it("clears a superseded_by tombstone via null at the code level", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(2, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      await hooks.tool.memory_update.execute(
+        { id: "MEM-002", entry: { superseded_by: "MEM-003" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+
+      const cleared = await hooks.tool.memory_update.execute(
+        { id: "MEM-002", entry: { superseded_by: null } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      expect(JSON.parse(cleared).message).toContain("updated");
+
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-002.json"), "utf8"));
+      expect(onDisk.superseded_by).toBeNull();
+    });
+
+    it("is idempotent when clearing an entry that has no tombstone", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(3, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-003", entry: { superseded_by: "" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      expect(JSON.parse(result).message).toContain("updated");
+
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-003.json"), "utf8"));
+      expect(onDisk.superseded_by).toBe("");
+
+      const search = await hooks.tool.memory_search.execute({ tags: ["auth"], limit: 5 }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(search).map(e => e.id)).toContain("MEM-003");
+    });
+
+    it("treats a patch containing only superseded_by \"\" as a clear, not an empty patch", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(4, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      await hooks.tool.memory_update.execute(
+        { id: "MEM-004", entry: { superseded_by: "MEM-005" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-004", entry: { superseded_by: "" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.message).toContain("updated");
+    });
   });
 
   describe("memory_delete tool (registered execute)", () => {
