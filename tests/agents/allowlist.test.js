@@ -6,7 +6,9 @@ import { join } from "path";
 // R201/R202/R203 contract: no agent bash entry may be a bare runtime or
 // build-tool wildcard (a bare wildcard silently permits arbitrary subcommands),
 // the scoped commands mandated by the SPEC stay present, and the four
-// read/inspect roles carry the read-only inspection baseline.
+// read/inspect roles carry the read-only inspection baseline. Also guards the
+// R003 SAST baseline (issue-25): the npm audit/dependency-scan commands stay
+// verb-pinned in every agent that runs scans or installs the tooling.
 
 const FORBIDDEN_BARE = [
   "node", "bun", "npm", "npx", "yarn", "pnpm", "deno",
@@ -18,6 +20,10 @@ const GIT_AGENTS = ["inspector.md", "explorer.md", "analyzer.md"];
 const GIT_COMMANDS = ["git branch*", "git merge-base*", "git check-ignore*", "git log --oneline*"];
 const READONLY_BASELINE_AGENTS = ["explorer.md", "inspector.md", "pathfinder.md", "artisan.md"];
 const READONLY_BASELINE_COMMANDS = ["cat*", "head*", "tail*", "wc*", "git show*", "git status -sb*"];
+const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
+const SCAN_COMMANDS = ["npm audit*"];
+const INSTALL_AGENTS = ["artisan.md"];
+const INSTALL_COMMANDS = ["npm install --save-dev*"];
 
 function agentFiles() {
   return readdirSync(join(process.cwd(), "agents")).filter(f => f.endsWith(".md")).sort();
@@ -80,6 +86,32 @@ describe("agents/*.md bash allowlist security scan", () => {
     for (const f of READONLY_BASELINE_AGENTS) {
       const patterns = entriesByFile.get(f).map(e => e.pattern);
       for (const cmd of READONLY_BASELINE_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps verb-pinned npm audit entries for Inspector, Analyzer, and Artisan (R003, AC012)", () => {
+    const missing = [];
+    for (const f of SCAN_AGENTS) {
+      const patterns = entriesByFile.get(f).map(e => e.pattern);
+      for (const cmd of SCAN_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the verb-pinned npm install enabler for Artisan (R003, AC012)", () => {
+    const missing = [];
+    for (const f of INSTALL_AGENTS) {
+      const patterns = entriesByFile.get(f).map(e => e.pattern);
+      for (const cmd of INSTALL_COMMANDS) {
         if (!patterns.includes(cmd)) {
           missing.push(`${f}: ${cmd}`);
         }
