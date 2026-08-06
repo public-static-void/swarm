@@ -332,6 +332,133 @@ Body text`;
       expect(closeHint).toContain("Resolution");
       expect(closeHint).toContain("evidence");
     });
+
+    describe("overseer INTENT issue injection (R007/R008)", () => {
+      const intentHint = output =>
+        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+
+      it("injects open issues in the stable line format for the overseer", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(2, { severity: "medium", title: "Format check issue", assigned_to: "inspector" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("- [ISSUE-002] (medium) Format check issue — assigned to inspector");
+        expect(hint).toContain("Triage Notes");
+      });
+
+      it("excludes resolved and closed issues from overseer injection", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { status: "open", title: "Open item" }),
+          addIssueFile(2, { status: "resolved", title: "Resolved item" }),
+          addIssueFile(3, { status: "closed", title: "Closed item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("Open item");
+        expect(hint).not.toContain("Resolved item");
+        expect(hint).not.toContain("Closed item");
+      });
+
+      it("skips a malformed-frontmatter issue file without blocking valid injection", async () => {
+        writeEntries(ISSUES_DIR, [
+          { fileName: "issue-001.md", content: "no frontmatter at all" },
+          addIssueFile(2, { severity: "low", title: "Well-formed issue" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("Well-formed issue");
+      });
+
+      it("injects no issue block and does not crash when zero open issues exist", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { status: "resolved", title: "Only closed item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        expect(intentHint(output)).toBeUndefined();
+      });
+
+      it("falls back to unassigned when an open issue has no assigned_to", async () => {
+        const frontmatter = [
+          "id: ISSUE-004",
+          "title: Ownerless issue",
+          "severity: low",
+          "status: open",
+          "created: 2026-07-29",
+          "session: ses_test_4",
+          "tags: [test]"
+        ].join("\n");
+        writeEntries(ISSUES_DIR, [
+          { fileName: "issue-004.md", content: `---\n${frontmatter}\n---\n\nBody.` }
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("— assigned to unassigned");
+      });
+
+      it("injects issues ordered by severity rank and ascending numeric id", async () => {
+        // Severity is deliberately permuted against the numeric id order so a
+        // filesystem-order (readdirSync) read cannot satisfy the expectation.
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(4, { severity: "high", title: "High B" }),
+          addIssueFile(2, { severity: "high", title: "High A" }),
+          addIssueFile(5, { severity: "low", title: "Low E" }),
+          addIssueFile(1, { severity: "low", title: "Low D" }),
+          addIssueFile(3, { severity: "medium", title: "Medium C" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        const issueLines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        expect(issueLines).toEqual([
+          "- [ISSUE-002] (high) High A — assigned to habit-builder",
+          "- [ISSUE-004] (high) High B — assigned to habit-builder",
+          "- [ISSUE-003] (medium) Medium C — assigned to habit-builder",
+          "- [ISSUE-001] (low) Low D — assigned to habit-builder",
+          "- [ISSUE-005] (low) Low E — assigned to habit-builder"
+        ]);
+      });
+    });
   });
 
   describe("validateMemoryEntry — with type field", () => {
