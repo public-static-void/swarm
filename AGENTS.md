@@ -25,6 +25,13 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 - `read`, `grep`, and `glob` are the canonical inspection tools — use them for all file and content inspection.
 - Chained or piped bash inspection (`cmd | cmd`, `cmd && cmd`) is not permitted; use the dedicated tools instead.
 
+## Test and Security Scan Workflow
+
+- Run the full test suite with `npx vitest run` (all files under `tests/`).
+- Run the dependency scan with `npm audit --audit-level=high` (or the `npm run audit` script). Exit 0 = no high/critical findings; non-zero = high/critical findings must be resolved or justified before the lifecycle advances. Low/medium findings are recorded in the AUDIT KD and do not block by themselves. A reachable npm registry is required — a connectivity failure is not a vulnerability finding and the outcome is recorded in the AUDIT KD.
+- Run the SAST scan with `npx eslint -c eslint.security.config.mjs plugins tests` (uses the `eslint-plugin-security` devDependency). Warnings are scan findings to record in the AUDIT KD; errors (syntax or error-level rules) must be resolved or justified.
+- AUDIT KDs must record the actual scan output (commands, exit codes, findings) instead of a "no SAST tooling" caveat — the scan tooling above is part of the repo baseline.
+
 ## Delegation Integrity
 
 Agents accept WHAT-level dispatches only — each dispatch describes the artifact to produce, the objective, and acceptance criteria, referencing KDs by path in the KD PATHS field. Each agent loads its own skills and determines its own approach.
