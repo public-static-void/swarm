@@ -307,7 +307,28 @@ function scanOpenIssues() {
       debug(`scanOpenIssues: skipping ${file}: ${e.message}`);
     }
   }
+  // readdirSync order is filesystem-dependent, so surfacing is non-deterministic
+  // without an explicit sort. Rank by severity (high → medium → low) and break
+  // ties by ascending numeric id so INTENT/EVOLVE injection is stable (R008).
+  openIssues.sort((a, b) => {
+    const bySeverity = issueSeverityRank(a.severity) - issueSeverityRank(b.severity);
+    if (bySeverity !== 0) return bySeverity;
+    return issueNumericId(a) - issueNumericId(b);
+  });
   return openIssues;
+}
+
+// Severity rank for issue surfacing: high(0) → medium(1) → low(2).
+// Unknown severities sort after low so they never displace ranked issues.
+function issueSeverityRank(severity) {
+  return { high: 0, medium: 1, low: 2 }[severity] ?? 3;
+}
+
+// Numeric id for stable tie-breaks within a severity. Real registry ids are
+// numeric ("14"); test fixtures and legacy files use "ISSUE-001" form.
+function issueNumericId(issue) {
+  const num = parseInt(String(issue.id).replace(/\D/g, ""), 10);
+  return Number.isNaN(num) ? Number.MAX_SAFE_INTEGER : num;
 }
 
 /**
