@@ -15,7 +15,7 @@ superseded_by: null
 
 <!-- Filename: knowledge/process-{{pattern}}-{{session_id}}-gen{{generation}}.md -->
 <!-- GENERATION: {{generation}} is the lifecycle counter from protocol-gate state. Each lifecycle's KDs are scoped to its generation (`-genN-` after the session ID) so stale KDs from prior lifecycles are never matched. Use the generation value provided by the dispatcher. -->
-<!-- Writes: The Habit Builder's write artifacts are this PROCESS KD and issue files (knowledge/issues/*.md). Memory entries (knowledge/memory/*.json) are written by the Scribe during EXTRACT. -->
+<!-- Writes: The Habit Builder's write artifacts are this PROCESS KD and issue files (knowledge/issues/*.md). -->
 
 # PROCESS: {{process name}}
 
