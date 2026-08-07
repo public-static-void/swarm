@@ -256,6 +256,14 @@ function scanHighSeverityIssues() {
 /**
  * Parses an issue markdown file's YAML frontmatter.
  * Minimal parser — does not require a YAML library.
+ *
+ * Value capture is tolerant (R004/G5):
+ * - quoted values (start `"`) try JSON.parse (handles `\"` escapes) and fall
+ *   back to stripping the surrounding quote pair (preserves embedded quotes)
+ * - array values (`tags: [a, b]`) fold into the value dispatch → arrays
+ * - a value starting with `"` that never closes on the line accumulates
+ *   continuation lines until the closing quote (joined with `\n`)
+ * - content without frontmatter returns null (unchanged)
  */
 function parseIssueFile(content, filename) {
   const match = content.match(/^---\n([\s\S]*?)\n---/);
@@ -263,27 +271,83 @@ function parseIssueFile(content, filename) {
 
   const frontmatter = match[1];
   const result = { filename };
+  const lines = frontmatter.split("\n");
 
-  for (const line of frontmatter.split("\n")) {
-    const kv = line.match(/^(\w+):\s*"?([^"]*)"?\s*$/);
-    if (kv) {
-      result[kv[1]] = kv[2];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const kv = line.match(/^(\w+):\s*(.*)$/);
+    if (!kv) continue;
+
+    const key = kv[1];
+    const rawValue = kv[2];
+
+    // Array values: tags: [auth, permission]
+    if (rawValue.startsWith("[") && rawValue.endsWith("]")) {
+      result[key] = rawValue.slice(1, -1).split(",").map(s => s.trim());
+      continue;
     }
-    // Handle array values like tags: [auth, permission]
-    const arrMatch = line.match(/^(\w+):\s*\[(.*)\]\s*$/);
-    if (arrMatch) {
-      result[arrMatch[1]] = arrMatch[2].split(",").map(s => s.trim());
+
+    // Quoted values: accumulate continuation lines until the closing quote,
+    // then parse — JSON.parse first, quote-pair strip as fallback.
+    if (rawValue.startsWith("\"")) {
+      let buffer = rawValue;
+      while (!hasClosingQuote(buffer) && i + 1 < lines.length) {
+        i++;
+        buffer += "\n" + lines[i];
+      }
+      result[key] = parseQuotedValue(buffer);
+      continue;
     }
+
+    result[key] = rawValue;
   }
 
   return result;
 }
 
+// True when a quoted value (starting with `"`) contains a closing unescaped
+// quote. Used to bound multiline accumulation to the value (RSK-003).
+function hasClosingQuote(value) {
+  let escaped = false;
+  for (let i = 1; i < value.length; i++) {
+    const ch = value[i];
+    if (escaped) {
+      escaped = false;
+    } else if (ch === "\\") {
+      escaped = true;
+    } else if (ch === "\"") {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Parses a quoted value: JSON.parse first (handles `\"` escapes), then falls
+// back to stripping the surrounding quote pair (preserves embedded quotes).
+// Non-string JSON results fall back to the strip so value types never change
+// (a quoted "42" stays the string "42", matching the pre-R004 parser).
+function parseQuotedValue(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === "string") return parsed;
+  } catch (_) {
+    // Not valid JSON (e.g. literal newline) — strip below
+  }
+  if (raw.length >= 2 && raw[0] === "\"" && raw[raw.length - 1] === "\"") {
+    return raw.slice(1, -1);
+  }
+  return raw;
+}
+
 /**
  * Scans knowledge/issues/ for ALL open issues (any severity).
  * Used during INTENT phase to surface prior-session issues to the Overseer.
+ *
+ * @param {object} [options]
+ * @param {number} [options.cap] - positive integer → return at most `cap`
+ *   issues taken AFTER the R008 stable sort; undefined/0/invalid → no cap.
  */
-function scanOpenIssues() {
+function scanOpenIssues(options = {}) {
   ensureIssuesDir();
   if (!existsSync(ISSUES_DIR)) return [];
 
@@ -315,7 +379,7 @@ function scanOpenIssues() {
     if (bySeverity !== 0) return bySeverity;
     return issueNumericId(a) - issueNumericId(b);
   });
-  return openIssues;
+  return applyCap(openIssues, options.cap);
 }
 
 // Severity rank for issue surfacing: high(0) → medium(1) → low(2).
@@ -329,6 +393,45 @@ function issueSeverityRank(severity) {
 function issueNumericId(issue) {
   const num = parseInt(String(issue.id).replace(/\D/g, ""), 10);
   return Number.isNaN(num) ? Number.MAX_SAFE_INTEGER : num;
+}
+
+// R001 bounded injection: positive integer → first N issues in the given
+// (already R008-sorted) order; undefined/0/invalid → no cap. Shared by
+// scanOpenIssues({ cap }) and the overseer branch's env-derived cap.
+function applyCap(issues, cap) {
+  return typeof cap === "number" && Number.isInteger(cap) && cap > 0
+    ? issues.slice(0, cap)
+    : issues;
+}
+
+// R001 cap for the overseer INTENT injection, read at transform call time
+// (not module load — required for per-test env control). Env contract:
+// unset/empty/invalid/negative → 10 (default); "0" → unbounded (0 = no cap);
+// positive integer → that value.
+function envOpenIssueCap() {
+  const raw = (process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES || "").trim();
+  if (raw === "") return 10;
+  if (raw === "0") return 0;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : 10;
+}
+
+// R002 opt-in audience routing for the overseer INTENT injection, read at
+// transform call time. KNOWLEDGE_GATE_ISSUE_AUDIENCE is a comma-separated
+// list of case-insensitive substrings matched against `assigned_to`. Issues
+// with no/empty `assigned_to` are ALWAYS included (unowned → need triage).
+// Unset/empty/whitespace-only → no filter (today's behavior). Preserves the
+// R008 order of the input list; the R001 cap applies afterwards.
+function filterByAudience(issues, audienceEnv) {
+  const raw = (audienceEnv || "").trim();
+  if (raw === "") return issues;
+  const needles = raw.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (needles.length === 0) return issues;
+  return issues.filter(issue => {
+    const assigned = String(issue.assigned_to || "").trim().toLowerCase();
+    if (assigned === "") return true;
+    return needles.some(n => assigned.includes(n));
+  });
 }
 
 /**
@@ -927,8 +1030,13 @@ export default {
 
       // During INTENT phase (Overseer), scan for open issues from prior sessions
       // and surface them in Triage Notes. This closes the issue tracking feedback loop.
+      // R001/R002: the injected set is bounded (KNOWLEDGE_GATE_MAX_OPEN_ISSUES cap,
+      // default 10) and optionally routed (KNOWLEDGE_GATE_ISSUE_AUDIENCE filter);
+      // the filter runs BEFORE the cap so the cap measures the audience-matched set.
+      // The habit-builder EVOLVE branch above stays unfiltered and uncapped.
       if (agent === "overseer") {
-        const openIssues = scanOpenIssues();
+        let openIssues = filterByAudience(scanOpenIssues(), process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
+        openIssues = applyCap(openIssues, envOpenIssueCap());
         if (openIssues.length > 0) {
           const issueSummary = openIssues.map(i =>
             `- [${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
