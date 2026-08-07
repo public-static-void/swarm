@@ -197,7 +197,7 @@ ${table}
   it("exports a PluginModule with server() returning the expected hooks", async () => {
     expect(pluginModule.id).toBe("protocol-gate");
     expect(typeof pluginModule.server).toBe("function");
-    for (const hook of ["chat.params", "permission.ask", "tool.execute.before", "command.execute.before", "tool.definition", "experimental.chat.system.transform"]) {
+    for (const hook of ["chat.params", "chat.message", "permission.ask", "tool.execute.before", "command.execute.before", "tool.definition", "experimental.chat.system.transform"]) {
       expect(typeof hooks[hook]).toBe("function");
     }
   });
@@ -1693,15 +1693,20 @@ ${table}
     await hooks["tool.definition"]({ toolID: "edit" }, editOut);
     expect(editOut.description).toContain("⛔");
 
-    // INTENT: edit/glob/grep get the ⛔ prefix, task always passes
+    // INTENT: glob/grep get the ⛔ prefix; edit is allowlisted (F2/R005) and
+    // carries a scoped restriction instead; task always passes.
     const s2 = sid("def-1");
     await initOverseer(s2);
     hooks.sessionPhaseMap.set(s2, hooks.STATES.INTENT);
-    for (const tool of ["edit", "glob", "grep"]) {
+    for (const tool of ["glob", "grep"]) {
       const output = { description: `Test ${tool}`, parameters: {} };
       await hooks["tool.definition"]({ toolID: tool }, output);
       expect(output.description).toContain("⛔");
     }
+    const intentEditOut = { description: "Test edit", parameters: {} };
+    await hooks["tool.definition"]({ toolID: "edit" }, intentEditOut);
+    expect(intentEditOut.description).not.toContain("⛔");
+    expect(intentEditOut.description).toContain("INTENT phase restriction: ONLY knowledge/intent-*.md");
     const taskOut = { description: "Test task", parameters: {} };
     await hooks["tool.definition"]({ toolID: "task" }, taskOut);
     expect(taskOut.description).not.toContain("⛔");
@@ -2640,6 +2645,86 @@ ${verdict}
     });
   });
 
+  describe("M1: stale advancement announcement cleared on /phase override and backward transition (AC001-AC004)", () => {
+    // Drives EXPLORE → INVESTIGATE through the real disk-advancement path so
+    // the one-shot announcement is set by the gate itself (R402), not seeded.
+    async function advanceExploreToInvestigate(s) {
+      await initOverseer(s);
+      await todo(s, "c1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      createKD(`intent-a-${s}.md`);
+      await todo(s, "c2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      createKD(`preflight-a-${s}.md`);
+      await todo(s, "c3"); // PREFLIGHT skip consumed
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      await todo(s, "c4");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      createKD(`exploration-a-${s}.md`);
+      await todo(s, "c5");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+      expect(hooks.advancementAnnouncements.has(s)).toBe(true);
+    }
+
+    it("AC001 (R001): /phase deletes the pending announcement for every valid invocation", async () => {
+      const s = sid("f1-ac001");
+      await advanceExploreToInvestigate(s);
+
+      const output = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "EXPLORE" }, output);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.advancementAnnouncements.has(s)).toBe(false);
+    });
+
+    it("AC002 (R001): after /phase, the next systemTransform carries no stale auto-advanced announcement", async () => {
+      const s = sid("f1-ac002");
+      await advanceExploreToInvestigate(s);
+
+      const phaseOut = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "EXPLORE" }, phaseOut);
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, output);
+      expect(output.system.join("\n")).not.toContain("Phase auto-advanced");
+    });
+
+    it("AC003 (R002): a backward transition deletes the pending announcement", async () => {
+      const s = sid("f1-ac003");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // Seeded directly — no /phase in this test, so only the backward
+      // transition (task dispatch with BACKWARD: true → handleBackwardTransition)
+      // can clear the announcement.
+      hooks.advancementAnnouncements.set(s, { from: "SWARM", to: "VERIFY", reason: "all milestones checked-off: 1/1" });
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "b1" },
+        { args: { prompt: "DISPATCH TO: artisan\nBACKWARD: true\nSCOPE: fix something", subagent_type: "artisan" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.advancementAnnouncements.has(s)).toBe(false);
+    });
+
+    it("AC004 (R003): the one-shot announcement still fires exactly once with no intervening override", async () => {
+      const s = sid("f1-ac004");
+      await advanceExploreToInvestigate(s);
+
+      const first = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, first);
+      expect(first.system.join("\n")).toContain("Phase auto-advanced: EXPLORE → INVESTIGATE");
+      expect(hooks.advancementAnnouncements.has(s)).toBe(false);
+
+      const second = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, second);
+      expect(second.system.join("\n")).not.toContain("Phase auto-advanced");
+
+      const all = [...first.system, ...second.system].join("\n");
+      const occurrences = all.split("[Protocol Gate] Phase auto-advanced:").length - 1;
+      expect(occurrences).toBe(1);
+    });
+  });
+
   it("R306 (relocated from delegation-gate M1): GENERATION falls back to the protocol-gate state file when the prompt omits GENERATION", async () => {
     // The delegation-gate GENERATION fallback reads PROTOCOL_GATE_STATE_DIR at
     // call time — this suite's temp stateDir (P302) is that dir, so the real
@@ -2946,6 +3031,218 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
       const persisted = JSON.parse(readFileSync(statePath(s), "utf8"));
       expect(persisted.overrideUntil).toBeUndefined();
+    });
+  });
+
+  describe("M2 (F2): /phase INTENT no longer traps the session (AC005–AC011)", () => {
+    // Ages a KD so its mtime predates the /phase marker — stale evidence under
+    // the R006 fresh-evidence rule. 60s of backdating dwarfs the millisecond
+    // gap between the marker's `since` and this call, so the KD is always stale.
+    function ageKD(filename, msBack = 60000) {
+      const when = new Date(Date.now() - msBack);
+      utimesSync(join(knowledgeDir, filename), when, when);
+    }
+
+    it("AC005 (R004): a stale-mtime corrected intent KD advances a /phase INTENT override and clears the marker", async () => {
+      const s = sid("f2-ac005");
+      await initOverseer(s);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "INTENT" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phase).toBe(hooks.STATES.INTENT);
+
+      // The user corrected the intent KD BEFORE the override — its mtime is
+      // below `since`, which used to hold INTENT forever (F2 trap 1).
+      createKD(`intent-corrected-${s}.md`);
+      ageKD(`intent-corrected-${s}.md`);
+
+      // Presence of the session-matching intent KD advances INTENT → PREFLIGHT
+      // on the next disk-check tool call, regardless of mtime (R004).
+      await todo(s, "f2-1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
+    });
+
+    it("AC006 (R004): /phase INTENT with no intent KD present does not advance on disk-check calls", async () => {
+      const s = sid("f2-ac006");
+      await initOverseer(s);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "INTENT" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+      await todo(s, "f2-1");
+      await todo(s, "f2-2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.INTENT);
+    });
+
+    it("AC007 (R004 scope): the exemption is INTENT-only — a stale exploration KD still holds a /phase EXPLORE override", async () => {
+      const s = sid("f2-ac007");
+      await initOverseer(s);
+      createKD(`exploration-stale-${s}.md`);
+      ageKD(`exploration-stale-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "EXPLORE" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+
+      await todo(s, "f2-1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.EXPLORE);
+    });
+
+    it("AC008 (R005): edit is in the INTENT allowlist — permissionAsk allows it and toolExecuteBefore does not block it", async () => {
+      const s = sid("f2-ac008");
+      await initOverseer(s);
+
+      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      const allowlistLine = pluginSrc.split("\n").find(line => line.includes('INTENT: ["todowrite"'));
+      expect(allowlistLine).toContain('"edit"');
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "INTENT" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+      const permOutput = {};
+      await hooks["permission.ask"]({ sessionID: s, type: "edit" }, permOutput);
+      expect(permOutput.status).not.toBe("deny");
+
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "edit", sessionID: s, callID: "e1" },
+          { args: { filePath: `knowledge/intent-feature-${s}.md` } }
+        )
+      ).resolves.toBeUndefined();
+    });
+
+    it("AC009 (R005): toolDefinition for edit in INTENT carries the scoped restriction text", async () => {
+      const s = sid("f2-ac009");
+      await initOverseer(s);
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "INTENT" }, { parts: [] });
+      // toolDefinition reads lastSeenSession — set it with a real tool call.
+      await hooks["tool.execute.before"](
+        { tool: "edit", sessionID: s, callID: "e1" },
+        { args: { filePath: `knowledge/intent-feature-${s}.md` } }
+      );
+
+      const output = { description: "Edit a file", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "edit" }, output);
+      expect(output.description).toContain("[INTENT phase restriction:");
+      expect(output.description).toContain("ONLY knowledge/intent-*.md");
+      expect(output.description).not.toContain("⛔");
+    });
+
+    it("AC010 (R006): commands/phase.md documents overrideUntil, the INTENT exemption, the recovery path, and edit-in-place", async () => {
+      const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
+      // (a) overrideUntil marker semantics + fresh-evidence rule (F3 answer)
+      expect(template).toContain("overrideUntil");
+      expect(template.toLowerCase()).toContain("fresh");
+      // (b) INTENT exemption — presence advances, freshness ignored (EC-3)
+      expect(template).toContain("INTENT override exemption");
+      expect(template).toContain("regardless of its mtime");
+      // (c) recovery path — /phase PREFLIGHT and the general escape hatch
+      expect(template).toContain("/phase PREFLIGHT");
+      // (d) edit-in-place of the corrected intent KD
+      expect(template).toContain("`edit`");
+      expect(template).toContain("knowledge/intent-*.md");
+    });
+  });
+
+  describe("M3 (F4): verbatim raw-intent capture at plugin level (AC012-AC018)", () => {
+    it("AC012 (R007): chat.message captures overseer text parts verbatim with no transformation", async () => {
+      const s = sid("f4-ac012");
+      await hooks["chat.message"](
+        { sessionID: s, agent: "overseer", messageID: "m1" },
+        { message: {}, parts: [{ type: "text", text: "Raw request text" }] }
+      );
+      expect(hooks.rawIntentCapture.get(s)).toEqual([{ messageID: "m1", text: "Raw request text" }]);
+    });
+
+    it("AC013 (R007): chat.message with only non-text parts adds no capture entry", async () => {
+      const s = sid("f4-ac013");
+      await hooks["chat.message"](
+        { sessionID: s, agent: "overseer", messageID: "m1" },
+        { message: {}, parts: [{ type: "file", file: { path: "/tmp/x" } }, { type: "agent", agent: "tool" }] }
+      );
+      expect(hooks.rawIntentCapture.has(s)).toBe(false);
+    });
+
+    it("AC014 (R007): chat.message with a subagent agent adds no capture entry", async () => {
+      const s = sid("f4-ac014");
+      await hooks["chat.message"](
+        { sessionID: s, agent: "artisan", messageID: "m1" },
+        { message: {}, parts: [{ type: "text", text: "subagent text must not leak" }] }
+      );
+      expect(hooks.rawIntentCapture.has(s)).toBe(false);
+    });
+
+    it("AC015 (R008): INTENT-phase systemTransform injects the verbatim text and the copy-exactly directive", async () => {
+      const s = sid("f4-ac015");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+      await hooks["chat.message"](
+        { sessionID: s, agent: "overseer", messageID: "m1" },
+        { message: {}, parts: [{ type: "text", text: "Raw request text" }] }
+      );
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, output);
+      const system = output.system.join("\n");
+      expect(system).toContain("[Protocol Gate] Raw user request (verbatim)");
+      expect(system).toContain("copy exactly");
+      expect(system).toContain("Do not paraphrase or summarize");
+      expect(system).toContain("Raw request text");
+      expect(system).toContain("Message 1:");
+    });
+
+    it("AC016 (R008): a non-INTENT phase carries no raw-intent injection for the same session", async () => {
+      const s = sid("f4-ac016");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.EXPLORE);
+      await hooks["chat.message"](
+        { sessionID: s, agent: "overseer", messageID: "m1" },
+        { message: {}, parts: [{ type: "text", text: "Raw request text" }] }
+      );
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, output);
+      const system = output.system.join("\n");
+      expect(system).not.toContain("Raw user request (verbatim)");
+      expect(system).not.toContain("copy exactly");
+      expect(system).not.toContain("Raw request text");
+    });
+
+    it("AC017 (R009): chat.message + systemTransform perform no writes to the knowledge dir", async () => {
+      const s = sid("f4-ac017");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+      await hooks["chat.message"](
+        { sessionID: s, agent: "overseer", messageID: "m1" },
+        { message: {}, parts: [{ type: "text", text: "Raw request text" }] }
+      );
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, output);
+      expect(output.system.join("\n")).toContain("Raw request text");
+      // The capture/injection path alone creates nothing — no intent KD
+      // auto-write, no other knowledge file (R009/NFR006).
+      expect(readdirSync(knowledgeDir)).toEqual([]);
+    });
+
+    it("AC018 (NFR004): the per-session capture is bounded at RAW_INTENT_MAX_MESSAGES, dropping the oldest", async () => {
+      const s = sid("f4-ac018");
+      for (let i = 1; i <= 11; i++) {
+        await hooks["chat.message"](
+          { sessionID: s, agent: "overseer", messageID: `m${i}` },
+          { message: {}, parts: [{ type: "text", text: `message ${i}` }] }
+        );
+      }
+      const entries = hooks.rawIntentCapture.get(s);
+      expect(entries.length).toBe(hooks.RAW_INTENT_MAX_MESSAGES);
+      expect(entries[0]).toEqual({ messageID: "m2", text: "message 2" });
+      expect(entries[entries.length - 1]).toEqual({ messageID: "m11", text: "message 11" });
     });
   });
 });
