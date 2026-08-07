@@ -89,18 +89,18 @@ describe("agents/*.md bash allowlist security scan", () => {
   });
 });
 
-// Static contract guard for the memory division of labor (M3): the write
-// memory tools live in the Scribe's allowlist only. The guard matches tool
-// allowlist lines (memory_write: allow), never prose — the positive note adds
-// the word "memory" to habit-builder.md's Constraints section legitimately.
+// Static contract guard for the memory division of labor (M3, FIX1): the write
+// memory tools live in the Scribe's allowlist only. The Scribe-writes-memory
+// rule lives in scribe.md (step 11), NOT in Habit Builder surfaces — FIX1
+// removed it from habit-builder.md after it was wrongfully placed there by M2.
 describe("Memory division of labor — static agent-file contract guard (M3, AC011)", () => {
   const files = agentFiles();
   const readAgent = name => readFileSync(join(process.cwd(), "agents", name), "utf8");
 
-  it("keeps the habit-builder write-scope note and no memory write/update/delete allowlist entries", () => {
+  it("keeps the Scribe-writes-memory rule out of habit-builder and no memory write/update/delete allowlist entries", () => {
     expect(files).toContain("habit-builder.md");
     const habitBuilder = readAgent("habit-builder.md");
-    expect(habitBuilder).toContain("written by the Scribe during EXTRACT");
+    expect(habitBuilder).not.toContain("written by the Scribe during EXTRACT");
     const writeEntries = habitBuilder.split("\n").filter(l => /^\s*memory_(write|update|delete):\s*allow\s*$/.test(l));
     expect(writeEntries).toEqual([]);
   });
