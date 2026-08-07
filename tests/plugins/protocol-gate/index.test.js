@@ -172,7 +172,10 @@ ${table}
     createKD(`impl-M1-a${suffix}`);
     await todo(s, "c9");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+    // R001 dual-KD gate: EXTRACT requires BOTH the review- and audit- KDs
+    // (the Inspector produces both), so create them together before c10.
     createKD(`review-a${suffix}`);
+    createKD(`audit-a${suffix}`);
     await todo(s, "c10");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
     createKD(`composed-a${suffix}`);
@@ -526,6 +529,45 @@ ${table}
     expect(existsSync(join(knowledgeDir, `intent-stale-${s}-gen1.md`))).toBe(true);
     expect(existsSync(join(knowledgeDir, `intent-fresh-${s}-gen2.md`))).toBe(false);
     expect(existsSync(join(knowledgeDir, `report-final-${s}-gen2.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, "intent-other-other-session.md"))).toBe(true);
+    removeKD("intent-other-other-session.md");
+  });
+
+  it("AC013 (M4): report-survivor — the triggering report written AFTER the lifecycle-end hook survives while sibling ending-generation KDs are deleted", async () => {
+    const s = sid("survivor-r011");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    hooks.sessionPhaseMap.set(`${s}:gen`, 2);
+
+    // Sibling ending-generation KDs (a PROCESS KD carrying preserved memory
+    // payloads is the issue-30 motivation) plus a PRE-EXISTING report file —
+    // the AC-R004 moment of the same sequence.
+    createKD(`intent-fresh-${s}-gen2.md`);
+    createKD(`process-payload-${s}-gen2.md`);
+    createKD(`report-final-${s}-gen2.md`);
+    createKD(`intent-stale-${s}-gen1.md`); // prior generation — must survive
+    createKD("intent-other-other-session.md"); // other session — must survive
+
+    // The hook runs BEFORE the runtime write (tool.execute.before): cleanup
+    // deletes every ending-generation KD, including the pre-existing report.
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: s, callID: "c1" },
+      { args: { filePath: `knowledge/report-final-${s}-gen2.md`, content: "report" } }
+    );
+    expect(hooks.sessionPhaseMap.has(s)).toBe(false);
+    expect(hooks.getCurrentGeneration(s)).toBe(3);
+    expect(existsSync(join(knowledgeDir, `report-final-${s}-gen2.md`))).toBe(false);
+
+    // Simulate the post-hook runtime write — the report file lands AFTER
+    // cleanup, so it survives. This is the incidental hook-ordering behavior
+    // the test locks in; issue-30 documents why it is not a durability
+    // guarantee for non-report KDs.
+    createKD(`report-final-${s}-gen2.md`, "report");
+    expect(existsSync(join(knowledgeDir, `report-final-${s}-gen2.md`))).toBe(true);
+    expect(existsSync(join(knowledgeDir, `intent-fresh-${s}-gen2.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, `process-payload-${s}-gen2.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, `intent-stale-${s}-gen1.md`))).toBe(true);
     expect(existsSync(join(knowledgeDir, "intent-other-other-session.md"))).toBe(true);
     removeKD("intent-other-other-session.md");
   });
@@ -1177,20 +1219,68 @@ ${table}
     expect(hooks.getCurrentGeneration(s)).toBe(1);
   });
 
-  it("BUG-009: VERIFY advances to EXTRACT with only a review KD or only an audit KD (OR fix)", async () => {
-    for (const prefix of ["review", "audit"]) {
-      const s = sid(`ror-${prefix}`);
-      await initOverseer(s);
-      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
-      hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      createKD(`${prefix}-ror-${s}.md`);
+  // R001 dual-KD gate (replaces the BUG-009 OR test): VERIFY advances to
+  // EXTRACT only when BOTH a current-generation review- KD AND an audit- KD
+  // exist — the Inspector produces both (verify.json:3, inspector.md:70).
+  // A single KD must hold VERIFY without consistency-regressing to SWARM (the
+  // regression-side ORs in checkPhaseStateConsistency are preserved), or the
+  // BUG-009 unbounded VERIFY⇄SWARM loop returns.
+  it("R001 (AC001-AC004/AC007): VERIFY advances to EXTRACT only when BOTH current-generation review- and audit- KDs exist", async () => {
+    const s = sid("verify-dual");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    let callID = 0;
+    const hookGlob = () => hooks["tool.execute.before"](
+      { tool: "glob", sessionID: s, callID: `c${++callID}` },
+      { args: { pattern: "knowledge/*.md" } }
+    );
+    const gate = () => hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount);
 
-      await hooks["tool.execute.before"](
-        { tool: "glob", sessionID: s, callID: "c1" },
-        { args: { pattern: "knowledge/*.md" } }
-      );
+    // review- alone: no advancement (AC001) and no consistency regression to
+    // SWARM across repeated hook invocations (AC007/NFR001).
+    createKD(`review-only-${s}.md`);
+    expect(gate()).toBe(false);
+    await hookGlob();
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+    await hookGlob();
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+
+    // audit- alone: no advancement (AC002).
+    removeKD(`review-only-${s}.md`);
+    createKD(`audit-only-${s}.md`);
+    expect(gate()).toBe(false);
+    await hookGlob();
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+
+    // both current-gen: advancement (AC003). With PROTOCOL_GATE_DEBUG=1 the
+    // disk-check log reports both flags accurately (AC010).
+    createKD(`review-both-${s}.md`);
+    expect(gate()).toBe(true);
+    try { rmSync(logPath); } catch (_) {}
+    process.env.PROTOCOL_GATE_DEBUG = "1";
+    try {
+      await hookGlob();
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+      expect(readFileSync(logPath, "utf8")).toContain("Disk check VERIFY: review=true, audit=true → true");
+    } finally {
+      delete process.env.PROTOCOL_GATE_DEBUG;
+      try { rmSync(logPath); } catch (_) {}
     }
+
+    // Generation scoping (AC004/NFR002): a current-gen review with a stale
+    // prior-gen audit is still blocked (only the review matches) until a
+    // current-gen audit lands.
+    const s2 = sid("verify-dual-gen");
+    await initOverseer(s2);
+    hooks.sessionPhaseMap.set(s2, hooks.STATES.VERIFY);
+    hooks.sessionPhaseMap.set(`${s2}:sid`, s2);
+    hooks.sessionPhaseMap.set(`${s2}:gen`, 2);
+    createKD(`review-cur-${s2}-gen2.md`);
+    createKD(`audit-stale-${s2}-gen1.md`);
+    expect(hooks.checkDiskAdvancement(s2, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+    createKD(`audit-cur-${s2}-gen2.md`);
+    expect(hooks.checkDiskAdvancement(s2, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
   it("R003: DECOMPOSE advances only when BOTH current-generation plan- and milestones- KDs exist (dual-KD gate)", async () => {
@@ -2436,6 +2526,8 @@ ${verdict}
         hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
         hooks.sessionPhaseMap.set(`${s}:sid`, s);
         createKD(`review-${name}-${s}.md`, content);
+        // R001 dual-KD gate: EXTRACT also requires an audit- KD.
+        createKD(`audit-${name}-${s}.md`);
 
         await hooks["tool.execute.before"](
           { tool: "glob", sessionID: s, callID: "c1" },
@@ -2479,6 +2571,9 @@ ${verdict}
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
       createKD(`review-older-${s}.md`, verdictKD("FAIL"));
       createKD(`review-newer-${s}.md`, "no verdict frontmatter");
+      // R001 dual-KD gate: EXTRACT also requires an audit- KD. It is created
+      // BEFORE the mtime bump so review-newer stays decisively newest.
+      createKD(`audit-${s}.md`);
       // Make the newer KD decisively newest via mtime so the filename
       // tie-break is not load-bearing (EC01: newest wins).
       utimesSync(join(knowledgeDir, `review-newer-${s}.md`), new Date(), new Date(Date.now() + 5000));
@@ -2831,8 +2926,10 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await todo(s, "v1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
 
-      // A fresh review KD (no verdict → treated as PASS) advances + clears.
+      // Fresh KDs (no verdict → treated as PASS) advance + clear: the R001
+      // dual-KD gate requires BOTH a fresh review- and a fresh audit- KD.
       createKD(`review-fresh-${s}.md`);
+      createKD(`audit-fresh-${s}.md`);
       await todo(s, "v2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);

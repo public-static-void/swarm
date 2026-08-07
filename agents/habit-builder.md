@@ -69,6 +69,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 ## Constraints
 
 - PROCESS KDs follow kd-system conventions
+- Write artifacts are the PROCESS KD and issue files (`knowledge/issues/*.md`).
 
 ## Context Marker
 
