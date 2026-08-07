@@ -143,6 +143,8 @@ Phase Output ──► Gate ──► Next Phase
 
 A `FAIL` verdict in the newest review/audit KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). A `FUNDAMENTAL` verdict blocks advancement and escalates; it must never auto-regress.
 
+During protocol-gate vitest runs, `FUNDAMENTAL_ESCALATION` lines are asserted test output from the F1 AC104 fixture (`tests/plugins/protocol-gate/index.test.js`). Verify the line against the test source before treating it as a lifecycle anomaly.
+
 ## Feedback Loop
 
 On FAIL with clear cause:

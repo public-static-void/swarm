@@ -38,6 +38,8 @@ permission:
     "git status -sb*": allow
     "git rm*": allow
     "npm test*": allow
+    "npm audit*": allow
+    "npm install --save-dev*": allow
     "npm run build*": allow
     "npm run lint*": allow
     "npm ci*": allow

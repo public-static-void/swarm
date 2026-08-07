@@ -24,6 +24,7 @@ permission:
   bash:
     "*": deny
     "npm test*": allow
+    "npm audit*": allow
     "npm run lint*": allow
     "bun test*": allow
     "cargo test*": allow

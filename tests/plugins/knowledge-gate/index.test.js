@@ -345,6 +345,133 @@ Body text`;
       expect(closeHint).toContain("Resolution");
       expect(closeHint).toContain("evidence");
     });
+
+    describe("overseer INTENT issue injection (R007/R008)", () => {
+      const intentHint = output =>
+        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+
+      it("injects open issues in the stable line format for the overseer", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(2, { severity: "medium", title: "Format check issue", assigned_to: "inspector" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("- [ISSUE-002] (medium) Format check issue — assigned to inspector");
+        expect(hint).toContain("Triage Notes");
+      });
+
+      it("excludes resolved and closed issues from overseer injection", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { status: "open", title: "Open item" }),
+          addIssueFile(2, { status: "resolved", title: "Resolved item" }),
+          addIssueFile(3, { status: "closed", title: "Closed item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("Open item");
+        expect(hint).not.toContain("Resolved item");
+        expect(hint).not.toContain("Closed item");
+      });
+
+      it("skips a malformed-frontmatter issue file without blocking valid injection", async () => {
+        writeEntries(ISSUES_DIR, [
+          { fileName: "issue-001.md", content: "no frontmatter at all" },
+          addIssueFile(2, { severity: "low", title: "Well-formed issue" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("Well-formed issue");
+      });
+
+      it("injects no issue block and does not crash when zero open issues exist", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { status: "resolved", title: "Only closed item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        expect(intentHint(output)).toBeUndefined();
+      });
+
+      it("falls back to unassigned when an open issue has no assigned_to", async () => {
+        const frontmatter = [
+          "id: ISSUE-004",
+          "title: Ownerless issue",
+          "severity: low",
+          "status: open",
+          "created: 2026-07-29",
+          "session: ses_test_4",
+          "tags: [test]"
+        ].join("\n");
+        writeEntries(ISSUES_DIR, [
+          { fileName: "issue-004.md", content: `---\n${frontmatter}\n---\n\nBody.` }
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("— assigned to unassigned");
+      });
+
+      it("injects issues ordered by severity rank and ascending numeric id", async () => {
+        // Severity is deliberately permuted against the numeric id order so a
+        // filesystem-order (readdirSync) read cannot satisfy the expectation.
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(4, { severity: "high", title: "High B" }),
+          addIssueFile(2, { severity: "high", title: "High A" }),
+          addIssueFile(5, { severity: "low", title: "Low E" }),
+          addIssueFile(1, { severity: "low", title: "Low D" }),
+          addIssueFile(3, { severity: "medium", title: "Medium C" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        const issueLines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        expect(issueLines).toEqual([
+          "- [ISSUE-002] (high) High A — assigned to habit-builder",
+          "- [ISSUE-004] (high) High B — assigned to habit-builder",
+          "- [ISSUE-003] (medium) Medium C — assigned to habit-builder",
+          "- [ISSUE-001] (low) Low D — assigned to habit-builder",
+          "- [ISSUE-005] (low) Low E — assigned to habit-builder"
+        ]);
+      });
+    });
   });
 
   describe("validateMemoryEntry — with type field", () => {
@@ -870,6 +997,75 @@ Body text`;
       const parsedWrite = JSON.parse(write);
       expect(parsedWrite.message).toContain("written");
       expect(parsedWrite.id).toBe("MEM-003");
+    });
+
+    it("clears a superseded_by tombstone via empty string; entry reappears in search", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      await hooks.tool.memory_update.execute(
+        { id: "MEM-001", entry: { superseded_by: "MEM-002" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+
+      const cleared = await hooks.tool.memory_update.execute(
+        { id: "MEM-001", entry: { superseded_by: "" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      expect(JSON.parse(cleared).message).toContain("updated");
+
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-001.json"), "utf8"));
+      expect(onDisk.superseded_by).toBe("");
+
+      // Un-superseded entry is searchable again
+      const search = await hooks.tool.memory_search.execute({ tags: ["auth"], limit: 5 }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(search).map(e => e.id)).toContain("MEM-001");
+    });
+
+    it("clears a superseded_by tombstone via null at the code level", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(2, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      await hooks.tool.memory_update.execute(
+        { id: "MEM-002", entry: { superseded_by: "MEM-003" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+
+      const cleared = await hooks.tool.memory_update.execute(
+        { id: "MEM-002", entry: { superseded_by: null } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      expect(JSON.parse(cleared).message).toContain("updated");
+
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-002.json"), "utf8"));
+      expect(onDisk.superseded_by).toBeNull();
+    });
+
+    it("is idempotent when clearing an entry that has no tombstone", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(3, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-003", entry: { superseded_by: "" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      expect(JSON.parse(result).message).toContain("updated");
+
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-003.json"), "utf8"));
+      expect(onDisk.superseded_by).toBe("");
+
+      const search = await hooks.tool.memory_search.execute({ tags: ["auth"], limit: 5 }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(search).map(e => e.id)).toContain("MEM-003");
+    });
+
+    it("treats a patch containing only superseded_by \"\" as a clear, not an empty patch", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(4, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      await hooks.tool.memory_update.execute(
+        { id: "MEM-004", entry: { superseded_by: "MEM-005" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+
+      const result = await hooks.tool.memory_update.execute(
+        { id: "MEM-004", entry: { superseded_by: "" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.message).toContain("updated");
     });
   });
 
