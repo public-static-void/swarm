@@ -25,6 +25,11 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 - `read`, `grep`, and `glob` are the canonical inspection tools — use them for all file and content inspection.
 - Chained or piped bash inspection (`cmd | cmd`, `cmd && cmd`) is not permitted; use the dedicated tools instead.
 
+## Evidence and Knowledge Durability
+
+- **Quote gate-log evidence inline**: when a KD, issue file, or report cites `plugins/logs/*.log` evidence, quote the relevant content into the citing document at capture time. Bare `file:line` citations rot — logs are gitignored (`*.log`) and rotated between sessions.
+- **Persist cross-lifecycle content durably**: content that must outlive a lifecycle lives in memory entries (Scribe), `knowledge/issues/` files, or committed artifacts (git). Lifecycle-end cleanup deletes every `*-{sessionID}-gen{N}.md` KD except the report at REPORT write, and `knowledge/` KDs are gitignored by design — do not rely on runtime KDs for cross-lifecycle evidence.
+
 ## Test and Security Scan Workflow
 
 - Run the full test suite with `npx vitest run` (all files under `tests/`).
