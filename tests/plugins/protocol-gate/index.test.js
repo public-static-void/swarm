@@ -533,6 +533,45 @@ ${table}
     removeKD("intent-other-other-session.md");
   });
 
+  it("AC013 (M4): report-survivor — the triggering report written AFTER the lifecycle-end hook survives while sibling ending-generation KDs are deleted", async () => {
+    const s = sid("survivor-r011");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    hooks.sessionPhaseMap.set(`${s}:gen`, 2);
+
+    // Sibling ending-generation KDs (a PROCESS KD carrying preserved memory
+    // payloads is the issue-30 motivation) plus a PRE-EXISTING report file —
+    // the AC-R004 moment of the same sequence.
+    createKD(`intent-fresh-${s}-gen2.md`);
+    createKD(`process-payload-${s}-gen2.md`);
+    createKD(`report-final-${s}-gen2.md`);
+    createKD(`intent-stale-${s}-gen1.md`); // prior generation — must survive
+    createKD("intent-other-other-session.md"); // other session — must survive
+
+    // The hook runs BEFORE the runtime write (tool.execute.before): cleanup
+    // deletes every ending-generation KD, including the pre-existing report.
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: s, callID: "c1" },
+      { args: { filePath: `knowledge/report-final-${s}-gen2.md`, content: "report" } }
+    );
+    expect(hooks.sessionPhaseMap.has(s)).toBe(false);
+    expect(hooks.getCurrentGeneration(s)).toBe(3);
+    expect(existsSync(join(knowledgeDir, `report-final-${s}-gen2.md`))).toBe(false);
+
+    // Simulate the post-hook runtime write — the report file lands AFTER
+    // cleanup, so it survives. This is the incidental hook-ordering behavior
+    // the test locks in; issue-30 documents why it is not a durability
+    // guarantee for non-report KDs.
+    createKD(`report-final-${s}-gen2.md`, "report");
+    expect(existsSync(join(knowledgeDir, `report-final-${s}-gen2.md`))).toBe(true);
+    expect(existsSync(join(knowledgeDir, `intent-fresh-${s}-gen2.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, `process-payload-${s}-gen2.md`))).toBe(false);
+    expect(existsSync(join(knowledgeDir, `intent-stale-${s}-gen1.md`))).toBe(true);
+    expect(existsSync(join(knowledgeDir, "intent-other-other-session.md"))).toBe(true);
+    removeKD("intent-other-other-session.md");
+  });
+
   it("AC101/AC102: cleanupLifecycleKDs removes only the ending generation's variants", () => {
     const cases = [
       { generation: 0, removed: 2, survivors: ["spec-c-{s}-gen1.md", "spec-d-{s}-gen2.md"] },
@@ -2460,6 +2499,9 @@ ${verdict}
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // TEST-ONLY: the FUNDAMENTAL_ESCALATION line below is asserted test output for the
+      // review-fund-<sid>.md fixture — verify against the test source before treating it
+      // as a lifecycle anomaly.
       createKD(`review-fund-${s}.md`, verdictKD("FUNDAMENTAL"));
 
       try { rmSync(logPath); } catch (_) {}

@@ -6,7 +6,9 @@ import { join } from "path";
 // R201/R202/R203 contract: no agent bash entry may be a bare runtime or
 // build-tool wildcard (a bare wildcard silently permits arbitrary subcommands),
 // the scoped commands mandated by the SPEC stay present, and the four
-// read/inspect roles carry the read-only inspection baseline.
+// read/inspect roles carry the read-only inspection baseline. Also guards the
+// R003 SAST baseline (issue-25): the npm audit/dependency-scan commands stay
+// verb-pinned in every agent that runs scans or installs the tooling.
 
 const FORBIDDEN_BARE = [
   "node", "bun", "npm", "npx", "yarn", "pnpm", "deno",
@@ -18,6 +20,10 @@ const GIT_AGENTS = ["inspector.md", "explorer.md", "analyzer.md"];
 const GIT_COMMANDS = ["git branch*", "git merge-base*", "git check-ignore*", "git log --oneline*"];
 const READONLY_BASELINE_AGENTS = ["explorer.md", "inspector.md", "pathfinder.md", "artisan.md"];
 const READONLY_BASELINE_COMMANDS = ["cat*", "head*", "tail*", "wc*", "git show*", "git status -sb*"];
+const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
+const SCAN_COMMANDS = ["npm audit*"];
+const INSTALL_AGENTS = ["artisan.md"];
+const INSTALL_COMMANDS = ["npm install --save-dev*"];
 
 function agentFiles() {
   return readdirSync(join(process.cwd(), "agents")).filter(f => f.endsWith(".md")).sort();
@@ -86,5 +92,58 @@ describe("agents/*.md bash allowlist security scan", () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  it("keeps verb-pinned npm audit entries for Inspector, Analyzer, and Artisan (R003, AC012)", () => {
+    const missing = [];
+    for (const f of SCAN_AGENTS) {
+      const patterns = entriesByFile.get(f).map(e => e.pattern);
+      for (const cmd of SCAN_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the verb-pinned npm install enabler for Artisan (R003, AC012)", () => {
+    const missing = [];
+    for (const f of INSTALL_AGENTS) {
+      const patterns = entriesByFile.get(f).map(e => e.pattern);
+      for (const cmd of INSTALL_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+});
+
+// Static contract guard for the memory division of labor (M3, FIX1): the write
+// memory tools live in the Scribe's allowlist only. The Scribe-writes-memory
+// rule lives in scribe.md (step 11), NOT in Habit Builder surfaces — FIX1
+// removed it from habit-builder.md after it was wrongfully placed there by M2.
+describe("Memory division of labor — static agent-file contract guard (M3, AC011)", () => {
+  const files = agentFiles();
+  const readAgent = name => readFileSync(join(process.cwd(), "agents", name), "utf8");
+
+  it("keeps the Scribe-writes-memory rule out of habit-builder and no memory write/update/delete allowlist entries", () => {
+    expect(files).toContain("habit-builder.md");
+    const habitBuilder = readAgent("habit-builder.md");
+    expect(habitBuilder).not.toContain("written by the Scribe during EXTRACT");
+    const writeEntries = habitBuilder.split("\n").filter(l => /^\s*memory_(write|update|delete):\s*allow\s*$/.test(l));
+    expect(writeEntries).toEqual([]);
+  });
+
+  it("keeps the scribe step-11 memory_write instruction and memory tool allowlist entries", () => {
+    expect(files).toContain("scribe.md");
+    const scribe = readAgent("scribe.md");
+    expect(scribe).toContain("write each as a JSON entry via the `memory_write` tool");
+    for (const tool of ["memory_search", "memory_write", "memory_update", "memory_delete"]) {
+      const allowLines = scribe.split("\n").filter(l => new RegExp(`^\\s*${tool}:\\s*allow\\s*$`).test(l));
+      expect(allowLines).toHaveLength(1);
+    }
   });
 });

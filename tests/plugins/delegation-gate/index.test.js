@@ -505,6 +505,39 @@ RESULT KD: knowledge/cleanup-foo.md`;
     });
   });
 
+  describe("Memory Division of Labor (M3, FIX1)", () => {
+    // Evolve dispatches the Habit Builder — its rendered prompt must stay free
+    // of the Scribe-writes-memory rule (FIX1: the rule belongs to scribe.md
+    // step 11, not Habit Builder surfaces) and of any memory-write instruction.
+    const evolvePrompt = `AGENT: habit-builder
+MODE: evolve
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-06
+SCOPE: Test evolve memory scope
+RESULT KD: knowledge/process-foo.md`;
+
+    it("keeps the Scribe-writes-memory rule out of the evolve template (AC007, FIX1)", async () => {
+      const output = { args: { prompt: evolvePrompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).not.toContain("written by the Scribe during EXTRACT");
+    });
+
+    it("renders the evolve template without a memory-write instruction (AC008)", async () => {
+      const output = { args: { prompt: evolvePrompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).not.toContain("memory_write tool");
+    });
+
+    it("keeps the Scribe-writes-memory rule out of the evolve fallback template (AC009, FIX1)", async () => {
+      // The in-code fallback (disk template missing) must render the same
+      // contract — assert it on the source so drift is caught at test time.
+      const src = readFileSync(new URL("../../../plugins/delegation-gate/index.js", import.meta.url), "utf8");
+      const fallbackLines = src.split("\n").filter(l => /^    evolve: /.test(l));
+      expect(fallbackLines).toHaveLength(1);
+      expect(fallbackLines[0]).not.toContain("written by the Scribe during EXTRACT");
+    });
+  });
+
   describe("Conditional KD PATHS Rendering (F4)", () => {
     it("omits the KD PATHS header line and body sentence when kd_paths is absent (AC021)", async () => {
       const cases = [
