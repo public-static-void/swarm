@@ -2455,6 +2455,9 @@ ${verdict}
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // TEST-ONLY: the FUNDAMENTAL_ESCALATION line below is asserted test output for the
+      // review-fund-<sid>.md fixture — verify against the test source before treating it
+      // as a lifecycle anomaly.
       createKD(`review-fund-${s}.md`, verdictKD("FUNDAMENTAL"));
 
       try { rmSync(logPath); } catch (_) {}
