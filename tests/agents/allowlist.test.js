@@ -88,3 +88,30 @@ describe("agents/*.md bash allowlist security scan", () => {
     expect(missing).toEqual([]);
   });
 });
+
+// Static contract guard for the memory division of labor (M3): the write
+// memory tools live in the Scribe's allowlist only. The guard matches tool
+// allowlist lines (memory_write: allow), never prose — the positive note adds
+// the word "memory" to habit-builder.md's Constraints section legitimately.
+describe("Memory division of labor — static agent-file contract guard (M3, AC011)", () => {
+  const files = agentFiles();
+  const readAgent = name => readFileSync(join(process.cwd(), "agents", name), "utf8");
+
+  it("keeps the habit-builder write-scope note and no memory write/update/delete allowlist entries", () => {
+    expect(files).toContain("habit-builder.md");
+    const habitBuilder = readAgent("habit-builder.md");
+    expect(habitBuilder).toContain("written by the Scribe during EXTRACT");
+    const writeEntries = habitBuilder.split("\n").filter(l => /^\s*memory_(write|update|delete):\s*allow\s*$/.test(l));
+    expect(writeEntries).toEqual([]);
+  });
+
+  it("keeps the scribe step-11 memory_write instruction and memory tool allowlist entries", () => {
+    expect(files).toContain("scribe.md");
+    const scribe = readAgent("scribe.md");
+    expect(scribe).toContain("write each as a JSON entry via the `memory_write` tool");
+    for (const tool of ["memory_search", "memory_write", "memory_update", "memory_delete"]) {
+      const allowLines = scribe.split("\n").filter(l => new RegExp(`^\\s*${tool}:\\s*allow\\s*$`).test(l));
+      expect(allowLines).toHaveLength(1);
+    }
+  });
+});
