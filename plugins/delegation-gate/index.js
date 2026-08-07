@@ -123,7 +123,7 @@ function loadTemplates(config) {
     swarm: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Execute the swarm phase per the scope above. Produce an IMPLEMENTATION SUMMARY KD at {result_kd}.",
     verify: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Verify the implementation per the scope above. Produce REVIEW and AUDIT KDs at {result_kd}.",
     extract: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd}.",
-    evolve: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Evolve the process per the scope above. Write the PROCESS KD and issue files (`knowledge/issues/*.md`). Memory entries (`knowledge/memory/*.json`) are written by the Scribe during EXTRACT. Produce a PROCESS KD at {result_kd}.",
+    evolve: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Evolve the process per the scope above. Write the PROCESS KD and issue files (`knowledge/issues/*.md`). Produce a PROCESS KD at {result_kd}.",
     checkpoint: "Load the kd-system skill. Load the committer-checkpoint skill. Create a checkpoint commit per the scope above. Write a CHECKPOINT KD at the RESULT KD path.",
     cleanup: "Load the kd-system skill. Load the committer-cleanup skill. Commit and push remaining changes per the scope above. Write a CLEANUP KD at {result_kd} using the template-cleanup.md template to signal completion.",
     preflight: "Load the kd-system skill and the committer-preflight skill. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
