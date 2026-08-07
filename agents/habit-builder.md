@@ -69,6 +69,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 ## Constraints
 
 - PROCESS KDs follow kd-system conventions
+- Write artifacts are the PROCESS KD and issue files (`knowledge/issues/*.md`). Memory entries (`knowledge/memory/*.json`) are written by the Scribe during EXTRACT.
 
 ## Context Marker
 
