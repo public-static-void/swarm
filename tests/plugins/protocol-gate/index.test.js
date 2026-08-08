@@ -239,7 +239,8 @@ ${table}
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
     // Second todowrite fires a disk check; with no intent KD on disk the phase
-    // regresses to PROTOCOL_NOT_LOADED — todowrite content alone never drives
+    // stays in INTENT (R004 — the old special case regressed INTENT to
+    // PROTOCOL_NOT_LOADED here) — todowrite content alone never drives
     // advancement past INTENT.
     await todo(s, "c2");
     expect(hooks.sessionPhaseMap.get(s)).toBeLessThanOrEqual(hooks.STATES.INTENT);
@@ -248,6 +249,39 @@ ${table}
     // then the disk check advances INTENT → PREFLIGHT once a KD is on disk.
     hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
     createKD(`intent-a-${s}.md`);
+    await todo(s, "c3");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+  });
+
+  it("AC023 (N3): fresh-instance restart at INTENT stays INTENT on todowrite re-issue, allows the intent KD write, then advances to PREFLIGHT", async () => {
+    const s = sid("n3-restart");
+    // Simulated restart (AC003 pattern): state file restored at INTENT with no
+    // intent KD on disk — the N3 live symptom where the first INTENT KD write
+    // was blocked ("Wrong phase. Available tools in PROTOCOL_NOT_LOADED:
+    // todowrite") after the consistency check regressed INTENT away.
+    writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.INTENT, generation: 0, sid: s, timestamp: Date.now() }));
+    hooks = await pluginModule.server({}, {});
+    await initOverseer(s);
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // AC012: a todowrite re-issue (non-creating disk-check call) with no intent
+    // KD on disk keeps INTENT — R004 means no regression to PROTOCOL_NOT_LOADED.
+    await todo(s, "c1");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // AC013: the intent KD write succeeds — not blocked by the
+    // PROTOCOL_NOT_LOADED allowlist (which only permits todowrite). The hook
+    // validates before the runtime creates the file; createKD materializes it
+    // (mirrors the runLifecycle createKD + todo pattern).
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: s, callID: "c2" },
+      { args: { filePath: `knowledge/intent-a-${s}.md`, content: "intent" } }
+    );
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+    createKD(`intent-a-${s}.md`);
+
+    // AC023: the next disk check sees the intent KD on disk and advances
+    // INTENT → PREFLIGHT.
     await todo(s, "c3");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
   });
