@@ -286,6 +286,110 @@ ${table}
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
   });
 
+  it("AC019: restart catch-up — restored at PREFLIGHT with preflight + exploration KDs advances exactly one phase per disk-check call", async () => {
+    const s = sid("ac019-restart");
+    // Pre-restart artifacts: state at PREFLIGHT plus the KDs the gate will
+    // catch up over — written BEFORE the simulated restart so they read as
+    // pre-existing disk evidence (fresh-instance pattern, AC003).
+    writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.PREFLIGHT, generation: 0, sid: s, timestamp: Date.now() }));
+    createKD(`preflight-a-${s}.md`);
+    createKD(`exploration-a-${s}.md`);
+    // Simulated restart: fresh plugin instance restores the state file.
+    hooks = await pluginModule.server({}, {});
+    await initOverseer(s);
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+
+    // Call 1: disk-evidence catch-up — exactly one hop (PREFLIGHT → EXPLORE),
+    // never a multi-phase skip (R010 one-phase-per-call policy).
+    await todo(s, "c1");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+
+    // Call 2: exactly one more hop (EXPLORE → INVESTIGATE).
+    await todo(s, "c2");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+  });
+
+  it("AC020: restart catch-up — restored at INTENT with only the intent KD advances to PREFLIGHT then stops (no PREFLIGHT KD, skip flag consumed)", async () => {
+    const s = sid("ac020-intent");
+    writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.INTENT, generation: 0, sid: s, timestamp: Date.now() }));
+    createKD(`intent-a-${s}.md`);
+    hooks = await pluginModule.server({}, {});
+    await initOverseer(s);
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // Call 1: the pre-existing intent KD drives INTENT → PREFLIGHT (one hop).
+    await todo(s, "c1");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+
+    // Call 2: no PREFLIGHT KD on disk — the phase does NOT advance; the
+    // entering-PREFLIGHT skip flag is consumed by this call either way.
+    await todo(s, "c2");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+  });
+
+  it("AC021: a gen-0 KD present at a gen-1 restart does not advance the phase (EC-007 through the advancement block)", async () => {
+    const s = sid("ac021-gen0");
+    // Restart at INTENT in generation 1; only a gen-0 (legacy-named) intent KD
+    // exists — stale prior-lifecycle evidence must not drive advancement.
+    writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.INTENT, generation: 1, sid: s, timestamp: Date.now() }));
+    createKD(`intent-stale-${s}.md`); // gen-0 naming — no -gen1 suffix
+    hooks = await pluginModule.server({}, {});
+    await initOverseer(s);
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // A disk-check call sees no gen-1 KD → no advancement.
+    await todo(s, "c1");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // A current-generation gen-1 KD advances as usual — the gate is scoped,
+    // not stuck.
+    createKD(`intent-fresh-${s}-gen1.md`);
+    await todo(s, "c2");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+  });
+
+  it("AC016: RESTART_CATCH_UP logged for catch-up advancement after a simulated restart (PROTOCOL_GATE_DEBUG=1)", async () => {
+    try { rmSync(logPath); } catch (_) {}
+    process.env.PROTOCOL_GATE_DEBUG = "1";
+    try {
+      const s = sid("ac016-catchup");
+      writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.PREFLIGHT, generation: 0, sid: s, timestamp: Date.now() }));
+      createKD(`preflight-a-${s}.md`);
+      createKD(`exploration-a-${s}.md`);
+      hooks = await pluginModule.server({}, {});
+      await initOverseer(s);
+
+      await todo(s, "c1"); // catch-up hop PREFLIGHT → EXPLORE on pre-existing KD
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toContain("RESTART_CATCH_UP: PREFLIGHT → EXPLORE on pre-existing KD (restore ");
+      expect(log).toContain(", KD mtime ");
+    } finally {
+      delete process.env.PROTOCOL_GATE_DEBUG;
+      try { rmSync(logPath); } catch (_) {}
+    }
+  });
+
+  it("AC017: no RESTART_CATCH_UP line for mid-session advancement (evidence KD written after phase entry, no restart)", async () => {
+    try { rmSync(logPath); } catch (_) {}
+    process.env.PROTOCOL_GATE_DEBUG = "1";
+    try {
+      const s = sid("ac017-mid");
+      // Fresh init — no state file at startup, so no restore timestamp is
+      // recorded (EC8): the diagnostic is skipped for every mid-session hop.
+      await initOverseer(s);
+      await todo(s, "c1"); // PROTOCOL_NOT_LOADED → INTENT (todowrite kickoff)
+      createKD(`intent-a-${s}.md`);
+      await todo(s, "c2"); // INTENT → PREFLIGHT (mid-session advancement)
+
+      const log = readFileSync(logPath, "utf8");
+      expect(log).not.toContain("RESTART_CATCH_UP");
+      expect(log).toContain("Disk advancement: INTENT → PREFLIGHT");
+    } finally {
+      delete process.env.PROTOCOL_GATE_DEBUG;
+      try { rmSync(logPath); } catch (_) {}
+    }
+  });
+
   it("captures the session ID from an intent KD filename on write; without it no disk advancement happens", async () => {
     const s = sid("sess-1");
     await initOverseer(s);
