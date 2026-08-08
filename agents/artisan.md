@@ -39,6 +39,7 @@ permission:
     "git rm*": allow
     "npm test*": allow
     "npm audit*": allow
+    "npm run audit*": allow
     "npm install --save-dev*": allow
     "npm run build*": allow
     "npm run lint*": allow

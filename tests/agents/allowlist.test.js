@@ -22,18 +22,22 @@ const READONLY_BASELINE_AGENTS = ["explorer.md", "inspector.md", "pathfinder.md"
 const READONLY_BASELINE_COMMANDS = ["cat*", "head*", "tail*", "wc*", "git show*", "git status -sb*"];
 const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
 const SCAN_COMMANDS = ["npm audit*"];
+const SCAN_SCRIPT_COMMANDS = ["npm run audit*"];
 const INSTALL_AGENTS = ["artisan.md"];
 const INSTALL_COMMANDS = ["npm install --save-dev*"];
+const COMMITTER_PLAN_SPEC_READ = ["knowledge/plan-*.md", "knowledge/spec-*.md"];
 
 function agentFiles() {
   return readdirSync(join(process.cwd(), "agents")).filter(f => f.endsWith(".md")).sort();
 }
 
-// Extracts `    "pattern": mode` lines directly under the `  bash:` mapping in
-// the agent frontmatter — the only place bash permissions are declared.
-function bashEntries(content) {
+// Extracts `    "pattern": mode` lines directly under a named mapping in the
+// agent frontmatter (`bash:`, `read:`, `edit:`) — the only place permission
+// entries are declared. Stops at the first non-entry line, which is the next
+// mapping key.
+function permissionEntries(content, blockName) {
   const lines = content.split("\n");
-  const start = lines.findIndex(l => l.trim() === "bash:");
+  const start = lines.findIndex(l => l.trim() === `${blockName}:`);
   const entries = [];
   for (let i = start + 1; i < lines.length; i++) {
     const m = lines[i].match(/^\s+"([^"]+)"\s*:\s*(allow|deny|ask)\s*$/);
@@ -41,6 +45,10 @@ function bashEntries(content) {
     entries.push({ pattern: m[1], mode: m[2] });
   }
   return entries;
+}
+
+function bashEntries(content) {
+  return permissionEntries(content, "bash");
 }
 
 describe("agents/*.md bash allowlist security scan", () => {
@@ -107,6 +115,19 @@ describe("agents/*.md bash allowlist security scan", () => {
     expect(missing).toEqual([]);
   });
 
+  it("keeps the verb-pinned npm run audit script form for Inspector, Analyzer, and Artisan (R008, AC022)", () => {
+    const missing = [];
+    for (const f of SCAN_AGENTS) {
+      const patterns = entriesByFile.get(f).map(e => e.pattern);
+      for (const cmd of SCAN_SCRIPT_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
   it("keeps the verb-pinned npm install enabler for Artisan (R003, AC012)", () => {
     const missing = [];
     for (const f of INSTALL_AGENTS) {
@@ -120,6 +141,20 @@ describe("agents/*.md bash allowlist security scan", () => {
     expect(missing).toEqual([]);
   });
 });
+
+describe("committer read allowlist (R006, issue-33)", () => {
+  const committer = readFileSync(join(process.cwd(), "agents", "committer.md"), "utf8");
+  const readPatterns = permissionEntries(committer, "read").map(e => e.pattern);
+  const editPatterns = permissionEntries(committer, "edit").map(e => e.pattern);
+
+  it("grants read access to plan and spec KDs (AC018)", () => {
+    const missing = COMMITTER_PLAN_SPEC_READ.filter(p => !readPatterns.includes(p));
+    expect(missing).toEqual([]);
+  });
+
+  it("does not grant edit access to plan or spec KDs (AC019)", () => {
+    const granted = editPatterns.filter(p => /^knowledge\/(plan|spec)-/.test(p));
+    expect(granted).toEqual([]);
 
 // Static contract guard for the memory division of labor (M3, FIX1): the write
 // memory tools live in the Scribe's allowlist only. The Scribe-writes-memory

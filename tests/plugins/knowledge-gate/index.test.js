@@ -77,6 +77,11 @@ describe("Knowledge-Gate Plugin", () => {
     rmSync(ISSUES_DIR, { recursive: true, force: true });
     mkdirSync(MEMORY_DIR, { recursive: true });
     mkdirSync(ISSUES_DIR, { recursive: true });
+    // R001/R002 env overrides are read at transform call time — reset them
+    // per test so no cap/audience leaks between tests. The dir overrides set
+    // in beforeAll are deliberately left untouched (RSK-002).
+    delete process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES;
+    delete process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE;
     // A fresh server instance carries a fresh in-server memory cache
     hooks = await pluginModule.default.server({}, {});
   });
@@ -214,6 +219,77 @@ describe("Knowledge-Gate Plugin", () => {
     });
   });
 
+  describe("R003 vestigial hook removal", () => {
+    it("does not register the tool.execute.before hook (AC009)", () => {
+      expect(hooks["tool.execute.before"]).toBeUndefined();
+    });
+
+    it("keeps scanHighSeverityIssues exported and functional (AC010)", () => {
+      expect(typeof hooks.scanHighSeverityIssues).toBe("function");
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(1, { severity: "high", status: "open" }),
+        addIssueFile(2, { severity: "low", status: "open" }),
+        addIssueFile(3, { severity: "high", status: "resolved" })
+      ]);
+
+      const results = hooks.scanHighSeverityIssues();
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("ISSUE-001");
+    });
+  });
+
+  describe("scanOpenIssues — cap (R001)", () => {
+    // 12 open issues: 4 high, 4 medium, 4 low — ids permuted against severity
+    // so a filesystem-order read cannot satisfy the R008 order expectation.
+    function writeTwelveOpen() {
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(12, { severity: "low", title: "Low L" }),
+        addIssueFile(1, { severity: "high", title: "High A" }),
+        addIssueFile(11, { severity: "low", title: "Low K" }),
+        addIssueFile(2, { severity: "high", title: "High B" }),
+        addIssueFile(10, { severity: "low", title: "Low J" }),
+        addIssueFile(3, { severity: "high", title: "High C" }),
+        addIssueFile(9, { severity: "low", title: "Low I" }),
+        addIssueFile(4, { severity: "high", title: "High D" }),
+        addIssueFile(8, { severity: "medium", title: "Medium H" }),
+        addIssueFile(5, { severity: "medium", title: "Medium E" }),
+        addIssueFile(7, { severity: "medium", title: "Medium G" }),
+        addIssueFile(6, { severity: "medium", title: "Medium F" })
+      ]);
+    }
+
+    it("caps after the R008 sort, highest severity first, ascending id (AC001)", () => {
+      writeTwelveOpen();
+      const capped = hooks.scanOpenIssues({ cap: 10 });
+      expect(capped).toHaveLength(10);
+      expect(capped.map(i => i.id)).toEqual([
+        "ISSUE-001", "ISSUE-002", "ISSUE-003", "ISSUE-004",
+        "ISSUE-005", "ISSUE-006", "ISSUE-007", "ISSUE-008",
+        "ISSUE-009", "ISSUE-010"
+      ]);
+      expect(capped.slice(0, 4).every(i => i.severity === "high")).toBe(true);
+      expect(capped.slice(4, 8).every(i => i.severity === "medium")).toBe(true);
+      expect(capped.slice(8).every(i => i.severity === "low")).toBe(true);
+    });
+
+    it("returns the full sorted list when cap is undefined or 0", () => {
+      writeTwelveOpen();
+      expect(hooks.scanOpenIssues()).toHaveLength(12);
+      expect(hooks.scanOpenIssues({ cap: 0 })).toHaveLength(12);
+      // Un-capped order still respects R008
+      const full = hooks.scanOpenIssues();
+      expect(full[0].severity).toBe("high");
+      expect(full[11].severity).toBe("low");
+    });
+
+    it("ignores invalid cap values (negative, non-integer, non-number)", () => {
+      writeTwelveOpen();
+      expect(hooks.scanOpenIssues({ cap: -3 })).toHaveLength(12);
+      expect(hooks.scanOpenIssues({ cap: 2.5 })).toHaveLength(12);
+      expect(hooks.scanOpenIssues({ cap: "10" })).toHaveLength(12);
+    });
+  });
+
   describe("parseIssueFile", () => {
     it("parses YAML frontmatter including array values", () => {
       const content = `---
@@ -235,6 +311,107 @@ Body text`;
     it("returns null for content without frontmatter", () => {
       const result = hooks.parseIssueFile("No frontmatter here", "issue-001.md");
       expect(result).toBeNull();
+    });
+
+    it("parses a quoted title with escaped embedded quotes (AC012)", () => {
+      const content = `---
+id: ISSUE-001
+title: "He said \\"hi\\" today"
+severity: high
+status: open
+---
+Body`;
+      const result = hooks.parseIssueFile(content, "issue-001.md");
+      expect(result).toBeTruthy();
+      expect(result.title).toBe('He said "hi" today');
+    });
+
+    it("parses a multiline quoted title with the newline preserved (AC013)", () => {
+      const content = `---
+id: ISSUE-001
+title: "Line one
+line two"
+severity: high
+status: open
+---
+Body`;
+      const result = hooks.parseIssueFile(content, "issue-001.md");
+      expect(result).toBeTruthy();
+      expect(result.title).toBe("Line one\nline two");
+    });
+
+    it("parses a quoted title with unescaped embedded quotes via quote-pair strip", () => {
+      const content = `---
+id: ISSUE-001
+title: "He said "hi" today"
+severity: high
+status: open
+---
+Body`;
+      const result = hooks.parseIssueFile(content, "issue-001.md");
+      expect(result).toBeTruthy();
+      expect(result.title).toBe('He said "hi" today');
+    });
+
+    it("keeps array and plain values intact alongside quoted values (AC014)", () => {
+      const content = `---
+id: ISSUE-001
+title: "Quoted title"
+severity: high
+status: open
+tags: [auth, permission]
+assigned_to: inspector
+---
+Body`;
+      const result = hooks.parseIssueFile(content, "issue-001.md");
+      expect(result.title).toBe("Quoted title");
+      expect(result.tags).toEqual(["auth", "permission"]);
+      expect(result.assigned_to).toBe("inspector");
+    });
+  });
+
+  describe("parseIssueFile — real registry regression (AC015)", () => {
+    // Legacy parser capture — mirrors the pre-R004 line-anchored value regex so
+    // the oracle asserts "unchanged values" on the real registry after R004.
+    function legacyParseIssueFile(content, filename) {
+      const match = content.match(/^---\n([\s\S]*?)\n---/);
+      if (!match) return null;
+      const frontmatter = match[1];
+      const result = { filename };
+      for (const line of frontmatter.split("\n")) {
+        const kv = line.match(/^(\w+):\s*"?([^"]*)"?\s*$/);
+        if (kv) result[kv[1]] = kv[2];
+        const arrMatch = line.match(/^(\w+):\s*\[(.*)\]\s*$/);
+        if (arrMatch) result[arrMatch[1]] = arrMatch[2].split(",").map(s => s.trim());
+      }
+      return result;
+    }
+
+    it("parses every real registry issue file with unchanged values (guarded)", () => {
+      const registryDir = join(process.cwd(), "knowledge", "issues");
+      let files;
+      try {
+        files = readdirSync(registryDir).filter(f => f.startsWith("issue-") && f.endsWith(".md")).sort();
+      } catch {
+        return; // knowledge/ is gitignored — skip cleanly when absent (RSK-005)
+      }
+
+      expect(files.length).toBeGreaterThan(0);
+      for (const file of files) {
+        const content = readFileSync(join(registryDir, file), "utf8");
+        const current = hooks.parseIssueFile(content, file);
+        const legacy = legacyParseIssueFile(content, file);
+
+        expect(current, file).not.toBeNull();
+        expect(current.filename).toBe(file);
+        for (const key of Object.keys(legacy)) {
+          expect(current[key], `${file} ${key}`).toEqual(legacy[key]);
+        }
+        expect(current.id, file).toBeTruthy();
+        expect(current.title, file).toBeTruthy();
+        expect(current.severity, file).toBeTruthy();
+        expect(current.status, file).toBeTruthy();
+      }
     });
   });
 
@@ -470,6 +647,312 @@ Body text`;
           "- [ISSUE-001] (low) Low D — assigned to habit-builder",
           "- [ISSUE-005] (low) Low E — assigned to habit-builder"
         ]);
+      });
+    });
+
+    describe("overseer INTENT cap env (R001)", () => {
+      const intentHint = output =>
+        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+
+      function writeTwelveOpen() {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(12, { severity: "low", title: "Low L" }),
+          addIssueFile(1, { severity: "high", title: "High A" }),
+          addIssueFile(11, { severity: "low", title: "Low K" }),
+          addIssueFile(2, { severity: "high", title: "High B" }),
+          addIssueFile(10, { severity: "low", title: "Low J" }),
+          addIssueFile(3, { severity: "high", title: "High C" }),
+          addIssueFile(9, { severity: "low", title: "Low I" }),
+          addIssueFile(4, { severity: "high", title: "High D" }),
+          addIssueFile(8, { severity: "medium", title: "Medium H" }),
+          addIssueFile(5, { severity: "medium", title: "Medium E" }),
+          addIssueFile(7, { severity: "medium", title: "Medium G" }),
+          addIssueFile(6, { severity: "medium", title: "Medium F" })
+        ]);
+      }
+
+      function issueLines(hint) {
+        return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+      }
+
+      it("injects exactly 10 issue lines under the default cap, high severity first (AC001)", async () => {
+        writeTwelveOpen();
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        const lines = issueLines(hint);
+        expect(lines).toHaveLength(10);
+        expect(lines[0]).toContain("(high) High A");
+        expect(lines[1]).toContain("(high) High B");
+        expect(lines[2]).toContain("(high) High C");
+        expect(lines[3]).toContain("(high) High D");
+      });
+
+      it("treats KNOWLEDGE_GATE_MAX_OPEN_ISSUES=0 as unbounded (AC002)", async () => {
+        process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "0";
+        writeTwelveOpen();
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(issueLines(hint)).toHaveLength(12);
+      });
+
+      it("falls back to the default cap 10 for an invalid env value (AC002)", async () => {
+        process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "abc";
+        writeTwelveOpen();
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(issueLines(hint)).toHaveLength(10);
+      });
+
+      it("injects no block and does not crash with zero open issues (AC004)", async () => {
+        writeEntries(ISSUES_DIR, [addIssueFile(1, { status: "resolved" })]);
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+        expect(intentHint(output)).toBeUndefined();
+      });
+    });
+
+    describe("overseer INTENT audience routing (R002)", () => {
+      const intentHint = output =>
+        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+
+      it("injects only audience-matched and unassigned issues (AC005)", async () => {
+        process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
+          addIssueFile(2, { assigned_to: "permission", title: "Permission item" }),
+          addIssueFile(3, { assigned_to: "test-harness", title: "Harness item" }),
+          addIssueFile(4, { assigned_to: "", title: "Ownerless item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        const lines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        expect(lines).toHaveLength(2);
+        expect(hint).toContain("Inspector item");
+        expect(hint).toContain("Ownerless item");
+        expect(hint).toContain("— assigned to unassigned");
+        expect(hint).not.toContain("Permission item");
+        expect(hint).not.toContain("Harness item");
+      });
+
+      it("injects all open issues when the audience env is unset or empty (AC006)", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
+          addIssueFile(2, { assigned_to: "permission", title: "Permission item" }),
+          addIssueFile(3, { assigned_to: "", title: "Ownerless item" })
+        ]);
+
+        // unset (deleted in beforeEach)
+        let output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+        let hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(3);
+
+        // empty string
+        process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "";
+        output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+        hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(3);
+      });
+
+      it("matches the audience case-insensitively as a substring (AC007)", async () => {
+        process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "INSPECTOR";
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
+          addIssueFile(2, { assigned_to: "habit-builder", title: "Habit item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("Inspector item");
+        expect(hint).not.toContain("Habit item");
+      });
+
+      it("applies the audience filter before the cap (filter then cap)", async () => {
+        process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
+        process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "1";
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
+          addIssueFile(2, { assigned_to: "inspector", title: "Inspector item 2" }),
+          addIssueFile(3, { assigned_to: "permission", title: "Permission item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        const lines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        // Filter yields 2 inspector issues; cap 1 → 1 line, and it must be an
+        // inspector issue (a cap-then-filter order could never produce this).
+        expect(lines).toHaveLength(1);
+        expect(hint).toContain("Inspector item");
+        expect(hint).not.toContain("Permission item");
+      });
+
+      it("keeps the habit-builder EVOLVE branch unfiltered and uncapped (R002)", async () => {
+        process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
+        process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "1";
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { assigned_to: "habit-builder", title: "Habit item" }),
+          addIssueFile(2, { assigned_to: "inspector", title: "Inspector item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "habit-builder" },
+          output
+        );
+
+        const closeHint = output.system.find(s => s.includes("Open issues detected"));
+        expect(closeHint).toBeTruthy();
+        expect(closeHint).toContain("Habit item");
+        expect(closeHint).toContain("Inspector item");
+      });
+    });
+
+    describe("overseer INTENT marker line (R005)", () => {
+      const intentHint = output =>
+        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+
+      function issueLines(hint) {
+        return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+      }
+
+      it("starts the injected block with the marker line, count = injected lines (AC016)", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { severity: "high", title: "High A" }),
+          addIssueFile(2, { severity: "medium", title: "Medium B" }),
+          addIssueFile(3, { severity: "low", title: "Low C" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        const lines = hint.split("\n");
+        expect(lines[0]).toBe("[Knowledge Gate] Open issues from prior sessions detected:");
+        expect(lines[1]).toBe("<!-- issues-snapshot v1: 3 open, R008 order -->");
+        expect(issueLines(hint)).toHaveLength(3);
+      });
+
+      it("reports the post-cap count in the marker (AC016)", async () => {
+        // 12 open issues under the default cap 10 → the marker says 10 and
+        // exactly 10 issue lines follow (the marker measures the injected set).
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(12, { severity: "low", title: "Low L" }),
+          addIssueFile(1, { severity: "high", title: "High A" }),
+          addIssueFile(11, { severity: "low", title: "Low K" }),
+          addIssueFile(2, { severity: "high", title: "High B" }),
+          addIssueFile(10, { severity: "low", title: "Low J" }),
+          addIssueFile(3, { severity: "high", title: "High C" }),
+          addIssueFile(9, { severity: "low", title: "Low I" }),
+          addIssueFile(4, { severity: "high", title: "High D" }),
+          addIssueFile(8, { severity: "medium", title: "Medium H" }),
+          addIssueFile(5, { severity: "medium", title: "Medium E" }),
+          addIssueFile(7, { severity: "medium", title: "Medium G" }),
+          addIssueFile(6, { severity: "medium", title: "Medium F" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("<!-- issues-snapshot v1: 10 open, R008 order -->");
+        expect(issueLines(hint)).toHaveLength(10);
+      });
+
+      it("reports the post-audience count in the marker (AC016)", async () => {
+        process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
+          addIssueFile(2, { assigned_to: "inspector", title: "Inspector item 2" }),
+          addIssueFile(3, { assigned_to: "permission", title: "Permission item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("<!-- issues-snapshot v1: 2 open, R008 order -->");
+        expect(issueLines(hint)).toHaveLength(2);
+        expect(hint).not.toContain("Permission item");
+      });
+
+      it("keeps the EVOLVE close-loop intact, format unchanged and marker-free (AC011, AC017)", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { severity: "medium", title: "Open issue A", assigned_to: "habit-builder" }),
+          addIssueFile(2, { status: "resolved", severity: "high", title: "Closed issue B" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "habit-builder" },
+          output
+        );
+
+        const closeHint = output.system.find(s => s.includes("Open issues detected"));
+        expect(closeHint).toBeTruthy();
+        // Unchanged line format, Close Issues step intact, resolved excluded
+        expect(closeHint).toContain("- [ISSUE-001] (medium) Open issue A — assigned to habit-builder");
+        expect(closeHint).toContain("Close Issues");
+        expect(closeHint).not.toContain("Closed issue B");
+        // The marker line is overseer-only — never in the EVOLVE block (AC017)
+        expect(closeHint).not.toContain("issues-snapshot");
       });
     });
   });

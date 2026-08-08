@@ -12,6 +12,8 @@ permission:
     "knowledge/cleanup-*.md": allow
     "knowledge/intent-*.md": allow
     "knowledge/impl-*.md": allow
+    "knowledge/plan-*.md": allow
+    "knowledge/spec-*.md": allow
     ".ignore": allow
     ".gitignore": allow
     ".gitkeep": allow

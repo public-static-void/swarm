@@ -41,6 +41,7 @@ permission:
     "git log --oneline*": allow
     "npm test*": allow
     "npm audit*": allow
+    "npm run audit*": allow
     "npm run lint*": allow
     "npx eslint*": allow
     "npx prettier*": allow
