@@ -219,6 +219,25 @@ describe("Knowledge-Gate Plugin", () => {
     });
   });
 
+  describe("R003 vestigial hook removal", () => {
+    it("does not register the tool.execute.before hook (AC009)", () => {
+      expect(hooks["tool.execute.before"]).toBeUndefined();
+    });
+
+    it("keeps scanHighSeverityIssues exported and functional (AC010)", () => {
+      expect(typeof hooks.scanHighSeverityIssues).toBe("function");
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(1, { severity: "high", status: "open" }),
+        addIssueFile(2, { severity: "low", status: "open" }),
+        addIssueFile(3, { severity: "high", status: "resolved" })
+      ]);
+
+      const results = hooks.scanHighSeverityIssues();
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("ISSUE-001");
+    });
+  });
+
   describe("scanOpenIssues — cap (R001)", () => {
     // 12 open issues: 4 high, 4 medium, 4 low — ids permuted against severity
     // so a filesystem-order read cannot satisfy the R008 order expectation.
@@ -818,6 +837,109 @@ Body`;
         expect(closeHint).toBeTruthy();
         expect(closeHint).toContain("Habit item");
         expect(closeHint).toContain("Inspector item");
+      });
+    });
+
+    describe("overseer INTENT marker line (R005)", () => {
+      const intentHint = output =>
+        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+
+      function issueLines(hint) {
+        return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+      }
+
+      it("starts the injected block with the marker line, count = injected lines (AC016)", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { severity: "high", title: "High A" }),
+          addIssueFile(2, { severity: "medium", title: "Medium B" }),
+          addIssueFile(3, { severity: "low", title: "Low C" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        const lines = hint.split("\n");
+        expect(lines[0]).toBe("[Knowledge Gate] Open issues from prior sessions detected:");
+        expect(lines[1]).toBe("<!-- issues-snapshot v1: 3 open, R008 order -->");
+        expect(issueLines(hint)).toHaveLength(3);
+      });
+
+      it("reports the post-cap count in the marker (AC016)", async () => {
+        // 12 open issues under the default cap 10 → the marker says 10 and
+        // exactly 10 issue lines follow (the marker measures the injected set).
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(12, { severity: "low", title: "Low L" }),
+          addIssueFile(1, { severity: "high", title: "High A" }),
+          addIssueFile(11, { severity: "low", title: "Low K" }),
+          addIssueFile(2, { severity: "high", title: "High B" }),
+          addIssueFile(10, { severity: "low", title: "Low J" }),
+          addIssueFile(3, { severity: "high", title: "High C" }),
+          addIssueFile(9, { severity: "low", title: "Low I" }),
+          addIssueFile(4, { severity: "high", title: "High D" }),
+          addIssueFile(8, { severity: "medium", title: "Medium H" }),
+          addIssueFile(5, { severity: "medium", title: "Medium E" }),
+          addIssueFile(7, { severity: "medium", title: "Medium G" }),
+          addIssueFile(6, { severity: "medium", title: "Medium F" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("<!-- issues-snapshot v1: 10 open, R008 order -->");
+        expect(issueLines(hint)).toHaveLength(10);
+      });
+
+      it("reports the post-audience count in the marker (AC016)", async () => {
+        process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
+          addIssueFile(2, { assigned_to: "inspector", title: "Inspector item 2" }),
+          addIssueFile(3, { assigned_to: "permission", title: "Permission item" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toBeTruthy();
+        expect(hint).toContain("<!-- issues-snapshot v1: 2 open, R008 order -->");
+        expect(issueLines(hint)).toHaveLength(2);
+        expect(hint).not.toContain("Permission item");
+      });
+
+      it("keeps the EVOLVE close-loop intact, format unchanged and marker-free (AC011, AC017)", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(1, { severity: "medium", title: "Open issue A", assigned_to: "habit-builder" }),
+          addIssueFile(2, { status: "resolved", severity: "high", title: "Closed issue B" })
+        ]);
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "test-session", agent: "habit-builder" },
+          output
+        );
+
+        const closeHint = output.system.find(s => s.includes("Open issues detected"));
+        expect(closeHint).toBeTruthy();
+        // Unchanged line format, Close Issues step intact, resolved excluded
+        expect(closeHint).toContain("- [ISSUE-001] (medium) Open issue A — assigned to habit-builder");
+        expect(closeHint).toContain("Close Issues");
+        expect(closeHint).not.toContain("Closed issue B");
+        // The marker line is overseer-only — never in the EVOLVE block (AC017)
+        expect(closeHint).not.toContain("issues-snapshot");
       });
     });
   });
