@@ -311,6 +311,151 @@ SCOPE: Implement feature X`,
       }
     });
 
+    it("rejects whole-value angle-bracket placeholders in any structured field (AC001, AC004, AC005)", async () => {
+      // N2 leak: format-hint literals like <mode> or <session-id>, copied
+      // verbatim into a dispatch, were captured by extraction and rendered —
+      // now each rejects at the placeholder check before template lookup.
+      const prompts = [
+        // AC004 — MODE placeholder must never reach template lookup
+        `AGENT: artisan
+MODE: <mode>
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`,
+        // AC005 — each standalone angle-bracket field
+        `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: <YYYY-MM-DD>
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`,
+        `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+SESSION ID: <session-id>
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`,
+        `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+GENERATION: <generation>
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`,
+        `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+SCOPE: <optional context>
+RESULT KD: knowledge/impl-foo.md`,
+        `AGENT: committer
+MODE: preflight
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+BRANCH: <branch>
+SCOPE: Implement feature X
+RESULT KD: knowledge/preflight-foo.md`,
+        `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+MILESTONE ID: <milestone-id>
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-M1-foo.md`,
+      ];
+      for (const prompt of prompts) {
+        await expect(
+          hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+        ).rejects.toThrow("unresolved placeholder");
+      }
+    });
+
+    it("accepts real values that merely look bracketed — no false positives (AC002, AC006)", async () => {
+      // Real session id, ISO date, branch, milestone, and KD paths all pass
+      // containsPlaceholder — the extension changes no valid dispatch path.
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-phase-dispatch-fix-ses_023f1f066ffecWQJC5SF8v1B8U-gen1.md
+SESSION DATE: 2026-08-08
+SESSION ID: ses_023f1f066ffecWQJC5SF8v1B8U
+GENERATION: 1
+MILESTONE ID: M1
+SCOPE: Execute milestone M1 with real values
+RESULT KD: knowledge/impl-M1-phase-dispatch-fix-ses_023f1f066ffecWQJC5SF8v1B8U-gen1.md
+KD PATHS: knowledge/spec-foo.md, knowledge/plan-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_023f1f066ffecWQJC5SF8v1B8U", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("MILESTONE ID: M1");
+      expect(output.args.prompt).toContain("ses_023f1f066ffecWQJC5SF8v1B8U");
+      expect(output.args.prompt).toContain("GENERATION: 1");
+
+      // A branch value that starts alphanumeric passes (AC002: gate-fix)
+      const preflight = `AGENT: committer
+MODE: preflight
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+BRANCH: gate-fix
+SCOPE: Preflight with a real branch
+RESULT KD: knowledge/preflight-foo.md`;
+      const out2 = { args: { prompt: preflight } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c2" }, out2);
+      expect(out2.args.prompt).toContain("BRANCH: gate-fix");
+    });
+
+    it("rejects a verbatim RESULT KD template form via validateKDPath, not the placeholder check (AC003)", async () => {
+      // knowledge/<type>-<name>.md is not a whole-value <...> placeholder, so
+      // containsPlaceholder lets it through; validateKDPath rejects loudly.
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+SCOPE: Implement feature X
+RESULT KD: knowledge/<type>-<name>.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Invalid result KD path");
+    });
+
+    it("rejects an empty prompt whose description carries old-style hint placeholders (AC007)", async () => {
+      // Description-fallback literals no longer render silently — the
+      // placeholder check fires on the extracted description values.
+      const description = `MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+SESSION ID: <session-id>
+GENERATION: <generation>
+SCOPE: <optional context>
+RESULT KD: knowledge/exploration-foo.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt: "", description, subagent_type: "explorer" } })
+      ).rejects.toThrow("unresolved placeholder");
+    });
+
+    it("lets real prompt values override stale description literals (EC1)", async () => {
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+SESSION ID: ses_real
+GENERATION: 1
+SCOPE: real context
+RESULT KD: knowledge/exploration-foo.md`;
+      const description = `SESSION ID: <session-id>
+GENERATION: <generation>
+SCOPE: <optional context>`;
+
+      const output = { args: { prompt, description, subagent_type: "explorer" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("ses_real");
+      expect(output.args.prompt).toContain("real context");
+      expect(output.args.prompt).toContain("GENERATION: 1");
+    });
+
     it("strips unresolved optional placeholders from the rendered template", async () => {
       const prompt = `AGENT: explorer
 MODE: explore
@@ -621,10 +766,11 @@ RESULT KD: knowledge/impl-foo.md`;
       for (const other of ["exploration", "analysis", "spec", "plan", "impl", "review", "audit", "composed", "process", "preflight", "cleanup"]) {
         expect(output.args.description).not.toContain(other);
       }
-      // Variable placeholders — genuinely vary per dispatch
-      expect(output.args.description).toContain("INTENT KD: knowledge/intent-<name>.md");
-      expect(output.args.description).toContain("SESSION ID: <session-id>");
-      expect(output.args.description).toContain("SCOPE: <optional context>");
+      // Genuine variables use parenthetical wording — the defused hint keeps no
+      // whole-value <...> placeholder line that extraction could capture (R002/R003)
+      expect(output.args.description).toContain("INTENT KD: knowledge/intent-(name).md");
+      expect(output.args.description).toContain("SESSION ID: (your session id)");
+      expect(output.args.description).toContain("SCOPE: (optional context)");
       // No angle bracket placeholders for fixed fields
       expect(output.args.description).not.toContain("<agent-name>");
       expect(output.args.description).not.toContain("<descriptive-name>");
@@ -749,10 +895,57 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       await hooks["tool.definition"]({ toolID: "task" }, output);
 
       expect(output.description).toContain("Delegation Prompt Format:");
-      expect(output.description).toContain("MILESTONE ID: <milestone-id> — swarm mode only, exactly one, required");
+      expect(output.description).toContain("MILESTONE ID: milestone id — swarm mode only, exactly one, required");
       expect(output.description).toContain("swarm mode only");
-      expect(output.description).toContain("KD PATHS: <upstream KD paths, comma-separated> (optional)");
+      expect(output.description).toContain("KD PATHS: upstream KD paths, comma-separated (optional)");
       expect(output.description).toContain("comma-separated");
+    });
+  });
+
+  describe("Defused Format Hints (R002/R003)", () => {
+    // AC008: neither hint may contain a KEY: line whose value is a whole-value
+    // angle-bracket placeholder — such a line, copied verbatim into a dispatch,
+    // is exactly the leak source N2 fixed. The RESULT KD example lines keep
+    // <name>-<session_id> path components but are never whole-value <...>.
+    const wholeValueAngleLine = /^(?:#{1,6}\s*)?(?:\*\*)?(?:AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BRANCH[. _]NAME|BRANCH|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*<[^>]+>$/;
+
+    it("emits no extractable whole-value angle-bracket line from dispatcherFormatHint (AC008, AC009)", async () => {
+      const output = { description: "Delegate work to another agent." };
+      await hooks["tool.definition"]({ toolID: "task" }, output);
+
+      const badLines = output.description.split("\n").filter(l => wholeValueAngleLine.test(l.trim()));
+      expect(badLines).toEqual([]);
+      // Instructional wording survives; the retained RESULT KD template form is
+      // not a whole-value placeholder (AC003 semantics).
+      expect(output.description).toContain("DISPATCH TO: agent name (e.g. explorer)");
+      expect(output.description).toContain("MODE: delegation mode (e.g. explore)");
+      expect(output.description).toContain("SESSION DATE: today's date (e.g. ");
+      expect(output.description).toContain("KD PATHS: upstream KD paths, comma-separated (optional)");
+      expect(output.description).toContain("RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md");
+    });
+
+    it("emits no extractable whole-value angle-bracket line from the injected hint and renders concrete values (AC008, AC009, AC010)", async () => {
+      const today = new Date().toISOString().slice(0, 10);
+      const prompt = `AGENT: artisan
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-08
+SCOPE: Implement feature X
+RESULT KD: knowledge/impl-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      const badLines = output.args.description.split("\n").filter(l => wholeValueAngleLine.test(l.trim()));
+      expect(badLines).toEqual([]);
+      // Fixed fields render concrete values (AC010); genuine variables use
+      // parenthetical wording.
+      expect(output.args.description).toContain("DISPATCH TO: artisan");
+      expect(output.args.description).toContain("MODE: checkpoint");
+      expect(output.args.description).toContain(`SESSION DATE: ${today}`);
+      expect(output.args.description).toContain("SESSION ID: (your session id)");
+      expect(output.args.description).toContain("SCOPE: (optional context)");
+      expect(output.args.description).toContain("GENERATION: (the lifecycle generation number)");
     });
   });
 
@@ -1204,7 +1397,7 @@ RESULT KD: knowledge/cleanup-foo.md`;
       // Mode-agnostic task-tool definition hint carries the qualifier
       const output = { description: "Delegate work to another agent." };
       await hooks["tool.definition"]({ toolID: "task" }, output);
-      expect(output.description).toContain("BRANCH: <branch> — preflight/cleanup modes only, required");
+      expect(output.description).toContain("BRANCH: branch name (required for preflight/cleanup)");
 
       // Per-mode injected hint: BRANCH line present for preflight/cleanup
       const committerModes = [
@@ -1221,7 +1414,7 @@ RESULT KD: ${result}`;
 
         const out = { args: { prompt } };
         await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, out);
-        expect(out.args.description).toContain("BRANCH: <branch> (required for preflight/cleanup)");
+        expect(out.args.description).toContain("BRANCH: (branch name, required for preflight/cleanup)");
       }
 
       // ...and absent for other modes
@@ -1263,7 +1456,7 @@ RESULT KD: knowledge/impl-M1-foo-ses_gen-gen2.md`;
       expect(output.args.prompt).toContain("GENERATION: 2");
       expect(output.args.prompt).toContain("knowledge/impl-<milestone-id>-<descriptive-name>-<session_id>-gen2.md");
       expect(output.args.description).toContain("knowledge/impl-<milestone-id>-<name>-<session_id>-gen2.md");
-      expect(output.args.description).toContain("GENERATION: <generation>");
+      expect(output.args.description).toContain("GENERATION: (the lifecycle generation number)");
     });
 
     it("keeps legacy naming when GENERATION is absent and no state file exists", async () => {

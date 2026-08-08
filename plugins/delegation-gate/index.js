@@ -316,10 +316,15 @@ function collectMilestoneIds(prompt) {
   return ids;
 }
 
-// Detects literal placeholder patterns like {scope} or {result_kd} that the
-// Overseer failed to fill in — these pass structural extraction but are meaningless.
+// Detects literal placeholder patterns that pass structural extraction but are
+// meaningless: brace placeholders ({scope}, {result_kd}) AND whole-value
+// angle-bracket placeholders (<mode>, <session-id>, <optional context>) leaked
+// from format hints. Whole-value semantics only — `knowledge/<type>-<name>.md`
+// and `Implement <x> in <y>` (not wholly bracketed) render as prose and are
+// handled by validateKDPath where they matter.
 function containsPlaceholder(value) {
-  return /^\{[a-zA-Z_][a-zA-Z0-9_]*\}$/.test(value.trim());
+  const v = value.trim();
+  return /^\{[a-zA-Z_][a-zA-Z0-9_]*\}$/.test(v) || /^<[^<>]+>$/.test(v);
 }
 
 // M4 (R009/R010): Extracts the milestone token from a swarm result KD path per
@@ -365,20 +370,27 @@ function renderTemplate(template, fields) {
 // "(swarm mode only)" qualifier (mirroring injectToolDocs' swarm-only line
 // placement right after MODE), and the KD PATHS line documents the
 // comma-separated convention the validation split() expects.
+// R002 (N2-F2): the hint values are bracket-free instructional wording — a
+// literal angle-bracket placeholder (<session-id>) copied verbatim from the
+// hint used to be captured by extraction as a field value and leak into the
+// rendered prompt. Instructional wording can be copied safely; the retained
+// RESULT KD template form (knowledge/<type>-<name>-<session_id>[-gen<N>].md)
+// is deliberately kept because it is not a standalone whole-value <...> line
+// and fails validateKDPath loudly if copied verbatim (spec A2/EC4).
 function dispatcherFormatHint() {
   return `
 Delegation Prompt Format:
 Put delegation fields as KEY: value lines INSIDE the prompt parameter, one per line:
-DISPATCH TO: <agent>
-MODE: <mode>
-MILESTONE ID: <milestone-id> — swarm mode only, exactly one, required
-SESSION DATE: <YYYY-MM-DD>
-SESSION ID: <session-id>
-GENERATION: <generation>
-BRANCH: <branch> — preflight/cleanup modes only, required
-SCOPE: <optional context>
+DISPATCH TO: agent name (e.g. explorer)
+MODE: delegation mode (e.g. explore)
+MILESTONE ID: milestone id — swarm mode only, exactly one, required
+SESSION DATE: today's date (e.g. 2026-08-08)
+SESSION ID: your session id (e.g. ses_abc)
+GENERATION: the lifecycle generation number
+BRANCH: branch name (required for preflight/cleanup)
+SCOPE: optional context
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
-KD PATHS: <upstream KD paths, comma-separated> (optional)
+KD PATHS: upstream KD paths, comma-separated (optional)
 `;
 }
 
@@ -390,10 +402,13 @@ function injectToolDocs(output, agentName, mode, generation) {
   // known, KD names carry `-gen{N}` after the session ID so stale prior-lifecycle
   // KDs never match. Generation 0 / unknown keeps the legacy bare suffix.
   const genSuffix = generation !== undefined && generation !== "" ? `-gen${generation}` : "";
-  // Concrete examples prevent LLMs from copying placeholder syntax literally.
-  // <name> and <optional context> are genuine variables — angle brackets signal variability.
   // MODE_TO_KD_PREFIXES maps current mode to its KD type prefix(es) — only the relevant
   // entry is injected so the LLM sees only the naming convention for this dispatch.
+  // R003 (N2-F2): genuine variables use parenthetical wording ((your session
+  // id), (optional context)) instead of angle-bracket placeholders — a literal
+  // <...> copied from this hint was captured by extraction as a field value.
+  // Only the RESULT KD example paths retain <name>-<session_id> components:
+  // those lines are not whole-value placeholders (spec A3, plan P003).
   const modePrefixes = MODE_TO_KD_PREFIXES[displayMode] || ["<type>"];
   // M4 (R009/R010): swarm result KDs carry the dispatched milestone as the
   // first token after impl- — knowledge/impl-<milestone-id>-<name>-... Only
@@ -405,20 +420,20 @@ function injectToolDocs(output, agentName, mode, generation) {
   // M3 (R006): swarm dispatches carry exactly one MILESTONE ID — the structural
   // field the protocol-gate registry transition keys on. Only injected for swarm
   // so other modes don't see a field they must not include.
-  const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: <milestone-id> (exactly one, required for swarm)\n" : "";
+  const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: (exactly one, required for swarm)\n" : "";
   // R102 (M3): committer-owned modes carry the dispatch BRANCH — the branch the
   // committer creates at preflight and verifies at cleanup. Only injected for
   // preflight/cleanup so other modes don't see a field they must not include.
-  const branchLine = displayMode === "preflight" || displayMode === "cleanup" ? "BRANCH: <branch> (required for preflight/cleanup)\n" : "";
+  const branchLine = displayMode === "preflight" || displayMode === "cleanup" ? "BRANCH: (branch name, required for preflight/cleanup)\n" : "";
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
 MODE: ${displayMode}
-${milestoneLine}INTENT KD: knowledge/intent-<name>.md
+${milestoneLine}INTENT KD: knowledge/intent-(name).md
 SESSION DATE: ${today}
-SESSION ID: <session-id>
-GENERATION: <generation>
-${branchLine}SCOPE: <optional context>
+SESSION ID: (your session id)
+GENERATION: (the lifecycle generation number)
+${branchLine}SCOPE: (optional context)
 RESULT KD: ${resultKdExamples} (when subagent produces a KD)
 
 RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
