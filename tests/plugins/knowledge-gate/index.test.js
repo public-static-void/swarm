@@ -453,6 +453,19 @@ Body`;
       expect(writeInstr).toBeTruthy();
     });
 
+    it("injects no memory-write instruction for habit-builder (Scribe-only division, AC010)", async () => {
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"](
+        { sessionID: "test-session", agent: "habit-builder" },
+        output
+      );
+      // Structural assertion of the division: only the scribe branch of
+      // systemTransform may carry the WRITE instruction. The habit-builder's
+      // legitimate memory_search READ hint stays untouched by this assertion.
+      const writeInstrs = output.system.filter(s => /memory_write tool|write distilled insights/.test(s));
+      expect(writeInstrs).toHaveLength(0);
+    });
+
     it("includes dynamic hint line when memory matches agent type", async () => {
       writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["implementation", "code"], topic: "Code patterns" })

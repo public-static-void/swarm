@@ -50,6 +50,12 @@ const STATES = {
 
 const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
 
+// F4 (R007/R008): retention cap for the per-session verbatim raw-intent
+// capture. The chat.message hook keeps only the latest RAW_INTENT_MAX_MESSAGES
+// overseer messages so the INTENT-phase systemTransform injection (R008) stays
+// bounded (NFR004). Named constant, exported as a test-access property.
+const RAW_INTENT_MAX_MESSAGES = 10;
+
 // KD type prefixes — maps phase constants to the prefix used in KD filenames.
 // Must match the regex patterns in checkDiskAdvancement() (lines 349-361) and
 // the dual-KD special cases (VERIFY, DECOMPOSE).
@@ -103,7 +109,7 @@ const PHASE_INSTRUCTIONS = {
 
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "read", "skill", "bash"],
+  INTENT: ["todowrite", "write", "edit", "read", "skill", "bash"],
   PREFLIGHT: ["task", "todowrite", "glob", "bash"],
   EXPLORE: ["task", "todowrite", "glob"],
   INVESTIGATE: ["task", "todowrite", "glob"],
@@ -125,7 +131,7 @@ const TOOL_ALLOWLIST = {
 // skills loaded via the skill tool. The read restrictions below scope the read
 // tool to skill files + phase KDs; neither string instructs reading templates.
 const TOOL_RESTRICTIONS = {
-  INTENT: { read: "ONLY skill files and intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", bash: "ONLY mkdir for knowledge directory creation" },
+  INTENT: { read: "ONLY skill files and intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", bash: "ONLY mkdir for knowledge directory creation" },
   SWARM: { read: "ONLY milestone registry KDs" },
   REPORT: { read: "ONLY skill files and knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
 };
@@ -956,8 +962,14 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   let result;
   if (overrideActive) {
-    result = sessionFiles.some(f => pattern.test(f) && getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since);
-    debug(`Disk check ${getPhaseName(phase)}: override fresh-evidence (since=${overrideUntil.since}) → ${result}`);
+    // F2 (R004): the INTENT override target advances on PRESENCE of the intent
+    // KD — the KD IS the phase deliverable, so its write-time relative to
+    // `since` is irrelevant to whether intent work is done. This is the only
+    // freshness exemption; all other override targets (and the DECOMPOSE /
+    // VERIFY / SWARM special cases above) keep fresh-evidence semantics.
+    const freshnessRequired = phase !== STATES.INTENT;
+    result = sessionFiles.some(f => pattern.test(f) && (!freshnessRequired || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
+    debug(`Disk check ${getPhaseName(phase)}: override ${freshnessRequired ? "fresh-evidence" : "presence"} (since=${overrideUntil.since}) → ${result}`);
   } else {
     result = sessionFiles.some(f => pattern.test(f));
     debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID}, lookupSIDs=${JSON.stringify(lookupSIDs)} → ${result}`);
@@ -1178,6 +1190,15 @@ export default {
     // advancement. In-memory only — a restart loses it, which is correct (the
     // event is in the past; the R401 log line remains the durable record).
     const advancementAnnouncements = new Map();
+    // F4 (R007): in-memory verbatim raw-intent capture — sessionID →
+    // Array<{messageID, text}>. Populated by the chat.message hook (fires on
+    // message receipt, before any LLM call) for overseer messages only;
+    // consumed by the INTENT-phase systemTransform injection (R008). Read-only
+    // with respect to KDs (R009): it never auto-writes the intent KD — the
+    // Overseer remains the KD author. In-memory only — restart durability is
+    // issue-6 scope (state-persistence lifecycle), a restart leaves it empty
+    // and the injection is omitted gracefully (EC-6).
+    const rawIntentCapture = new Map();
     // tool.definition doesn't receive sessionID — track the most recent session
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
@@ -1449,6 +1470,9 @@ export default {
         sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
         debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)} (R006)`);
       }
+      // F1 (R002): a backward transition also supersedes any pending auto-advance
+      // — the one-shot announcement is stale the moment the user moves back.
+      advancementAnnouncements.delete(sessionID);
       debug(`Backward transition complete: ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
       saveState(sessionID);
       pendingVerification.delete(sessionID);
@@ -1574,6 +1598,35 @@ export default {
       }
     }
 
+    // --- Hook: chat.message (F4/R007) ---
+    // Verbatim raw-intent capture: fires when a message is received, before any
+    // LLM call. The Overseer's Raw Request is captured word-for-word so the
+    // INTENT-phase systemTransform injection (R008) can relay it verbatim into
+    // the intent KD authoring flow — behavioral relay rules are insufficient
+    // because the model may summarize or omit. Read-only discipline (R009):
+    // no KD writes, no mutation of output.message; subagent messages and
+    // non-text parts are skipped (AC013/AC014); the per-session capture is
+    // capped at RAW_INTENT_MAX_MESSAGES by dropping the oldest entries (NFR004).
+    async function chatMessage(input, output) {
+      const { sessionID, agent, messageID } = input || {};
+      if (!sessionID) return;
+      if (agent && String(agent).toLowerCase() !== "overseer") return;
+      const parts = output?.parts;
+      if (!Array.isArray(parts)) return;
+      const texts = parts
+        .filter(p => p && p.type === "text" && typeof p.text === "string")
+        .map(p => p.text);
+      if (texts.length === 0) return;
+      const entry = { messageID, text: texts.join("\n") };
+      const list = rawIntentCapture.get(sessionID) || [];
+      list.push(entry);
+      if (list.length > RAW_INTENT_MAX_MESSAGES) {
+        list.splice(0, list.length - RAW_INTENT_MAX_MESSAGES);
+      }
+      rawIntentCapture.set(sessionID, list);
+      debug(`chat.message: captured ${texts.length} text part(s) for session ${sessionID} (${list.length}/${RAW_INTENT_MAX_MESSAGES})`);
+    }
+
     // --- Hook: command.execute.before (R008) ---
     // Implements the /phase slash command — the single user-facing override
     // path. Validates the argument against STATES (rejections: 99, INVALID,
@@ -1604,6 +1657,11 @@ export default {
       // override, P010); the marker clears on advance-away, backward
       // transition, or REPORT reset.
       sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since: Date.now() });
+      // F1 (R001): a manual /phase override supersedes any pending auto-advance.
+      // The one-shot announcement must not leak into the next systemTransform —
+      // e.g. a stale "auto-advanced EXPLORE → INVESTIGATE" after a redispatch to
+      // EXPLORE would contradict the manual override and misroute the LLM.
+      advancementAnnouncements.delete(sessionID);
       // Re-capture the session ID so checkDiskAdvancement can filter KDs by
       // session — required when /phase starts a fresh lifecycle.
       if (!sessionPhaseMap.has(`${sessionID}:sid`)) {
@@ -2473,12 +2531,30 @@ export default {
           advancementAnnouncements.delete(sessionID);
           debug(`systemTransform: announced phase auto-advance ${announcement.from} → ${announcement.to} for session ${sessionID}`);
         }
+
+        // F4 (R008): INTENT-phase verbatim raw-intent injection. The captured
+        // user text is relayed word-for-word into the Raw Request authoring
+        // flow, removing model discretion over the verbatim copy. Read-only
+        // (R009): the directive instructs a copy, never an auto-write — the
+        // Overseer remains the KD author. Fires only while phase stays INTENT
+        // (may repeat on subsequent turns; stops automatically on advance —
+        // NFR003). Overseer-only: this block is inside the isOverseerSession
+        // gate at the top of systemTransform.
+        if (phase === STATES.INTENT && sessionID) {
+          const captured = rawIntentCapture.get(sessionID);
+          if (captured && captured.length > 0) {
+            captured.forEach((entry, i) => {
+              output.system.push(`[Protocol Gate] Raw user request (verbatim) — copy exactly, word for word, into the Raw Request section of the intent KD. Do not paraphrase or summarize. — Message ${i + 1}: ${entry.text}`);
+            });
+          }
+        }
       }
       debug(`systemTransform: injected phase constraint for phase=${phaseName}`);
     }
 
     return {
       "chat.params": chatParams,
+      "chat.message": chatMessage,
       "permission.ask": permissionAsk,
       "tool.execute.before": toolExecuteBefore,
       "command.execute.before": commandExecuteBefore,
@@ -2498,6 +2574,8 @@ export default {
       pendingVerificationToolCount,
       freshAdvancement,
       advancementAnnouncements,
+      rawIntentCapture,
+      RAW_INTENT_MAX_MESSAGES,
       KD_TYPE_PREFIXES,
       checkPhaseStateConsistency,
       checkDiskAdvancement,

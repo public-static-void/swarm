@@ -155,5 +155,30 @@ describe("committer read allowlist (R006, issue-33)", () => {
   it("does not grant edit access to plan or spec KDs (AC019)", () => {
     const granted = editPatterns.filter(p => /^knowledge\/(plan|spec)-/.test(p));
     expect(granted).toEqual([]);
+
+// Static contract guard for the memory division of labor (M3, FIX1): the write
+// memory tools live in the Scribe's allowlist only. The Scribe-writes-memory
+// rule lives in scribe.md (step 11), NOT in Habit Builder surfaces — FIX1
+// removed it from habit-builder.md after it was wrongfully placed there by M2.
+describe("Memory division of labor — static agent-file contract guard (M3, AC011)", () => {
+  const files = agentFiles();
+  const readAgent = name => readFileSync(join(process.cwd(), "agents", name), "utf8");
+
+  it("keeps the Scribe-writes-memory rule out of habit-builder and no memory write/update/delete allowlist entries", () => {
+    expect(files).toContain("habit-builder.md");
+    const habitBuilder = readAgent("habit-builder.md");
+    expect(habitBuilder).not.toContain("written by the Scribe during EXTRACT");
+    const writeEntries = habitBuilder.split("\n").filter(l => /^\s*memory_(write|update|delete):\s*allow\s*$/.test(l));
+    expect(writeEntries).toEqual([]);
+  });
+
+  it("keeps the scribe step-11 memory_write instruction and memory tool allowlist entries", () => {
+    expect(files).toContain("scribe.md");
+    const scribe = readAgent("scribe.md");
+    expect(scribe).toContain("write each as a JSON entry via the `memory_write` tool");
+    for (const tool of ["memory_search", "memory_write", "memory_update", "memory_delete"]) {
+      const allowLines = scribe.split("\n").filter(l => new RegExp(`^\\s*${tool}:\\s*allow\\s*$`).test(l));
+      expect(allowLines).toHaveLength(1);
+    }
   });
 });
