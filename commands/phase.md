@@ -36,6 +36,12 @@ The INTENT target is the one exception to the fresh-evidence rule: the intent KD
 
 `/phase <phase>` is the manual escape hatch for any stuck phase. If a phase holds unexpectedly, move back or forward explicitly — for example `/phase PREFLIGHT` after correcting the intent KD. A manual override supersedes any pending auto-advance announcement, so redispatches are clean.
 
+## Restart catch-up
+
+After a restart, the gate may advance one phase per tool call (`write`, `glob`, `todowrite`, `task`) across phases whose KDs already exist on disk. This is disk-evidence catch-up, not a bug: the state file restores the phase, and each disk check re-reads `knowledge/` — pre-existing KDs from before the restart are legitimate evidence, so the lifecycle walks forward one hop per call until it reaches the phase whose KD is missing. With `PROTOCOL_GATE_DEBUG=1`, catch-up hops are logged as `RESTART_CATCH_UP: <from> → <to> on pre-existing KD`.
+
+`/phase <phase>` pins a phase at any point — a manual override always wins over catch-up. The one-shot auto-advance announcement (`Phase auto-advanced: <from> → <to>`) explains each hop as it happens, so a "phase jumped" read during catch-up is accumulated disk evidence, not a skipped phase.
+
 ## Correcting the intent KD in place
 
 A corrected intent KD can be fixed with `edit` (scoped to `knowledge/intent-*.md` in INTENT phase) and advances to PREFLIGHT on the next disk-check tool call. Editing the KD does not require re-running `/phase INTENT`.
