@@ -356,6 +356,15 @@ ${table}
       writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.PREFLIGHT, generation: 0, sid: s, timestamp: Date.now() }));
       createKD(`preflight-a-${s}.md`);
       createKD(`exploration-a-${s}.md`);
+      // Deterministic "pre-existing" fixture: backdate both KDs so their mtime
+      // provably predates the restore timestamp recorded at reconcile (R005).
+      // Without this, KD creation and reconcile can land in the same
+      // millisecond — statSync().mtimeMs (float) can then be >= the truncated
+      // integer Date.now() captured as restoredAt, and the evidenceMtime <
+      // restoredAt comparison skips the RESTART_CATCH_UP diagnostic (flake).
+      const aged = new Date(Date.now() - 10000);
+      utimesSync(join(knowledgeDir, `preflight-a-${s}.md`), aged, aged);
+      utimesSync(join(knowledgeDir, `exploration-a-${s}.md`), aged, aged);
       hooks = await pluginModule.server({}, {});
       await initOverseer(s);
 
