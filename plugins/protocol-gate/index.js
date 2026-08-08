@@ -1103,12 +1103,12 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     }
   }
 
-  // Also handle INTENT phase: if intent KD is missing but session ID was captured
-  // (meaning the lifecycle started), regress to PROTOCOL_NOT_LOADED
-  if (!foundEarlierKD && currentPhase === STATES.INTENT) {
-    regressedPhase = STATES.PROTOCOL_NOT_LOADED;
-    foundEarlierKD = true; // intent phase with captured SID counts as lifecycle evidence
-  }
+  // R004 (M2): INTENT with a missing intent KD and no earlier-phase KD falls
+  // through to the general no-regression rule below. The old special case
+  // regressed INTENT → PROTOCOL_NOT_LOADED on the first non-creating disk-check
+  // call after a restart, stalling the intent KD write (N3). A missing intent
+  // KD is recovered by rewriting it in INTENT (write allowed by the allowlist);
+  // checkDiskAdvancement still returns false, so nothing advances.
 
   if (!foundEarlierKD) return false; // no regression — phase set directly, not via lifecycle
 
