@@ -1,6 +1,6 @@
 // Knowledge-Gate Plugin — persistent memory search + issue tracking
 //
-// Hooks: chat.params, tool.execute.before, tool.definition,
+// Hooks: chat.params, tool.definition,
 //        experimental.chat.system.transform
 // Scope: Scribe (memory writes), Habit Builder (issue detection),
 //        all agents (memory_search queries), Overseer (open issue surfacing)
@@ -694,11 +694,9 @@ export default {
 
     // --- Registered tools: memory_search + memory_write ---
     // Custom tools are registered through the plugin `tool` hook map so they
-    // appear in the agent's callable tool list. The tool.execute.before
-    // interception previously handled them invisibly (never exposed to the
-    // LLM); the logic now lives in each tool's execute. Scribe-only gating
-    // uses ToolContext.agent (the runtime passes it per call), falling back
-    // to the session map when the context omits it.
+    // appear in the agent's callable tool list. Scribe-only gating uses
+    // ToolContext.agent (the runtime passes it per call), falling back to
+    // the session map when the context omits it.
     const memoryTools = {
       memory_search: tool({
         description: "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5). Returns JSON array of matching entries.",
@@ -924,29 +922,6 @@ export default {
       }
     }
 
-    // --- Hook: tool.execute.before ---
-    // memory_search/memory_write are registered tools now (see memoryTools) —
-    // their logic runs in the tool's execute, so no interception here.
-    // This hook only scans for high-severity issues after EVOLVE.
-    async function toolExecuteBefore(input, output) {
-      const { tool, sessionID } = input;
-
-      // After EVOLVE phase (habit-builder), scan for high-severity issues.
-      // Detect by checking if a process-*.md KD was just written (EVOLVE output).
-      // This runs on every tool call — cheap check against disk.
-      if (tool === "task") {
-        const agent = sessionAgentMap.get(sessionID);
-        if (agent === "habit-builder") {
-          const highSeverity = scanHighSeverityIssues();
-          if (highSeverity.length > 0) {
-            debug(`EVOLVE: found ${highSeverity.length} high-severity open issues`);
-            // Store issues on the output so downstream hooks can reference them
-            output._knowledgeGateIssues = highSeverity;
-          }
-        }
-      }
-    }
-
     // --- Hook: tool.definition ---
     // Re-assert the memory tool descriptions on every LLM call. The tools are
     // registered via the tool hook (memoryTools above); this hook keeps the
@@ -1041,8 +1016,13 @@ export default {
           const issueSummary = openIssues.map(i =>
             `- [${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
           ).join("\n");
+          // R005: the machine-checkable marker line starts the injected block.
+          // {count} equals the number of lines actually injected (post
+          // audience-filter/cap) so an INTENT KD transcription can be verified
+          // against the issue registry (NFR006).
           output.system.push(
-            `[Knowledge Gate] Open issues from prior sessions detected:\n${issueSummary}\n` +
+            `[Knowledge Gate] Open issues from prior sessions detected:\n` +
+            `<!-- issues-snapshot v1: ${openIssues.length} open, R008 order -->\n${issueSummary}\n` +
             `Include these in the Triage Notes section of your intent KD. ` +
             `Reference the issue IDs and recommend which ones to address in this session.`
           );
@@ -1053,7 +1033,6 @@ export default {
 
     return {
       "chat.params": chatParams,
-      "tool.execute.before": toolExecuteBefore,
       "tool.definition": toolDefinition,
       "experimental.chat.system.transform": systemTransform,
       // Registered custom tools — exposed to the agent's callable tool list
