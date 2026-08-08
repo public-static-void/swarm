@@ -726,6 +726,45 @@ function findNewestVerdictKD(sessionFiles) {
   return { filename, verdict: readVerdictFrontmatter(join(knowledgeDir, filename)) };
 }
 
+// R005 (M3): re-derives the evidence KD for a phase's disk-advancement
+// pattern. checkDiskAdvancement returns boolean only (plan Risk R2), so the
+// RESTART_CATCH_UP diagnostic re-derives the newest session-scoped,
+// generation-scoped KD that would have driven the advance. Returns the
+// filename or null when none is determinable (EC8 — diagnostic skipped).
+// Single readdir + bounded stat (getFileMtimeMs); consumed only by the
+// log-only diagnostic, never by the advancement gate itself.
+function findNewestEvidenceKD(sessionPhaseMap, sessionID, phase) {
+  if (phase === undefined || phase === STATES.PROTOCOL_NOT_LOADED || phase === STATES.REPORT) return null;
+  const patterns = {
+    [STATES.INTENT]: /^intent-/i,
+    [STATES.PREFLIGHT]: /^preflight-/i,
+    [STATES.EXPLORE]: /^exploration-/i,
+    [STATES.INVESTIGATE]: /^analysis-/i,
+    [STATES.ALIGN]: /^spec-/i,
+    [STATES.DECOMPOSE]: /^plan-|^milestones-/i,
+    [STATES.SWARM]: /^impl-/i,
+    [STATES.VERIFY]: /^review-|^audit-/i,
+    [STATES.EXTRACT]: /^composed-/i,
+    [STATES.EVOLVE]: /^process-/i,
+    [STATES.CLEANUP]: /^cleanup-/i
+  };
+  const pattern = patterns[phase];
+  if (!pattern) return null;
+  const knowledgeDir = getKnowledgeDir();
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const matches = files.filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation) && pattern.test(f));
+  if (matches.length === 0) return null;
+  let newest = matches[0];
+  let newestMtime = getFileMtimeMs(join(knowledgeDir, newest));
+  for (const f of matches.slice(1)) {
+    const m = getFileMtimeMs(join(knowledgeDir, f));
+    if (m > newestMtime) { newest = f; newestMtime = m; }
+  }
+  return newest;
+}
+
 // F1 (R104/AC103/EC02/EC07): On a FAIL auto-regression every checked-off
 // milestone row of the session registry re-opens to in-progress, so the M5
 // all-checked-off gate cannot re-advance SWARM→VERIFY before fresh impl KDs
@@ -1103,12 +1142,12 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     }
   }
 
-  // Also handle INTENT phase: if intent KD is missing but session ID was captured
-  // (meaning the lifecycle started), regress to PROTOCOL_NOT_LOADED
-  if (!foundEarlierKD && currentPhase === STATES.INTENT) {
-    regressedPhase = STATES.PROTOCOL_NOT_LOADED;
-    foundEarlierKD = true; // intent phase with captured SID counts as lifecycle evidence
-  }
+  // R004 (M2): INTENT with a missing intent KD and no earlier-phase KD falls
+  // through to the general no-regression rule below. The old special case
+  // regressed INTENT → PROTOCOL_NOT_LOADED on the first non-creating disk-check
+  // call after a restart, stalling the intent KD write (N3). A missing intent
+  // KD is recovered by rewriting it in INTENT (write allowed by the allowlist);
+  // checkDiskAdvancement still returns false, so nothing advances.
 
   if (!foundEarlierKD) return false; // no regression — phase set directly, not via lifecycle
 
@@ -1360,6 +1399,14 @@ export default {
     // pointer is never adopted).
     function reconcileSessionState(sessionID) {
       const state = readStateFile(sessionID);
+      // R005 (M3): firstLoad is captured BEFORE the fresh-init branches below
+      // set the phase entry. The restore timestamp must be recorded only when
+      // this server instance loads the session from a valid state file for the
+      // first time — that is a restart. A mid-session chat.params reconcile
+      // re-syncs an already-in-memory session (P002) and is NOT a restart;
+      // re-recording there would make every mid-session KD look pre-restart
+      // and flag RESTART_CATCH_UP falsely (AC017).
+      const firstLoad = !sessionPhaseMap.has(sessionID);
 
       if (state === "missing") {
         // R001 (M1): fresh-session-only lifecycle start — the workspace-level
@@ -1403,6 +1450,15 @@ export default {
       sessionPhaseMap.set(`${sessionID}:sid`, healedSid || sessionID);
       const phase = typeof state.phase === "number" ? state.phase : STATES.PROTOCOL_NOT_LOADED;
       sessionPhaseMap.set(sessionID, phase);
+      // R005 (M3): record the in-memory restore timestamp on the first valid
+      // restore per server instance — the advancement block uses it to flag
+      // post-restart disk-evidence catch-up (RESTART_CATCH_UP, log-only; spec
+      // R005/OQ1). Never persisted (saveState serializes only phase/generation/
+      // sid/overrideUntil): a second restart re-runs reconcile and re-records.
+      if (firstLoad) {
+        sessionPhaseMap.set(`${sessionID}:restoredAt`, Date.now());
+        debug(`reconcile: recorded restore timestamp for ${sessionID} (R005)`);
+      }
       // R006 (M2): restore the persistent override marker so a mid-session
       // restart honors the override until fresh evidence (AC010b). Omitted
       // when absent — legacy state files load unchanged (NFR003).
@@ -2133,6 +2189,25 @@ export default {
               advancementGateEvidence = `all milestones checked-off: ${gateEvidence.checkedOff}/${gateEvidence.total}`;
             }
             debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}${advancementGateEvidence ? ` (${advancementGateEvidence})` : ""}`);
+            // R005 (M3): post-restart disk-evidence catch-up diagnostic — log-only.
+            // After a restart the gate may advance one phase per tool call across
+            // phases whose KDs already exist on disk; that is disk-evidence
+            // catch-up, not a skip (spec A4/R010 — no mtime gate, no suppression).
+            // When the advancing phase's evidence KD predates the session's
+            // restore timestamp, name it RESTART_CATCH_UP so a "phase jumped"
+            // read is explained as accumulated disk evidence. Skipped when no
+            // restore timestamp was recorded (EC8) or the evidence KD is
+            // indeterminable (R2 — checkDiskAdvancement returns boolean only).
+            const restoredAt = sessionPhaseMap.get(`${sessionID}:restoredAt`);
+            if (typeof restoredAt === "number") {
+              const evidenceFile = findNewestEvidenceKD(sessionPhaseMap, sessionID, currentPhase);
+              if (evidenceFile) {
+                const evidenceMtime = getFileMtimeMs(join(getKnowledgeDir(), evidenceFile));
+                if (evidenceMtime >= 0 && evidenceMtime < restoredAt) {
+                  debug(`RESTART_CATCH_UP: ${currentPhaseName} → ${getPhaseName(newPhase)} on pre-existing KD (restore ${restoredAt}, KD mtime ${evidenceMtime})`);
+                }
+              }
+            }
             // Finding 4 (R402): record the transition for the one-shot
             // LLM-visible announcement. The systemTransform consumes and deletes
             // the entry on its next run for this session (R403).

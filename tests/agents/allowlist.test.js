@@ -155,6 +155,8 @@ describe("committer read allowlist (R006, issue-33)", () => {
   it("does not grant edit access to plan or spec KDs (AC019)", () => {
     const granted = editPatterns.filter(p => /^knowledge\/(plan|spec)-/.test(p));
     expect(granted).toEqual([]);
+  });
+});
 
 // Static contract guard for the memory division of labor (M3, FIX1): the write
 // memory tools live in the Scribe's allowlist only. The Scribe-writes-memory

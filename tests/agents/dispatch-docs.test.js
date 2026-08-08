@@ -102,8 +102,9 @@ describe("agents/*.md delegation dispatch docs", () => {
       await hooks["tool.definition"]({ toolID: "task" }, output);
       // The mode-agnostic tool.definition hint must teach the BRANCH field with
       // its preflight/cleanup-only qualifier so dispatchers compose it upfront.
-      expect(output.description).toContain("BRANCH: <branch> — preflight/cleanup modes only, required");
-      expect(output.description).toContain("preflight/cleanup modes only");
+      // R002 defuse: the value is instructional wording, not a <...> placeholder.
+      expect(output.description).toContain("BRANCH: branch name (required for preflight/cleanup)");
+      expect(output.description).toContain("preflight/cleanup");
     });
 
     it("validates the corrected artisan.md checkpoint dispatch example (AC124)", async () => {
