@@ -1003,8 +1003,10 @@ export default {
         }
       }
 
-      // During INTENT phase (Overseer), scan for open issues from prior sessions
-      // and surface them in Triage Notes. This closes the issue tracking feedback loop.
+      // On every Overseer systemTransform (not phase-gated), scan for open issues from
+      // prior sessions and surface them in Triage Notes. The guard is agent === "overseer"
+      // only — injection is intentionally NOT phase-gated, so issues stay visible across
+      // the whole lifecycle. This closes the issue tracking feedback loop.
       // R001/R002: the injected set is bounded (KNOWLEDGE_GATE_MAX_OPEN_ISSUES cap,
       // default 10) and optionally routed (KNOWLEDGE_GATE_ISSUE_AUDIENCE filter);
       // the filter runs BEFORE the cap so the cap measures the audience-matched set.
