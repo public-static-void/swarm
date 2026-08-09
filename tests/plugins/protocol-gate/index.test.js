@@ -2573,6 +2573,59 @@ ${table}
     });
   });
 
+  describe("M2 (issue-43): structural git-stage guard (R043-02, T43-01..T43-05)", () => {
+    // Issue-43 fix: the stage guard runs in toolExecuteBefore for tool ===
+    // "bash" BEFORE the overseer/non-overseer split so it covers every session
+    // — no lifecycle phase or overseer initialization is needed for these
+    // tests. It rejects git add invocations that carry a force flag or an
+    // explicit path under the gitignored knowledge/ set, and passes everything
+    // else through.
+
+    async function bash(s, callID, command) {
+      await hooks["tool.execute.before"](
+        { tool: "bash", sessionID: s, callID },
+        { args: { command } }
+      );
+    }
+
+    it("T43-01: rejects `git add` with a force flag and a knowledge path (GITIGNORED_STAGE_REJECTED)", async () => {
+      const s = sid("t43-01");
+      await expect(bash(s, "t43-01-1", "git add -f knowledge/impl-foo.md")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+      await expect(bash(s, "t43-01-2", "git add --force knowledge/impl-foo.md")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+      await expect(bash(s, "t43-01-3", "git add plugins/foo.js -f")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+    });
+
+    it("T43-02: rejects `git add` of an explicit knowledge/ path (GITIGNORED_STAGE_REJECTED)", async () => {
+      const s = sid("t43-02");
+      await expect(bash(s, "t43-02-1", "git add knowledge/impl-foo.md")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+      await expect(bash(s, "t43-02-2", "git add ./knowledge/issues/issue-1.md")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+      await expect(bash(s, "t43-02-3", "git add knowledge/")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+    });
+
+    it("T43-03: passes through `git add <tracked-path>`", async () => {
+      const s = sid("t43-03");
+      await expect(bash(s, "t43-03-1", "git add plugins/protocol-gate/index.js")).resolves.toBeUndefined();
+    });
+
+    it("T43-04: passes through `git add .`, `git add -A`, and non-add git commands", async () => {
+      const s = sid("t43-04");
+      await expect(bash(s, "t43-04-1", "git add .")).resolves.toBeUndefined();
+      await expect(bash(s, "t43-04-2", "git add -A")).resolves.toBeUndefined();
+      await expect(bash(s, "t43-04-3", "git status")).resolves.toBeUndefined();
+      await expect(bash(s, "t43-04-4", "git ls-files")).resolves.toBeUndefined();
+    });
+
+    it("T43-05: the guard is a no-op for non-bash tools", async () => {
+      const s = sid("t43-05");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "write", sessionID: s, callID: "t43-05-1" }, { args: { filePath: "knowledge/impl-foo.md", content: "x" } })
+      ).resolves.toBeUndefined();
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: s, callID: "t43-05-2" }, { args: { subagent_type: "committer", prompt: "AGENT: committer\nMODE: checkpoint" } })
+      ).resolves.toBeUndefined();
+    });
+  });
+
   describe("M4: registry write ordering fix (R017, AC017, issue-7)", () => {
     it("AC017: a multi-milestone dispatch (repeated lines or comma list) is rejected before any registry write — registry byte-identical", async () => {
       const variants = [
