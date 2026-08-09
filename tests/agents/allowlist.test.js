@@ -142,6 +142,40 @@ describe("agents/*.md bash allowlist security scan", () => {
   });
 });
 
+// Force-add guard (issue-43, R043-04 / R045-01, AC43-06/07): every `git add*`
+// allow entry in any agent's bash allowlist must be paired with a later
+// `git add -f*` deny entry — last-match-wins makes the narrow guard override
+// the broad allow, so no agent can stage gitignored knowledge/ artifacts via a
+// force-add. The committer carries the guard from M2 (issue-43); the artisan
+// gains it in M4 (issue-45) — the same group then covers both.
+describe("git add force-add guard (R043-04, R045-01, AC43-06/07)", () => {
+  const files = agentFiles();
+
+  it("pairs every git add allow with a later git add -f* deny in every agent (AC43-07)", () => {
+    const violations = [];
+    for (const f of files) {
+      const entries = bashEntries(readFileSync(join(process.cwd(), "agents", f), "utf8"));
+      const denyIdx = entries.findIndex(e => e.pattern === "git add -f*" && e.mode === "deny");
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        if (e.pattern.startsWith("git add") && e.mode === "allow") {
+          if (denyIdx === -1) violations.push(`${f}: ${e.pattern} has no git add -f* deny`);
+          else if (denyIdx < i) violations.push(`${f}: git add -f* deny (idx ${denyIdx}) precedes ${e.pattern} allow (idx ${i})`);
+        }
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  it("carries the committer git add -f* deny after its git add* allow (AC43-06)", () => {
+    const committer = bashEntries(readFileSync(join(process.cwd(), "agents", "committer.md"), "utf8"));
+    const allowIdx = committer.findIndex(e => e.pattern === "git add*" && e.mode === "allow");
+    const denyIdx = committer.findIndex(e => e.pattern === "git add -f*" && e.mode === "deny");
+    expect(allowIdx).toBeGreaterThanOrEqual(0);
+    expect(denyIdx).toBeGreaterThan(allowIdx);
+  });
+});
+
 describe("committer read allowlist (R006, issue-33)", () => {
   const committer = readFileSync(join(process.cwd(), "agents", "committer.md"), "utf8");
   const readPatterns = permissionEntries(committer, "read").map(e => e.pattern);
