@@ -9,7 +9,7 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
@@ -392,6 +392,16 @@ function collectMilestoneIds(prompt) {
 function extractMilestoneIdFromPrompt(prompt) {
   const ids = collectMilestoneIds(prompt);
   return ids.length > 0 ? ids[0] : null;
+}
+
+// R014 (issue-14): extracts the `RESULT KD:` path from a raw dispatch prompt.
+// protocol-gate runs BEFORE delegation-gate, so the raw prompt (not the
+// rendered template) is the source of truth — the same pattern as
+// extractMilestoneIdFromPrompt. Returns null when the prompt carries no
+// RESULT KD line (e.g. legacy dispatches without a declared result artifact).
+function parseResultKdFromPrompt(prompt) {
+  const match = String(prompt || "").match(/^\s*RESULT KD:\s*(.+?)\s*$/m);
+  return match ? match[1] : null;
 }
 
 // F1 (R001/NFR005): per-milestone redispatch counter key. The SAFETY_STUCK
@@ -1192,6 +1202,12 @@ export default {
     const diskCheckFailures = new Map();
     // Tracks re-dispatch attempts per session-phase pair to cap retries at 5.
     const phaseRedispatchCount = new Map();
+    // R014 (issue-14): per-session record of the LAST charged dispatch, set at
+    // the :2475 increment site so the tool.execute.after hook can restore the
+    // redispatch budget when a dispatch produces no expected RESULT KD
+    // (empty-result detection). One entry per session — a re-dispatch
+    // overwrites the previous record; the entry is deleted after reconciliation.
+    const lastTaskDispatch = new Map();
     // R004/R005: Tracks active subagent dispatches per session.
     // When a task call dispatches the current phase's expected agent, the
     // expected KD prefix is stored here. checkPhaseStateConsistency skips
@@ -2473,6 +2489,20 @@ export default {
               }
             }
             phaseRedispatchCount.set(redispatchKey, (phaseRedispatchCount.get(redispatchKey) || 0) + 1);
+            // R014 (issue-14): record the charged dispatch so the
+            // tool.execute.after hook can restore the budget when the dispatch
+            // produces no expected RESULT KD (empty-result detection). resultKd
+            // is parsed from the raw prompt's `RESULT KD:` line; prefixes are
+            // the phase's expected KD prefixes (multi-KD phases like VERIFY
+            // scan all of them when no explicit RESULT KD is present).
+            lastTaskDispatch.set(sessionID, {
+              redispatchKey,
+              resultKd: parseResultKdFromPrompt(args?.prompt || ""),
+              prefixes: getPrefixes(phase),
+              phase,
+              agentName,
+              callID
+            });
             // BUG-003: Trigger pendingVerification when task dispatches the current phase's
             // expected agent. The expected KD will be produced by the subagent.
             const prefixes = getPrefixes(phase);
@@ -2523,6 +2553,64 @@ export default {
           }
         }
       }
+    }
+
+    // --- Helper: expected-KD existence for a recorded dispatch (R014) ---
+    // Explicit RESULT KD paths are checked directly; dispatches without one
+    // fall back to a prefix scan of the phase's expected KD prefixes
+    // (multi-KD phases like VERIFY = review+audit are covered by the scan).
+    // The RESULT KD path is project-relative (e.g. `knowledge/impl-...`), so
+    // the leading `knowledge/` segment is stripped before joining with
+    // getKnowledgeDir(). A missing knowledge/ dir is not an error — returns false.
+    function expectedKdExists(recorded, sessionID) {
+      if (recorded.resultKd) {
+        const rel = toProjectRelative(recorded.resultKd).replace(/^(?:\.\/)?knowledge\//, "");
+        return existsSync(join(getKnowledgeDir(), rel));
+      }
+      const knowledgeDir = getKnowledgeDir();
+      let files;
+      try {
+        files = readdirSync(knowledgeDir);
+      } catch (_) {
+        return false;
+      }
+      const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+      return files.some(f =>
+        recorded.prefixes.some(p => f.startsWith(`${p}-`)) &&
+        matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation)
+      );
+    }
+
+    // --- Hook: tool.execute.after ---
+    // R014 (issue-14): empty-result redispatch reconciliation. The before-hook
+    // charges the redispatch budget at the :2475 increment site; this hook
+    // restores the charge when a task dispatch produced no expected RESULT KD,
+    // so an empty-result dispatch does not silently consume a redispatch slot
+    // (issue-14 AC #1). Non-fatal: it returns normally and tool execution
+    // continues regardless of outcome (NFR005).
+    async function toolExecuteAfter(input, output) {
+      const { tool, sessionID } = input;
+      // Mirror the :1779 gate — only overseer task dispatches touch the
+      // overseer's redispatch counter; subagent→subagent task calls never do.
+      if (tool !== "task" || !isOverseerSession(sessionID)) return;
+      const recorded = lastTaskDispatch.get(sessionID);
+      if (!recorded) return;
+      if (expectedKdExists(recorded, sessionID)) {
+        // The dispatch produced its expected KD — keep the charge. SWARM
+        // check-off already reset the per-milestone counter via
+        // autoCheckOffMilestone; non-SWARM phases keep the increment for a
+        // produced KD (R014-02.5).
+        lastTaskDispatch.delete(sessionID);
+        return;
+      }
+      // No expected KD on disk — empty-result dispatch. Restore the counter
+      // with floor 0 (delete when it would drop to 0, matching fresh-key
+      // semantics) so the next dispatch of the same milestone is not capped.
+      const v = phaseRedispatchCount.get(recorded.redispatchKey) || 0;
+      if (v > 1) phaseRedispatchCount.set(recorded.redispatchKey, v - 1);
+      else phaseRedispatchCount.delete(recorded.redispatchKey);
+      lastTaskDispatch.delete(sessionID);
+      debug(`COUNTER_RECONCILE: empty-result dispatch for session ${sessionID} — redispatchKey=${recorded.redispatchKey} restored to ${v > 1 ? v - 1 : 0}`);
     }
 
     // --- Hook: tool.definition ---
@@ -2632,6 +2720,7 @@ export default {
       "chat.message": chatMessage,
       "permission.ask": permissionAsk,
       "tool.execute.before": toolExecuteBefore,
+      "tool.execute.after": toolExecuteAfter,
       "command.execute.before": commandExecuteBefore,
       "tool.definition": toolDefinition,
       "experimental.chat.system.transform": systemTransform,
@@ -2643,6 +2732,7 @@ export default {
       cycleMap,
       swarmDispatchCount,
       phaseRedispatchCount,
+      lastTaskDispatch,
       diskCheckFailures,
       inFlightDispatches,
       pendingVerification,
