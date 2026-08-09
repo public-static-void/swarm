@@ -17,6 +17,7 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 - **Noise Cancellation**: Be succinct. Compress. Delete bloat. Delete every word that doesn't pull weight. Prefer lists over paragraphs. Stop when done. Re-explain or summarize only on request.
 - **Context Markers**: Prefix responses with your agent emoji.
 - **Standard Commits**: Use standard git workflow with hooks enabled for all commits.
+- **Git Contract**: git tracks swarm config only: AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json. knowledge/ is workflow meta and stays gitignored.
 - **Comment Intent**: Source code comments must explain WHY. Git history documents changes; comments capture engineering rationale.
 - **External References**: Reference only external APIs, public documentation, and standard conventions in source code comments and commit messages.
 
