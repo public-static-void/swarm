@@ -28,13 +28,6 @@ milestones:
   M2: pending
 ```
 
-## Milestone Details
-
-| Milestone ID | Description | Plan Steps | Completion Criteria | State | Assigned Artisan | Dispatched At | Checked Off At |
-| ------------ | ----------- | ---------- | ------------------- | ----- | ---------------- | ------------- | -------------- |
-| M1 | {{description}} | {{P001, P002}} | {{criteria}} | pending | — | — | — |
-| M2 | {{description}} | {{P003}} | {{criteria}} | pending | — | — | — |
-
 ## State Model
 
 **State values**: `pending`, `assigned`, `in-progress`, `checked-off`, `failed`.
@@ -57,7 +50,7 @@ SWARM advances to VERIFY ONLY when every milestone row is `checked-off` AND each
 
 ## Parsing Contract
 
-protocol-gate reads the `## Milestone States` fenced YAML block (`milestones:` mapping of ID → state). The Milestone Details table is human-readable; the YAML block is the machine-readable source.
+protocol-gate reads the `## Milestone States` fenced YAML block (`milestones:` mapping of ID → state). The YAML block is the single status surface for machine and human readers.
 
 ## Writing Rules
 

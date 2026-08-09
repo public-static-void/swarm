@@ -24,6 +24,8 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 
 - `read`, `grep`, and `glob` are the canonical inspection tools — use them for all file and content inspection.
 - Chained or piped bash inspection (`cmd | cmd`, `cmd && cmd`) is not permitted; use the dedicated tools instead.
+- Read `.log` evidence with `read` using targeted offsets — `grep` skips `.log` files.
+- For per-file evidence, use `include` filters on the directory (or glob + targeted reads) — `grep` with a file path falls back to a parent/directory-wide search.
 
 ## Evidence and Knowledge Durability
 
