@@ -153,7 +153,8 @@ const ERROR_TEMPLATES = {
   WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `❌ WRONG AGENT: Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
   CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "❌ ERROR: Backward transition cycle limit exceeded. Escalate to user", guidance: "Escalate to user" },
   FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" },
-  MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" }
+  MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
+  GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json) or `git add .` to stage all non-ignored changes" }
 };
 
 function getPhaseName(phaseId) {
@@ -1791,6 +1792,27 @@ export default {
       lastSeenSession = sessionID;
       // opencode API: tool args live on output.args, not input.args
       const args = output.args || {};
+
+      // R043-02 (issue-43): structural git-stage guard. Rejects `git add`
+      // invocations that would stage gitignored paths — force flags bypass the
+      // ignore rules and explicit knowledge/ paths are the gitignored workflow
+      // set. Runs before the overseer/non-overseer split so every session is
+      // covered; the positive guidance points to the allowed staging forms.
+      if (tool === "bash" && typeof args.command === "string") {
+        const addSegments = args.command.split(/\s*(?:&&|\|\||;)\s*/).filter(seg => /\bgit add\b/.test(seg));
+        if (addSegments.length > 0) {
+          const forceFlag = addSegments.some(seg => /(^|\s)(-f|--force)(\s|$)/.test(seg));
+          const knowledgePath = addSegments.some(seg => /\bknowledge\//.test(seg));
+          if (forceFlag || knowledgePath) {
+            debug(`STAGE GUARD: rejecting git add — forceFlag=${forceFlag} knowledgePath=${knowledgePath} (command=${args.command})`);
+            throw new ProtocolGateError(
+              ERROR_TEMPLATES.GITIGNORED_STAGE_REJECTED.code,
+              ERROR_TEMPLATES.GITIGNORED_STAGE_REJECTED.message,
+              ERROR_TEMPLATES.GITIGNORED_STAGE_REJECTED.guidance
+            );
+          }
+        }
+      }
 
       if (!isOverseerSession(sessionID)) {
         // R100: Checkpoint KD enforcement for subagent writes/edits.
