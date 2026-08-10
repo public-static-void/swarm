@@ -1,4 +1,0 @@
-{
-  "mode": "verify",
-  "template": "DISPATCH TO: {agent}\nMODE: verify\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read SPEC KDs, PLAN KDs, and IMPL KDs from KD PATHS. Verify the implementation per the scope above. Produce REVIEW and AUDIT KDs at {result_kd} using the naming convention: knowledge/review-<name>-<session_id>-gen{generation}.md and knowledge/audit-<name>-<session_id>-gen{generation}.md"
-}

@@ -1,0 +1,4 @@
+{
+  "mode": "review",
+  "template": "DISPATCH TO: {agent}\nMODE: review\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read SPEC KDs, PLAN KDs, and IMPL KDs from KD PATHS. Review the implementation per the scope above. Produce a REVIEW KD at {result_kd} using the naming convention: knowledge/review-<name>-<session_id>-gen{generation}.md"
+}

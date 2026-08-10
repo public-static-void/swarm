@@ -51,26 +51,26 @@ const ERRORS = {
 const KNOWN_MODES = [
   "checkpoint", "preflight", "cleanup",
   "explore", "investigate", "align", "decompose",
-  "swarm", "verify", "extract", "evolve"
+  "swarm", "review", "audit", "extract", "evolve"
 ];
 
 // Modes that produce Knowledge Documents — result_kd is mandatory for these.
 const KD_PRODUCING_MODES = [
   "preflight",
   "explore", "investigate", "align", "decompose",
-  "swarm", "verify", "extract", "evolve",
+  "swarm", "review", "audit", "extract", "evolve",
   "checkpoint", "cleanup"
 ];
 
 // Maps each delegation mode to the KD type prefix(es) it produces.
-// verify produces two KDs (review + audit); all others produce one.
 const MODE_TO_KD_PREFIXES = {
   explore:     ["exploration"],
   investigate: ["analysis"],
   align:       ["spec"],
   decompose:   ["plan"],
   swarm:       ["impl"],
-  verify:      ["review", "audit"],
+  review:      ["review"],
+  audit:       ["audit"],
   extract:     ["composed"],
   evolve:      ["process"],
   preflight:   ["preflight"],
@@ -121,7 +121,8 @@ function loadTemplates(config) {
     align: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Align the requirements per the scope above. Produce a SPEC KD at {result_kd}.",
     decompose: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Decompose the project per the scope above. Produce a PLAN KD at {result_kd}.",
     swarm: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Execute the swarm phase per the scope above. Produce an IMPLEMENTATION SUMMARY KD at {result_kd}.",
-    verify: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Verify the implementation per the scope above. Produce REVIEW and AUDIT KDs at {result_kd}.",
+    review: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Review the implementation per the scope above. Produce a REVIEW KD at {result_kd}.",
+    audit: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Audit the implementation per the scope above. Produce an AUDIT KD at {result_kd}.",
     extract: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Extract and compose the documentation per the scope above. Produce a COMPOSED KD at {result_kd}.",
     evolve: "Load the kd-system skill. Read the INTENT KD at {intent_kd}. Evolve the process per the scope above. Write the PROCESS KD and issue files (`knowledge/issues/*.md`). Produce a PROCESS KD at {result_kd}.",
     checkpoint: "Load the kd-system skill. Load the committer-checkpoint skill. Create a checkpoint commit per the scope above. Write a CHECKPOINT KD at the RESULT KD path.",
@@ -364,7 +365,7 @@ function renderTemplate(template, fields) {
   // `KD PATHS:` header line and the "Read ... from KD PATHS." body sentence so
   // preflight/checkpoint/cleanup dispatches without upstream paths render no
   // empty header and no dangling read instruction. When kd_paths is present,
-  // no post-processing — legitimate modes (swarm, verify, investigate, ...)
+  // no post-processing — legitimate modes (swarm, review, audit, investigate, ...)
   // keep the header and sentence unchanged. One generic path, no per-template
   // text forks.
   if (!fields.kd_paths) {
