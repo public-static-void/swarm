@@ -100,7 +100,7 @@ You produce Git workspace states (branches, commits), PREFLIGHT KDs, CHECKPOINT 
 ## Constraints
 
 - Stage each file in its entirety per batch — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant concern per the skill's grouping step. Each batch must form a coherent, independently verifiable change set — reference the committer-checkpoint skill's concern-separation rule.
-- Stage only intended tracked files (swarm config: AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json), one file per batch with `git add <file>`.
+- Stage the files this task changed — one file per batch with `git add <file>`.
 
 ## Context Marker
 

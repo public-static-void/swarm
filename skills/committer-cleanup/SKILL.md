@@ -33,7 +33,7 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
    - Mixed types in one file: classify by dominant type (majority of lines changed). If roughly equal, flag to split across files if possible; otherwise classify by primary intent.
    - feat + refactor in same file: classify as feat with refactor note in body. Only split if refactor >50% of changed lines.
 
-6. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage. Confirm `knowledge/` is listed in `.gitignore` — if missing, report the gap and halt. Stage tracked files outside the `knowledge/` directory. If any knowledge files appear staged, unstage them immediately. Stage and commit all tracked files absent from `.gitignore`. Silently skip ignored files; report which files were skipped if relevant.
+6. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage for the files this task changed. Stage all tracked files changed by the task. If any gitignored file appears staged, unstage it immediately. Silently skip ignored files; report which files were skipped if relevant.
 
 7. **Edge cases**:
    - **Empty commit**: If the filtered set is empty, report "no changes to commit" and exit cleanly.

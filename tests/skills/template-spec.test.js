@@ -8,10 +8,10 @@ import { join } from "path";
 // SPEC template itself sanctioned force-adds (issue-42 incident). These
 // assertions lock the corrected template: acceptance criteria for gitignored
 // artifacts verify from disk (read/glob/grep), staging guidance is positive
-// (stage only intended tracked files), AGENTS.md documents the tracked set, and
+// (stage the files this task changed), AGENTS.md documents the tracked set, and
 // the AC template never demands git-diff/staged-state evidence.
 
-const BOILERPLATE = "Acceptance criteria for gitignored artifacts (`knowledge/`, `knowledge/issues/`, `knowledge/memory/`) are verified from disk via `read`/`glob`/`grep`. Stage only intended tracked files; use the standard git workflow. Rewrite any AC that cannot be verified from disk so it verifies from disk.";
+const BOILERPLATE = "Acceptance criteria for gitignored artifacts (`knowledge/`, `knowledge/issues/`, `knowledge/memory/`) are verified from disk via `read`/`glob`/`grep`. Stage the files this task changed; use the standard git workflow. Rewrite any AC that cannot be verified from disk so it verifies from disk.";
 
 describe("template-spec git hygiene (issue-43, R043-01/03)", () => {
   const skill = readFileSync(join(process.cwd(), "skills", "template-spec", "SKILL.md"), "utf8");
