@@ -99,7 +99,7 @@ Phase Output ──► Gate ──► Next Phase
 ### Implementation Gate (after SWARM)
 
 - [ ] Code compiles/runs without errors
-- [ ] All acceptance criteria from SPEC addressed
+- [ ] Acceptance criteria verified against implementation behavior — tests grouped per behavior, one group per behavior
 - [ ] Tests pass (if tests were specified)
 - [ ] Checkpoint commits exist per step
 - [ ] IMPLEMENTATION SUMMARY KD documents deviations
@@ -121,6 +121,10 @@ Phase Output ──► Gate ──► Next Phase
 6. Check for uncovered requirements: every requirement must have a verification entry
 7. Findings are terse and actionable (Noise Cancellation)
 8. Inspector reports findings with evidence and severity; all fix implementation is the artisan's responsibility
+
+## Behavior-Based Tests
+
+Tests verify behavior, not wording. Group tests by behavior — one group per behavior, each test covering one meaningful case — and name each test after the behavior it verifies. Test names and comments carry no requirement-ID codes (R/AC/M); the traceability matrix maps acceptance criteria to the test groups that verify them. A suite grows when new behavior appears, not when a requirement count suggests volume, and consolidation of overlapping or stale tests is part of normal maintenance. Static configuration guards are behavior tests when they protect a runtime contract — assert the contract, not the prose that describes it.
 
 ## Gate Protocol
 
