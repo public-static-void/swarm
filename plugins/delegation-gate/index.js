@@ -83,7 +83,7 @@ let _logFile = null;
 function getLogFile() {
   const logDir = process.env.DELEGATION_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
   // Re-bind the cached path when the env seam moves the log directory — a
-  // stale cache would keep appending to the previously resolved path (AC017).
+  // A stale cache would keep appending to the previously resolved path.
   if (!_logFile || dirname(_logFile) !== logDir) {
     try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
     _logFile = join(logDir, "delegation-gate.log");
@@ -130,8 +130,8 @@ function loadTemplates(config) {
     preflight: "Load the kd-system skill and the committer-preflight skill. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
   };
 
-  // R101 (M3): preflight/cleanup fallback headers carry `BRANCH: {branch}`
-  // between GENERATION and SCOPE, mirroring the disk templates. Cleanup keeps
+  // Preflight/cleanup fallback headers carry `BRANCH: {branch}` between
+  // GENERATION and SCOPE, mirroring the disk templates. Cleanup keeps
   // its no-INTENT-KD header shape (matches templates/cleanup.json); all other
   // modes keep the shared header with INTENT KD and no BRANCH line. Both error
   // paths render the same header so the fallback can never drift from the
@@ -181,7 +181,7 @@ function extractFromText(text, fields, override = false) {
     const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BRANCH[. _]NAME|BRANCH|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       let key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
-      // R102 (M3): BRANCH_NAME / BRANCH.NAME / BRANCH NAME all normalize to `branch`
+      // BRANCH_NAME / BRANCH.NAME / BRANCH NAME all normalize to `branch`
       if (key === "branch_name") key = "branch";
       const assigned = override || !fields[key];
       if (assigned) fields[key] = match[2].trim().replace(/\*\*/g, "").trim();
@@ -276,10 +276,10 @@ function validateKDPath(path) {
   return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(normalized);
 }
 
-// R102 (M3): git-ref-safe branch contract (spec interface contract #7) —
-// starts alphanumeric, then only [A-Za-z0-9._/-], no `..`, no trailing `/` or
-// `.`. Rejecting unsafe values here (EC04) keeps them from ever reaching a
-// `git checkout -b` invocation in the committer.
+// Git-ref-safe branch contract: starts alphanumeric, then only
+// [A-Za-z0-9._/-], no `..`, no trailing `/` or `.`. Rejecting unsafe values
+// here keeps them from ever reaching a `git checkout -b` invocation in the
+// committer.
 function validateBranch(branch) {
   if (typeof branch !== "string" || branch.trim() === "") return false;
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(branch)) return false;
@@ -317,7 +317,7 @@ function isBareKDPath(prompt) {
 // Collects every MILESTONE ID field value from a prompt — one entry per
 // `MILESTONE ID:` / `MILESTONE_ID:` line, with Markdown bold markers stripped.
 // A comma inside a single value means multiple milestones were crammed into one
-// field; both cases are rejected as MULTI_MILESTONE (R007).
+// field; both cases are rejected as MULTI_MILESTONE.
 function collectMilestoneIds(prompt) {
   if (!prompt) return [];
   const ids = [];
@@ -342,8 +342,8 @@ function containsPlaceholder(value) {
   return /^\{[a-zA-Z_][a-zA-Z0-9_]*\}$/.test(v) || /^<[^<>]+>$/.test(v);
 }
 
-// M4 (R009/R010): Extracts the milestone token from a swarm result KD path per
-// the milestone-scoped impl naming contract — the first token after `impl-`.
+// Extracts the milestone token from a swarm result KD path per the
+// milestone-scoped impl naming contract — the first token after `impl-`.
 // Returns null when the path is not an impl KD at all.
 function extractMilestoneTokenFromResultKd(resultKd) {
   if (typeof resultKd !== "string") return null;
@@ -361,7 +361,7 @@ function renderTemplate(template, fields) {
   }
   // Strip unresolved placeholders (e.g. {scope} when scope wasn't provided)
   result = result.replace(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, "");
-  // F4 (R030–R032): KD PATHS is optional — when kd_paths is falsy, drop the
+  // KD PATHS is optional — when kd_paths is falsy, drop the
   // `KD PATHS:` header line and the "Read ... from KD PATHS." body sentence so
   // preflight/checkpoint/cleanup dispatches without upstream paths render no
   // empty header and no dangling read instruction. When kd_paths is present,
@@ -375,23 +375,23 @@ function renderTemplate(template, fields) {
   return result;
 }
 
-// Dispatcher-visible delegation format hint (R303). The tool.definition hook
+// Dispatcher-visible delegation format hint. The tool.definition hook
 // annotates the task tool description so the dispatching agent sees the
 // KEY: value-in-prompt rule BEFORE composing — closing the audience/timing
 // gap where injectToolDocs' hint lands only in the subagent-facing description
 // after compose. Mirrors protocol-gate's tool.definition pattern.
-// R009 (issue-9 remainder): the hint is mode-agnostic — it is injected before
-// the dispatch mode is known — so the swarm MILESTONE ID line carries the
-// "(swarm mode only)" qualifier (mirroring injectToolDocs' swarm-only line
-// placement right after MODE), and the KD PATHS line documents the
-// comma-separated convention the validation split() expects.
-// R002 (N2-F2): the hint values are bracket-free instructional wording — a
-// literal angle-bracket placeholder (<session-id>) copied verbatim from the
-// hint used to be captured by extraction as a field value and leak into the
-// rendered prompt. Instructional wording can be copied safely; the retained
-// RESULT KD template form (knowledge/<type>-<name>-<session_id>[-gen<N>].md)
-// is deliberately kept because it is not a standalone whole-value <...> line
-// and fails validateKDPath loudly if copied verbatim (spec A2/EC4).
+// The hint is mode-agnostic — it is injected before the dispatch mode is
+// known — so the swarm MILESTONE ID line carries the "(swarm mode only)"
+// qualifier (mirroring injectToolDocs' swarm-only line placement right after
+// MODE), and the KD PATHS line documents the comma-separated convention the
+// validation split() expects.
+// The hint values are bracket-free instructional wording — a literal
+// angle-bracket placeholder (<session-id>) copied verbatim from the hint used
+// to be captured by extraction as a field value and leak into the rendered
+// prompt. Instructional wording can be copied safely; the retained RESULT KD
+// template form (knowledge/<type>-<name>-<session_id>[-gen<N>].md) is
+// deliberately kept because it is not a standalone whole-value <...> line and
+// fails validateKDPath loudly if copied verbatim.
 function dispatcherFormatHint() {
   return `
 Delegation Prompt Format:
@@ -413,31 +413,31 @@ function injectToolDocs(output, agentName, mode, generation) {
   const today = new Date().toISOString().slice(0, 10);
   const displayAgent = agentName || "explorer";
   const displayMode = mode || "explore";
-  // Generation suffix (P004/R002 Option A): when a lifecycle generation is
-  // known, KD names carry `-gen{N}` after the session ID so stale prior-lifecycle
-  // KDs never match. Generation 0 / unknown keeps the legacy bare suffix.
+  // Generation suffix: when a lifecycle generation is known, KD names carry
+  // `-gen{N}` after the session ID so stale prior-lifecycle KDs never match.
+  // Generation 0 / unknown keeps the legacy bare suffix.
   const genSuffix = generation !== undefined && generation !== "" ? `-gen${generation}` : "";
   // MODE_TO_KD_PREFIXES maps current mode to its KD type prefix(es) — only the relevant
   // entry is injected so the LLM sees only the naming convention for this dispatch.
-  // R003 (N2-F2): genuine variables use parenthetical wording ((your session
-  // id), (optional context)) instead of angle-bracket placeholders — a literal
-  // <...> copied from this hint was captured by extraction as a field value.
-  // Only the RESULT KD example paths retain <name>-<session_id> components:
-  // those lines are not whole-value placeholders (spec A3, plan P003).
+  // Genuine variables use parenthetical wording ((your session id), (optional
+  // context)) instead of angle-bracket placeholders — a literal <...> copied
+  // from this hint was captured by extraction as a field value. Only the
+  // RESULT KD example paths retain <name>-<session_id> components: those lines
+  // are not whole-value placeholders.
   const modePrefixes = MODE_TO_KD_PREFIXES[displayMode] || ["<type>"];
-  // M4 (R009/R010): swarm result KDs carry the dispatched milestone as the
-  // first token after impl- — knowledge/impl-<milestone-id>-<name>-... Only
+  // Swarm result KDs carry the dispatched milestone as the first token after
+  // impl- — knowledge/impl-<milestone-id>-<name>-... Only
   // injected for swarm so other modes don't see the contract they must not use.
   const milestoneToken = displayMode === "swarm" ? "<milestone-id>-" : "";
   const resultKdExamples = modePrefixes
     .map(p => `knowledge/${p}-${milestoneToken}<name>-<session_id>${genSuffix}.md`)
     .join(", ");
-  // M3 (R006): swarm dispatches carry exactly one MILESTONE ID — the structural
-  // field the protocol-gate registry transition keys on. Only injected for swarm
+  // Swarm dispatches carry exactly one MILESTONE ID — the structural field the
+  // protocol-gate registry transition keys on. Only injected for swarm
   // so other modes don't see a field they must not include.
   const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: (exactly one, required for swarm)\n" : "";
-  // R102 (M3): committer-owned modes carry the dispatch BRANCH — the branch the
-  // committer creates at preflight and verifies at cleanup. Only injected for
+  // Committer-owned modes carry the dispatch BRANCH — the branch the committer
+  // creates at preflight and verifies at cleanup. Only injected for
   // preflight/cleanup so other modes don't see a field they must not include.
   const branchLine = displayMode === "preflight" || displayMode === "cleanup" ? "BRANCH: (branch name, required for preflight/cleanup)\n" : "";
   const formatHint = `
@@ -515,10 +515,10 @@ export default {
       }
 
       // generation from protocol-gate state file — fills {generation} when the
-      // prompt omits GENERATION: (P004). Mirrors the SESSION ID fallback above;
+      // prompt omits GENERATION. Mirrors the SESSION ID fallback above;
       // saveState always writes generation, so an active session has a value.
-      // The state dir follows protocol-gate's PROTOCOL_GATE_STATE_DIR seam (P302)
-      // so isolated test runs never race on the real .state dir.
+      // The state dir follows protocol-gate's PROTOCOL_GATE_STATE_DIR seam so
+      // isolated test runs never race on the real .state dir.
       if (!fields["generation"] && sessionID) {
         try {
           const stateDir = process.env.PROTOCOL_GATE_STATE_DIR || join(PLUGIN_DIR, "..", "protocol-gate", ".state");
@@ -534,8 +534,8 @@ export default {
       }
 
       // scope is optional — provides domain context but doesn't block delegation
-      // R009/R014: intent_kd is not required for the committer-owned modes
-      // (checkpoint, cleanup) — their templates render no INTENT KD reference
+      // intent_kd is not required for the committer-owned modes (checkpoint,
+      // cleanup) — their templates render no INTENT KD reference
       // (the committer's read:allow denies knowledge/intent-*.md), so requiring
       // the field serves no purpose. Only non-committer modes need intent_kd
       // to identify the upstream KD.
@@ -543,10 +543,10 @@ export default {
       if (fields.mode?.toLowerCase() !== "checkpoint" && fields.mode?.toLowerCase() !== "cleanup") {
         requiredFields.push("intent_kd");
       }
-      // R102 (M3): committer-owned modes carry a branch field — the committer
+      // Committer-owned modes carry a branch field — the committer
       // creates/verifies the dispatch BRANCH, so an absent branch is a hard
-      // rejection before template rendering (spec matrix: preflight + cleanup
-      // require branch; checkpoint and all other modes do not).
+      // rejection before template rendering (preflight + cleanup require
+      // branch; checkpoint and all other modes do not).
       if (fields.mode?.toLowerCase() === "preflight" || fields.mode?.toLowerCase() === "cleanup") {
         requiredFields.push("branch");
       }
@@ -569,9 +569,9 @@ export default {
         }
       }
 
-      // R102 (M3): validate any branch value present — required for
-      // preflight/cleanup, but a stray BRANCH line in other modes is still
-      // checked so unsafe values can never reach a git command (EC04).
+      // Validate any branch value present — required for preflight/cleanup,
+      // but a stray BRANCH line in other modes is still checked so unsafe
+      // values can never reach a git command.
       if (fields.branch !== undefined && !validateBranch(fields.branch)) {
         debug(`VALIDATION FAILED: invalid branch '${fields.branch}'`);
         throw new DelegationGateError(ERRORS.INVALID_BRANCH.code, ERRORS.INVALID_BRANCH.message, ERRORS.INVALID_BRANCH.guidance);
@@ -582,9 +582,10 @@ export default {
         debug(`WARNING: scope validation failed (len=${fields.scope.length}, content='${fields.scope}') — proceeding anyway`);
       }
 
-      // R008: SWARM mode multi-milestone scope warning — large plans overload artisan context.
-      // Advisory only: warns but does not block delegation. The structural fix (one artisan
-      // per milestone) requires Pathfinder to produce milestone-scoped plans.
+      // SWARM mode multi-milestone scope warning — large plans overload
+      // artisan context. Advisory only: warns but does not block delegation.
+      // The structural fix (one artisan per milestone) requires Pathfinder to
+      // produce milestone-scoped plans.
       if (fields.mode?.toLowerCase() === "swarm" && fields.scope) {
         if (/M\d+.*M\d+|milestones?\s*\d[\s,]*\d/i.test(fields.scope)) {
           debug(`WARNING: SWARM mode scope references multiple milestones — artisan overload risk. Consider one artisan per milestone.`);
@@ -624,11 +625,11 @@ export default {
         throw new DelegationGateError(ERRORS.MISSING_RESULT_KD.code, ERRORS.MISSING_RESULT_KD.message, ERRORS.MISSING_RESULT_KD.guidance);
       }
 
-      // R006–R008: swarm dispatches require exactly one valid MILESTONE ID.
-      // Runs after the result_kd check so a missing result_kd reports the more
-      // specific error first. Multiple milestones in one dispatch are rejected
+      // Swarm dispatches require exactly one valid MILESTONE ID. Runs after
+      // the result_kd check so a missing result_kd reports the more specific
+      // error first. Multiple milestones in one dispatch are rejected
       // structurally (MULTI_MILESTONE) instead of warned about — the advisory
-      // regex only caught prose references (MEM-015), never enforced anything.
+      // regex only caught prose references, never enforced anything.
       if (fields.mode?.toLowerCase() === "swarm") {
         const milestoneIds = collectMilestoneIds(prompt);
         if (milestoneIds.length === 0) {
@@ -647,11 +648,12 @@ export default {
         fields["milestone_id"] = milestoneId;
         debug(`ALLOW swarm dispatch for milestone: ${milestoneId}`);
 
-        // M4 (R009/R010): the swarm result KD must be milestone-scoped — the
-        // first token after impl- is the dispatched milestone ID. This naming
-        // is the check-off contract the protocol-gate reads back: the impl KD
-        // on disk is the verifiable evidence of the milestone's completion.
-        // Matching is case-insensitive so impl-m3-... satisfies MILESTONE ID: M3.
+        // The swarm result KD must be milestone-scoped — the first token after
+        // impl- is the dispatched milestone ID. This naming is the check-off
+        // contract the protocol-gate reads back: the impl KD on disk is the
+        // verifiable evidence of the milestone's completion. Matching is
+        // case-insensitive so a lowercase milestone token satisfies the
+        // uppercase milestone ID.
         if (fields.result_kd) {
           const resultToken = extractMilestoneTokenFromResultKd(fields.result_kd);
           if (!resultToken || resultToken.toLowerCase() !== milestoneId.toLowerCase()) {
@@ -668,10 +670,10 @@ export default {
     }
 
     // --- Hook: tool.definition ---
-    // R303: annotate the task tool definition so the format hint is visible to
-    // the dispatcher before composing. Dedupe guard (FM04): never show the hint
-    // twice on one surface — injectToolDocs applies the same includes() guard
-    // to the subagent-facing description after compose.
+    // Annotate the task tool definition so the format hint is visible to the
+    // dispatcher before composing. Dedupe guard: never show the hint twice on
+    // one surface — injectToolDocs applies the same includes() guard to the
+    // subagent-facing description after compose.
     async function toolDefinition(input, output) {
       const { toolID } = input;
       if (toolID !== "task") return;

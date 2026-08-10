@@ -1,11 +1,11 @@
-// eslint.security.config.mjs — SAST baseline (issue-25/M3 + M6 prohibition-lexicon).
+// eslint.security.config.mjs — SAST baseline for the rules layer.
 // eslint-plugin-security's recommended rules are warn-level, so warnings are scan
-// findings and only errors block. The M6 rule-layer check enforces positive framing:
+// findings and only errors block. The rules-layer check enforces positive framing:
 // behavioral prose states the expected action; limiter words are reserved for
 // structural enforcement layers (plugins, permissions, lint rules).
 import security from 'eslint-plugin-security'
 
-// ── M6: prohibition-lexicon over the rules layer ──────────────────────────────
+// ── prohibition-lexicon over the rules layer ──────────────────────────────────
 // Scans AGENTS.md, agents/, commands/, and skills instruction sections for limiter
 // words that contradict "Point the Target". Limiters in structural layers
 // (permission-deny rules, plugin guard text) stay outside this scan's scope.
@@ -106,4 +106,98 @@ const rulesLayerConfig = {
   rules: { 'rules-layer/prohibition-lexicon': 'error' },
 }
 
-export default [security.configs.recommended, rulesLayerConfig]
+// ── no-meta-marker: purge regression guard ───────────────────────────────────
+// Scans comments in plugin sources and tests, plus describe/it/test first-arg
+// labels, for process-workflow meta markers (AC###, R###, NFR###, P###, EC##,
+// BUG-##, issue-##, Finding #, F#, FM#, G#, RSK-##, T##-##, and milestone
+// prefixes in labels). Fixture data lives in string literals (dispatch prompts,
+// fixture KD paths, registry rows) — functional test input — so only comments
+// and label strings are scanned, never code.
+const META_MARKERS = [
+  /\bAC\d+\b/,
+  /\bR\d{3}\b/,
+  /\bNFR\d+\b/,
+  /\bP\d{3}\b/,
+  /\bEC-?\d+\b/,
+  /\bBUG-\d+\b/,
+  /\bissue-\d+\b/i,
+  /\bFinding \d+\b/i,
+  /\bF\d{2,3}\b/,
+  /\bFM\d+\b/,
+  /\bG\d\b/,
+  /\bRSK-\d+\b/i,
+  /\bT\d{2}-\d+\b/,
+]
+// Milestone-prefixed describe/it/test labels ("M1: ...", "M3 (F4): ...").
+const LABEL_MILESTONE_PREFIX = /\bM[1-5]:/
+
+// Functional naming contracts, not workflow meta markers: the knowledge-gate
+// generates and parses issue-file IDs of the form "ISSUE-001" (3-digit), so
+// the uppercase ID form is legitimate fixture/contract data everywhere.
+const MARKER_ALLOWLIST = [/\bISSUE-\d{3}\b/]
+
+const noMetaMarker = {
+  meta: {
+    type: 'problem',
+    docs: { description: 'Reject process-workflow meta markers in comments and test labels' },
+    messages: {
+      marker: 'Meta marker "{{marker}}" in {{where}} — reference fixture data by value, not by workflow code.',
+    },
+  },
+  create(context) {
+    function firstMarker(text) {
+      if (MARKER_ALLOWLIST.some((pattern) => pattern.test(text))) return null
+      for (const pattern of META_MARKERS) {
+        const match = pattern.exec(text)
+        if (match) return match[0]
+      }
+      return null
+    }
+    return {
+      Program() {
+        for (const comment of context.sourceCode.getAllComments()) {
+          const lines = comment.value.split('\n')
+          lines.forEach((line, i) => {
+            const hit = firstMarker(line)
+            if (hit) {
+              context.report({
+                loc: { line: comment.loc.start.line + i, column: 0 },
+                messageId: 'marker',
+                data: { marker: hit, where: 'a comment' },
+              })
+            }
+          })
+        }
+        context.sourceCode.lines.forEach((line, i) => {
+          if (!/^\s*(describe|it|test)\s*\(\s*['"]/.test(line)) return
+          const start = line.indexOf("'") >= 0 ? line.indexOf("'") : line.indexOf('"')
+          const quote = line[start]
+          const label = line.slice(start + 1, line.lastIndexOf(quote))
+          const hit = firstMarker(label)
+          const prefix = LABEL_MILESTONE_PREFIX.exec(label)
+          if (hit) {
+            context.report({
+              loc: { line: i + 1, column: 0 },
+              messageId: 'marker',
+              data: { marker: hit, where: 'a test label' },
+            })
+          } else if (prefix) {
+            context.report({
+              loc: { line: i + 1, column: 0 },
+              messageId: 'marker',
+              data: { marker: prefix[0], where: 'a test label' },
+            })
+          }
+        })
+      },
+    }
+  },
+}
+
+const sourceMetaMarkerConfig = {
+  files: ['plugins/**/*.js', 'tests/**/*.js'],
+  plugins: { 'meta-marker': { rules: { 'no-meta-marker': noMetaMarker } } },
+  rules: { 'meta-marker/no-meta-marker': 'error' },
+}
+
+export default [security.configs.recommended, rulesLayerConfig, sourceMetaMarkerConfig]

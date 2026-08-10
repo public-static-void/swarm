@@ -77,9 +77,9 @@ describe("Knowledge-Gate Plugin", () => {
     rmSync(ISSUES_DIR, { recursive: true, force: true });
     mkdirSync(MEMORY_DIR, { recursive: true });
     mkdirSync(ISSUES_DIR, { recursive: true });
-    // R001/R002 env overrides are read at transform call time — reset them
+    // Env overrides are read at transform call time — reset them
     // per test so no cap/audience leaks between tests. The dir overrides set
-    // in beforeAll are deliberately left untouched (RSK-002).
+    // in beforeAll are deliberately left untouched.
     delete process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES;
     delete process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE;
     // A fresh server instance carries a fresh in-server memory cache
@@ -219,12 +219,12 @@ describe("Knowledge-Gate Plugin", () => {
     });
   });
 
-  describe("R003 vestigial hook removal", () => {
-    it("does not register the tool.execute.before hook (AC009)", () => {
+  describe("Vestigial hook removal", () => {
+    it("does not register the tool.execute.before hook", () => {
       expect(hooks["tool.execute.before"]).toBeUndefined();
     });
 
-    it("keeps scanHighSeverityIssues exported and functional (AC010)", () => {
+    it("keeps scanHighSeverityIssues exported and functional", () => {
       expect(typeof hooks.scanHighSeverityIssues).toBe("function");
       writeEntries(ISSUES_DIR, [
         addIssueFile(1, { severity: "high", status: "open" }),
@@ -238,9 +238,9 @@ describe("Knowledge-Gate Plugin", () => {
     });
   });
 
-  describe("scanOpenIssues — cap (R001)", () => {
+  describe("scanOpenIssues — cap", () => {
     // 12 open issues: 4 high, 4 medium, 4 low — ids permuted against severity
-    // so a filesystem-order read cannot satisfy the R008 order expectation.
+    // so a filesystem-order read cannot satisfy the stable order expectation.
     function writeTwelveOpen() {
       writeEntries(ISSUES_DIR, [
         addIssueFile(12, { severity: "low", title: "Low L" }),
@@ -258,7 +258,7 @@ describe("Knowledge-Gate Plugin", () => {
       ]);
     }
 
-    it("caps after the R008 sort, highest severity first, ascending id (AC001)", () => {
+    it("caps after the stable sort, highest severity first, ascending id", () => {
       writeTwelveOpen();
       const capped = hooks.scanOpenIssues({ cap: 10 });
       expect(capped).toHaveLength(10);
@@ -276,7 +276,7 @@ describe("Knowledge-Gate Plugin", () => {
       writeTwelveOpen();
       expect(hooks.scanOpenIssues()).toHaveLength(12);
       expect(hooks.scanOpenIssues({ cap: 0 })).toHaveLength(12);
-      // Un-capped order still respects R008
+      // Un-capped order still respects the stable sort
       const full = hooks.scanOpenIssues();
       expect(full[0].severity).toBe("high");
       expect(full[11].severity).toBe("low");
@@ -313,7 +313,7 @@ Body text`;
       expect(result).toBeNull();
     });
 
-    it("parses a quoted title with escaped embedded quotes (AC012)", () => {
+    it("parses a quoted title with escaped embedded quotes", () => {
       const content = `---
 id: ISSUE-001
 title: "He said \\"hi\\" today"
@@ -326,7 +326,7 @@ Body`;
       expect(result.title).toBe('He said "hi" today');
     });
 
-    it("parses a multiline quoted title with the newline preserved (AC013)", () => {
+    it("parses a multiline quoted title with the newline preserved", () => {
       const content = `---
 id: ISSUE-001
 title: "Line one
@@ -353,7 +353,7 @@ Body`;
       expect(result.title).toBe('He said "hi" today');
     });
 
-    it("keeps array and plain values intact alongside quoted values (AC014)", () => {
+    it("keeps array and plain values intact alongside quoted values", () => {
       const content = `---
 id: ISSUE-001
 title: "Quoted title"
@@ -370,9 +370,9 @@ Body`;
     });
   });
 
-  describe("parseIssueFile — real registry regression (AC015)", () => {
-    // Legacy parser capture — mirrors the pre-R004 line-anchored value regex so
-    // the oracle asserts "unchanged values" on the real registry after R004.
+  describe("parseIssueFile — real registry regression", () => {
+    // Legacy parser capture — mirrors the earlier line-anchored value regex so
+    // the oracle asserts "unchanged values" on the real registry.
     function legacyParseIssueFile(content, filename) {
       const match = content.match(/^---\n([\s\S]*?)\n---/);
       if (!match) return null;
@@ -393,7 +393,7 @@ Body`;
       try {
         files = readdirSync(registryDir).filter(f => f.startsWith("issue-") && f.endsWith(".md")).sort();
       } catch {
-        return; // knowledge/ is gitignored — skip cleanly when absent (RSK-005)
+        return; // knowledge/ is gitignored — skip cleanly when absent
       }
 
       expect(files.length).toBeGreaterThan(0);
@@ -453,7 +453,7 @@ Body`;
       expect(writeInstr).toBeTruthy();
     });
 
-    it("injects no memory-write instruction for habit-builder (Scribe-only division, AC010)", async () => {
+    it("injects no memory-write instruction for habit-builder (Scribe-only division)", async () => {
       const output = { system: [] };
       await hooks["experimental.chat.system.transform"](
         { sessionID: "test-session", agent: "habit-builder" },
@@ -523,7 +523,7 @@ Body`;
       expect(closeHint).toContain("evidence");
     });
 
-    describe("overseer INTENT issue injection (R007/R008)", () => {
+    describe("overseer INTENT issue injection", () => {
       const intentHint = output =>
         output.system.find(s => s.includes("Open issues from prior sessions detected"));
 
@@ -650,7 +650,7 @@ Body`;
       });
     });
 
-    describe("overseer INTENT cap env (R001)", () => {
+    describe("overseer INTENT cap env", () => {
       const intentHint = output =>
         output.system.find(s => s.includes("Open issues from prior sessions detected"));
 
@@ -675,7 +675,7 @@ Body`;
         return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
       }
 
-      it("injects exactly 10 issue lines under the default cap, high severity first (AC001)", async () => {
+      it("injects exactly 10 issue lines under the default cap, high severity first", async () => {
         writeTwelveOpen();
         const output = { system: [] };
         await hooks["experimental.chat.system.transform"](
@@ -692,7 +692,7 @@ Body`;
         expect(lines[3]).toContain("(high) High D");
       });
 
-      it("treats KNOWLEDGE_GATE_MAX_OPEN_ISSUES=0 as unbounded (AC002)", async () => {
+      it("treats KNOWLEDGE_GATE_MAX_OPEN_ISSUES=0 as unbounded", async () => {
         process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "0";
         writeTwelveOpen();
         const output = { system: [] };
@@ -705,7 +705,7 @@ Body`;
         expect(issueLines(hint)).toHaveLength(12);
       });
 
-      it("falls back to the default cap 10 for an invalid env value (AC002)", async () => {
+      it("falls back to the default cap 10 for an invalid env value", async () => {
         process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "abc";
         writeTwelveOpen();
         const output = { system: [] };
@@ -718,7 +718,7 @@ Body`;
         expect(issueLines(hint)).toHaveLength(10);
       });
 
-      it("injects no block and does not crash with zero open issues (AC004)", async () => {
+      it("injects no block and does not crash with zero open issues", async () => {
         writeEntries(ISSUES_DIR, [addIssueFile(1, { status: "resolved" })]);
         const output = { system: [] };
         await hooks["experimental.chat.system.transform"](
@@ -729,11 +729,11 @@ Body`;
       });
     });
 
-    describe("overseer INTENT audience routing (R002)", () => {
+    describe("overseer INTENT audience routing", () => {
       const intentHint = output =>
         output.system.find(s => s.includes("Open issues from prior sessions detected"));
 
-      it("injects only audience-matched and unassigned issues (AC005)", async () => {
+      it("injects only audience-matched and unassigned issues", async () => {
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
         writeEntries(ISSUES_DIR, [
           addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
@@ -759,7 +759,7 @@ Body`;
         expect(hint).not.toContain("Harness item");
       });
 
-      it("injects all open issues when the audience env is unset or empty (AC006)", async () => {
+      it("injects all open issues when the audience env is unset or empty", async () => {
         writeEntries(ISSUES_DIR, [
           addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
           addIssueFile(2, { assigned_to: "permission", title: "Permission item" }),
@@ -788,7 +788,7 @@ Body`;
         expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(3);
       });
 
-      it("matches the audience case-insensitively as a substring (AC007)", async () => {
+      it("matches the audience case-insensitively as a substring", async () => {
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "INSPECTOR";
         writeEntries(ISSUES_DIR, [
           addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
@@ -832,7 +832,7 @@ Body`;
         expect(hint).not.toContain("Permission item");
       });
 
-      it("keeps the habit-builder EVOLVE branch unfiltered and uncapped (R002)", async () => {
+      it("keeps the habit-builder EVOLVE branch unfiltered and uncapped", async () => {
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
         process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "1";
         writeEntries(ISSUES_DIR, [
@@ -853,7 +853,7 @@ Body`;
       });
     });
 
-    describe("overseer INTENT marker line (R005)", () => {
+    describe("overseer INTENT marker line", () => {
       const intentHint = output =>
         output.system.find(s => s.includes("Open issues from prior sessions detected"));
 
@@ -861,7 +861,7 @@ Body`;
         return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
       }
 
-      it("starts the injected block with the marker line, count = injected lines (AC016)", async () => {
+      it("starts the injected block with the marker line, count = injected lines", async () => {
         writeEntries(ISSUES_DIR, [
           addIssueFile(1, { severity: "high", title: "High A" }),
           addIssueFile(2, { severity: "medium", title: "Medium B" }),
@@ -878,11 +878,11 @@ Body`;
         expect(hint).toBeTruthy();
         const lines = hint.split("\n");
         expect(lines[0]).toBe("[Knowledge Gate] Open issues from prior sessions detected:");
-        expect(lines[1]).toBe("<!-- issues-snapshot v1: 3 open, R008 order -->");
+        expect(lines[1]).toBe("<!-- issues-snapshot v1: 3 open, stable order -->");
         expect(issueLines(hint)).toHaveLength(3);
       });
 
-      it("reports the post-cap count in the marker (AC016)", async () => {
+      it("reports the post-cap count in the marker", async () => {
         // 12 open issues under the default cap 10 → the marker says 10 and
         // exactly 10 issue lines follow (the marker measures the injected set).
         writeEntries(ISSUES_DIR, [
@@ -908,11 +908,11 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint).toContain("<!-- issues-snapshot v1: 10 open, R008 order -->");
+        expect(hint).toContain("<!-- issues-snapshot v1: 10 open, stable order -->");
         expect(issueLines(hint)).toHaveLength(10);
       });
 
-      it("reports the post-audience count in the marker (AC016)", async () => {
+      it("reports the post-audience count in the marker", async () => {
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
         writeEntries(ISSUES_DIR, [
           addIssueFile(1, { assigned_to: "inspector", title: "Inspector item" }),
@@ -928,12 +928,12 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint).toContain("<!-- issues-snapshot v1: 2 open, R008 order -->");
+        expect(hint).toContain("<!-- issues-snapshot v1: 2 open, stable order -->");
         expect(issueLines(hint)).toHaveLength(2);
         expect(hint).not.toContain("Permission item");
       });
 
-      it("keeps the EVOLVE close-loop intact, format unchanged and marker-free (AC011, AC017)", async () => {
+      it("keeps the EVOLVE close-loop intact, format unchanged and marker-free", async () => {
         writeEntries(ISSUES_DIR, [
           addIssueFile(1, { severity: "medium", title: "Open issue A", assigned_to: "habit-builder" }),
           addIssueFile(2, { status: "resolved", severity: "high", title: "Closed issue B" })
@@ -951,7 +951,7 @@ Body`;
         expect(closeHint).toContain("- [ISSUE-001] (medium) Open issue A — assigned to habit-builder");
         expect(closeHint).toContain("Close Issues");
         expect(closeHint).not.toContain("Closed issue B");
-        // The marker line is overseer-only — never in the EVOLVE block (AC017)
+        // The marker line is overseer-only — never in the EVOLVE block
         expect(closeHint).not.toContain("issues-snapshot");
       });
     });
@@ -1262,7 +1262,7 @@ Body`;
       expect(result.id).toBe("MEM-001");
     });
 
-    it("does not dedup-skip a write with 3 shared tags but unrelated topics (issue-20)", async () => {
+    it("does not dedup-skip a write with 3 shared tags but unrelated topics", async () => {
       writeEntries(MEMORY_DIR, [
         addMemoryEntry(1, { tags: ["permissions", "testing", "cache"], topic: "Permission glob patterns" })
       ]);

@@ -4,14 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pluginModule from "../../../plugins/delegation-gate/index.js";
 
-// Consolidated delegation-gate suite (P304): 106 → 53 tests. Issue-labeled
-// one-off describes (Issue 2, Issue 3, Issue 7A/7B, Bug 2, M1/M3/M4 describe
-// blocks) are folded into the core describes they exercise; duplicate and
-// tautological assertions are merged into parameterized loops. No behavior
-// coverage was dropped — the from → folded-into mapping is documented in
-// knowledge/impl-M3-*.md. The M1 GENERATION-fallback state-file test was
-// relocated to the protocol-gate suite (R306), so this suite needs no temp
-// PROTOCOL_GATE_STATE_DIR and never writes the real .state dir (AC306).
+// Consolidated delegation-gate suite: 106 → 53 tests. Issue-labeled
+// one-off describes are folded into the core describes they exercise;
+// duplicate and tautological assertions are merged into parameterized loops.
+// No behavior coverage was dropped — the from → folded-into mapping is
+// documented in the consolidation impl KD. The GENERATION-fallback
+// state-file test was relocated to the protocol-gate suite, so this suite
+// needs no temp PROTOCOL_GATE_STATE_DIR and never writes the real .state dir.
 describe("Delegation-Gate Plugin", () => {
   let hooks;
   let logDir;
@@ -19,13 +18,13 @@ describe("Delegation-Gate Plugin", () => {
   let priorDebug;
 
   beforeAll(() => {
-    // Log isolation (AC018): point DELEGATION_GATE_LOG_DIR at a per-run temp
+    // Log isolation: point DELEGATION_GATE_LOG_DIR at a per-run temp
     // dir BEFORE the first server() call so the module-level _logFile cache
     // binds to the temp path. Test runs then never append to the real
     // plugins/logs/delegation-gate.log — even when DELEGATION_GATE_DEBUG is
     // set in the environment (.env sets it). The flag is also asserted here
     // so every server() call in this suite deterministically exercises the
-    // debug path (AC020) and proves the redirect (AC019).
+    // debug path and proves the redirect.
     priorLogDir = process.env.DELEGATION_GATE_LOG_DIR;
     priorDebug = process.env.DELEGATION_GATE_DEBUG;
     logDir = mkdtempSync(join(tmpdir(), "delegation-gate-test-"));
@@ -311,19 +310,19 @@ SCOPE: Implement feature X`,
       }
     });
 
-    it("rejects whole-value angle-bracket placeholders in any structured field (AC001, AC004, AC005)", async () => {
-      // N2 leak: format-hint literals like <mode> or <session-id>, copied
+    it("rejects whole-value angle-bracket placeholders in any structured field", async () => {
+      // Format-hint literals like <mode> or <session-id>, copied
       // verbatim into a dispatch, were captured by extraction and rendered —
       // now each rejects at the placeholder check before template lookup.
       const prompts = [
-        // AC004 — MODE placeholder must never reach template lookup
+        // MODE placeholder must never reach template lookup
         `AGENT: artisan
 MODE: <mode>
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`,
-        // AC005 — each standalone angle-bracket field
+        // Each standalone angle-bracket field
         `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
@@ -372,7 +371,7 @@ RESULT KD: knowledge/impl-M1-foo.md`,
       }
     });
 
-    it("accepts real values that merely look bracketed — no false positives (AC002, AC006)", async () => {
+    it("accepts real values that merely look bracketed — no false positives", async () => {
       // Real session id, ISO date, branch, milestone, and KD paths all pass
       // containsPlaceholder — the extension changes no valid dispatch path.
       const prompt = `AGENT: artisan
@@ -392,7 +391,7 @@ KD PATHS: knowledge/spec-foo.md, knowledge/plan-foo.md`;
       expect(output.args.prompt).toContain("ses_023f1f066ffecWQJC5SF8v1B8U");
       expect(output.args.prompt).toContain("GENERATION: 1");
 
-      // A branch value that starts alphanumeric passes (AC002: gate-fix)
+      // A branch value that starts alphanumeric passes the gate-fix contract
       const preflight = `AGENT: committer
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
@@ -405,7 +404,7 @@ RESULT KD: knowledge/preflight-foo.md`;
       expect(out2.args.prompt).toContain("BRANCH: gate-fix");
     });
 
-    it("rejects a verbatim RESULT KD template form via validateKDPath, not the placeholder check (AC003)", async () => {
+    it("rejects a verbatim RESULT KD template form via validateKDPath, not the placeholder check", async () => {
       // knowledge/<type>-<name>.md is not a whole-value <...> placeholder, so
       // containsPlaceholder lets it through; validateKDPath rejects loudly.
       const prompt = `AGENT: artisan
@@ -420,7 +419,7 @@ RESULT KD: knowledge/<type>-<name>.md`;
       ).rejects.toThrow("Invalid result KD path");
     });
 
-    it("rejects an empty prompt whose description carries old-style hint placeholders (AC007)", async () => {
+    it("rejects an empty prompt whose description carries old-style hint placeholders", async () => {
       // Description-fallback literals no longer render silently — the
       // placeholder check fires on the extracted description values.
       const description = `MODE: explore
@@ -436,7 +435,7 @@ RESULT KD: knowledge/exploration-foo.md`;
       ).rejects.toThrow("unresolved placeholder");
     });
 
-    it("lets real prompt values override stale description literals (EC1)", async () => {
+    it("lets real prompt values override stale description literals", async () => {
       const prompt = `AGENT: explorer
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
@@ -594,7 +593,7 @@ RESULT KD: knowledge/preflight-foo.md`,
         // Preflight must not instruct reading the INTENT KD (no read:allow on committer)
         { mode: "preflight", result: "knowledge/preflight-foo.md", branch: "fix/swarm-gate", expectMatch: /Load the kd-system skill and the committer-preflight skill/, expectNoMatch: /Read the INTENT KD at/ },
         // Checkpoint reads KDs from KD PATHS only — kd_paths supplied so the
-        // sentence renders (F4 strips it when kd_paths is absent)
+        // sentence renders (stripped when kd_paths is absent)
         { mode: "checkpoint", result: "knowledge/checkpoint-foo.md", kdPaths: "knowledge/intent-foo.md", expectMatch: /Read KDs from KD PATHS/, expectNoMatch: /Read the INTENT KD at/ },
         // Cleanup must not instruct reading the INTENT KD (no read:allow on committer)
         { mode: "cleanup", result: "knowledge/cleanup-foo.md", branch: "chore/version-bump-2", expectMatch: /Load the kd-system skill. Load the committer-cleanup skill/, expectNoMatch: /Read the INTENT KD at/ },
@@ -646,8 +645,8 @@ RESULT KD: ${kd}`;
     });
   });
 
-  describe("Cleanup INTENT-KD Exemption (M2)", () => {
-    it("exempts cleanup from the intent_kd required-field check like checkpoint (AC015)", async () => {
+  describe("Cleanup INTENT-KD Exemption", () => {
+    it("exempts cleanup from the intent_kd required-field check like checkpoint", async () => {
       // Cleanup dispatch without intent_kd passes validation — the cleanup
       // template renders no INTENT KD reference for the committer to read.
       const withoutIntent = `AGENT: committer
@@ -678,7 +677,7 @@ RESULT KD: knowledge/cleanup-foo.md`;
       expect(out2.args.prompt).not.toContain("Read the INTENT KD at");
     });
 
-    it("keeps the cleanup and preflight fallback templates free of the INTENT-KD read instruction (AC012, AC013)", async () => {
+    it("keeps the cleanup and preflight fallback templates free of the INTENT-KD read instruction", async () => {
       // Fallback templates are embedded strings in index.js, reachable only
       // when the disk template fails to load — assert absence directly on the
       // source so the fallback path can't reintroduce the denied read.
@@ -691,9 +690,9 @@ RESULT KD: knowledge/cleanup-foo.md`;
     });
   });
 
-  describe("Memory Division of Labor (M3, FIX1)", () => {
+  describe("Memory Division of Labor", () => {
     // Evolve dispatches the Habit Builder — its rendered prompt must stay free
-    // of the Scribe-writes-memory rule (FIX1: the rule belongs to scribe.md
+    // of the Scribe-writes-memory rule (the rule belongs to scribe.md
     // step 11, not Habit Builder surfaces) and of any memory-write instruction.
     const evolvePrompt = `AGENT: habit-builder
 MODE: evolve
@@ -702,19 +701,19 @@ SESSION DATE: 2026-08-06
 SCOPE: Test evolve memory scope
 RESULT KD: knowledge/process-foo.md`;
 
-    it("keeps the Scribe-writes-memory rule out of the evolve template (AC007, FIX1)", async () => {
+    it("keeps the Scribe-writes-memory rule out of the evolve template", async () => {
       const output = { args: { prompt: evolvePrompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).not.toContain("written by the Scribe during EXTRACT");
     });
 
-    it("renders the evolve template without a memory-write instruction (AC008)", async () => {
+    it("renders the evolve template without a memory-write instruction", async () => {
       const output = { args: { prompt: evolvePrompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).not.toContain("memory_write tool");
     });
 
-    it("keeps the Scribe-writes-memory rule out of the evolve fallback template (AC009, FIX1)", async () => {
+    it("keeps the Scribe-writes-memory rule out of the evolve fallback template", async () => {
       // The in-code fallback (disk template missing) must render the same
       // contract — assert it on the source so drift is caught at test time.
       const src = readFileSync(new URL("../../../plugins/delegation-gate/index.js", import.meta.url), "utf8");
@@ -724,8 +723,8 @@ RESULT KD: knowledge/process-foo.md`;
     });
   });
 
-  describe("Conditional KD PATHS Rendering (F4)", () => {
-    it("omits the KD PATHS header line and body sentence when kd_paths is absent (AC021)", async () => {
+  describe("Conditional KD PATHS Rendering", () => {
+    it("omits the KD PATHS header line and body sentence when kd_paths is absent", async () => {
       const cases = [
         { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md", branch: "fix/swarm-gate" },
         { mode: "checkpoint", agent: "committer", result: "knowledge/checkpoint-foo.md" },
@@ -747,7 +746,7 @@ ${branch ? `BRANCH: ${branch}` : ""}`;
       }
     });
 
-    it("renders the KD PATHS header line and body sentence when kd_paths is supplied (AC022)", async () => {
+    it("renders the KD PATHS header line and body sentence when kd_paths is supplied", async () => {
       const cases = [
         { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md", branch: "fix/swarm-gate" },
         { mode: "checkpoint", agent: "committer", result: "knowledge/checkpoint-foo.md" },
@@ -769,7 +768,7 @@ ${branch ? `BRANCH: ${branch}\n` : ""}KD PATHS: knowledge/upstream-foo.md`;
       }
     });
 
-    it("renders KD PATHS unchanged for legitimate modes with kd_paths supplied (AC023)", async () => {
+    it("renders KD PATHS unchanged for legitimate modes with kd_paths supplied", async () => {
       const swarmPrompt = `AGENT: artisan
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
@@ -808,7 +807,7 @@ RESULT KD: knowledge/impl-foo.md`;
         expect(output.args.description).not.toContain(other);
       }
       // Genuine variables use parenthetical wording — the defused hint keeps no
-      // whole-value <...> placeholder line that extraction could capture (R002/R003)
+      // whole-value <...> placeholder line that extraction could capture
       expect(output.args.description).toContain("INTENT KD: knowledge/intent-(name).md");
       expect(output.args.description).toContain("SESSION ID: (your session id)");
       expect(output.args.description).toContain("SCOPE: (optional context)");
@@ -934,12 +933,12 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       expect(ckptOutput.args.description).toContain("RESULT KD: knowledge/checkpoint-<name>-<session_id>.md");
     });
 
-    // R009 / issue-9 remainder (AC014): dispatcherFormatHint() is mode-agnostic —
+    // dispatcherFormatHint() is mode-agnostic —
     // injected via tool.definition before dispatch, when the mode is not yet known.
     // The swarm MILESTONE ID line therefore carries the "(swarm mode only)"
     // qualifier, and the KD PATHS line documents the comma-separated convention
     // that the validation split() (index.js:516-517) expects.
-    it("annotates the task tool definition with the swarm MILESTONE ID and comma-separated KD PATHS conventions (AC014)", async () => {
+    it("annotates the task tool definition with the swarm MILESTONE ID and comma-separated KD PATHS conventions", async () => {
       const output = { description: "Delegate work to another agent." };
       await hooks["tool.definition"]({ toolID: "task" }, output);
 
@@ -951,21 +950,21 @@ RESULT KD: knowledge/checkpoint-foo.md`;
     });
   });
 
-  describe("Defused Format Hints (R002/R003)", () => {
-    // AC008: neither hint may contain a KEY: line whose value is a whole-value
+  describe("Defused Format Hints", () => {
+    // Neither hint may contain a KEY: line whose value is a whole-value
     // angle-bracket placeholder — such a line, copied verbatim into a dispatch,
-    // is exactly the leak source N2 fixed. The RESULT KD example lines keep
+    // is exactly the leak source fixed. The RESULT KD example lines keep
     // <name>-<session_id> path components but are never whole-value <...>.
     const wholeValueAngleLine = /^(?:#{1,6}\s*)?(?:\*\*)?(?:AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BRANCH[. _]NAME|BRANCH|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*<[^>]+>$/;
 
-    it("emits no extractable whole-value angle-bracket line from dispatcherFormatHint (AC008, AC009)", async () => {
+    it("emits no extractable whole-value angle-bracket line from dispatcherFormatHint", async () => {
       const output = { description: "Delegate work to another agent." };
       await hooks["tool.definition"]({ toolID: "task" }, output);
 
       const badLines = output.description.split("\n").filter(l => wholeValueAngleLine.test(l.trim()));
       expect(badLines).toEqual([]);
       // Instructional wording survives; the retained RESULT KD template form is
-      // not a whole-value placeholder (AC003 semantics).
+      // not a whole-value placeholder.
       expect(output.description).toContain("DISPATCH TO: agent name (e.g. explorer)");
       expect(output.description).toContain("MODE: delegation mode (e.g. explore)");
       expect(output.description).toContain("SESSION DATE: today's date (e.g. ");
@@ -973,7 +972,7 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       expect(output.description).toContain("RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md");
     });
 
-    it("emits no extractable whole-value angle-bracket line from the injected hint and renders concrete values (AC008, AC009, AC010)", async () => {
+    it("emits no extractable whole-value angle-bracket line from the injected hint and renders concrete values", async () => {
       const today = new Date().toISOString().slice(0, 10);
       const prompt = `AGENT: artisan
 MODE: checkpoint
@@ -987,7 +986,7 @@ RESULT KD: knowledge/impl-foo.md`;
 
       const badLines = output.args.description.split("\n").filter(l => wholeValueAngleLine.test(l.trim()));
       expect(badLines).toEqual([]);
-      // Fixed fields render concrete values (AC010); genuine variables use
+      // Fixed fields render concrete values; genuine variables use
       // parenthetical wording.
       expect(output.args.description).toContain("DISPATCH TO: artisan");
       expect(output.args.description).toContain("MODE: checkpoint");
@@ -1190,7 +1189,7 @@ ${branch ? `BRANCH: ${branch}` : ""}`;
     });
   });
 
-  describe("Swarm Milestone Enforcement (M3)", () => {
+  describe("Swarm Milestone Enforcement", () => {
     it("preserves exactly one valid MILESTONE ID through the rendered swarm template", async () => {
       const prompt = `AGENT: artisan
 MODE: swarm
@@ -1271,7 +1270,7 @@ RESULT KD: knowledge/exploration-foo.md`;
     });
   });
 
-  describe("Milestone-Scoped impl Result KD (M4)", () => {
+  describe("Milestone-Scoped impl Result KD", () => {
     it("accepts a milestone-scoped result KD matching the swarm MILESTONE ID", async () => {
       const cases = [
         { milestone: "M4", kd: "knowledge/impl-M4-feature-ses_x-gen0.md" },
@@ -1333,8 +1332,8 @@ RESULT KD: knowledge/checkpoint-foo.md`;
     });
   });
 
-  describe("BRANCH Contract (M3)", () => {
-    it("renders BRANCH between GENERATION and SCOPE for preflight and cleanup dispatches (AC101)", async () => {
+  describe("BRANCH Contract", () => {
+    it("renders BRANCH between GENERATION and SCOPE for preflight and cleanup dispatches", async () => {
       const cases = [
         { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md", branch: "fix/swarm-gate", intent: "INTENT KD: knowledge/intent-foo.md\n" },
         { mode: "cleanup", agent: "committer", result: "knowledge/cleanup-foo.md", branch: "chore/version-bump-2", intent: "" },
@@ -1362,7 +1361,7 @@ RESULT KD: ${result}`;
       }
     });
 
-    it("extracts branch in BRANCH:/branch:/BRANCH_NAME: forms and requires it for preflight/cleanup (AC102)", async () => {
+    it("extracts branch in BRANCH:/branch:/BRANCH_NAME: forms and requires it for preflight/cleanup", async () => {
       // Both case forms and the BRANCH_NAME underscore variant normalize to `branch`
       const forms = ["BRANCH: fix/swarm-gate", "branch: fix/swarm-gate", "BRANCH_NAME: fix/swarm-gate"];
       for (const form of forms) {
@@ -1412,7 +1411,7 @@ RESULT KD: knowledge/impl-M3-foo.md`;
       expect(swarmOut.args.prompt).toContain("MILESTONE ID: M3");
     });
 
-    it("rejects unsafe branch values with the dedicated INVALID_BRANCH error and accepts git-ref-safe ones (AC103)", async () => {
+    it("rejects unsafe branch values with the dedicated INVALID_BRANCH error and accepts git-ref-safe ones", async () => {
       const invalid = ["a..b", "-fix/x", "fix/", "a b", "a;b"];
       for (const branch of invalid) {
         const prompt = `AGENT: committer
@@ -1443,7 +1442,7 @@ RESULT KD: knowledge/cleanup-foo.md`;
       }
     });
 
-    it("shows the BRANCH format hint only for preflight/cleanup modes (AC104)", async () => {
+    it("shows the BRANCH format hint only for preflight/cleanup modes", async () => {
       // Mode-agnostic task-tool definition hint carries the qualifier
       const output = { description: "Delegate work to another agent." };
       await hooks["tool.definition"]({ toolID: "task" }, output);
@@ -1488,7 +1487,7 @@ RESULT KD: ${result}`;
     });
   });
 
-  describe("Generation Propagation (M1)", () => {
+  describe("Generation Propagation", () => {
     it("renders GENERATION and -gen{N} naming when the prompt carries GENERATION", async () => {
       const prompt = `AGENT: artisan
 MODE: swarm
@@ -1560,9 +1559,9 @@ RESULT KD: knowledge/exploration-foo.md`;
       expect(agentMatch[1].trim()).toBe("explorer");
     });
 
-    it("does not require PROTOCOL_GATE_STATE_DIR and leaves the real .state dir untouched (AC306)", async () => {
-      // The M1 GENERATION-fallback state-file test now lives in the protocol-gate
-      // suite (R306). This suite runs against the plugin default without any env
+    it("does not require PROTOCOL_GATE_STATE_DIR and leaves the real .state dir untouched", async () => {
+      // The GENERATION-fallback state-file test now lives in the protocol-gate
+      // suite. This suite runs against the plugin default without any env
       // override, proving no temp state dir is needed and the real
       // plugins/protocol-gate/.state is never written by this suite.
       const prompt = `AGENT: artisan
@@ -1595,7 +1594,7 @@ RESULT KD: knowledge/exploration-foo.md`;
     });
   });
 
-  describe("Log Isolation (F3)", () => {
+  describe("Log Isolation", () => {
     const promptFor = (mode, overrides = {}) => `AGENT: ${overrides.agent || "artisan"}
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
@@ -1603,7 +1602,7 @@ SESSION DATE: 2026-08-03
 SCOPE: Log isolation test
 RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
 
-    it("writes debug output to the env-seam directory when DELEGATION_GATE_LOG_DIR is set (AC016, AC020)", async () => {
+    it("writes debug output to the env-seam directory when DELEGATION_GATE_LOG_DIR is set", async () => {
       const altDir = mkdtempSync(join(tmpdir(), "delegation-gate-alt-"));
       try {
         process.env.DELEGATION_GATE_LOG_DIR = altDir;
@@ -1620,7 +1619,7 @@ RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
       }
     });
 
-    it("honors a runtime DELEGATION_GATE_LOG_DIR change with no stale-cache writes (AC017)", async () => {
+    it("honors a runtime DELEGATION_GATE_LOG_DIR change with no stale-cache writes", async () => {
       const dirA = mkdtempSync(join(tmpdir(), "delegation-gate-a-"));
       const dirB = mkdtempSync(join(tmpdir(), "delegation-gate-b-"));
       try {
@@ -1646,7 +1645,7 @@ RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
       }
     });
 
-    it("keeps the real plugins/logs log untouched and writes to the suite temp dir (AC018, AC019)", async () => {
+    it("keeps the real plugins/logs log untouched and writes to the suite temp dir", async () => {
       const realLog = new URL("../../../plugins/logs/delegation-gate.log", import.meta.url);
       const realSize = existsSync(realLog) ? statSync(realLog).size : null;
 
@@ -1665,7 +1664,7 @@ RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
       }
     });
 
-    it("does not write debug output when DELEGATION_GATE_DEBUG is unset (R023)", async () => {
+    it("does not write debug output when DELEGATION_GATE_DEBUG is unset", async () => {
       const quietDir = mkdtempSync(join(tmpdir(), "delegation-gate-quiet-"));
       try {
         delete process.env.DELEGATION_GATE_DEBUG;
@@ -1679,7 +1678,7 @@ RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
       }
     });
 
-    it("logs the FULL prompt text in RAW PROMPT with the (N chars) annotation for a 2000+ char prompt (T44-01)", async () => {
+    it("logs the FULL prompt text in RAW PROMPT with the (N chars) annotation for a 2000+ char prompt", async () => {
       // Trailing body text extends the prompt past 2000 chars while the
       // structured fields stay valid — the audit trail must carry every character.
       const longPrompt = promptFor("explore") + `\n\n${"x".repeat(2500)}`;
@@ -1689,7 +1688,7 @@ RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
       expect(log).toContain(`RAW PROMPT (${longPrompt.length} chars): ${longPrompt}`);
     });
 
-    it("logs the FULL description text in RAW DESCRIPTION for a 2000+ char description (T44-02)", async () => {
+    it("logs the FULL description text in RAW DESCRIPTION for a 2000+ char description", async () => {
       const longDescription = "d".repeat(2000);
       await hooks["tool.execute.before"](
         { tool: "task", sessionID: "s1", callID: "c1" },
@@ -1700,7 +1699,7 @@ RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
       expect(log).toContain(`RAW DESCRIPTION (${longDescription.length} chars): ${longDescription}`);
     });
 
-    it("logs the FULL scope text in the scope-validation warning with no 50-char cut (T44-03)", async () => {
+    it("logs the FULL scope text in the scope-validation warning with no 50-char cut", async () => {
       // A /home/ absolute path trips validateScope (advisory) but the SCOPE line
       // is skipped by detectForeignPaths, so the call proceeds to the warning.
       const longScope = "Implement full dispatch logging in /home/swarm/plugins/delegation-gate per issue 44 plan steps";

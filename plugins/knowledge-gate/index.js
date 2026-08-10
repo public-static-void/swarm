@@ -258,7 +258,7 @@ function scanHighSeverityIssues() {
  * Parses an issue markdown file's YAML frontmatter.
  * Minimal parser — does not require a YAML library.
  *
- * Value capture is tolerant (R004/G5):
+ * Value capture is tolerant:
  * - quoted values (start `"`) try JSON.parse (handles `\"` escapes) and fall
  *   back to stripping the surrounding quote pair (preserves embedded quotes)
  * - array values (`tags: [a, b]`) fold into the value dispatch → arrays
@@ -307,7 +307,7 @@ function parseIssueFile(content, filename) {
 }
 
 // True when a quoted value (starting with `"`) contains a closing unescaped
-// quote. Used to bound multiline accumulation to the value (RSK-003).
+// quote. Used to bound multiline accumulation to the value.
 function hasClosingQuote(value) {
   let escaped = false;
   for (let i = 1; i < value.length; i++) {
@@ -326,7 +326,7 @@ function hasClosingQuote(value) {
 // Parses a quoted value: JSON.parse first (handles `\"` escapes), then falls
 // back to stripping the surrounding quote pair (preserves embedded quotes).
 // Non-string JSON results fall back to the strip so value types never change
-// (a quoted "42" stays the string "42", matching the pre-R004 parser).
+// (a quoted "42" stays the string "42", matching the legacy parser).
 function parseQuotedValue(raw) {
   try {
     const parsed = JSON.parse(raw);
@@ -346,7 +346,7 @@ function parseQuotedValue(raw) {
  *
  * @param {object} [options]
  * @param {number} [options.cap] - positive integer → return at most `cap`
- *   issues taken AFTER the R008 stable sort; undefined/0/invalid → no cap.
+ *   issues taken AFTER the stable severity/id sort; undefined/0/invalid → no cap.
  */
 function scanOpenIssues(options = {}) {
   ensureIssuesDir();
@@ -374,7 +374,7 @@ function scanOpenIssues(options = {}) {
   }
   // readdirSync order is filesystem-dependent, so surfacing is non-deterministic
   // without an explicit sort. Rank by severity (high → medium → low) and break
-  // ties by ascending numeric id so INTENT/EVOLVE injection is stable (R008).
+  // ties by ascending numeric id so INTENT/EVOLVE injection is stable.
   openIssues.sort((a, b) => {
     const bySeverity = issueSeverityRank(a.severity) - issueSeverityRank(b.severity);
     if (bySeverity !== 0) return bySeverity;
@@ -396,8 +396,8 @@ function issueNumericId(issue) {
   return Number.isNaN(num) ? Number.MAX_SAFE_INTEGER : num;
 }
 
-// R001 bounded injection: positive integer → first N issues in the given
-// (already R008-sorted) order; undefined/0/invalid → no cap. Shared by
+// Bounded injection: positive integer → first N issues in the given
+// (already severity-sorted) order; undefined/0/invalid → no cap. Shared by
 // scanOpenIssues({ cap }) and the overseer branch's env-derived cap.
 function applyCap(issues, cap) {
   return typeof cap === "number" && Number.isInteger(cap) && cap > 0
@@ -405,7 +405,7 @@ function applyCap(issues, cap) {
     : issues;
 }
 
-// R001 cap for the overseer INTENT injection, read at transform call time
+// Cap for the overseer INTENT injection, read at transform call time
 // (not module load — required for per-test env control). Env contract:
 // unset/empty/invalid/negative → 10 (default); "0" → unbounded (0 = no cap);
 // positive integer → that value.
@@ -417,12 +417,12 @@ function envOpenIssueCap() {
   return Number.isInteger(n) && n > 0 ? n : 10;
 }
 
-// R002 opt-in audience routing for the overseer INTENT injection, read at
+// Opt-in audience routing for the overseer INTENT injection, read at
 // transform call time. KNOWLEDGE_GATE_ISSUE_AUDIENCE is a comma-separated
 // list of case-insensitive substrings matched against `assigned_to`. Issues
 // with no/empty `assigned_to` are ALWAYS included (unowned → need triage).
 // Unset/empty/whitespace-only → no filter (today's behavior). Preserves the
-// R008 order of the input list; the R001 cap applies afterwards.
+// Sort order of the input list; the cap applies afterwards.
 function filterByAudience(issues, audienceEnv) {
   const raw = (audienceEnv || "").trim();
   if (raw === "") return issues;
@@ -682,7 +682,7 @@ export default {
           : 0;
         const score = tagOverlap + topicMatch;
         // Duplicate only when topic overlaps AND score clears the threshold —
-        // shared tags alone (unrelated topics) must not skip a write (issue 20).
+        // shared tags alone (unrelated topics) must not skip a write.
         if (topicMatch && score >= threshold) {
           return r;
         }
@@ -827,7 +827,7 @@ export default {
 
           // Tombstone format check (format-only; entries are self-contained).
           // "" and null are explicit clear sentinels — they remove the tombstone
-          // instead of validating as replacement IDs (issue-23 un-supersede path).
+          // instead of validating as replacement IDs (the un-supersede path).
           if (
             entry.superseded_by !== undefined &&
             entry.superseded_by !== null &&
@@ -1008,7 +1008,7 @@ export default {
       // prior sessions and surface them in Triage Notes. The guard is agent === "overseer"
       // only — injection is intentionally NOT phase-gated, so issues stay visible across
       // the whole lifecycle. This closes the issue tracking feedback loop.
-      // R001/R002: the injected set is bounded (KNOWLEDGE_GATE_MAX_OPEN_ISSUES cap,
+      // The injected set is bounded (KNOWLEDGE_GATE_MAX_OPEN_ISSUES cap,
       // default 10) and optionally routed (KNOWLEDGE_GATE_ISSUE_AUDIENCE filter);
       // the filter runs BEFORE the cap so the cap measures the audience-matched set.
       // The habit-builder EVOLVE branch above stays unfiltered and uncapped.
@@ -1019,13 +1019,13 @@ export default {
           const issueSummary = openIssues.map(i =>
             `- [${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
           ).join("\n");
-          // R005: the machine-checkable marker line starts the injected block.
+          // The machine-checkable marker line starts the injected block.
           // {count} equals the number of lines actually injected (post
           // audience-filter/cap) so an INTENT KD transcription can be verified
-          // against the issue registry (NFR006).
+          // against the issue registry.
           output.system.push(
             `[Knowledge Gate] Open issues from prior sessions detected:\n` +
-            `<!-- issues-snapshot v1: ${openIssues.length} open, R008 order -->\n${issueSummary}\n` +
+            `<!-- issues-snapshot v1: ${openIssues.length} open, stable order -->\n${issueSummary}\n` +
             `Include these in the Triage Notes section of your intent KD. ` +
             `Reference the issue IDs and recommend which ones to address in this session.`
           );

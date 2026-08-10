@@ -16,10 +16,10 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
 
-// Directory seams (P302): call-time helpers, not module-load constants, so
-// tests can flip PROTOCOL_GATE_STATE_DIR / PROTOCOL_GATE_KNOWLEDGE_DIR between
-// tests without re-importing the module. Defaults mirror the pre-M3 layout:
-// state lives under the plugin dir, knowledge is project-relative (cwd).
+// Directory seams: call-time helpers, not module-load constants, so tests can
+// flip PROTOCOL_GATE_STATE_DIR / PROTOCOL_GATE_KNOWLEDGE_DIR between tests
+// without re-importing the module. Defaults: state lives under the plugin dir,
+// knowledge is project-relative (cwd).
 function getStateDir() {
   return process.env.PROTOCOL_GATE_STATE_DIR
     ? resolve(process.env.PROTOCOL_GATE_STATE_DIR)
@@ -50,17 +50,17 @@ const STATES = {
 
 const ALL_KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
 
-// F4 (R007/R008): retention cap for the per-session verbatim raw-intent
-// capture. The chat.message hook keeps only the latest RAW_INTENT_MAX_MESSAGES
-// overseer messages so the INTENT-phase systemTransform injection (R008) stays
-// bounded (NFR004). Named constant, exported as a test-access property.
+// Retention cap for the per-session verbatim raw-intent capture. The
+// chat.message hook keeps only the latest RAW_INTENT_MAX_MESSAGES overseer
+// messages so the INTENT-phase systemTransform injection stays bounded.
+// Named constant, exported as a test-access property.
 const RAW_INTENT_MAX_MESSAGES = 10;
 
 // KD type prefixes — maps phase constants to the prefix used in KD filenames.
-// Must match the regex patterns in checkDiskAdvancement() (lines 349-361) and
-// the dual-KD special cases (VERIFY, DECOMPOSE).
-// Used by in-flight dispatch tracking so the R001 guard can correctly match
-// pending KDs against the disk pattern. (BUG-001/BUG-002 fix)
+// Must match the regex patterns in checkDiskAdvancement() and the dual-KD
+// special cases (VERIFY, DECOMPOSE).
+// Used by in-flight dispatch tracking so the guard can correctly match pending
+// KDs against the disk pattern.
 // VERIFY produces TWO KDs (review + audit); DECOMPOSE produces the plan KD plus
 // the milestone registry (milestones-). Multi-KD phases are stored as arrays;
 // all other phases use a single string for backward compatibility.
@@ -163,7 +163,7 @@ function getPhaseName(phaseId) {
 
 // Current lifecycle generation for a session, read from the :gen map entry.
 // Defaults to 0 when absent — legacy state files without a generation field
-// behave as generation 0 (NFR001 backward compatibility).
+// behave as generation 0 (backward compatibility).
 // Module-level so checkDiskAdvancement can derive the generation from the
 // sessionPhaseMap it already receives as a parameter.
 function getCurrentGeneration(sessionPhaseMap, sessionID) {
@@ -173,10 +173,10 @@ function getCurrentGeneration(sessionPhaseMap, sessionID) {
 // Generation-aware session KD matcher. Accepts both naming variants:
 //   - `...-${sessionID}.md`         (generation 0, legacy naming)
 //   - `...-${sessionID}-gen${N}.md` (generation N naming)
-// A file matches only when its generation equals the current state generation
-// (R002, Option A). Gen-less files are treated as generation 0 and are NOT
-// matched when the current generation is > 0 (EC-007) — they belong to a
-// prior lifecycle and must not advance or suppress the new one.
+// A file matches only when its generation equals the current state generation.
+// Gen-less files are treated as generation 0 and are NOT matched when the
+// current generation is > 0 — they belong to a prior lifecycle and must not
+// advance or suppress the new one.
 function matchesSessionKD(filename, sessionID, generation) {
   if (typeof filename !== "string" || !sessionID) return false;
   // Generation N variant: `...-${sessionID}-gen${N}.md`
@@ -194,46 +194,46 @@ function matchesSessionKD(filename, sessionID, generation) {
   return filename.endsWith(`-${sessionID}.md`);
 }
 
-// R002/R004 (M1): resolves the session IDs whose KDs belong to the current
-// lifecycle for READ/scan purposes. Cross-session adoption was removed — a
-// session never inherits another lifecycle's phase or `:sid` — and stale `:sid`
-// entries are healed at reconcile (R002), so the lookup set is exactly
-// [current sessionID]. No read path can ever scan a prior lifecycle's KDs.
+// Resolves the session IDs whose KDs belong to the current lifecycle for
+// READ/scan purposes. Cross-session adoption was removed — a session never
+// inherits another lifecycle's phase or `:sid` — and stale `:sid` entries are
+// healed at reconcile, so the lookup set is exactly [current sessionID]. No
+// read path can ever scan a prior lifecycle's KDs.
 function getKDLookupSIDs(sessionPhaseMap, sessionID) {
   return [sessionID];
 }
 
-// R004 (M1): generation-scoped KD matcher against the session's single-session
-// lookup set ([current sessionID] only — cross-session adoption removed). True
-// when the file belongs to the lifecycle at the given generation under the
-// current session id.
+// Generation-scoped KD matcher against the session's single-session lookup set
+// ([current sessionID] only — cross-session adoption removed). True when the
+// file belongs to the lifecycle at the given generation under the current
+// session id.
 function matchesSessionKDForSession(filename, sessionPhaseMap, sessionID, generation) {
   return getKDLookupSIDs(sessionPhaseMap, sessionID).some(sid => matchesSessionKD(filename, sid, generation));
 }
 
-// Deletes ONLY the knowledge KDs of a session's ENDING lifecycle generation
-// (R101): for generation 0 the legacy `-${sessionID}.md` variant plus the
-// `-gen0.md` suffix; for generation N only the `-gen${N}.md` variant. Files of
-// any other generation are never touched — a reused session ID spans lifecycles
+// Deletes ONLY the knowledge KDs of a session's ENDING lifecycle generation:
+// for generation 0 the legacy `-${sessionID}.md` variant plus the `-gen0.md`
+// suffix; for generation N only the `-gen${N}.md` variant. Files of any other
+// generation are never touched — a reused session ID spans lifecycles
 // (opencode --continue), so a stray/duplicate REPORT write or edit fired after
-// the next lifecycle began must not wipe the new lifecycle's KDs (BUG-008).
-// Semantics mirror the generation-scoped read path matchesSessionKD (R104).
-// Single readdirSync + batch rmSync loop (NFR007 — no per-file glob).
-// EC-005: a missing knowledge/ dir is not an error — returns 0.
-// R6: logs the count of removed files.
+// the next lifecycle began must not wipe the new lifecycle's KDs.
+// Semantics mirror the generation-scoped read path matchesSessionKD.
+// Single readdirSync + batch rmSync loop (no per-file glob).
+// A missing knowledge/ dir is not an error — returns 0.
+// Logs the count of removed files.
 function cleanupLifecycleKDs(sessionID, generation = 0) {
   const knowledgeDir = getKnowledgeDir();
   let files = [];
   try {
     files = readdirSync(knowledgeDir);
   } catch (e) {
-    debug(`cleanupLifecycleKDs: knowledge/ dir not found for session ${sessionID} — nothing to clean (EC-005)`);
+    debug(`cleanupLifecycleKDs: knowledge/ dir not found for session ${sessionID} — nothing to clean`);
     return 0;
   }
   const gen = Number(generation) || 0;
   // Regex construction over the raw session ID keeps the historical failure
   // mode: a malformed ID throws, and the REPORT call sites' try/catch turns it
-  // into a logged, non-blocking cleanup (EC-008).
+  // into a logged, non-blocking cleanup.
   const genPattern = new RegExp(`-${sessionID}-gen${gen}\\.md$`, "i");
   const stale = files.filter(f => (gen === 0 && f.endsWith(`-${sessionID}.md`)) || genPattern.test(f));
   for (const f of stale) {
@@ -250,7 +250,7 @@ function cleanupLifecycleKDs(sessionID, generation = 0) {
 // Parses a /phase command argument into a phase number. Accepts:
 //   - a number string 0-12 (e.g. "5" → ALIGN)
 //   - a phase name, case-insensitive (e.g. "INTENT", "preflight")
-// Returns null when the argument is not a valid phase reference — the AC-R006
+// Returns null when the argument is not a valid phase reference — the
 // rejection cases (99, INVALID, empty) all funnel through here.
 function parsePhaseArg(arg) {
   if (typeof arg !== "string") return null;
@@ -264,9 +264,9 @@ function parsePhaseArg(arg) {
   return Object.prototype.hasOwnProperty.call(STATES, trimmed) ? STATES[trimmed] : null;
 }
 
-// NFR004: session IDs reach file paths and can be attacker-influenced. Reject
-// path separators, NUL, and the traversal entries so a crafted ID can never
-// escape the plugin's .state directory. opencode session IDs (ses_...) pass.
+// Session IDs reach file paths and can be attacker-influenced. Reject path
+// separators, NUL, and the traversal entries so a crafted ID can never escape
+// the plugin's .state directory. opencode session IDs (ses_...) pass.
 function sanitizeSessionID(sessionID) {
   if (typeof sessionID !== "string" || sessionID.length === 0) return null;
   if (sessionID === "." || sessionID === "..") return null;
@@ -274,9 +274,9 @@ function sanitizeSessionID(sessionID) {
   return sessionID;
 }
 
-// NFR001: atomic durable write — tmp file + fsync + rename. The rename is
-// atomic on the same filesystem, so a crash mid-write can never leave a torn
-// file at the target path. Throws on failure; callers surface the error.
+// Atomic durable write — tmp file + fsync + rename. The rename is atomic on
+// the same filesystem, so a crash mid-write can never leave a torn file at the
+// target path. Throws on failure; callers surface the error.
 function atomicWriteFileSync(targetPath, data) {
   const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
   try {
@@ -369,8 +369,8 @@ function extractAgentFromPrompt(prompt) {
 // Collects every MILESTONE ID field value from a dispatch prompt — one entry
 // per `MILESTONE ID:` / `MILESTONE_ID:` / `MILESTONE.ID:` line, with Markdown
 // bold markers stripped. Mirrors delegation-gate's collectMilestoneIds so both
-// gates agree on cardinality (R017). A comma inside a single value means
-// multiple milestones were crammed into one field; the caller rejects that as
+// gates agree on cardinality. A comma inside a single value means multiple
+// milestones were crammed into one field; the caller rejects that as
 // MULTI_MILESTONE.
 function collectMilestoneIds(prompt) {
   if (typeof prompt !== "string") return [];
@@ -387,41 +387,41 @@ function collectMilestoneIds(prompt) {
 
 // Extracts the single MILESTONE ID from a raw dispatch prompt. protocol-gate
 // runs BEFORE delegation-gate, so the raw prompt (not the rendered template)
-// is the source of truth. R017/P019: cardinality (exactly one) is validated at
-// the dispatch call site BEFORE any registry mutation — this helper only
-// surfaces the first value for callers that already know cardinality holds.
+// is the source of truth. Cardinality (exactly one) is validated at the
+// dispatch call site BEFORE any registry mutation — this helper only surfaces
+// the first value for callers that already know cardinality holds.
 function extractMilestoneIdFromPrompt(prompt) {
   const ids = collectMilestoneIds(prompt);
   return ids.length > 0 ? ids[0] : null;
 }
 
-// R014 (issue-14): extracts the `RESULT KD:` path from a raw dispatch prompt.
-// protocol-gate runs BEFORE delegation-gate, so the raw prompt (not the
-// rendered template) is the source of truth — the same pattern as
-// extractMilestoneIdFromPrompt. Returns null when the prompt carries no
-// RESULT KD line (e.g. legacy dispatches without a declared result artifact).
+// Extracts the `RESULT KD:` path from a raw dispatch prompt. protocol-gate
+// runs BEFORE delegation-gate, so the raw prompt (not the rendered template)
+// is the source of truth — the same pattern as extractMilestoneIdFromPrompt.
+// Returns null when the prompt carries no RESULT KD line (e.g. legacy
+// dispatches without a declared result artifact).
 function parseResultKdFromPrompt(prompt) {
   const match = String(prompt || "").match(/^\s*RESULT KD:\s*(.+?)\s*$/m);
   return match ? match[1] : null;
 }
 
-// F1 (R001/NFR005): per-milestone redispatch counter key. The SAFETY_STUCK
-// 5-redispatch cap counts a milestone's OWN attempts, not the whole lifecycle —
-// one milestone's transient retries must never consume another milestone's
-// budget (the M4 false-positive root cause). The key is case-normalized to
-// uppercase so `M3` and `m3` map to the same budget, matching the registry's
-// case-insensitive row matching (an `impl-m3` check-off resets the same key
-// that `MILESTONE ID: M3` dispatches increment).
+// Per-milestone redispatch counter key. The SAFETY_STUCK 5-redispatch cap
+// counts a milestone's OWN attempts, not the whole lifecycle — one milestone's
+// transient retries must never consume another milestone's budget. The key is
+// case-normalized to uppercase so lower/upper milestone ids map to the same
+// budget, matching the registry's case-insensitive row matching (an
+// `impl-<milestone-id>` check-off resets the same key that the matching
+// `MILESTONE ID: <milestone-id>` dispatch increments).
 function milestoneRedispatchKey(sessionID, milestoneId) {
   return `${sessionID}:${String(milestoneId).toUpperCase()}`;
 }
 
-// F1 (R006/NFR004): clears every per-milestone redispatch key for a session.
-// Per-milestone keys are `${sessionID}:<milestone-id>` (e.g. `sid:M3`) while
-// phase keys are `${sessionID}:<phase-constant>` (a number) — deleting the
-// non-numeric suffixes removes all milestone budgets without touching phase
-// counters. Called on regress-to-SWARM and SWARM FORCE ADVANCE so milestone
-// budgets never accumulate unboundedly across lifecycle transitions.
+// Clears every per-milestone redispatch key for a session. Per-milestone keys
+// are `${sessionID}:<milestone-id>` while phase keys are
+// `${sessionID}:<phase-constant>` (a number) — deleting the non-numeric
+// suffixes removes all milestone budgets without touching phase counters.
+// Called on regress-to-SWARM and SWARM FORCE ADVANCE so milestone budgets
+// never accumulate unboundedly across lifecycle transitions.
 function clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID) {
   const prefix = `${sessionID}:`;
   for (const key of [...phaseRedispatchCount.keys()]) {
@@ -441,14 +441,13 @@ function clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID) {
 // in-progress milestones — the artisan checks off only after its impl KD lands,
 // so pending/assigned/failed rows are rejected with invalid-transition. Row
 // matching is case-insensitive (impl KDs may carry any casing for the milestone
-// token, e.g. impl-m3 vs row M3) and the replacement preserves the registry
-// row's own casing.
-// R014/NFR001: the write is atomic (tmp + fsync + rename) so a crash mid-write
-// can never leave a torn registry YAML on disk.
-// R016 (P017): a checked-off row is immutable for every caller EXCEPT the SWARM
-// re-dispatch path (opts.reopen). When the Overseer re-dispatches a checked-off
-// milestone after inspector findings, the row re-opens to a non-terminal state
-// so the SWARM→VERIFY gate fails closed again until the fix is re-verified.
+// token) and the replacement preserves the registry row's own casing.
+// The write is atomic (tmp + fsync + rename) so a crash mid-write can never
+// leave a torn registry YAML on disk.
+// A checked-off row is immutable for every caller EXCEPT the SWARM re-dispatch
+// path (opts.reopen). When the Overseer re-dispatches a checked-off milestone
+// after inspector findings, the row re-opens to a non-terminal state so the
+// SWARM→VERIFY gate fails closed again until the fix is re-verified.
 // Returns { ok, path, changed } on success or { ok: false, reason } otherwise.
 function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states, opts = {}) {
   const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
@@ -467,8 +466,8 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
     return { ok: false, reason: "invalid-transition" };
   }
   if (current === "checked-off") {
-    // Only the SWARM re-dispatch path re-opens completed rows (R016); every
-    // other writer leaves them immutable so evidence is never silently lost.
+    // Only the SWARM re-dispatch path re-opens completed rows; every other
+    // writer leaves them immutable so evidence is never silently lost.
     if (!opts.reopen || finalState === "checked-off") {
       return { ok: true, path: located.path, changed: false };
     }
@@ -478,7 +477,7 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
   const newBlock = located.block.replace(rowPattern, `  ${rowId}: ${finalState}`);
   const newContent = located.content.slice(0, located.fenceStart) + newBlock + located.content.slice(located.fenceEnd);
   try {
-    // R014/NFR001: atomic durable registry write — no torn YAML after a crash.
+    // Atomic durable registry write — no torn YAML after a crash.
     atomicWriteFileSync(located.path, newContent);
     debug(`Registry ${located.path}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
     return { ok: true, path: located.path, changed: true };
@@ -488,12 +487,12 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
   }
 }
 
-// M4 (R009/R010): Locates and parses the session's milestone registry KD.
-// Shared by updateMilestoneRegistry and readMilestoneState so both helpers agree
-// on the machine-readable `## Milestone States` YAML block as the SSOT.
+// Locates and parses the session's milestone registry KD. Shared by
+// updateMilestoneRegistry and readMilestoneState so both helpers agree on the
+// machine-readable `## Milestone States` YAML block as the SSOT.
 // Returns { path, content, block, fenceStart, fenceEnd } or null when the
 // registry file or YAML block is missing.
-// Anchored fence parsing (R310): the heading is accepted either bare
+// Anchored fence parsing: the heading is accepted either bare
 // (`^## Milestone States$`) or glued to the opening fence
 // (`^## Milestone States```yaml`). In the non-glued form the opening ```yaml
 // fence is accepted only when the lines between the heading and the fence are
@@ -507,9 +506,9 @@ function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
   const knowledgeDir = getKnowledgeDir();
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
-  // R004 (M1): registry lookup is scoped to the current session only — no
-  // cross-session adoption means a prior lifecycle's registry never gates a
-  // fresh session's SWARM.
+  // Registry lookup is scoped to the current session only — no cross-session
+  // adoption means a prior lifecycle's registry never gates a fresh session's
+  // SWARM.
   const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
   if (!registry) return null;
 
@@ -530,7 +529,7 @@ function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
     fenceStart = content.indexOf("```yaml", heading);
   } else {
     // Non-glued form: the first ```yaml after the heading, accepted only when
-    // the intervening lines are empty/whitespace-only (R310b).
+    // the intervening lines are empty/whitespace-only.
     fenceStart = content.indexOf("```yaml", heading + headingMatch[0].length);
     if (fenceStart === -1) return null;
     const gap = content.slice(heading + headingMatch[0].length, fenceStart);
@@ -538,7 +537,7 @@ function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
   }
 
   // Closing fence: the next ``` after the opening fence, located before the
-  // next `## ` heading (R310c).
+  // next `## ` heading.
   const fenceEnd = content.indexOf("```", fenceStart + 7);
   if (fenceEnd === -1) return null;
   const afterOpening = content.slice(fenceStart + 7);
@@ -548,8 +547,8 @@ function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
   return { path, content, block: content.slice(fenceStart, fenceEnd), fenceStart, fenceEnd };
 }
 
-// M4 (R009/R010): Reads the current state of a milestone row from the registry
-// YAML block. Returns the state string or null when the registry/row is missing.
+// Reads the current state of a milestone row from the registry YAML block.
+// Returns the state string or null when the registry/row is missing.
 function readMilestoneState(sessionID, sessionPhaseMap, milestoneId) {
   const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!located) return null;
@@ -558,10 +557,10 @@ function readMilestoneState(sessionID, sessionPhaseMap, milestoneId) {
   return rowMatch ? rowMatch[1] : null;
 }
 
-// M4 (R009/R010): Finds the milestone-scoped impl KD on disk for a milestone.
-// Mirrors matchesSessionKD generation scoping: gen 0 matches the legacy
-// `-<session>.md` suffix; gen N matches only `-<session>-genN.md`. The milestone
-// prefix match is case-insensitive. Returns the filename or null.
+// Finds the milestone-scoped impl KD on disk for a milestone. Mirrors
+// matchesSessionKD generation scoping: gen 0 matches the legacy `-<session>.md`
+// suffix; gen N matches only `-<session>-genN.md`. The milestone prefix match
+// is case-insensitive. Returns the filename or null.
 function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   if (!milestoneId) return null;
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
@@ -569,17 +568,17 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
   const prefix = `impl-${milestoneId}-`;
-  // R004 (M1): impl-KD evidence is scoped to the current session only — a
-  // prior lifecycle's impl KDs (under another session id) never check off a
-  // fresh session's milestone rows.
+  // Impl-KD evidence is scoped to the current session only — a prior
+  // lifecycle's impl KDs (under another session id) never check off a fresh
+  // session's milestone rows.
   const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
   return found || null;
 }
 
-// M4 (R009/R010): Cross-checks a milestone's registry state against its impl KD
-// on disk — the verifiable check-off semantics the M5 all-checked-off gate will
-// consume. A row is genuinely checked-off only when BOTH the registry row says
-// checked-off AND the milestone-scoped impl KD exists on disk.
+// Cross-checks a milestone's registry state against its impl KD on disk — the
+// verifiable check-off semantics the all-checked-off gate consumes. A row is
+// genuinely checked-off only when BOTH the registry row says checked-off AND
+// the milestone-scoped impl KD exists on disk.
 function checkMilestoneCheckedOff(sessionID, sessionPhaseMap, milestoneId) {
   const state = readMilestoneState(sessionID, sessionPhaseMap, milestoneId);
   const implKD = findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId);
@@ -591,11 +590,10 @@ function checkMilestoneCheckedOff(sessionID, sessionPhaseMap, milestoneId) {
   };
 }
 
-// M5 (R011-R014): Parses the session's milestone registry rows from the
-// machine-readable `## Milestone States` YAML block (the same SSOT the M4
-// helpers use). Returns { rows: [{ id, state }], path, content, block,
-// fenceStart, fenceEnd } or null when the registry file or YAML block is
-// missing/unparsable.
+// Parses the session's milestone registry rows from the machine-readable
+// `## Milestone States` YAML block (the same SSOT the registry helpers use).
+// Returns { rows: [{ id, state }], path, content, block, fenceStart, fenceEnd }
+// or null when the registry file or YAML block is missing/unparsable.
 function readMilestoneRegistry(sessionID, sessionPhaseMap) {
   const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!located) return null;
@@ -608,9 +606,9 @@ function readMilestoneRegistry(sessionID, sessionPhaseMap) {
   return { rows, ...located };
 }
 
-// M5 (R011-R014): The all-checked-off gate — SWARM→VERIFY advances ONLY when
-// every registry row is checked-off AND its milestone-scoped impl KD is on
-// disk (checkMilestoneCheckedOff semantics: registry state + disk evidence).
+// The all-checked-off gate — SWARM→VERIFY advances ONLY when every registry
+// row is checked-off AND its milestone-scoped impl KD is on disk
+// (checkMilestoneCheckedOff semantics: registry state + disk evidence).
 // Fails closed on missing (REGISTRY_MISSING) and empty (REGISTRY_EMPTY)
 // registries. Returns { ok, total, checkedOff, rows }.
 function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
@@ -637,17 +635,17 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   return { ok, total: rows.length, checkedOff, rows };
 }
 
-// M5 (R011-R014): Repurposes the legacy SWARM safety force-advances. A stuck
-// SWARM session never auto-advances to VERIFY — it marks stuck milestone(s)
-// failed in the registry, logs SAFETY_STUCK, and stays in SWARM.
+// Repurposes the legacy SWARM safety force-advances. A stuck SWARM session
+// never auto-advances to VERIFY — it marks stuck milestone(s) failed in the
+// registry, logs SAFETY_STUCK, and stays in SWARM.
 // The only escape hatch is the user's /phase override (SAFETY_ESCAPE).
-// F1 (R005): the optional milestoneId scopes the failure to ONE registry row —
-// the REDISPATCH CAP path fails only the offending milestone (AC006), while
-// the FORCE ADVANCE path omits it and keeps the legacy global all-rows
-// behavior (AC007). The two mechanisms guard different failure modes: the cap
-// is a milestone-level "genuinely attempted ≥5 times" guard; FORCE ADVANCE is
-// the lifecycle-level deadlock escape. Row matching is case-insensitive to
-// mirror registry semantics (M3/m3).
+// The optional milestoneId scopes the failure to ONE registry row — the
+// REDISPATCH CAP path fails only the offending milestone, while the FORCE
+// ADVANCE path omits it and keeps the legacy global all-rows behavior. The two
+// mechanisms guard different failure modes: the cap is a milestone-level
+// "genuinely attempted ≥5 times" guard; FORCE ADVANCE is the lifecycle-level
+// deadlock escape. Row matching is case-insensitive to mirror registry
+// semantics.
 function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger, milestoneId) {
   const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
@@ -666,11 +664,11 @@ function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger, mileston
   debug(`SAFETY_STUCK: ${trigger} for session ${sessionID} — staying in SWARM (no auto-advance)`);
 }
 
-// M4 (R009/R010): Extracts the milestone ID from an impl KD filename per the
-// milestone-scoped naming contract `impl-<milestone-id>-<name>-<session>[-gen{N}].md`.
-// The first token after the `impl-` prefix is the milestone ID. Returns null for
-// non-impl filenames (other KD types) and invalid input — a legacy unscoped
-// impl KD yields its first name token, which never matches a registry row.
+// Extracts the milestone ID from an impl KD filename per the milestone-scoped
+// naming contract `impl-<milestone-id>-<name>-<session>[-gen{N}].md`. The first
+// token after the `impl-` prefix is the milestone ID. Returns null for non-impl
+// filenames (other KD types) and invalid input — a legacy unscoped impl KD
+// yields its first name token, which never matches a registry row.
 function extractMilestoneIdFromImplKD(filename) {
   if (typeof filename !== "string") return null;
   const base = filename.replace(/\\/g, "/").split("/").pop();
@@ -697,13 +695,13 @@ function toProjectRelative(filePath) {
   return normalized;
 }
 
-// F1 (R101): Reads the `verdict` field from a KD file's YAML frontmatter — the
-// machine source for the verdict-aware VERIFY gate. Only the first frontmatter
-// block (between the leading `---` and the next `---` line) is inspected; a
-// body Verdict section is human-readable and never read. Returns "PASS",
-// "FAIL", or "FUNDAMENTAL", or null when the field is absent or its value is
-// not one of the three valid verdicts (R106/FM02 — missing/invalid is treated
-// as PASS with a warning at the call site).
+// Reads the `verdict` field from a KD file's YAML frontmatter — the machine
+// source for the verdict-aware VERIFY gate. Only the first frontmatter block
+// (between the leading `---` and the next `---` line) is inspected; a body
+// Verdict section is human-readable and never read. Returns "PASS", "FAIL", or
+// "FUNDAMENTAL", or null when the field is absent or its value is not one of
+// the three valid verdicts (missing/invalid is treated as PASS with a warning
+// at the call site).
 function readVerdictFrontmatter(filePath) {
   try {
     const content = readFileSync(filePath, "utf8");
@@ -718,11 +716,11 @@ function readVerdictFrontmatter(filePath) {
   }
 }
 
-// F1 (R102/EC01): Finds the newest review/audit KD among the session's KDs.
-// "Newest" is deterministic: greatest file mtime, tie-break by greatest
-// filename. Returns { filename, verdict } (verdict read from the newest KD's
-// frontmatter) or null when no review/audit KD exists — the caller then falls
-// back to the presence-based result (false).
+// Finds the newest review/audit KD among the session's KDs. "Newest" is
+// deterministic: greatest file mtime, tie-break by greatest filename. Returns
+// { filename, verdict } (verdict read from the newest KD's frontmatter) or
+// null when no review/audit KD exists — the caller then falls back to the
+// presence-based result (false).
 function findNewestVerdictKD(sessionFiles) {
   const reviewAuditFiles = sessionFiles.filter(f => /^review-|^audit-/i.test(f));
   if (reviewAuditFiles.length === 0) return null;
@@ -737,13 +735,13 @@ function findNewestVerdictKD(sessionFiles) {
   return { filename, verdict: readVerdictFrontmatter(join(knowledgeDir, filename)) };
 }
 
-// R005 (M3): re-derives the evidence KD for a phase's disk-advancement
-// pattern. checkDiskAdvancement returns boolean only (plan Risk R2), so the
-// RESTART_CATCH_UP diagnostic re-derives the newest session-scoped,
-// generation-scoped KD that would have driven the advance. Returns the
-// filename or null when none is determinable (EC8 — diagnostic skipped).
-// Single readdir + bounded stat (getFileMtimeMs); consumed only by the
-// log-only diagnostic, never by the advancement gate itself.
+// Re-derives the evidence KD for a phase's disk-advancement pattern.
+// checkDiskAdvancement returns boolean only, so the RESTART_CATCH_UP
+// diagnostic re-derives the newest session-scoped, generation-scoped KD that
+// would have driven the advance. Returns the filename or null when none is
+// determinable (diagnostic skipped). Single readdir + bounded stat
+// (getFileMtimeMs); consumed only by the log-only diagnostic, never by the
+// advancement gate itself.
 function findNewestEvidenceKD(sessionPhaseMap, sessionID, phase) {
   if (phase === undefined || phase === STATES.PROTOCOL_NOT_LOADED || phase === STATES.REPORT) return null;
   const patterns = {
@@ -776,34 +774,33 @@ function findNewestEvidenceKD(sessionPhaseMap, sessionID, phase) {
   return newest;
 }
 
-// F1 (R104/AC103/EC02/EC07): On a FAIL auto-regression every checked-off
-// milestone row of the session registry re-opens to in-progress, so the M5
-// all-checked-off gate cannot re-advance SWARM→VERIFY before fresh impl KDs
-// land. Idempotent for rows already in-progress (EC02); a missing/empty
-// registry is a no-op and the SWARM gate fails closed on REGISTRY_EMPTY/MISSING
-// (EC07). updateMilestoneRegistry's reopen semantics preserve the registry
-// row's own casing.
+// On a FAIL auto-regression every checked-off milestone row of the session
+// registry re-opens to in-progress, so the all-checked-off gate cannot
+// re-advance SWARM→VERIFY before fresh impl KDs land. Idempotent for rows
+// already in-progress; a missing/empty registry is a no-op and the SWARM gate
+// fails closed on REGISTRY_EMPTY/MISSING. updateMilestoneRegistry's reopen
+// semantics preserve the registry row's own casing.
 function reopenCheckedOffMilestones(sessionID, sessionPhaseMap) {
   const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
-    debug(`F1 reopen: no milestone registry for session ${sessionID} — nothing to reopen (EC07)`);
+    debug(`reopen: no milestone registry for session ${sessionID} — nothing to reopen`);
     return;
   }
   for (const row of registry.rows) {
     if (row.state === "checked-off") {
       const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"], { reopen: true });
-      debug(`F1 reopen: milestone ${row.id} checked-off → in-progress (${JSON.stringify(result)})`);
+      debug(`reopen: milestone ${row.id} checked-off → in-progress (${JSON.stringify(result)})`);
     }
   }
 }
 
-// F1 (R102/R103): FAIL-verdict auto-regression. Regresses VERIFY→SWARM via the
-// existing backward-transition path — no `BACKWARD: true` flag and no explicit
-// dispatch — then re-opens checked-off milestone rows (R104). The once-per-KD
-// guard records the KD filename that fired the regression so re-evaluating the
-// same KD never regresses again (R103). The cycle cap in backwardTransition
-// bounds repeated fix cycles (NFR001). Returns true when a regression fired,
-// false when this KD filename was already seen.
+// FAIL-verdict auto-regression. Regresses VERIFY→SWARM via the existing
+// backward-transition path — no `BACKWARD: true` flag and no explicit dispatch
+// — then re-opens checked-off milestone rows. The once-per-KD guard records
+// the KD filename that fired the regression so re-evaluating the same KD never
+// regresses again. The cycle cap in backwardTransition bounds repeated fix
+// cycles. Returns true when a regression fired, false when this KD filename
+// was already seen.
 function regressVerifyOnFail(sessionID, kdFilename, sessionPhaseMap, verdictRegressedKDs, backwardTransition) {
   let seen = verdictRegressedKDs.get(sessionID);
   if (!seen) {
@@ -812,14 +809,14 @@ function regressVerifyOnFail(sessionID, kdFilename, sessionPhaseMap, verdictRegr
   }
   if (seen.has(kdFilename)) return false;
   seen.add(kdFilename);
-  debug(`VERDICT_FAIL: KD ${kdFilename} verdict=FAIL — auto-regressing VERIFY→SWARM (R102, no BACKWARD flag)`);
+  debug(`VERDICT_FAIL: KD ${kdFilename} verdict=FAIL — auto-regressing VERIFY→SWARM (no BACKWARD flag)`);
   backwardTransition(sessionID, STATES.VERIFY, STATES.SWARM);
   reopenCheckedOffMilestones(sessionID, sessionPhaseMap);
   return true;
 }
 
-// F1 (R102-R106): module-level verdict-aware VERIFY gate body. checkDiskAdvancement
-// delegates the FAIL verdict here; f1Options carries the server-local regression
+// Module-level verdict-aware VERIFY gate body. checkDiskAdvancement delegates
+// the FAIL verdict here; f1Options carries the server-local regression
 // dependencies ({ verdictRegressedKDs, backwardTransition }) so direct unit-test
 // calls without a handler stay blocked-but-safe (no regression side effect).
 function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options) {
@@ -835,39 +832,39 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
     return false;
   }
   if (verdictInfo && verdictInfo.verdict === "FUNDAMENTAL") {
-    const escalation = `FUNDAMENTAL_ESCALATION: review/audit KD ${verdictInfo.filename} carries verdict FUNDAMENTAL — VERIFY advancement blocked; escalate to user (Happy to Delete) or override with /phase (R105)`;
+    const escalation = `FUNDAMENTAL_ESCALATION: review/audit KD ${verdictInfo.filename} carries verdict FUNDAMENTAL — VERIFY advancement blocked; escalate to user (Happy to Delete) or override with /phase`;
     debug(escalation);
     process.stderr.write(`[protocol-gate] ${escalation}\n`);
     debug(`Disk check VERIFY: blocked by FUNDAMENTAL verdict on ${verdictInfo.filename}`);
     return false;
   }
   if (verdictInfo && !verdictInfo.verdict) {
-    debug(`VERDICT_MISSING: newest review/audit KD ${verdictInfo.filename} lacks a valid verdict field — treated as PASS (R106/FM02)`);
+    debug(`VERDICT_MISSING: newest review/audit KD ${verdictInfo.filename} lacks a valid verdict field — treated as PASS`);
   }
-  // R001 (dual-KD gate): advancement requires BOTH KDs because the Inspector
-  // produces both (verify.json:3, inspector.md:70) — EXTRACT must not start
-  // without the audit KD's security posture. The regression side stays OR
+  // Advancement requires BOTH KDs because the Inspector produces both
+  // (verify.json:3, inspector.md:70) — EXTRACT must not start without the
+  // audit KD's security posture. The regression side stays OR
   // (checkPhaseStateConsistency, lines 1042/1064) so a single-KD VERIFY holds
-  // instead of directly regressing to SWARM — otherwise the BUG-009 unbounded
+  // instead of directly regressing to SWARM — otherwise the unbounded
   // VERIFY⇄SWARM loop returns.
   const result = hasReview && hasAudit;
   debug(`Disk check VERIFY: review=${hasReview}, audit=${hasAudit} → ${result}`);
   return result;
 }
 
-// R006 (M2): reads the active override marker for a session — null when
-// absent or malformed. The marker is authoritative only while the current
-// phase equals its target (R006a/b).
+// Reads the active override marker for a session — null when absent or
+// malformed. The marker is authoritative only while the current phase equals
+// its target.
 function getOverrideUntil(sessionPhaseMap, sessionID) {
   const overrideUntil = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
   if (!overrideUntil || typeof overrideUntil.phase !== "number" || typeof overrideUntil.since !== "number") return null;
   return overrideUntil;
 }
 
-// R006 (M2): bounded stat — returns the file's mtimeMs or -1 on failure.
-// Only candidate files that already match the phase prefix are stat'd, so the
-// override freshness check stays within NFR005 (single readdir + bounded stat
-// work, no per-file glob).
+// Bounded stat — returns the file's mtimeMs or -1 on failure. Only candidate
+// files that already match the phase prefix are stat'd, so the override
+// freshness check stays within the bounded-work budget (single readdir +
+// bounded stat, no per-file glob).
 function getFileMtimeMs(fullPath) {
   try {
     return statSync(fullPath).mtimeMs;
@@ -889,7 +886,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   }
 
   // Knowledge directory is project-relative by default (cwd), overridable via
-  // PROTOCOL_GATE_KNOWLEDGE_DIR (P302 seam). PLUGIN_DIR stays for log paths
+  // PROTOCOL_GATE_KNOWLEDGE_DIR seam. PLUGIN_DIR stays for log paths
   // which ARE relative to plugin location.
   const knowledgeDir = getKnowledgeDir();
   let files = [];
@@ -903,11 +900,11 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // Filter to only files matching the current session ID AND generation.
   // KD filenames embed the session ID as a suffix (e.g. preflight-workspace-ses_abc123.md).
   // Uses suffix matching to prevent substring collisions (ses_abc1 matching ses_abc123).
-  // Generation scoping (P003/R002): files from a prior lifecycle carry a
-  // different `-genN-` suffix and must not advance the new lifecycle (BUG-008).
-  // NFR005: generation defaults to 0 when the state was never loaded or the
+  // Generation scoping: files from a prior lifecycle carry a
+  // different `-genN-` suffix and must not advance the new lifecycle.
+  // Generation defaults to 0 when the state was never loaded or the
   // file carried no generation field — session-ID-only matching is the fallback.
-  // R004 (M1): reads scan the current session's KDs only — cross-session
+  // Reads scan the current session's KDs only — cross-session
   // adoption is removed, so a fresh session can never advance off another
   // lifecycle's KDs. lookupSIDs stays single-session (diagnostic only).
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
@@ -918,7 +915,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
       sessionFiles.push(f);
     } else if (lookupSIDs.some(sid => f.endsWith(`-${sid}.md`) || f.includes(`-${sid}-gen`))) {
       // Same session but different generation — stale prior-lifecycle KD.
-      // Log the skip so generation mismatches are diagnosable (R006/R5).
+      // Log the skip so generation mismatches are diagnosable.
       const fileGenMatch = f.match(/-gen(\d+)\.md$/);
       const fileGen = fileGenMatch ? parseInt(fileGenMatch[1], 10) : 0;
       debug(`Skipped KD ${f}: generation mismatch (file=${fileGen}, current=${generation})`);
@@ -943,19 +940,19 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   const pattern = patterns[phase];
 
-  // R006 (M2): while the override is active at this phase, only fresh evidence
+  // While the override is active at this phase, only fresh evidence
   // (KD mtime >= since) advances — pre-existing/stale KDs never undo the
   // manual override (interface contract #5). KDs written before `since` are
-  // skipped; the marker clears on advance-away (P010), restoring normal
-  // R009 semantics for later phases.
+  // skipped; the marker clears on advance-away, restoring normal
+  // advancement semantics for later phases.
   const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
   const overrideActive = overrideUntil && phase === overrideUntil.phase;
 
   // DECOMPOSE advancement requires BOTH the plan KD and the milestone registry
-  // (R003 dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM must
-  // not start until the registry (live state SSOT) is on disk. A plan- KD alone
-  // is the EC03 case — fail-closed, no advancement. Under an override at
-  // DECOMPOSE, both KDs must be fresh (mtime >= since, contract #5).
+  // (dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM must not
+  // start until the registry (live state SSOT) is on disk. A plan- KD alone is
+  // the fail-closed case — no advancement. Under an override at DECOMPOSE,
+  // both KDs must be fresh (mtime >= since, contract #5).
   if (phase === STATES.DECOMPOSE) {
     const hasPlan = sessionFiles.some(f => /^plan-/i.test(f) && (!overrideActive || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
     const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f) && (!overrideActive || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
@@ -966,9 +963,9 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   if (!pattern) return false;
 
-  // F1 (R102-R106): the verdict-aware VERIFY gate — see evaluateVerifyVerdict.
+  // The verdict-aware VERIFY gate — see evaluateVerifyVerdict.
   // The newest review/audit KD's frontmatter verdict decides advancement; only
-  // the newest KD's frontmatter is read (NFR007). Under an override at VERIFY,
+  // the newest KD's frontmatter is read. Under an override at VERIFY,
   // the newest review/audit KD's mtime is the evidence timestamp — a stale
   // verdict KD never re-advances VERIFY (contract #5).
   if (phase === STATES.VERIFY) {
@@ -989,7 +986,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     return evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options);
   }
 
-  // M5 (R011-R014): SWARM advancement requires ALL registry milestones to be
+  // SWARM advancement requires ALL registry milestones to be
   // checked-off with their impl KDs on disk (checkAllMilestonesCheckedOff).
   // The milestone registry is the live state SSOT — the legacy dispatch-count
   // gate (MILESTONE_COUNT, swarmDispatchCount) has no gating effect. Fails
@@ -1012,7 +1009,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   let result;
   if (overrideActive) {
-    // F2 (R004): the INTENT override target advances on PRESENCE of the intent
+    // The INTENT override target advances on PRESENCE of the intent
     // KD — the KD IS the phase deliverable, so its write-time relative to
     // `since` is irrelevant to whether intent work is done. This is the only
     // freshness exemption; all other override targets (and the DECOMPOSE /
@@ -1041,9 +1038,9 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return false; }
 
-  // Generation-scoped (P003): stale gen-N KDs from a prior lifecycle must not
-  // suppress legitimate phase regression in the current lifecycle (R3 gap fix).
-  // R004 (M1): the scan covers the current session's KDs only — a fresh
+  // Generation-scoped: stale gen-N KDs from a prior lifecycle must not
+  // suppress legitimate phase regression in the current lifecycle.
+  // The scan covers the current session's KDs only — a fresh
   // session is never held up or regressed by another lifecycle's KDs.
   const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
   const sessionFiles = files.filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
@@ -1065,18 +1062,18 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   const currentPattern = patterns[currentPhase];
   if (!currentPattern) return false;
 
-  // R006a (M2): while the override is active at the target phase, the override
-  // is authoritative — a missing KD for the overridden phase is logged but
-  // never regresses the phase (AC009). The marker clears on advance-away,
-  // backward transition, new /phase, or REPORT reset (P010), after which
-  // normal regression resumes.
+  // While the override is active at the target phase, the override is
+  // authoritative — a missing KD for the overridden phase is logged but never
+  // regresses the phase. The marker clears on advance-away, backward
+  // transition, new /phase, or REPORT reset, after which normal regression
+  // resumes.
   const overrideUntil = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
   if (overrideUntil && currentPhase === overrideUntil.phase) {
-    debug(`Consistency check: skipped — /phase override pins ${getPhaseName(currentPhase)} (since=${overrideUntil.since}) for session ${sessionID} (R006a)`);
+    debug(`Consistency check: skipped — /phase override pins ${getPhaseName(currentPhase)} (since=${overrideUntil.since}) for session ${sessionID}`);
     return false;
   }
 
-  // R004: Skip regression when a subagent dispatch is in-flight for this phase.
+  // Skip regression when a subagent dispatch is in-flight for this phase.
   // The KD is pending creation, not deleted — false regression would loop.
   // inFlightDispatches stores an array of prefixes (e.g., ["review", "audit"] for VERIFY).
   const inFlightPrefixes = inFlightDispatches?.get(sessionID);
@@ -1085,7 +1082,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     return false;
   }
 
-  // R002: Grace period for fresh phase advancement.
+  // Grace period for fresh phase advancement.
   // When a phase just advanced via disk check (e.g., SWARM→VERIFY), the new phase's
   // KD hasn't been produced yet. Skip regression for the first 3 disk checks to
   // avoid false regression back to the previous phase.
@@ -1107,10 +1104,10 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   if (currentPhase === STATES.VERIFY) {
     const hasReview = sessionFiles.some(f => /^review-/i.test(f));
     const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
-    // VERIFY regression-side OR (R003): a single review/audit KD keeps VERIFY
+    // VERIFY regression-side OR: a single review/audit KD keeps VERIFY
     // "phase is fine". MUST stay OR — an AND here would regress a single-KD
     // VERIFY directly to SWARM via the set() below (bypassing the backward
-    // cycle cap), reintroducing the BUG-009 unbounded VERIFY⇄SWARM loop.
+    // cycle cap), reintroducing the unbounded VERIFY⇄SWARM loop.
     // Advancement is gated separately by the AND in evaluateVerifyVerdict.
     if (hasReview || hasAudit) return false; // current phase is fine
   } else {
@@ -1134,11 +1131,11 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     if (phase === STATES.VERIFY) {
       const hasReview = sessionFiles.some(f => /^review-/i.test(f));
       const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
-      // VERIFY backward-walk OR (R003): a surviving single review/audit KD
+      // VERIFY backward-walk OR: a surviving single review/audit KD
       // anchors VERIFY during the backward walk. MUST stay OR — aligning it to
       // AND would let a missing second KD regress VERIFY directly to SWARM via
       // the set() below (bypassing handleBackwardTransition and the cycle cap),
-      // reintroducing the BUG-009 unbounded loop.
+      // reintroducing the unbounded loop.
       if (hasReview || hasAudit) {
         regressedPhase = phase;
         foundEarlierKD = true;
@@ -1153,10 +1150,10 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     }
   }
 
-  // R004 (M2): INTENT with a missing intent KD and no earlier-phase KD falls
+  // INTENT with a missing intent KD and no earlier-phase KD falls
   // through to the general no-regression rule below. The old special case
   // regressed INTENT → PROTOCOL_NOT_LOADED on the first non-creating disk-check
-  // call after a restart, stalling the intent KD write (N3). A missing intent
+  // call after a restart, stalling the intent KD write. A missing intent
   // KD is recovered by rewriting it in INTENT (write allowed by the allowlist);
   // checkDiskAdvancement still returns false, so nothing advances.
 
@@ -1165,7 +1162,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   debug(`Consistency regression: ${getPhaseName(currentPhase)} → ${getPhaseName(regressedPhase)}`);
   sessionPhaseMap.set(sessionID, regressedPhase);
 
-  // R003: Counters persist across regressions — safety mechanisms (force-advance,
+  // Counters persist across regressions — safety mechanisms (force-advance,
   // re-dispatch cap) must remain effective. Only clear swarmDispatchCount when
   // regressing past SWARM, as that is phase-dependent cleanup, not counter reset.
   // Clear dispatch count if regressing past SWARM phase
@@ -1173,7 +1170,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     swarmDispatchCount.delete(sessionID);
   }
 
-  // R004: Persist regressed phase
+  // Persist regressed phase
   saveState(sessionID);
   return true;
 }
@@ -1203,18 +1200,18 @@ export default {
     const diskCheckFailures = new Map();
     // Tracks re-dispatch attempts per session-phase pair to cap retries at 5.
     const phaseRedispatchCount = new Map();
-    // R014 (issue-14): per-session record of the LAST charged dispatch, set at
+    // Per-session record of the LAST charged dispatch, set at
     // the :2475 increment site so the tool.execute.after hook can restore the
     // redispatch budget when a dispatch produces no expected RESULT KD
     // (empty-result detection). One entry per session — a re-dispatch
     // overwrites the previous record; the entry is deleted after reconciliation.
     const lastTaskDispatch = new Map();
-    // R004/R005: Tracks active subagent dispatches per session.
+    // Tracks active subagent dispatches per session.
     // When a task call dispatches the current phase's expected agent, the
     // expected KD prefix is stored here. checkPhaseStateConsistency skips
     // regression when an in-flight dispatch exists — the KD is pending, not deleted.
     const inFlightDispatches = new Map();
-    // BUG-003 fix: Event-driven phase advancement verification.
+    // Event-driven phase advancement verification.
     // When a task dispatch or write triggers a phase advancement, pendingVerification
     // is set. While active, checkPhaseStateConsistency is skipped (preventing false
     // regression) and diskCheckFailures is not incremented (preventing premature stuck
@@ -1222,51 +1219,51 @@ export default {
     // Replaces the time-based REGRESSION_COOLDOWN_MS mechanism.
     const pendingVerification = new Map();
     // Tracks tool calls made while pendingVerification is active per session.
-    // Used by R007 safety timeout: warning at 10, force-advance at 15.
+    // Used by the safety timeout: warning at 10, force-advance at 15.
     const pendingVerificationToolCount = new Map();
-    // R002: Fresh advancement tracking — records when a phase was just advanced via
+    // Fresh advancement tracking — records when a phase was just advanced via
     // disk check. Used by checkPhaseStateConsistency to grant a grace period before
     // allowing regression. Prevents false regression when SWARM→VERIFY advancement
     // occurs and VERIFY's KD hasn't been produced yet.
-    // In-memory only — not persisted to .state files (NFR003).
+    // In-memory only — not persisted to .state files.
     const freshAdvancement = new Map(); // sessionID → {phase, diskCheckCount}
-    // R100: Track agent type for ALL sessions (including subagents) to enforce
+    // Track agent type for ALL sessions (including subagents) to enforce
     // checkpoint KD restrictions. Populated in chatParams for every session.
     const sessionAgentMap = new Map();
-    // F1 (R103): once-per-KD regression guard — per-session set of review/audit
+    // Once-per-KD regression guard — per-session set of review/audit
     // KD filenames that already triggered a FAIL auto-regression. Re-evaluating
     // the same KD must not regress again (no infinite FAIL→SWARM→VERIFY loop);
     // a re-review writes a new filename which may trigger the next regression.
     // In-memory only (like freshAdvancement) — the cap is re-established from
     // disk on restart via the cycle counter semantics.
     const verdictRegressedKDs = new Map(); // sessionID → Set<filename>
-    // Finding 4 (R402): one-shot phase-transition announcements — sessionID →
+    // One-shot phase-transition announcements — sessionID →
     // { from, to, reason }. Set at the disk-advancement site when the phase
     // increments; consumed+deleted in the first systemTransform that runs after
     // advancement. In-memory only — a restart loses it, which is correct (the
-    // event is in the past; the R401 log line remains the durable record).
+    // event is in the past; the durable log line remains the record).
     const advancementAnnouncements = new Map();
-    // F4 (R007): in-memory verbatim raw-intent capture — sessionID →
+    // In-memory verbatim raw-intent capture — sessionID →
     // Array<{messageID, text}>. Populated by the chat.message hook (fires on
     // message receipt, before any LLM call) for overseer messages only;
-    // consumed by the INTENT-phase systemTransform injection (R008). Read-only
-    // with respect to KDs (R009): it never auto-writes the intent KD — the
+    // consumed by the INTENT-phase systemTransform injection. Read-only
+    // with respect to KDs: it never auto-writes the intent KD — the
     // Overseer remains the KD author. In-memory only — restart durability is
-    // issue-6 scope (state-persistence lifecycle), a restart leaves it empty
-    // and the injection is omitted gracefully (EC-6).
+    // out of scope (state-persistence lifecycle), a restart leaves it empty
+    // and the injection is omitted gracefully.
     const rawIntentCapture = new Map();
     // tool.definition doesn't receive sessionID — track the most recent session
     // so it knows which phase to enforce. Updated in chat.params and tool.execute.before.
     let lastSeenSession = null;
 
-    // --- State persistence (M1: file-backed SSOT) ---
-    // The .state file is the single source of truth for phase (R001). The
+    // --- State persistence (file-backed SSOT) ---
+    // The .state file is the single source of truth for phase. The
     // in-memory sessionPhaseMap is a cache reconciled against the file on every
     // overseer message; every transition persists before it is considered
-    // complete (R002); a restart restores from the file (R003); a fresh session
+    // complete; a restart restores from the file; a fresh session
     // with no own state file starts at PROTOCOL_NOT_LOADED — no cross-session
-    // adoption (R001) — and the active-session pointer is deleted at lifecycle
-    // end and never re-created for a finished session (R003).
+    // adoption — and the active-session pointer is deleted at lifecycle
+    // end and never re-created for a finished session.
     function getStatePath(sessionID) {
       const safe = sanitizeSessionID(sessionID);
       if (!safe) return null;
@@ -1276,11 +1273,11 @@ export default {
     function saveState(sessionID) {
       const statePath = getStatePath(sessionID);
       if (!statePath) {
-        debug(`saveState: unsafe session ID rejected: ${JSON.stringify(sessionID)} (NFR004)`);
-        process.stderr.write(`[protocol-gate] saveState: unsafe session ID rejected (NFR004)\n`);
+        debug(`saveState: unsafe session ID rejected: ${JSON.stringify(sessionID)}`);
+        process.stderr.write(`[protocol-gate] saveState: unsafe session ID rejected\n`);
         return false;
       }
-      // P009: the phase entry is deleted at lifecycle end (REPORT reset).
+      // The phase entry is deleted at lifecycle end (REPORT reset).
       // Persist that state as phase 0 — the next reconcile restores
       // PROTOCOL_NOT_LOADED and honors any manual edit of this file.
       const phase = sessionPhaseMap.get(sessionID) ?? STATES.PROTOCOL_NOT_LOADED;
@@ -1288,39 +1285,39 @@ export default {
       try {
         // generation persists across lifecycle resets via the :gen map entry.
         // Written even at phase 0 so the counter survives restarts between
-        // lifecycles (R003). Returns boolean so callers can enforce the NFR001
-        // atomicity contract: revert in-memory :gen when save fails.
+        // lifecycles. Returns boolean so callers can enforce the atomicity
+        // contract: revert in-memory :gen when save fails.
         const generation = sessionPhaseMap.get(`${sessionID}:gen`) || 0;
-        // Fix M4: Omit sid from state JSON when it's null/undefined (deleted after REPORT).
+        // Omit sid from state JSON when it's null/undefined (deleted after REPORT).
         // Previously, sid: null was serialized, causing loadState to skip phase restoration
         // and producing artifacts in the state file.
         const state = { phase, generation, timestamp: Date.now() };
         if (sid) state.sid = sid;
-        // R006 (M2): serialize the /phase override marker so it survives a
-        // mid-session restart (AC010b). Omitted when absent — legacy state
-        // files without overrideUntil load unchanged (NFR003).
+        // Serialize the /phase override marker so it survives a
+        // mid-session restart. Omitted when absent — legacy state
+        // files without overrideUntil load unchanged.
         const overrideUntil = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
         if (overrideUntil && typeof overrideUntil.phase === "number" && typeof overrideUntil.since === "number") {
           state.overrideUntil = { phase: overrideUntil.phase, since: overrideUntil.since };
         }
         const stateDir = getStateDir();
         mkdirSync(stateDir, { recursive: true });
-        // NFR001/R005: atomic durable write — tmp file + fsync + rename. A
+        // Atomic durable write — tmp file + fsync + rename. A
         // failure (disk full, permissions) surfaces to the caller as false +
         // stderr so the in-memory phase never silently diverges from disk.
         atomicWriteFileSync(statePath, JSON.stringify(state));
-        // R003 (M1): the workspace-level pointer is only written while the
+        // The workspace-level pointer is only written while the
         // lifecycle is ACTIVE (phase entry present). At lifecycle end (REPORT
         // reset) the phase entry is deleted, so saveState must NOT re-create
         // `.active-session.json` pointing at the finished session — the
-        // finished lifecycle is never a resume target (R001 makes the pointer
-        // inert for fresh sessions; R003 deletes it at REPORT).
+        // finished lifecycle is never a resume target (the pointer is inert
+        // for fresh sessions; it is deleted at REPORT).
         if (sessionPhaseMap.has(sessionID)) {
           if (!writeActiveSession(sessionID)) {
             debug(`saveState: state persisted but active-session pointer update failed for ${sessionID}`);
           }
         } else {
-          debug(`saveState: phase entry absent for ${sessionID} — active-session pointer not updated (finished lifecycle, R003)`);
+          debug(`saveState: phase entry absent for ${sessionID} — active-session pointer not updated (finished lifecycle)`);
         }
         return true;
       } catch (e) {
@@ -1333,10 +1330,10 @@ export default {
     // Reads + parses the session's state file. Returns the parsed state object,
     // "missing" when no file exists, or "corrupt" when the file exists but
     // cannot be parsed. On corruption the original file is preserved via a
-    // backup rename (R006) — never silently clobbered with phase 0.
+    // backup rename — never silently clobbered with phase 0.
     function readStateFile(sessionID) {
       const statePath = getStatePath(sessionID);
-      if (!statePath) return "missing"; // unsafe session ID — nothing to read (NFR004)
+      if (!statePath) return "missing"; // unsafe session ID — nothing to read
       try {
         return JSON.parse(readFileSync(statePath, "utf8"));
       } catch (e) {
@@ -1345,7 +1342,7 @@ export default {
           const backupPath = join(getStateDir(), `.protocol-state-${sanitizeSessionID(sessionID)}.corrupt-${Date.now()}.json`);
           renameSync(statePath, backupPath);
           debug(`loadState: corrupt state file backed up to ${backupPath} (${e.message})`);
-          process.stderr.write(`[protocol-gate] Corrupt state file for session ${sessionID} — backed up to ${basename(backupPath)}; initializing PROTOCOL_NOT_LOADED (R006)\n`);
+          process.stderr.write(`[protocol-gate] Corrupt state file for session ${sessionID} — backed up to ${basename(backupPath)}; initializing PROTOCOL_NOT_LOADED\n`);
         } catch (be) {
           debug(`loadState: failed to back up corrupt state file for ${sessionID}: ${be.message}`);
         }
@@ -1361,10 +1358,10 @@ export default {
       return state === "missing" || state === "corrupt" || state === null ? null : state;
     }
 
-    // --- Active-session pointer (R003) ---
+    // --- Active-session pointer ---
     // Workspace-level file recording the most recently active lifecycle.
-    // R001 (M1): it is INERT for fresh sessions — a session with no own state
-    // file never adopts from it. It is deleted at lifecycle end (R003) and is
+    // It is INERT for fresh sessions — a session with no own state
+    // file never adopts from it. It is deleted at lifecycle end and is
     // never re-created for a finished session; it exists only as an audit
     // marker for the currently active lifecycle.
     function getActiveSessionPath() {
@@ -1394,7 +1391,7 @@ export default {
       }
     }
 
-    // R003 (M1): deletes the workspace-level active-session pointer at
+    // Deletes the workspace-level active-session pointer at
     // lifecycle end — a finished lifecycle must never be a resume target. The
     // REPORT reset handlers call this before saveState; saveState itself never
     // re-creates the pointer for a session whose phase entry is absent.
@@ -1409,85 +1406,85 @@ export default {
       }
     }
 
-    // P002/R001: the file is the runtime SSOT — reconcile the in-memory cache
+    // The file is the runtime SSOT — reconcile the in-memory cache
     // on every overseer message so manual file edits are honored mid-session.
-    // Priority: valid own file (R003) > corrupt-file fresh init (R006) >
-    // missing-file fresh PROTOCOL_NOT_LOADED init (R001 — the active-session
+    // Priority: valid own file > corrupt-file fresh init >
+    // missing-file fresh PROTOCOL_NOT_LOADED init (the active-session
     // pointer is never adopted).
     function reconcileSessionState(sessionID) {
       const state = readStateFile(sessionID);
-      // R005 (M3): firstLoad is captured BEFORE the fresh-init branches below
+      // firstLoad is captured BEFORE the fresh-init branches below
       // set the phase entry. The restore timestamp must be recorded only when
       // this server instance loads the session from a valid state file for the
       // first time — that is a restart. A mid-session chat.params reconcile
-      // re-syncs an already-in-memory session (P002) and is NOT a restart;
+      // re-syncs an already-in-memory session and is NOT a restart;
       // re-recording there would make every mid-session KD look pre-restart
-      // and flag RESTART_CATCH_UP falsely (AC017).
+      // and flag RESTART_CATCH_UP falsely.
       const firstLoad = !sessionPhaseMap.has(sessionID);
 
       if (state === "missing") {
-        // R001 (M1): fresh-session-only lifecycle start — the workspace-level
+        // Fresh-session-only lifecycle start — the workspace-level
         // active-session pointer is INERT. A session with no own state file
         // never adopts another session's phase, generation, or `:sid`; it
         // always initializes at PROTOCOL_NOT_LOADED with `:sid` = current so
         // the mandatory todowrite kickoff runs. A same-session restart
-        // restores via this session's own state file (R003); a restart that
+        // restores via this session's own state file; a restart that
         // mints a NEW session id mid-lifecycle is recovered via the user's
-        // /phase override (SAFETY_ESCAPE), per plan assumption A1.
+        // /phase override (SAFETY_ESCAPE).
         sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
         sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
         saveState(sessionID);
-        debug(`reconcile: initialized PROTOCOL_NOT_LOADED for ${sessionID} (R001 — no cross-session adoption)`);
+        debug(`reconcile: initialized PROTOCOL_NOT_LOADED for ${sessionID} (no cross-session adoption)`);
         return;
       }
 
       if (state === "corrupt") {
-        // R006: the corrupt file was backed up by readStateFile — initialize
+        // The corrupt file was backed up by readStateFile — initialize
         // fresh rather than trusting a half-written state. The next valid
         // transition overwrites the original path with valid JSON.
         sessionPhaseMap.set(sessionID, STATES.PROTOCOL_NOT_LOADED);
         sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
         saveState(sessionID);
-        debug(`reconcile: initialized PROTOCOL_NOT_LOADED after corrupt state file for ${sessionID} (R006)`);
+        debug(`reconcile: initialized PROTOCOL_NOT_LOADED after corrupt state file for ${sessionID}`);
         return;
       }
 
-      // Valid own file — restore phase, generation, and sid (R001/R003).
+      // Valid own file — restore phase, generation, and sid.
       if (state.generation !== undefined) {
         sessionPhaseMap.set(`${sessionID}:gen`, state.generation);
       }
-      // R002 (M1): heal a stale `:sid` on restore — the stored sid may belong
+      // Heal a stale `:sid` on restore — the stored sid may belong
       // to a prior lifecycle (legacy adoption chain). Only the current
       // session's KDs may be read/advanced off, so the map entry is refreshed
       // to the current sessionID and the state file is persisted WITHOUT the
       // stale sid, eliminating stale-sid chaining across pre-existing files.
-      // Legacy files without `sid` keep the current-session default (R005 —
-      // no migration step).
+      // Legacy files without `sid` keep the current-session default (no
+      // migration step).
       const healedSid = state.sid && state.sid !== sessionID ? sessionID : state.sid;
       sessionPhaseMap.set(`${sessionID}:sid`, healedSid || sessionID);
       const phase = typeof state.phase === "number" ? state.phase : STATES.PROTOCOL_NOT_LOADED;
       sessionPhaseMap.set(sessionID, phase);
-      // R005 (M3): record the in-memory restore timestamp on the first valid
+      // Record the in-memory restore timestamp on the first valid
       // restore per server instance — the advancement block uses it to flag
-      // post-restart disk-evidence catch-up (RESTART_CATCH_UP, log-only; spec
-      // R005/OQ1). Never persisted (saveState serializes only phase/generation/
+      // post-restart disk-evidence catch-up (RESTART_CATCH_UP, log-only).
+      // Never persisted (saveState serializes only phase/generation/
       // sid/overrideUntil): a second restart re-runs reconcile and re-records.
       if (firstLoad) {
         sessionPhaseMap.set(`${sessionID}:restoredAt`, Date.now());
-        debug(`reconcile: recorded restore timestamp for ${sessionID} (R005)`);
+        debug(`reconcile: recorded restore timestamp for ${sessionID}`);
       }
-      // R006 (M2): restore the persistent override marker so a mid-session
-      // restart honors the override until fresh evidence (AC010b). Omitted
-      // when absent — legacy state files load unchanged (NFR003).
+      // Restore the persistent override marker so a mid-session
+      // restart honors the override until fresh evidence. Omitted
+      // when absent — legacy state files load unchanged.
       if (state.overrideUntil && typeof state.overrideUntil.phase === "number" && typeof state.overrideUntil.since === "number") {
         sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: state.overrideUntil.phase, since: state.overrideUntil.since });
-        debug(`reconcile: restored overrideUntil phase=${getPhaseName(state.overrideUntil.phase)} since=${state.overrideUntil.since} for ${sessionID} (R006)`);
+        debug(`reconcile: restored overrideUntil phase=${getPhaseName(state.overrideUntil.phase)} since=${state.overrideUntil.since} for ${sessionID}`);
       }
       if (state.sid && state.sid !== sessionID) {
-        debug(`reconcile: healed stale sid ${state.sid} → ${sessionID} for ${sessionID} (R002)`);
+        debug(`reconcile: healed stale sid ${state.sid} → ${sessionID} for ${sessionID}`);
         saveState(sessionID);
       }
-      debug(`reconcile: restored phase=${getPhaseName(phase)} sid=${healedSid || sessionID} for ${sessionID} (R001)`);
+      debug(`reconcile: restored phase=${getPhaseName(phase)} sid=${healedSid || sessionID} for ${sessionID}`);
     }
 
     const agentToPhaseMap = buildAgentToPhaseMap(PHASE_AGENT_MAP);
@@ -1497,13 +1494,13 @@ export default {
     debug(`Backward transitions: ${JSON.stringify(BACKWARD_TRANSITIONS)}`);
     debug(`Phase→agent map: ${JSON.stringify(PHASE_AGENT_MAP)}`);
 
-    // AC012: Clean up orphaned state files with missing SID on plugin load.
+    // Clean up orphaned state files with missing SID on plugin load.
     // These accumulate when sessions are interrupted mid-lifecycle.
     // Only delete files where sid is missing from the JSON, not where sid is null
     // (null sid is valid for INTENT-phase state before intent KD is written).
     // A phase-0 file that carries a `generation` field is a completed-lifecycle
     // marker (post-REPORT state) — it must survive restarts so the counter is
-    // not lost between lifecycles (R4).
+    // not lost between lifecycles.
     try {
       const stateDir = getStateDir();
       const stateFiles = readdirSync(stateDir).filter(f => f.startsWith(".protocol-state-") && f.endsWith(".json"));
@@ -1537,13 +1534,13 @@ export default {
 
       const prevPhase = sessionPhaseMap.get(sessionID);
       sessionPhaseMap.set(sessionID, targetPhase);
-      // R006 (P010): a backward transition clears the override marker — the
+      // A backward transition clears the override marker — the
       // user chose to move back, so the previous override no longer applies.
       if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
         sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
-        debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)} (R006)`);
+        debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
       }
-      // F1 (R002): a backward transition also supersedes any pending auto-advance
+      // A backward transition also supersedes any pending auto-advance
       // — the one-shot announcement is stale the moment the user moves back.
       advancementAnnouncements.delete(sessionID);
       debug(`Backward transition complete: ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
@@ -1552,16 +1549,16 @@ export default {
       pendingVerificationToolCount.delete(sessionID);
       debug(`pendingVerification: CLEARED (backward transition) for session ${sessionID}`);
 
-      // R004: Reset counters when regressing to a target phase.
-      // This prevents stale dispatch counts from causing formula divergence (BUG-005)
+      // Reset counters when regressing to a target phase.
+      // This prevents stale dispatch counts from causing formula divergence
       // and allows fresh tracking of re-dispatches for the new phase entry.
-      // T-R004-1: Reset swarmDispatchCount when regressing TO SWARM
+      // Reset swarmDispatchCount when regressing TO SWARM
       if (targetPhase === STATES.SWARM) {
         const knowledgeDir = getKnowledgeDir();
         let implFiles = [];
         try {
           const files = readdirSync(knowledgeDir);
-          // R004 (M1): count impl KDs for the current session only — no
+          // Count impl KDs for the current session only — no
           // cross-session lookup set after adoption removal.
           implFiles = files.filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID)) && /^impl-/i.test(f));
         } catch (_) {}
@@ -1569,21 +1566,21 @@ export default {
         swarmDispatchCount.set(sessionID, reconciliedCount);
         debug(`COUNTER_RESET: swarmDispatchCount set to ${reconciliedCount} (${implFiles.length} impl files found) for session ${sessionID}`);
       }
-      // T-R004-2: Reset phaseRedispatchCount for the target phase
+      // Reset phaseRedispatchCount for the target phase
       phaseRedispatchCount.delete(`${sessionID}:${targetPhase}`);
-      // F1 (R006): regression to SWARM also clears every per-milestone
+      // Regression to SWARM also clears every per-milestone
       // redispatch budget — re-entering the swarm starts each milestone fresh.
       clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       debug(`COUNTER_RESET: phaseRedispatchCount deleted for ${getPhaseName(targetPhase)} (session ${sessionID})`);
       return true;
     }
 
-    // R013/P014: restart-proof check-off — the impl KD filename is the ONLY
+    // Restart-proof check-off — the impl KD filename is the ONLY
     // source of the parent lifecycle. Candidate parent sessions are collected
     // from the on-disk .state files (which survive restart) plus the in-memory
     // overseer cache; the filename's embedded `-{sessionID}-gen{N}` suffix
     // selects the parent via matchesSessionKD. A fresh instance with an empty
-    // overseerSessions set still checks the milestone off (AC013).
+    // overseerSessions set still checks the milestone off.
     function collectParentSessionCandidates() {
       const candidates = new Set(overseerSessions);
       try {
@@ -1598,7 +1595,7 @@ export default {
 
     // Persisted generation for a session — reads the .state file so check-off
     // matches the correct lifecycle after a restart when the in-memory map is
-    // empty (the file is the SSOT, R014). Returns null when no valid file
+    // empty (the file is the SSOT). Returns null when no valid file
     // exists so callers can fall back to the in-memory value.
     function getPersistedGeneration(sessionID) {
       const statePath = getStatePath(sessionID);
@@ -1611,11 +1608,11 @@ export default {
       }
     }
 
-    // M3 (R012/R013): When the artisan writes its milestone-scoped impl KD,
+    // When the artisan writes its milestone-scoped impl KD,
     // advance that milestone to checked-off in the parent lifecycle's registry.
     // The impl KD on disk IS the verifiable evidence of completion — the
     // SWARM→VERIFY gate reads it back via checkMilestoneCheckedOff. Only a row
-    // in-progress in the registry can complete (R012); the parent session and
+    // in-progress in the registry can complete; the parent session and
     // generation come from the filename + on-disk state, never from in-memory
     // session state alone.
     function autoCheckOffMilestone(relPath) {
@@ -1632,10 +1629,10 @@ export default {
             sessionPhaseMap.set(`${candidate}:gen`, generation);
           }
           const result = updateMilestoneRegistry(candidate, sessionPhaseMap, milestoneId, ["checked-off"]);
-          debug(`M3 auto check-off: impl KD for milestone ${milestoneId} (parent ${candidate}) → ${JSON.stringify(result)}`);
-          // F1 (R004): only a SUCCESSFUL check-off resets the per-milestone
+          debug(`auto check-off: impl KD for milestone ${milestoneId} (parent ${candidate}) → ${JSON.stringify(result)}`);
+          // Only a SUCCESSFUL check-off resets the per-milestone
           // redispatch budget. A failed registry update keeps the counter so
-          // retries still count toward the cap; a re-opened milestone (R016)
+          // retries still count toward the cap; a re-opened milestone
           // starts fresh because its budget was cleared at the earlier
           // check-off — the desired re-open semantics.
           if (result.ok) {
@@ -1652,13 +1649,13 @@ export default {
       const { sessionID, agent } = input;
       lastSeenSession = sessionID;
 
-      // R100: Track agent for ALL sessions (overseer and subagents).
+      // Track agent for ALL sessions (overseer and subagents).
       // Used by checkpoint KD enforcement to verify the writing agent.
       if (agent) sessionAgentMap.set(sessionID, agent);
 
       if (agent === "overseer") {
         overseerSessions.add(sessionID);
-        // P002/R001: the state file is the runtime SSOT — reconcile the
+        // The state file is the runtime SSOT — reconcile the
         // in-memory cache on every overseer message so manual file edits are
         // honored mid-session. The old `!sessionPhaseMap.has` one-shot load
         // guard is deliberately removed: the file always wins.
@@ -1671,15 +1668,15 @@ export default {
       }
     }
 
-    // --- Hook: chat.message (F4/R007) ---
+    // --- Hook: chat.message ---
     // Verbatim raw-intent capture: fires when a message is received, before any
     // LLM call. The Overseer's Raw Request is captured word-for-word so the
-    // INTENT-phase systemTransform injection (R008) can relay it verbatim into
+    // INTENT-phase systemTransform injection can relay it verbatim into
     // the intent KD authoring flow — behavioral relay rules are insufficient
-    // because the model may summarize or omit. Read-only discipline (R009):
+    // because the model may summarize or omit. Read-only discipline:
     // no KD writes, no mutation of output.message; subagent messages and
-    // non-text parts are skipped (AC013/AC014); the per-session capture is
-    // capped at RAW_INTENT_MAX_MESSAGES by dropping the oldest entries (NFR004).
+    // non-text parts are skipped; the per-session capture is
+    // capped at RAW_INTENT_MAX_MESSAGES by dropping the oldest entries.
     async function chatMessage(input, output) {
       const { sessionID, agent, messageID } = input || {};
       if (!sessionID) return;
@@ -1700,13 +1697,13 @@ export default {
       debug(`chat.message: captured ${texts.length} text part(s) for session ${sessionID} (${list.length}/${RAW_INTENT_MAX_MESSAGES})`);
     }
 
-    // --- Hook: command.execute.before (R008) ---
+    // --- Hook: command.execute.before ---
     // Implements the /phase slash command — the single user-facing override
     // path. Validates the argument against STATES (rejections: 99, INVALID,
     // empty), sets the phase in memory, persists via saveState, and replies
     // with a deterministic confirmation. Any valid phase 0-12 is accepted with
-    // no forward-jump cap (R009); the command template is confirmation-only —
-    // the LLM never hand-writes state files (R007/NFR005).
+    // no forward-jump cap; the command template is confirmation-only —
+    // the LLM never hand-writes state files.
     async function commandExecuteBefore(input, output) {
       const commandName = String(input.command || "").replace(/^\/+/, "");
       if (commandName !== "phase") return;
@@ -1723,14 +1720,14 @@ export default {
       }
       const prevPhase = sessionPhaseMap.get(sessionID);
       sessionPhaseMap.set(sessionID, n);
-      // R006 (M2): every /phase invocation persists an override marker
+      // Every /phase invocation persists an override marker
       // { phase, since } — while the current phase equals the target, only
       // fresh evidence (KD mtime >= since) advances and consistency never
       // regresses. A new /phase replaces any prior marker (clear-on-new-
-      // override, P010); the marker clears on advance-away, backward
+      // override); the marker clears on advance-away, backward
       // transition, or REPORT reset.
       sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since: Date.now() });
-      // F1 (R001): a manual /phase override supersedes any pending auto-advance.
+      // A manual /phase override supersedes any pending auto-advance.
       // The one-shot announcement must not leak into the next systemTransform —
       // e.g. a stale "auto-advanced EXPLORE → INVESTIGATE" after a redispatch to
       // EXPLORE would contradict the manual override and misroute the LLM.
@@ -1742,17 +1739,17 @@ export default {
       }
       overseerSessions.add(sessionID);
       saveState(sessionID);
-      // M5 (R011-R014): the user's /phase override is the ONLY escape hatch
+      // The user's /phase override is the ONLY escape hatch
       // from a stuck SWARM — the automatic safety mechanisms never advance it.
       if (prevPhase === STATES.SWARM && n !== STATES.SWARM) {
         debug(`SAFETY_ESCAPE: /phase override ${getPhaseName(prevPhase)} → ${getPhaseName(n)} for session ${sessionID} — manual escape from SWARM`);
-        // R007 (issue-18): an escaped-and-continued lifecycle must restart
+        // An escaped-and-continued lifecycle must restart
         // each milestone with a fresh redispatch budget, or stale caps from
         // before the escape could deny legitimate retries. Numeric phase-key
         // counters are preserved — only non-numeric per-milestone keys clear.
         clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       }
-      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — overrideUntil set (phase ${n}, since ${sessionPhaseMap.get(`${sessionID}:overrideUntil`).since}) (R006)`);
+      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — overrideUntil set (phase ${n}, since ${sessionPhaseMap.get(`${sessionID}:overrideUntil`).since})`);
       output.parts = [{ type: "text", text: `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
     }
 
@@ -1771,7 +1768,7 @@ export default {
       if (tool !== "task" && !allowedTools.includes(tool)) {
         debug(`permission.ask: DENY tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
         output.status = "deny";
-        // Per R026: non-task tool blocks set output.status = "deny" without throwing
+        // Non-task tool blocks set output.status = "deny" without throwing
       } else {
         debug(`permission.ask: ALLOW tool=${tool} in phase=${phaseName}`);
       }
@@ -1793,7 +1790,7 @@ export default {
       // opencode API: tool args live on output.args, not input.args
       const args = output.args || {};
 
-      // R043-02 (issue-43): structural git-stage guard. Rejects `git add`
+      // Structural git-stage guard. Rejects `git add`
       // invocations that would stage gitignored paths — force flags bypass the
       // ignore rules and explicit knowledge/ paths are the gitignored workflow
       // set. Runs before the overseer/non-overseer split so every session is
@@ -1815,7 +1812,7 @@ export default {
       }
 
       if (!isOverseerSession(sessionID)) {
-        // R100: Checkpoint KD enforcement for subagent writes/edits.
+        // Checkpoint KD enforcement for subagent writes/edits.
         // Only the committer should write checkpoint KDs during SWARM phase.
         // If a non-committer subagent (e.g. artisan) writes or edits a
         // checkpoint KD directly, flag it. Check ALL overseer sessions for
@@ -1856,7 +1853,7 @@ export default {
               }
             }
           }
-          // M4 (R009/R010): the artisan's milestone-scoped impl KD write is the
+          // The artisan's milestone-scoped impl KD write is the
           // check-off signal — advance that milestone in the parent SWARM
           // lifecycle's registry. Only the artisan (the intended writer of impl
           // KDs) triggers it; other agents' writes never touch milestone state.
@@ -1904,7 +1901,7 @@ export default {
             if (hasAll) {
               debug(`todowrite: all lifecycle keywords present → advancing to INTENT`);
               sessionPhaseMap.set(sessionID, STATES.INTENT);
-              // Fix M2: Re-initialize :sid when entering INTENT after REPORT→PROTOCOL_NOT_LOADED cycle.
+              // Re-initialize :sid when entering INTENT after REPORT→PROTOCOL_NOT_LOADED cycle.
               // Without this, checkDiskAdvancement lacks :sid to filter KDs by session, preventing progression.
               sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
               debug("INTENT phase: write the intent KD with the raw user request; the Explorer handles codebase exploration after dispatch.");
@@ -1916,7 +1913,7 @@ export default {
             }
           }
         }
-        // Phase advancement happens ONLY via checkDiskAdvancement() — not via todowrite content (R009)
+        // Phase advancement happens ONLY via checkDiskAdvancement() — not via todowrite content
       }
 
       // --- write handler ---
@@ -1927,7 +1924,7 @@ export default {
         // Check if path matches the required pattern (handles both relative and absolute paths)
         const isIntentKD = relPath.startsWith("knowledge/intent-") || relPath.includes("/knowledge/intent-");
         const isReportKD = relPath.startsWith("knowledge/report-") || relPath.includes("/knowledge/report-");
-        // R100: Checkpoint KD enforcement — Overseer should not write checkpoint KDs.
+        // Checkpoint KD enforcement — Overseer should not write checkpoint KDs.
         // Check BEFORE phase-specific restrictions (INTENT, REPORT) to provide the
         // more specific error: checkpoint KDs are only for committers.
         const isCheckpointKD = relPath.startsWith("knowledge/checkpoint-") || relPath.includes("/knowledge/checkpoint-");
@@ -1953,28 +1950,28 @@ export default {
         // Reset to phase 0 so the Overseer can start a new lifecycle with todowrite.
         if (phase === STATES.REPORT && isReportKD) {
           debug(`write: report KD written → transitioning lifecycle end`);
-          // R003 (M1): lifecycle end — the finished session must never be a
+          // Lifecycle end — the finished session must never be a
           // resume target. Delete the pointer; saveState won't re-create it
-          // because the phase entry is deleted below (R003).
+          // because the phase entry is deleted below.
           deleteActiveSession();
-          // R001: increment generation on lifecycle end — the new generation
-          // scopes all KDs written in the next lifecycle. NFR002/EC-003:
-          // increment is atomic with saveState — revert on save failure.
+          // Increment generation on lifecycle end — the new generation
+          // scopes all KDs written in the next lifecycle. The increment
+          // is atomic with saveState — revert on save failure.
           const currentGen = getCurrentGeneration(sessionPhaseMap, sessionID);
           const nextGen = currentGen + 1;
           sessionPhaseMap.set(`${sessionID}:gen`, nextGen);
-          // R004/P009: delete the phase entry instead of setting PROTOCOL_NOT_LOADED.
+          // Delete the phase entry instead of setting PROTOCOL_NOT_LOADED.
           // chat.params only re-runs loadState() when the entry is absent, so a
           // 0 here would keep the in-memory map diverged from a manually edited
-          // state file (BUG-009). Deleting forces loadState() on the next message.
+          // state file. Deleting forces loadState() on the next message.
           sessionPhaseMap.delete(sessionID);
           diskCheckFailures.set(sessionID, 0);
           sessionPhaseMap.delete(`${sessionID}:sid`);
-          // R006 (P010): lifecycle end clears the override marker — a finished
+          // Lifecycle end clears the override marker — a finished
           // lifecycle is never pinned; the next lifecycle starts fresh.
           if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
             sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
-            debug(`Override cleared: REPORT reset (R006)`);
+            debug(`Override cleared: REPORT reset`);
           }
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
@@ -1983,21 +1980,21 @@ export default {
           pendingVerificationToolCount.delete(sessionID);
           if (!saveState(sessionID)) {
             sessionPhaseMap.set(`${sessionID}:gen`, currentGen);
-            debug(`saveState failed — generation stays ${currentGen} for session ${sessionID} (NFR002)`);
+            debug(`saveState failed — generation stays ${currentGen} for session ${sessionID}`);
           } else {
             debug(`Generation ${currentGen} → ${nextGen} for session ${sessionID}`);
           }
-          // R003/P008: remove this lifecycle's KDs so stale files can never
-          // advance or suppress the next generation. R102: pass the ENDING
+          // Remove this lifecycle's KDs so stale files can never
+          // advance or suppress the next generation. Pass the ENDING
           // generation (currentGen, captured before the increment) so a reused
-          // session ID never deletes the new lifecycle's KDs. EC-008: cleanup
+          // session ID never deletes the new lifecycle's KDs. Cleanup
           // failure must not block the phase reset — wrapped in try-catch.
-          // EC-004 accepted race: any KD written between the REPORT trigger and
+          // Accepted race: any KD written between the REPORT trigger and
           // this cleanup belongs to the ending lifecycle; deletion is safe.
           try {
             cleanupLifecycleKDs(sessionID, currentGen);
           } catch (e) {
-            debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message} (EC-008)`);
+            debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message}`);
           }
           phase = STATES.PROTOCOL_NOT_LOADED;
           phaseName = getPhaseName(phase);
@@ -2029,7 +2026,7 @@ export default {
           }
         }
 
-        // BUG-003: Trigger pendingVerification when write creates a KD matching
+        // Trigger pendingVerification when write creates a KD matching
         // the current phase's expected prefix. This prevents false regression
         // while the KD is being finalized and written to disk.
         if (phase > STATES.INTENT && phase <= STATES.CLEANUP) {
@@ -2103,23 +2100,23 @@ export default {
 
         if (phase === STATES.REPORT && isReportKD) {
           debug(`edit: report KD edited → transitioning lifecycle end`);
-          // R003 (M1): lifecycle end — delete the active-session pointer; the
+          // Lifecycle end — delete the active-session pointer; the
           // finished session must never be a resume target (see write handler).
           deleteActiveSession();
-          // R001: generation increment — mirrors the write handler (see above
-          // for the NFR002 atomicity rationale). R004/P009: delete the phase
-          // entry so the next chat.params re-runs loadState() (BUG-009).
+          // Generation increment — mirrors the write handler (see above
+          // for the atomicity rationale). Delete the phase
+          // entry so the next chat.params re-runs loadState().
           const currentGen = getCurrentGeneration(sessionPhaseMap, sessionID);
           const nextGen = currentGen + 1;
           sessionPhaseMap.set(`${sessionID}:gen`, nextGen);
           sessionPhaseMap.delete(sessionID);
           diskCheckFailures.set(sessionID, 0);
           sessionPhaseMap.delete(`${sessionID}:sid`);
-          // R006 (P010): lifecycle end clears the override marker (see write
+          // Lifecycle end clears the override marker (see write
           // handler for the rationale).
           if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
             sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
-            debug(`Override cleared: REPORT reset via edit (R006)`);
+            debug(`Override cleared: REPORT reset via edit`);
           }
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
@@ -2128,17 +2125,17 @@ export default {
           pendingVerificationToolCount.delete(sessionID);
           if (!saveState(sessionID)) {
             sessionPhaseMap.set(`${sessionID}:gen`, currentGen);
-            debug(`saveState failed — generation stays ${currentGen} for session ${sessionID} (NFR002)`);
+            debug(`saveState failed — generation stays ${currentGen} for session ${sessionID}`);
           } else {
             debug(`Generation ${currentGen} → ${nextGen} for session ${sessionID}`);
           }
-          // R003/P008: cleanup the ending lifecycle's KDs. R102: pass the
+          // Cleanup the ending lifecycle's KDs: pass the
           // ENDING generation (currentGen) so newer generations survive a
-          // reused session ID; EC-008 try-catch (see write handler).
+          // reused session ID; try-catch (see write handler).
           try {
             cleanupLifecycleKDs(sessionID, currentGen);
           } catch (e) {
-            debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message} (EC-008)`);
+            debug(`cleanupLifecycleKDs error for session ${sessionID}: ${e.message}`);
           }
           phase = STATES.PROTOCOL_NOT_LOADED;
           phaseName = getPhaseName(phase);
@@ -2148,14 +2145,14 @@ export default {
         }
       }
 
-      // R016/P017: a SWARM re-dispatch must re-open its checked-off milestone
+      // A SWARM re-dispatch must re-open its checked-off milestone
       // BEFORE the all-checked-off gate runs. The gate is checked on the same
       // task call (below); without the re-open first, an all-done registry would
       // advance SWARM→VERIFY and the re-dispatch would be blocked as a wrong
       // agent before the task handler ever runs. Only genuine artisan dispatches
       // to SWARM's agent advance the registry; every other task call passes
       // through untouched.
-      // R017/P019 (issue-7): MILESTONE_ID cardinality is validated BEFORE any
+      // MILESTONE_ID cardinality is validated BEFORE any
       // registry mutation. A MULTI_MILESTONE rejection must leave the registry
       // byte-identical — without this check, first-line-wins extraction would
       // advance the first row before delegation-gate rejected the dispatch
@@ -2178,7 +2175,7 @@ export default {
         }
       }
 
-      // --- disk-based advancement for lifecycle tools (R009) ---
+      // --- disk-based advancement for lifecycle tools ---
       // Runs BEFORE the task handler so the phase is current when agent routing
       // validates the dispatched agent. Without this, task calls in PREFLIGHT
       // check against the stale pre-advancement phase and throw WRONG_AGENT.
@@ -2195,16 +2192,16 @@ export default {
           const currentPhaseName = getPhaseName(currentPhase);
           if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount, { verdictRegressedKDs, backwardTransition: handleBackwardTransition })) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
-            // R006 (P010): the phase advanced away from the override target on
-            // fresh evidence — clear the marker so normal R009 advancement
-            // semantics resume for this and later phases (AC007).
+            // The phase advanced away from the override target on
+            // fresh evidence — clear the marker so normal advancement
+            // semantics resume for this and later phases.
             const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
             if (overrideUntil && currentPhase === overrideUntil.phase) {
               sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
-              debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence (R006)`);
+              debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence`);
             }
             diskCheckFailures.set(sessionID, 0);
-            // R005: Clear in-flight tracking — KD appeared on disk, dispatch is complete
+            // Clear in-flight tracking — KD appeared on disk, dispatch is complete
             inFlightDispatches.delete(sessionID);
             pendingVerification.delete(sessionID);
             pendingVerificationToolCount.delete(sessionID);
@@ -2212,14 +2209,14 @@ export default {
             // Reset re-dispatch counter for the phase we just advanced from
             phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
             const newPhase = currentPhase + 1;
-            // R002: Record fresh advancement to prevent false regression.
+            // Record fresh advancement to prevent false regression.
             // checkPhaseStateConsistency uses this to grant a grace period before
             // allowing regression from the new phase back to the old one.
             freshAdvancement.set(sessionID, { phase: newPhase, diskCheckCount: 0 });
             debug(`FRESH_ADVANCEMENT: ${currentPhaseName} → ${getPhaseName(newPhase)} recorded for session ${sessionID}`);
-            // Finding 4 (R401): explicit advancement event. Diagnostic re-read of
-            // the already-returned gate result — the M5 gate semantics are
-            // unchanged (AC404); this only formats checkedOff/total as evidence
+            // Explicit advancement event. Diagnostic re-read of
+            // the already-returned gate result — the all-checked-off gate semantics
+            // are unchanged; this only formats checkedOff/total as evidence
             // for the log and the one-shot announcement below.
             let advancementGateEvidence = "";
             if (currentPhase === STATES.SWARM) {
@@ -2227,15 +2224,15 @@ export default {
               advancementGateEvidence = `all milestones checked-off: ${gateEvidence.checkedOff}/${gateEvidence.total}`;
             }
             debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}${advancementGateEvidence ? ` (${advancementGateEvidence})` : ""}`);
-            // R005 (M3): post-restart disk-evidence catch-up diagnostic — log-only.
+            // Post-restart disk-evidence catch-up diagnostic — log-only.
             // After a restart the gate may advance one phase per tool call across
             // phases whose KDs already exist on disk; that is disk-evidence
-            // catch-up, not a skip (spec A4/R010 — no mtime gate, no suppression).
+            // catch-up, not a skip — no mtime gate, no suppression.
             // When the advancing phase's evidence KD predates the session's
             // restore timestamp, name it RESTART_CATCH_UP so a "phase jumped"
             // read is explained as accumulated disk evidence. Skipped when no
-            // restore timestamp was recorded (EC8) or the evidence KD is
-            // indeterminable (R2 — checkDiskAdvancement returns boolean only).
+            // restore timestamp was recorded or the evidence KD is
+            // indeterminable (checkDiskAdvancement returns boolean only).
             const restoredAt = sessionPhaseMap.get(`${sessionID}:restoredAt`);
             if (typeof restoredAt === "number") {
               const evidenceFile = findNewestEvidenceKD(sessionPhaseMap, sessionID, currentPhase);
@@ -2246,9 +2243,9 @@ export default {
                 }
               }
             }
-            // Finding 4 (R402): record the transition for the one-shot
+            // Record the transition for the one-shot
             // LLM-visible announcement. The systemTransform consumes and deletes
-            // the entry on its next run for this session (R403).
+            // the entry on its next run for this session.
             advancementAnnouncements.set(sessionID, {
               from: currentPhaseName,
               to: getPhaseName(newPhase),
@@ -2264,7 +2261,7 @@ export default {
           } else {
             // REPORT doesn't use disk-based advancement — skip stuck detection.
             // REPORT writes the KD directly; other phases rely on KD file existence.
-            // P009: after lifecycle-end the phase entry was deleted; currentPhase
+            // After lifecycle-end the phase entry was deleted; currentPhase
             // is undefined and there is nothing to check — skip the whole block
             // (getPhaseName(undefined).toLowerCase() would throw).
             if (currentPhase === undefined) {
@@ -2275,7 +2272,7 @@ export default {
                 currentPhasePrefixes.push(currentPhaseName.toLowerCase());
               }
 
-              // R001 guard: skip consistency check when write/task is creating expected KD.
+              // Skip consistency check when write/task is creating expected KD.
               // For VERIFY phase, match against ANY prefix in the array (review OR audit).
               let isCreatingExpectedKD = tool === "write" && currentPhasePrefixes.some(p =>
                 (args?.filePath || "").includes(`${p}-`) || (args?.content || "").includes(`${p}-`)
@@ -2295,27 +2292,27 @@ export default {
                 }
               }
 
-              // R003: Always increment diskCheckFailures — even during
+              // Always increment diskCheckFailures — even during
               // pendingVerification — so safety mechanisms (force-advance at 15,
               // re-dispatch cap at 5) can fire regardless of pendingVerification state.
               // Previously, pendingVerification suppressed all stuck detection,
-              // causing the infinite loop to run indefinitely. (BUG-007 fix)
+              // causing the infinite loop to run indefinitely.
               const currentFailures = (diskCheckFailures.get(sessionID) || 0) + 1;
               diskCheckFailures.set(sessionID, currentFailures);
 
-              // R003: Check force-advance safety mechanism BEFORE pendingVerification guard.
+              // Check force-advance safety mechanism BEFORE pendingVerification guard.
               // When pendingVerification is active but the subagent is stuck and not
               // producing the expected KD, this ensures the force-advance still fires.
               let safetyTriggered = false;
               if (currentFailures >= 15) {
                 if (currentPhase === STATES.SWARM) {
-                  // M5 (R011-R014): repurposed — a stuck SWARM never
+                  // A stuck SWARM never
                   // auto-advances to VERIFY. Mark stuck milestones failed,
                   // reset counters, stay in SWARM. User /phase is the escape.
                   markStuckMilestonesFailed(sessionID, sessionPhaseMap, `FORCE ADVANCE at ${currentFailures} failures`);
                   diskCheckFailures.set(sessionID, 0);
                   phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
-                  // F1 (R006): SWARM FORCE ADVANCE clears every per-milestone
+                  // SWARM FORCE ADVANCE clears every per-milestone
                   // redispatch budget too — no stale caps after the escape hatch.
                   clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
                   pendingVerification.delete(sessionID);
@@ -2334,12 +2331,12 @@ export default {
                 }
                 safetyTriggered = true;
               } else {
-                // R003: Check re-dispatch cap BEFORE pendingVerification guard
-                // F1 (R001/R003): in SWARM the cap reads the offending
+                // Check re-dispatch cap BEFORE pendingVerification guard.
+                // In SWARM the cap reads the offending
                 // milestone's own key — a missing key returns 0, so a fresh
                 // milestone (zero prior attempts) can never satisfy `>= 5` and
                 // never throws SAFETY_STUCK on its first dispatch. Non-SWARM
-                // phases keep the phase-keyed counter (R002); a malformed
+                // phases keep the phase-keyed counter; a malformed
                 // SWARM prompt with no extractable milestone ID falls back to
                 // the phase key (prior behavior preserved, no crash).
                 let redispatchKey = `${sessionID}:${currentPhase}`;
@@ -2353,10 +2350,10 @@ export default {
                 const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
                 if (redispatches >= 5 && tool === "task") {
                   if (currentPhase === STATES.SWARM) {
-                    // M5 (R011-R014): repurposed — the redispatch cap during
+                    // The redispatch cap during
                     // SWARM blocks the dispatch, marks the stuck milestone
                     // failed, and throws SAFETY_STUCK (no auto-advance).
-                    // F1 (R005): only the offending milestone's row fails.
+                    // Only the offending milestone's row fails.
                     if (capMilestoneId) {
                       markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`, capMilestoneId);
                     } else {
@@ -2397,7 +2394,7 @@ export default {
                   // Safety timeout: warn at 10, force-advance at 15 tool calls
                   if (toolCalls >= 15) {
                     if (currentPhase === STATES.SWARM) {
-                      // M5 (R011-R014): repurposed — a stuck SWARM never
+                      // A stuck SWARM never
                       // auto-advances to VERIFY. Mark stuck milestones failed,
                       // clear pendingVerification, stay in SWARM.
                       markStuckMilestonesFailed(sessionID, sessionPhaseMap, `pendingVerification force-advance after ${toolCalls} tool calls`);
@@ -2438,7 +2435,7 @@ export default {
                     if (currentFailures === 10) {
                       const knowledgeDir = getKnowledgeDir();
                       let foundFiles = [];
-                      // R004 (M1): the stuck diagnostic scans the current
+                      // The stuck diagnostic scans the current
                       // session's KDs only (single-session lookup).
                       try { foundFiles = readdirSync(knowledgeDir).filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, getCurrentGeneration(sessionPhaseMap, sessionID))); } catch (_) {}
                       debug(`STUCK WARNING: ${currentPhaseName} phase — no matching KD after ${currentFailures} disk checks. Expected prefixes: ${JSON.stringify(currentPhasePrefixes)}. Files found: ${JSON.stringify(foundFiles)}. Delegate to produce the required KD or check delegation-gate logs for extraction failures.`);
@@ -2489,17 +2486,17 @@ export default {
             if (phase === STATES.SWARM) {
               const count = (swarmDispatchCount.get(sessionID) || 0) + 1;
               swarmDispatchCount.set(sessionID, count);
-              // M5 (R011-R014): MILESTONE_COUNT is no longer extracted or
+              // MILESTONE_COUNT is no longer extracted or
               // stored — the all-checked-off registry gate replaces count-based
-              // advancement, so count signals have no gating effect (AC024).
-              // M3: per-milestone registry tracking runs in the pre-gate block
-              // above (R016 re-open must precede the all-checked-off gate).
+              // advancement, so count signals have no gating effect.
+              // Per-milestone registry tracking runs in the pre-gate block
+              // above (the re-open must precede the all-checked-off gate).
               // swarmDispatchCount remains a pure counter — it has no gating
-              // effect (M5: the all-checked-off registry gate replaces it).
+              // effect (the all-checked-off registry gate replaces it).
               debug(`SWARM dispatch count for ${sessionID}: ${count}`);
             }
-            // Track re-dispatches per phase to cap retries. F1 (R001/R002):
-            // in SWARM the counter increments the dispatched milestone's own
+            // Track re-dispatches per phase to cap retries.
+            // In SWARM the counter increments the dispatched milestone's own
             // key (case-normalized) so each milestone caps independently; a
             // malformed prompt with no milestone ID falls back to the phase key
             // (prior behavior preserved). Non-SWARM phases stay phase-keyed.
@@ -2511,7 +2508,7 @@ export default {
               }
             }
             phaseRedispatchCount.set(redispatchKey, (phaseRedispatchCount.get(redispatchKey) || 0) + 1);
-            // R014 (issue-14): record the charged dispatch so the
+            // Record the charged dispatch so the
             // tool.execute.after hook can restore the budget when the dispatch
             // produces no expected RESULT KD (empty-result detection). resultKd
             // is parsed from the raw prompt's `RESULT KD:` line; prefixes are
@@ -2525,7 +2522,7 @@ export default {
               agentName,
               callID
             });
-            // BUG-003: Trigger pendingVerification when task dispatches the current phase's
+            // Trigger pendingVerification when task dispatches the current phase's
             // expected agent. The expected KD will be produced by the subagent.
             const prefixes = getPrefixes(phase);
             if (prefixes.length > 0) {
@@ -2546,7 +2543,7 @@ export default {
             const targetPhaseId = agentPhases.find(pid => validTargets.includes(pid));
 
             if (targetPhaseId !== undefined) {
-              // R011: Require explicit BACKWARD: true flag for backward transitions
+              // Require explicit BACKWARD: true flag for backward transitions
               // Without the flag, dispatching a non-current-phase agent is a wrong-agent
               // error even if the agent could theoretically trigger a backward transition.
               const hasBackwardFlag = /\bBACKWARD:\s*true\b/i.test(prompt);
@@ -2566,7 +2563,7 @@ export default {
               // by the subagent bypass — artisan sessions are not in overseerSessions,
               // so committer dispatches from artisan pass through protocol-gate untouched.
               // The Overseer dispatching committer during SWARM without BACKWARD: true
-              // is now blocked (R011) — which is correct because checkpoint commits are
+              // is now blocked — which is correct because checkpoint commits are
               // the artisan's responsibility, not the overseer's.
               const expectedAgent = currentPhaseAgent || phaseName;
               debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
@@ -2577,7 +2574,7 @@ export default {
       }
     }
 
-    // --- Helper: expected-KD existence for a recorded dispatch (R014) ---
+    // --- Helper: expected-KD existence for a recorded dispatch ---
     // Explicit RESULT KD paths are checked directly; dispatches without one
     // fall back to a prefix scan of the phase's expected KD prefixes
     // (multi-KD phases like VERIFY = review+audit are covered by the scan).
@@ -2604,12 +2601,12 @@ export default {
     }
 
     // --- Hook: tool.execute.after ---
-    // R014 (issue-14): empty-result redispatch reconciliation. The before-hook
-    // charges the redispatch budget at the :2475 increment site; this hook
+    // Empty-result redispatch reconciliation. The before-hook
+    // charges the redispatch budget at the increment site; this hook
     // restores the charge when a task dispatch produced no expected RESULT KD,
-    // so an empty-result dispatch does not silently consume a redispatch slot
-    // (issue-14 AC #1). Non-fatal: it returns normally and tool execution
-    // continues regardless of outcome (NFR005).
+    // so an empty-result dispatch does not silently consume a redispatch slot.
+    // Non-fatal: it returns normally and tool execution
+    // continues regardless of outcome.
     async function toolExecuteAfter(input, output) {
       const { tool, sessionID } = input;
       // Mirror the :1779 gate — only overseer task dispatches touch the
@@ -2621,7 +2618,7 @@ export default {
         // The dispatch produced its expected KD — keep the charge. SWARM
         // check-off already reset the per-milestone counter via
         // autoCheckOffMilestone; non-SWARM phases keep the increment for a
-        // produced KD (R014-02.5).
+        // produced KD.
         lastTaskDispatch.delete(sessionID);
         return;
       }
@@ -2682,7 +2679,7 @@ export default {
         let systemMsg = `[Protocol Gate] Phase ${phaseName}: ${instructions}`;
 
         // During INTENT phase, inject session ID + generation so Overseer can
-        // use them in the KD filename. The -gen{N} suffix (R002 Option A)
+        // use them in the KD filename. The -gen{N} suffix
         // scopes this lifecycle's KDs so stale prior-lifecycle KDs never match.
         if (phase === STATES.INTENT && sessionID) {
           const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
@@ -2690,7 +2687,7 @@ export default {
           systemMsg += `\nUse this session ID and generation in the intent KD filename: knowledge/intent-{name}-${sessionID}-gen${generation}.md`;
         }
 
-        // R010 (AC010): during SWARM, surface the milestone list (IDs + live
+        // During SWARM, surface the milestone list (IDs + live
         // states) so the Overseer knows the plan's milestones and dispatches
         // exactly one MILESTONE ID per artisan. The registry KD is the SSOT —
         // the list is read fresh from disk, never from in-memory caches.
@@ -2705,9 +2702,9 @@ export default {
 
         output.system.push(systemMsg);
 
-        // Finding 4 (R402/R403): one-shot phase-transition announcement. The map
+        // One-shot phase-transition announcement. The map
         // entry is consumed in this same transform — deleted right after
-        // announcing — so multi-tool turns never repeat it (NFR003). No entry
+        // announcing — so multi-tool turns never repeat it. No entry
         // (e.g. non-disk advancements or a restart) → no announcement.
         const announcement = advancementAnnouncements.get(sessionID);
         if (announcement) {
@@ -2717,13 +2714,13 @@ export default {
           debug(`systemTransform: announced phase auto-advance ${announcement.from} → ${announcement.to} for session ${sessionID}`);
         }
 
-        // F4 (R008): INTENT-phase verbatim raw-intent injection. The captured
+        // INTENT-phase verbatim raw-intent injection. The captured
         // user text is relayed word-for-word into the Raw Request authoring
-        // flow, removing model discretion over the verbatim copy. Read-only
-        // (R009): the directive instructs a copy, never an auto-write — the
+        // flow, removing model discretion over the verbatim copy. Read-only:
+        // the directive instructs a copy, never an auto-write — the
         // Overseer remains the KD author. Fires only while phase stays INTENT
-        // (may repeat on subsequent turns; stops automatically on advance —
-        // NFR003). Overseer-only: this block is inside the isOverseerSession
+        // (may repeat on subsequent turns; stops automatically on advance).
+        // Overseer-only: this block is inside the isOverseerSession
         // gate at the top of systemTransform.
         if (phase === STATES.INTENT && sessionID) {
           const captured = rawIntentCapture.get(sessionID);
