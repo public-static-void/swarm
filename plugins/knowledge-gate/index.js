@@ -69,7 +69,7 @@ function debug(msg) {
 const TAG_TAXONOMY = {
   plugin: ["protocol-gate", "delegation-gate", "knowledge-gate"],
   agent: ["overseer", "scribe", "analyzer", "artisan", "inspector", "committer", "explorer", "pathfinder", "spec-weaver", "habit-builder"],
-  mode: ["explore", "investigate", "align", "decompose", "swarm", "verify", "extract", "evolve"],
+  mode: ["explore", "investigate", "align", "decompose", "swarm", "review", "audit", "extract", "evolve"],
   domain: ["permissions", "auth", "state-machine", "phase-transition", "bug", "testing", "commit", "template", "scope", "lifecycle", "regression", "cache", "injection", "hook", "schema", "validation"],
   severity: ["critical", "major", "minor"],
   type: ["fact", "decision", "pattern", "warning", "context"]
@@ -85,7 +85,8 @@ const MODE_TAG_MAP = {
   align: ["specification", "design", "decision"],
   decompose: ["planning", "tasks", "dependencies"],
   swarm: ["implementation", "code", "pattern"],
-  verify: ["review", "audit", "quality"],
+  review: ["review", "quality"],
+  audit: ["audit", "quality"],
   extract: ["knowledge", "insight", "documentation"],
   evolve: ["process", "friction", "improvement"]
 };
