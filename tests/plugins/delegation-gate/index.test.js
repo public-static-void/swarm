@@ -624,7 +624,8 @@ ${c.branch ? `BRANCH: ${c.branch}\n` : ""}${c.kdPaths ? `KD PATHS: ${c.kdPaths}`
         { mode: "align", agent: "spec-weaver", kd: "knowledge/spec-foo.md" },
         { mode: "decompose", agent: "pathfinder", kd: "knowledge/plan-foo.md" },
         { mode: "swarm", agent: "artisan", kd: "knowledge/impl-M1-foo.md", milestoneId: "M1" },
-        { mode: "verify", agent: "inspector", kd: "knowledge/review-foo.md" },
+        { mode: "review", agent: "inspector", kd: "knowledge/review-foo.md" },
+        { mode: "audit", agent: "inspector", kd: "knowledge/audit-foo.md" },
         { mode: "extract", agent: "scribe", kd: "knowledge/composed-foo.md" },
         { mode: "evolve", agent: "habit-builder", kd: "knowledge/process-foo.md" },
       ];
@@ -858,22 +859,30 @@ ${c.mode === "preflight" ? "BRANCH: fix/swarm-gate" : ""}`;
       }
     });
 
-    it("injects both review and audit prefixes for verify mode (dual KDs)", async () => {
-      const prompt = `AGENT: inspector
-MODE: verify
+    it("injects the single KD prefix for review and audit modes separately", async () => {
+      const cases = [
+        { mode: "review", kd: "knowledge/review-<name>-<session_id>.md", otherPrefix: "audit" },
+        { mode: "audit", kd: "knowledge/audit-<name>-<session_id>.md", otherPrefix: "review" },
+      ];
+
+      for (const c of cases) {
+        const prompt = `AGENT: inspector
+MODE: ${c.mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
-SCOPE: Verify implementation
-RESULT KD: knowledge/review-foo.md`;
+SCOPE: ${c.mode} implementation
+RESULT KD: knowledge/${c.mode}-foo.md`;
 
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+        const output = { args: { prompt } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-      expect(output.args.description).toContain("MODE: verify");
-      expect(output.args.description).toContain("RESULT KD: knowledge/review-<name>-<session_id>.md, knowledge/audit-<name>-<session_id>.md");
-      expect(output.args.description).toContain("RESULT KD Naming Conventions:");
-      expect(output.args.description).toContain("- verify: knowledge/review-<name>-<session_id>.md, knowledge/audit-<name>-<session_id>.md");
-      expect(output.args.description).not.toContain("RESULT KD Naming Convention:");
+        expect(output.args.description).toContain(`MODE: ${c.mode}`);
+        expect(output.args.description).toContain(`RESULT KD: ${c.kd}`);
+        expect(output.args.description).toContain(`- ${c.mode}: ${c.kd}`);
+        expect(output.args.description).toContain("RESULT KD Naming Convention:");
+        expect(output.args.description).not.toContain("RESULT KD Naming Conventions:");
+        expect(output.args.description).not.toContain(`knowledge/${c.otherPrefix}-`);
+      }
     });
 
     it("falls back to the <type> placeholder for unknown modes", async () => {
@@ -1159,7 +1168,8 @@ SCOPE: Test partial match`;
         { mode: "checkpoint", agent: "committer", scope: "Create a checkpoint commit" },
         { mode: "preflight", agent: "committer", scope: "Setup workspace", branch: "fix/swarm-gate" },
         { mode: "align", agent: "spec-weaver", scope: "Align requirements" },
-        { mode: "verify", agent: "inspector", scope: "Verify implementation" },
+        { mode: "review", agent: "inspector", scope: "Review implementation" },
+        { mode: "audit", agent: "inspector", scope: "Audit implementation" },
         { mode: "extract", agent: "scribe", scope: "Extract documentation" },
         { mode: "evolve", agent: "habit-builder", scope: "Evolve process" },
         { mode: "cleanup", agent: "committer", scope: "Commit changes", branch: "chore/version-bump-2" }
