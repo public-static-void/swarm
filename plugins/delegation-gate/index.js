@@ -163,8 +163,12 @@ function loadTemplates(config) {
 
 // Scan a text block for structured delegation fields. Returns fields found.
 // When override is true, existing field values are overwritten (used for prompt-after-description).
+// A key-less line is treated as a SCOPE continuation: scopes are free-form
+// prose that legitimately wraps across lines, while every other field stays
+// single-line key-value. Accumulation stops at the next key-prefixed line.
 function extractFromText(text, fields, override = false) {
   if (!text) return;
+  let scopeActive = false;
   for (const line of text.split("\n")) {
     // Accept both "AGENT:" and "DISPATCH TO:" with optional Markdown heading prefix (##, ###, etc.)
     const agentMatch = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(AGENT|DISPATCH TO)(?:\*\*)?:\s*(.*)/i);
@@ -178,7 +182,17 @@ function extractFromText(text, fields, override = false) {
       let key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       // R102 (M3): BRANCH_NAME / BRANCH.NAME / BRANCH NAME all normalize to `branch`
       if (key === "branch_name") key = "branch";
-      if (override || !fields[key]) fields[key] = match[2].trim().replace(/\*\*/g, "").trim();
+      const assigned = override || !fields[key];
+      if (assigned) fields[key] = match[2].trim().replace(/\*\*/g, "").trim();
+      // Only a SCOPE assignment opens accumulation; the next key-prefixed line closes it.
+      scopeActive = assigned && key === "scope";
+      continue;
+    }
+    if (scopeActive) {
+      const continuation = line.trim();
+      if (continuation) {
+        fields.scope = fields.scope ? `${fields.scope}\n${continuation}` : continuation;
+      }
     }
   }
 }
