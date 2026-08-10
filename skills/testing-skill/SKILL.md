@@ -83,10 +83,10 @@ const orderWithZeroQty = createOrder({
 
 ### Mock vs Stub Selection
 
-Use stubs when you only need a fixed return value. Use mocks when you need to verify interaction patterns (call count, arguments).
+Use stubs when you need a fixed return value. Use mocks when you need to verify interaction patterns (call count, arguments).
 
 ```typescript
-// Stub — we only care about the return value
+// Stub — the return value is what matters
 const inventoryStub = { checkAvailability: () => Promise.resolve(true) };
 
 // Mock — we need to verify the service called it with correct arguments
@@ -119,4 +119,4 @@ Systematically identify edge cases by varying input dimensions.
 - Include negative test cases for every code path.
 - Use coverage as a minimum threshold; measure quality by assertion meaningfulness.
 - Write deterministic tests with seeded random data and explicit timing control.
-- Test only your integration with third-party libraries.
+- Test your integration with third-party libraries.

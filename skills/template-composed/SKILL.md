@@ -34,7 +34,7 @@ These KDs must be loaded for this task:
 
 ## Reference Documents
 
-(Load only those relevant to the task domain)
+(Load those relevant to the task domain)
 
 - {{path to skill or reference doc}}
 - {{path to style guide or convention doc}}
@@ -59,7 +59,7 @@ These are NOT needed for this task:
 
 ## Process Friction
 
-_This section is optional — include only if friction was encountered during work._
+_This section is optional — include it when friction was encountered during work._
 
 | ID     | Issue                       | Severity            | Status                  | Fixed by            |
 | ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |

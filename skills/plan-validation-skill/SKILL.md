@@ -91,6 +91,6 @@ Maintain a structured risk register for plan-level risks:
 - Report findings and recommendations separately; leave plan modification to the planner.
 - Validate plan-level properties: completeness, ordering, feasibility, risk coverage.
 - Request historical metrics for team velocity before rendering feasibility judgment.
-- Approve plans only after resolving all circular dependencies.
+- Approve plans after resolving all circular dependencies.
 - Flag external dependencies explicitly and require contingency plans.
 - Validate cross-cutting concerns (testing, documentation, monitoring, deployment) in every plan.

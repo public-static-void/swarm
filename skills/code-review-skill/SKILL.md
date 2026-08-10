@@ -14,7 +14,7 @@ Covers systematic code review processes including review criteria evaluation, V-
 - Reviews follow a structured checklist approach; every review evaluates the same categories consistently.
 - Require every implementation change to trace to a requirement, user story, or bug report.
 - Architecture alignment: changes must conform to the project's established architectural patterns (layering, module boundaries, dependency direction). Violations require explicit justification and architectural review approval.
-- Convention compliance: code must follow the project's established conventions for naming, formatting, error handling, logging, and testing. Flag deviations; approve only those that improve clarity or correctness.
+- Convention compliance: code must follow the project's established conventions for naming, formatting, error handling, logging, and testing. Flag deviations; approve those that improve clarity or correctness.
 - Documentation completeness: changes affecting public APIs, configuration, or user-facing behavior must include corresponding documentation updates (API docs, README, inline comments for non-trivial logic).
 - Review comments distinguish between blocking issues (must fix before merge) and suggestions (improvements that can be addressed later). Blocking issues are clearly marked.
 
@@ -97,16 +97,16 @@ When changes deviate from established patterns, document the rationale.
 ## ADR-012: Direct Database Access in Reporting Module
 
 **Context**: The reporting module requires complex aggregations beyond the ORM's efficient expression capability.
-**Decision**: Allow raw SQL queries within the ReportingRepository implementation only.
+**Decision**: Allow raw SQL queries within the ReportingRepository implementation.
 **Consequences**: Bypasses ORM abstraction for this module. Requires manual index management and migration coordination.
 ```
 
 ## CONSTRAINTS
 
-- Approve code changes only after all blocking issues are resolved.
-- Evaluate code changes against existing project conventions only.
-- Request changes only for violations of codified project conventions.
-- Approve changes only when new business logic includes corresponding tests.
+- Approve code changes after all blocking issues are resolved.
+- Evaluate code changes against existing project conventions.
+- Request changes for violations of codified project conventions.
+- Approve changes when new business logic includes corresponding tests.
 - Verify traceability for every change.
 - Flag suspicious security patterns during review and escalate to security-audit-skill.
 - Approve changes that maintain acyclic dependency graphs.

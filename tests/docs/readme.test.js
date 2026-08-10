@@ -32,13 +32,13 @@ describe("README.md architecture documentation (R045-reframe)", () => {
     }
   });
 
-  it("documents role boundaries with no capability overlap", () => {
+  it("documents role boundaries as disjoint ownership", () => {
     const readme = readFileSync(README_PATH, "utf8");
     expect(readme).toContain("Explorer");
     expect(readme).toContain("exploration");
     expect(readme).toContain("Analyzer");
     expect(readme).toContain("root cause");
-    expect(readme).toContain("no capability overlap");
+    expect(readme).toContain("owned by exactly one role");
   });
 
   it("documents that permissions are limited by design — enforcement, not a gap", () => {
@@ -50,7 +50,7 @@ describe("README.md architecture documentation (R045-reframe)", () => {
 
   it("documents the dispatch semantics for git operations and checkpoints", () => {
     const readme = readFileSync(README_PATH, "utf8");
-    expect(readme).toContain("Git operations always go to the Committer");
+    expect(readme).toContain("Git operations go to the Committer");
     expect(readme).toContain("dispatches the Committer");
   });
 

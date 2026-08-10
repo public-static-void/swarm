@@ -139,9 +139,9 @@ Phase Output ──► Gate ──► Next Phase
 | ----------- | ----------------------- | ----------------------------------------------------------------------------------------- |
 | PASS        | All criteria met, clean | VERIFY advances to the next phase (presence-based)                                        |
 | FAIL        | Specific fixable issues | protocol-gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; producer fixes |
-| FUNDAMENTAL | Design-level flaw       | protocol-gate blocks VERIFY advancement and escalates to the user; it never regresses — Happy to Delete |
+| FUNDAMENTAL | Design-level flaw       | protocol-gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
 
-A `FAIL` verdict in the newest review/audit KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). A `FUNDAMENTAL` verdict blocks advancement and escalates; it must never auto-regress.
+A `FAIL` verdict in the newest review/audit KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). A `FUNDAMENTAL` verdict blocks advancement and escalates; the phase stays at VERIFY.
 
 During protocol-gate vitest runs, `FUNDAMENTAL_ESCALATION` lines are asserted test output from the F1 AC104 fixture (`tests/plugins/protocol-gate/index.test.js`). Verify the line against the test source before treating it as a lifecycle anomaly.
 
@@ -157,12 +157,12 @@ On FAIL with clear cause:
 
 ## /phase SAFETY_ESCAPE Counter Semantics
 
-The user's `/phase` slash-command override is the only escape hatch from a stuck SWARM phase — the automatic safety mechanisms never advance it (protocol-gate logs `SAFETY_ESCAPE` on the escape). Its effect on the redispatch counters (issue-18, R007):
+The user's `/phase` slash-command override is the escape hatch from a stuck SWARM phase — the automatic safety mechanisms keep the phase at SWARM (protocol-gate logs `SAFETY_ESCAPE` on the escape). Its effect on the redispatch counters (issue-18, R007):
 
 - **Resets per-milestone redispatch budgets.** Escaping SWARM → non-SWARM deletes every non-numeric `{sessionID}:{milestone}` key (e.g. `sid:M1`) in `phaseRedispatchCount`, so an escaped-and-continued lifecycle restarts each milestone with a fresh budget instead of inheriting stale pre-escape caps.
 - **Preserves phase counters.** Numeric `{sessionID}:{phase-constant}` keys (e.g. `sid:7` for SWARM) are untouched — the phase's own dispatch count is not reset by the escape.
 - **Same-phase override fires nothing.** `/phase SWARM → SWARM` is not an escape (`prevPhase === SWARM && n !== SWARM` is false); budgets and counters are preserved for the no-op override.
-- Other `/phase` transitions (into or between non-SWARM phases) do not touch redispatch counters.
+- Other `/phase` transitions (into or between non-SWARM phases) leave redispatch counters unchanged.
 
 ## Security Audits
 

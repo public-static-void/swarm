@@ -7,7 +7,7 @@ description: "Escalation protocol for the Agentic Swarm. Use when encountering a
 
 ## Overview
 
-When an agent encounters a situation beyond its resolution scope, it escalates directly and produces only verified results. This skill defines the complete escalation protocol — the single source of truth for all agents and the Overseer.
+When an agent encounters a situation beyond its resolution scope, it escalates directly and produces verified results. This skill defines the complete escalation protocol — the single source of truth for all agents and the Overseer.
 
 ## When to Load This Skill
 
@@ -55,7 +55,7 @@ When information is blocked by permission rules:
 1. **Accept the block** — Permission restrictions are intentional by design. The Overseer does not need this information to dispatch correctly.
 2. **Document** — Note the information gap in the REPORT KD.
 3. **Continue lifecycle** — Dispatch the next-phase agent with available KDs. The receiving agent reads what it needs independently.
-4. **Network Effect** — Sub-agents have broader permissions by design. They access information through their own tool set and report findings through KDs. The Overseer receives KD paths only.
+4. **Network Effect** — Sub-agents have broader permissions by design. They access information through their own tool set and report findings through KDs. The Overseer receives KD paths as the report channel.
 
 ## Overseer Response
 

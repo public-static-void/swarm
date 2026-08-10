@@ -29,7 +29,7 @@ describe("template-spec git hygiene (issue-43, R043-01/03)", () => {
   });
 
   it("documents the tracked-set ground rule in AGENTS.md (AC43-02)", () => {
-    expect(agents).toContain("git tracks swarm config only: AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json. knowledge/ is workflow meta and stays gitignored.");
+    expect(agents).toContain("git tracks swarm config: AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json. knowledge/ is workflow meta and stays gitignored.");
   });
 
   it("keeps knowledge/ gitignored in .gitignore (AC43-08)", () => {

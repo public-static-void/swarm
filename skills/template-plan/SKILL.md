@@ -62,7 +62,7 @@ Every milestone is an independently dispatchable unit: one Artisan dispatch comp
 
 ## Process Friction
 
-_This section is optional — include only if friction was encountered during work._
+_This section is optional — include it when friction was encountered during work._
 
 | ID     | Issue                       | Severity            | Status                  | Fixed by            |
 | ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |

@@ -75,7 +75,7 @@ by agent for rev.  review      by new KD
 
 Example: `spec-auth-flow-ses_0711b9644ffe-gen1.md`
 
-The `-gen{N}` suffix is the lifecycle generation from protocol-gate state. Each lifecycle's KDs are scoped to its generation — the protocol-gate only matches KDs whose generation equals the current lifecycle generation, so stale KDs from prior lifecycles never advance or regress a new one. Legacy KDs without `-genN-` are treated as generation 0.
+The `-gen{N}` suffix is the lifecycle generation from protocol-gate state. Each lifecycle's KDs are scoped to its generation — the protocol-gate matches KDs whose generation equals the current lifecycle generation, and stale KDs from prior lifecycles stay inert. Legacy KDs without `-genN-` are treated as generation 0.
 
 ## Storage
 
