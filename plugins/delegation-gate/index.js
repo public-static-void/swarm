@@ -471,9 +471,10 @@ export default {
       const subagentType = args?.subagent_type || "";
       const description = args?.description || "";
 
-      // Log raw inputs before any mutation — critical for debugging delegation failures
-      debug(`RAW PROMPT (${prompt.length} chars): ${prompt.substring(0, 500)}`);
-      debug(`RAW DESCRIPTION (${description.length} chars): ${description.substring(0, 500)}`);
+      // Log raw inputs before any mutation — critical for debugging delegation failures.
+      // Full text is the dispatch audit trail; log rotation bounds growth (AGENTS.md).
+      debug(`RAW PROMPT (${prompt.length} chars): ${prompt}`);
+      debug(`RAW DESCRIPTION (${description.length} chars): ${description}`);
       debug(`RAW SUBAGENT_TYPE: ${subagentType}`);
 
       if (isBareKDPath(prompt)) {
@@ -563,7 +564,7 @@ export default {
 
       // Scope validation — advisory only, never blocks delegation
       if (fields.scope !== undefined && !validateScope(fields.scope)) {
-        debug(`WARNING: scope validation failed (len=${fields.scope.length}, content='${fields.scope.substring(0, 50)}...') — proceeding anyway`);
+        debug(`WARNING: scope validation failed (len=${fields.scope.length}, content='${fields.scope}') — proceeding anyway`);
       }
 
       // R008: SWARM mode multi-milestone scope warning — large plans overload artisan context.

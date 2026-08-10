@@ -1628,5 +1628,42 @@ RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
         rmSync(quietDir, { recursive: true, force: true });
       }
     });
+
+    it("logs the FULL prompt text in RAW PROMPT with the (N chars) annotation for a 2000+ char prompt (T44-01)", async () => {
+      // Trailing body text extends the prompt past 2000 chars while the
+      // structured fields stay valid — the audit trail must carry every character.
+      const longPrompt = promptFor("explore") + `\n\n${"x".repeat(2500)}`;
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt: longPrompt } });
+
+      const log = readFileSync(join(logDir, "delegation-gate.log"), "utf8");
+      expect(log).toContain(`RAW PROMPT (${longPrompt.length} chars): ${longPrompt}`);
+    });
+
+    it("logs the FULL description text in RAW DESCRIPTION for a 2000+ char description (T44-02)", async () => {
+      const longDescription = "d".repeat(2000);
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "s1", callID: "c1" },
+        { args: { prompt: promptFor("explore"), description: longDescription } }
+      );
+
+      const log = readFileSync(join(logDir, "delegation-gate.log"), "utf8");
+      expect(log).toContain(`RAW DESCRIPTION (${longDescription.length} chars): ${longDescription}`);
+    });
+
+    it("logs the FULL scope text in the scope-validation warning with no 50-char cut (T44-03)", async () => {
+      // A /home/ absolute path trips validateScope (advisory) but the SCOPE line
+      // is skipped by detectForeignPaths, so the call proceeds to the warning.
+      const longScope = "Implement full dispatch logging in /home/swarm/plugins/delegation-gate per issue 44 plan steps";
+      const prompt = `AGENT: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-03
+SCOPE: ${longScope}
+RESULT KD: knowledge/exploration-foo.md`;
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } });
+
+      const log = readFileSync(join(logDir, "delegation-gate.log"), "utf8");
+      expect(log).toContain(`WARNING: scope validation failed (len=${longScope.length}, content='${longScope}') — proceeding anyway`);
+    });
   });
 });

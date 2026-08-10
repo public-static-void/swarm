@@ -2386,6 +2386,246 @@ ${table}
     });
   });
 
+  describe("F1 (issue-14): empty-result redispatch reconciliation (R014, T14-01..T14-05)", () => {
+    // Issue-14 fix: the before-hook charges the redispatch budget at the :2475
+    // increment site and records the dispatch in lastTaskDispatch; the
+    // tool.execute.after hook restores the charge when no expected RESULT KD
+    // lands on disk (empty-result detection). All tests drive the hooks
+    // directly — the same pattern the F1 redispatch suite uses — and assert
+    // against the exported phaseRedispatchCount / lastTaskDispatch maps.
+
+    it("T14-01: an empty-result dispatch restores the counter to its pre-dispatch value; the next dispatch of the same milestone is not capped", async () => {
+      const s = sid("t14-01");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+
+      // First dispatch charges the M1 budget and records the dispatch.
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "t14-01-1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm\nRESULT KD: knowledge/impl-M1-feature.md" } }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(1);
+      expect(hooks.lastTaskDispatch.get(s)).toBeDefined();
+
+      // The dispatch returns empty — no expected KD lands on disk. The
+      // after-hook must restore the counter to its pre-dispatch value.
+      await hooks["tool.execute.after"](
+        { tool: "task", sessionID: s, callID: "t14-01-1" },
+        { output: "", title: "" }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
+      expect(hooks.lastTaskDispatch.get(s)).toBeUndefined();
+
+      // A second dispatch of the same milestone is not capped (regression
+      // guard for issue-14 AC #1 — the empty result did not burn a slot).
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "t14-01-2" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm\nRESULT KD: knowledge/impl-M1-feature.md" } }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(1);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+    });
+
+    it("T14-02: a successful dispatch leaves the counter at its check-off/phase value", async () => {
+      // Part A — SWARM: the impl-KD check-off resets the per-milestone key;
+      // the after-hook leaves that reset state alone.
+      const s = sid("t14-02-swarm");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "t14-02-1" },
+        { args: { subagent_type: "artisan", prompt: `AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm\nRESULT KD: knowledge/impl-M1-feature-${s}.md` } }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(1);
+
+      // Artisan produces the expected impl KD → auto check-off deletes the key.
+      const artisan = sid("t14-02-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "t14-02-w" },
+        { args: { filePath: `knowledge/impl-M1-feature-${s}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
+
+      // After-hook sees the expected KD on disk — the counter stays reset.
+      await hooks["tool.execute.after"](
+        { tool: "task", sessionID: s, callID: "t14-02-1" },
+        { output: "done", title: "impl" }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
+      expect(hooks.lastTaskDispatch.get(s)).toBeUndefined();
+
+      // Part B — non-SWARM (CLEANUP): no check-off, so the increment survives
+      // the after-hook when the expected cleanup KD exists on disk.
+      const s2 = sid("t14-02-cleanup");
+      await initOverseer(s2);
+      hooks.sessionPhaseMap.set(s2, hooks.STATES.CLEANUP);
+      hooks.sessionPhaseMap.set(`${s2}:sid`, s2);
+
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s2, callID: "t14-02-c2" },
+        { args: { subagent_type: "committer", prompt: "AGENT: committer\nMODE: cleanup\nRESULT KD: knowledge/cleanup-feature.md" } }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s2}:${hooks.STATES.CLEANUP}`)).toBe(1);
+      createKD("cleanup-feature.md");
+      await hooks["tool.execute.after"](
+        { tool: "task", sessionID: s2, callID: "t14-02-c2" },
+        { output: "done", title: "cleanup" }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s2}:${hooks.STATES.CLEANUP}`)).toBe(1);
+      expect(hooks.lastTaskDispatch.get(s2)).toBeUndefined();
+    });
+
+    it("T14-03: the after-hook is a no-op for non-task tools and non-overseer sessions", async () => {
+      const s = sid("t14-03");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+
+      // Charge a dispatch, then fire the after-hook with a non-task tool — the
+      // recorded entry and the counter must stay untouched.
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "t14-03-1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm\nRESULT KD: knowledge/impl-M1-feature.md" } }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(1);
+      await hooks["tool.execute.after"](
+        { tool: "glob", sessionID: s, callID: "t14-03-g" },
+        { output: "", title: "" }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(1);
+      expect(hooks.lastTaskDispatch.get(s)).toBeDefined();
+
+      // A non-overseer (subagent) session's task after-hook never reconciles —
+      // mirror of the :1779 gate; subagent→subagent task calls never touch the
+      // overseer counter. Seed the map directly since the before-hook never
+      // records for non-overseer sessions.
+      const sub = sid("t14-03-sub");
+      await hooks["chat.params"]({ sessionID: sub, agent: "artisan" }, {});
+      hooks.lastTaskDispatch.set(sub, { redispatchKey: `${sub}:M1`, resultKd: null, prefixes: ["impl"], phase: hooks.STATES.SWARM, agentName: "artisan", callID: "t14-03-s" });
+      hooks.phaseRedispatchCount.set(`${sub}:M1`, 1);
+      await hooks["tool.execute.after"](
+        { tool: "task", sessionID: sub, callID: "t14-03-s" },
+        { output: "", title: "" }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${sub}:M1`)).toBe(1);
+      expect(hooks.lastTaskDispatch.get(sub)).toBeDefined();
+    });
+
+    it("T14-04: the after-hook returns without changes when no dispatch is recorded for the session", async () => {
+      const s = sid("t14-04");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      hooks.phaseRedispatchCount.set(`${s}:M1`, 3);
+
+      await hooks["tool.execute.after"](
+        { tool: "task", sessionID: s, callID: "t14-04-1" },
+        { output: "", title: "" }
+      );
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBe(3);
+      expect(hooks.lastTaskDispatch.get(s)).toBeUndefined();
+    });
+
+    it("T14-05: lastTaskDispatch entries are removed after reconciliation in both the KD-present and KD-absent paths", async () => {
+      // KD-absent path (empty result) — entry removed, counter restored.
+      const s = sid("t14-05-empty");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "t14-05-e1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm\nRESULT KD: knowledge/impl-M1-feature.md" } }
+      );
+      expect(hooks.lastTaskDispatch.get(s)).toBeDefined();
+      await hooks["tool.execute.after"](
+        { tool: "task", sessionID: s, callID: "t14-05-e1" },
+        { output: "", title: "" }
+      );
+      expect(hooks.lastTaskDispatch.get(s)).toBeUndefined();
+      expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
+
+      // KD-present path (success) — entry removed, counter keeps its value.
+      const s2 = sid("t14-05-kd");
+      await initOverseer(s2);
+      hooks.sessionPhaseMap.set(s2, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s2}:sid`, s2);
+      createRegistry(s2, [["M1", "in-progress"]]);
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s2, callID: "t14-05-k1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm\nRESULT KD: knowledge/impl-M1-feature.md" } }
+      );
+      expect(hooks.lastTaskDispatch.get(s2)).toBeDefined();
+      createKD("impl-M1-feature.md");
+      await hooks["tool.execute.after"](
+        { tool: "task", sessionID: s2, callID: "t14-05-k1" },
+        { output: "done", title: "impl" }
+      );
+      expect(hooks.lastTaskDispatch.get(s2)).toBeUndefined();
+      expect(hooks.phaseRedispatchCount.get(`${s2}:M1`)).toBe(1);
+    });
+  });
+
+  describe("M2 (issue-43): structural git-stage guard (R043-02, T43-01..T43-05)", () => {
+    // Issue-43 fix: the stage guard runs in toolExecuteBefore for tool ===
+    // "bash" BEFORE the overseer/non-overseer split so it covers every session
+    // — no lifecycle phase or overseer initialization is needed for these
+    // tests. It rejects git add invocations that carry a force flag or an
+    // explicit path under the gitignored knowledge/ set, and passes everything
+    // else through.
+
+    async function bash(s, callID, command) {
+      await hooks["tool.execute.before"](
+        { tool: "bash", sessionID: s, callID },
+        { args: { command } }
+      );
+    }
+
+    it("T43-01: rejects `git add` with a force flag and a knowledge path (GITIGNORED_STAGE_REJECTED)", async () => {
+      const s = sid("t43-01");
+      await expect(bash(s, "t43-01-1", "git add -f knowledge/impl-foo.md")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+      await expect(bash(s, "t43-01-2", "git add --force knowledge/impl-foo.md")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+      await expect(bash(s, "t43-01-3", "git add plugins/foo.js -f")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+    });
+
+    it("T43-02: rejects `git add` of an explicit knowledge/ path (GITIGNORED_STAGE_REJECTED)", async () => {
+      const s = sid("t43-02");
+      await expect(bash(s, "t43-02-1", "git add knowledge/impl-foo.md")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+      await expect(bash(s, "t43-02-2", "git add ./knowledge/issues/issue-1.md")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+      await expect(bash(s, "t43-02-3", "git add knowledge/")).rejects.toMatchObject({ code: "GITIGNORED_STAGE_REJECTED" });
+    });
+
+    it("T43-03: passes through `git add <tracked-path>`", async () => {
+      const s = sid("t43-03");
+      await expect(bash(s, "t43-03-1", "git add plugins/protocol-gate/index.js")).resolves.toBeUndefined();
+    });
+
+    it("T43-04: passes through `git add .`, `git add -A`, and non-add git commands", async () => {
+      const s = sid("t43-04");
+      await expect(bash(s, "t43-04-1", "git add .")).resolves.toBeUndefined();
+      await expect(bash(s, "t43-04-2", "git add -A")).resolves.toBeUndefined();
+      await expect(bash(s, "t43-04-3", "git status")).resolves.toBeUndefined();
+      await expect(bash(s, "t43-04-4", "git ls-files")).resolves.toBeUndefined();
+    });
+
+    it("T43-05: the guard is a no-op for non-bash tools", async () => {
+      const s = sid("t43-05");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "write", sessionID: s, callID: "t43-05-1" }, { args: { filePath: "knowledge/impl-foo.md", content: "x" } })
+      ).resolves.toBeUndefined();
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: s, callID: "t43-05-2" }, { args: { subagent_type: "committer", prompt: "AGENT: committer\nMODE: checkpoint" } })
+      ).resolves.toBeUndefined();
+    });
+  });
+
   describe("M4: registry write ordering fix (R017, AC017, issue-7)", () => {
     it("AC017: a multi-milestone dispatch (repeated lines or comma list) is rejected before any registry write — registry byte-identical", async () => {
       const variants = [

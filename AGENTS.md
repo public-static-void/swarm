@@ -17,6 +17,7 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 - **Noise Cancellation**: Be succinct. Compress. Delete bloat. Delete every word that doesn't pull weight. Prefer lists over paragraphs. Stop when done. Re-explain or summarize only on request.
 - **Context Markers**: Prefix responses with your agent emoji.
 - **Standard Commits**: Use standard git workflow with hooks enabled for all commits.
+- **Git Contract**: git tracks swarm config only: AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json. knowledge/ is workflow meta and stays gitignored.
 - **Comment Intent**: Source code comments must explain WHY. Git history documents changes; comments capture engineering rationale.
 - **External References**: Reference only external APIs, public documentation, and standard conventions in source code comments and commit messages.
 
@@ -30,6 +31,7 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 ## Evidence and Knowledge Durability
 
 - **Quote gate-log evidence inline**: when a KD, issue file, or report cites `plugins/logs/*.log` evidence, quote the relevant content into the citing document at capture time. Bare `file:line` citations rot — logs are gitignored (`*.log`) and rotated between sessions.
+- **Dispatch audit trail**: delegation-gate logs dispatch RAW PROMPT/RAW DESCRIPTION in full — the log is the dispatch audit trail. Logs remain gitignored (`*.log`) and rotated between sessions.
 - **Persist cross-lifecycle content durably**: content that must outlive a lifecycle lives in memory entries (Scribe), `knowledge/issues/` files, or committed artifacts (git). Lifecycle-end cleanup deletes every `*-{sessionID}-gen{N}.md` KD except the report at REPORT write, and `knowledge/` KDs are gitignored by design — do not rely on runtime KDs for cross-lifecycle evidence.
 
 ## Test and Security Scan Workflow
