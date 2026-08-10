@@ -521,6 +521,46 @@ RESULT KD: knowledge/impl-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("Fix the bug");
     });
+
+    it("renders a three-line SCOPE verbatim and keeps whole-prompt code-block rejection", async () => {
+      const scopeLines = [
+        "Implement multi-line scope extraction in the delegation plugin",
+        "Continuation lines after the SCOPE key join the same field value",
+        "The rendered prompt and RAW PROMPT audit trail carry all three lines",
+      ];
+      const prompt = `AGENT: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-10
+SCOPE: ${scopeLines[0]}
+${scopeLines[1]}
+${scopeLines[2]}
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      for (const line of scopeLines) {
+        expect(output.args.prompt).toContain(line);
+      }
+
+      const log = readFileSync(join(logDir, "delegation-gate.log"), "utf8");
+      expect(log).toContain(`RAW PROMPT (${prompt.length} chars): ${prompt}`);
+
+      // A code block on a scope continuation line still trips the guard — the
+      // abuse checks scan the whole prompt, not just the extracted field values.
+      const scopedCodeBlock = `AGENT: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-10
+SCOPE: Wrap prose across lines
+\`\`\`js
+console.log("injected");
+\`\`\`
+RESULT KD: knowledge/exploration-foo.md`;
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt: scopedCodeBlock } })
+      ).rejects.toThrow("Code blocks detected in prompt");
+    });
   });
 
   describe("Template Injection", () => {
