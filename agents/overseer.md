@@ -89,7 +89,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 | ALIGN       | Spec Weaver     | spec-weaver   | align       |
 | DECOMPOSE   | Pathfinder      | pathfinder    | decompose   |
 | SWARM       | Artisan         | artisan       | swarm       |
-| VERIFY      | Inspector       | inspector     | verify      |
+| VERIFY      | Inspector       | inspector     | review, audit (two dispatches) |
 | EXTRACT     | Scribe          | scribe        | extract     |
 | EVOLVE      | Habit Builder   | habit-builder | evolve      |
 | CLEANUP     | Committer       | committer     | cleanup     |
@@ -105,12 +105,12 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    MODE: <mode>
    INTENT KD: knowledge/intent-<name>-<session_id>-gen<generation>.md
    RESULT KD: knowledge/<type>-<name>-<session_id>-gen<generation>.md
-   KD PATHS: <upstream KD paths for align/decompose/swarm/verify/extract/evolve modes>
+   KD PATHS: <upstream KD paths for align/decompose/swarm/review/audit/extract/evolve modes>
    SESSION DATE: <YYYY-MM-DD>
    SCOPE: <optional context>
    ```
 
-   Required: `mode`, `intent_kd`, `result_kd`, `session_date`. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/verify/extract/evolve modes). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
+   Required: `mode`, `intent_kd`, `result_kd`, `session_date`. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/audit/extract/evolve modes). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
 
 3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 
