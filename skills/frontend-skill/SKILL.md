@@ -16,7 +16,7 @@ Covers all aspects of client-side interface development including component arch
 - All interactive elements must support keyboard navigation (Tab, Enter, Escape, Arrow keys) and carry appropriate ARIA attributes where semantic HTML is insufficient.
 - Color contrast ratios must meet WCAG 2.1 AA minimum: 4.5:1 for normal text, 3:1 for large text and UI components.
 - Responsive design follows mobile-first breakpoint strategy with breakpoints defined in a centralized token system.
-- State management follows the colocation principle: local component state first, then context/provider lifting, then global store only when data crosses unrelated component tree branches.
+- State management follows the colocation principle: local component state first, then context/provider lifting, then global store when data crosses unrelated component tree branches.
 - Use the project's existing styling methodology (CSS Modules, Tailwind, Styled Components, Sass, vanilla CSS).
 - Externalize all user-facing strings into translation-ready resources.
 
@@ -29,7 +29,7 @@ Covers all aspects of client-side interface development including component arch
 - [ ] Focus management handled for dynamic content (modals, dialogs, route transitions)
 - [ ] Responsive layout validated at all defined breakpoints with horizontal overflow eliminated
 - [ ] State scoped to the smallest necessary component or context boundary
-- [ ] Use inline styles only for dynamically computed prop values
+- [ ] Use inline styles for dynamically computed prop values
 - [ ] Loading, error, and empty states implemented for every async data consumer
 - [ ] Client-side tests cover rendering output, user interactions, and accessibility assertions
 - [ ] User-facing strings externalized into i18n resource files
@@ -71,7 +71,7 @@ Define breakpoints as design tokens consumed by both CSS and JavaScript.
 
 ### State Colocation
 
-Place state in the component that both reads and writes it. Lift state only when multiple sibling components require the same value. Escalate to global store only when data crosses unrelated branches of the component tree.
+Place state in the component that both reads and writes it. Lift state when multiple sibling components require the same value. Escalate to global store when data crosses unrelated branches of the component tree.
 
 ### Error Boundary Isolation
 
@@ -79,7 +79,7 @@ Wrap feature trees with error boundaries to contain failures. Display a meaningf
 
 ### Progressive Enhancement for Browser APIs
 
-Always provide fallbacks for browser-specific APIs. Feature-detect before use, check capabilities before use.
+Provide fallbacks for browser-specific APIs. Feature-detect before use, check capabilities before use.
 
 ```js
 const storage =
@@ -94,6 +94,6 @@ const storage =
 - Use the project's existing styling methodology.
 - Use relative units and design tokens for all dimensions.
 - Verify accessibility compliance for every user-facing element.
-- Store sensitive data only with explicit security review approval.
+- Store sensitive data with explicit security review approval.
 - Use the framework's abstraction layer for all DOM interactions.
 - Abstract route transitions behind a navigation service.

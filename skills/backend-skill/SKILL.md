@@ -14,7 +14,7 @@ Covers all aspects of server-side application development including API design (
 - Detect the project's framework and language before applying patterns.
 - API endpoints follow resource-oriented naming for REST (`/resources/{id}`), operation-based naming for GraphQL mutations, and protobuf service definitions for gRPC. Maintain consistency within the project's chosen paradigm.
 - Business logic must be isolated from transport layer (routes/controllers). Controllers handle request parsing and response formatting; services contain domain rules; repositories handle data access.
-- Authentication follows the project's existing scheme (JWT, OAuth2, API keys, session cookies). Introduce new auth mechanisms only after architectural review and approval.
+- Authentication follows the project's existing scheme (JWT, OAuth2, API keys, session cookies). Introduce new auth mechanisms after architectural review and approval.
 - Validate every input at the boundary (request body, query params, path params, headers) before business logic executes. Use schema validators matching the project convention (Zod, Joi, class-validator, Pydantic, etc.).
 - Error responses follow a consistent envelope: `{ "error": { "code": string, "message": string, "details?: object } }`. HTTP status codes must accurately reflect the error category (4xx client, 5xx server).
 - Middleware is ordered: logging -> auth -> validation -> business logic -> response serialization. Each middleware has a single responsibility.
@@ -24,7 +24,7 @@ Covers all aspects of server-side application development including API design (
 
 - [ ] API endpoint follows project naming convention (resource-oriented for REST, operation-based for GraphQL)
 - [ ] Request/response schemas defined and validated at the transport boundary before business logic
-- [ ] Business logic resides in the service layer only
+- [ ] Business logic resides in the service layer
 - [ ] Data access flows through repository/interface layer
 - [ ] Authentication middleware applied to all protected endpoints with proper role/permission checks
 - [ ] Error responses use consistent envelope format with appropriate HTTP status codes
@@ -101,9 +101,9 @@ Idempotency-Key: uuid-v4-unique-per-client-request
 ## CONSTRAINTS
 
 - Modify application source code, configuration, and API contracts within this skill's scope.
-- Introduce new authentication mechanisms only after architectural review and explicit approval.
+- Introduce new authentication mechanisms after architectural review and explicit approval.
 - Keep business logic exclusively in the service layer, separate from controllers and route handlers.
-- Log only non-sensitive operational data.
+- Log non-sensitive operational data.
 - Return user-safe error responses that omit internal details.
 - Route all data access through the repository abstraction.
 - Define explicit DTOs for all input and output boundaries.

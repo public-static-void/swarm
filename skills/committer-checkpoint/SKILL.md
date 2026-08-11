@@ -19,7 +19,7 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 2. **Survey repo** — `git log --oneline -30`. Filter out non-representative commits (merge commits, reverts, automated, initial commits). Analyze language, scope usage (`type(scope):` consistency), style (imperative present tense, capitalization, period). If fewer than 3 representative commits, fall back to: English, conventional commits with scope, imperative present tense. Subject line omits trailing period.
 
-3. **Classify changes (lightweight)** — `git status --porcelain` for the changed-file list and state, `git diff --stat` for the file-level change overview, and `git diff --name-only` for the changed-file names. Classify each changed file by type (feat/fix/refactor/docs/test/chore) from names and stats. Do not load full diff content for grouping — full content is read only per batch at stage time.
+3. **Classify changes (lightweight)** — `git status --porcelain` for the changed-file list and state, `git diff --stat` for the file-level change overview, and `git diff --name-only` for the changed-file names. Classify each changed file by type (feat/fix/refactor/docs/test/chore) from names and stats. Group from names and stats; read full diff content per batch at stage time.
 
 4. **Group into batches** — Split by module/scope and functional concern:
    - One module/scope per batch; one type per batch where possible
@@ -28,13 +28,13 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
    - If changes span multiple modules, separate batches per module
    - Mixed types in one file: classify by dominant type (majority of lines changed). If roughly equal, flag to split across files if possible; otherwise classify by primary intent.
    - If a single file's changes cross multiple concerns, classify by dominant concern. If roughly equal, flag for potential file-level split.
-   - feat + refactor in same file: classify as feat with refactor note in body. Only split if refactor >50% of changed lines.
+   - feat + refactor in same file: classify as feat with refactor note in body. Split when refactor exceeds 50% of changed lines.
 
-5. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage. Confirm `knowledge/` is listed in `.gitignore` — if missing, report the gap and halt. Stage tracked files outside the `knowledge/` directory. If any knowledge files appear staged, unstage them immediately. Stage and commit all tracked files absent from `.gitignore`. Silently skip ignored files; report which files were skipped if relevant.
+5. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage for the files this task changed. Stage all tracked files changed by the task. If any gitignored file appears staged, unstage it immediately. Silently skip ignored files; report which files were skipped if relevant.
 
 6. **Edge cases**:
    - **Empty commit**: If the filtered set is empty, report "no changes to commit" and exit cleanly.
-   - **Ambiguity**: If change fits multiple types, classify by dominant change. If still ambiguous, inspect only the ambiguous file via `git diff -- <file>`. Only commit if a legitimate type is determinable. If truly unable, report back to the dispatching agent for guidance.
+   - **Ambiguity**: If change fits multiple types, classify by dominant change. If still ambiguous, inspect the ambiguous file via `git diff -- <file>`. Commit when a legitimate type is determinable. If truly unable, report back to the dispatching agent for guidance.
    - **Uncertainty**: If unresolvable, report back to dispatching agent.
 
 7. **Enforce commit conventions** — All commits MUST use:

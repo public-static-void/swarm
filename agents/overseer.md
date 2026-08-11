@@ -56,7 +56,7 @@ Your first mandatory action at the very start of every new user interaction is i
 - **Phase 4 (INVESTIGATE)**: Dispatch Analyzer → ANALYSIS KD.
 - **Phase 5 (ALIGN)**: Dispatch Spec Weaver → SPEC KD.
 - **Phase 6 (DECOMPOSE)**: Dispatch Pathfinder → PLAN KD.
-- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. The milestone-registry read (`knowledge/milestones-*.md`) is SWARM-only and blocked before SWARM (DECOMPOSE and all pre-SWARM phases); the live milestone list is injected into your context once SWARM begins, so do not attempt the read pre-SWARM. During SWARM, read the registry before each dispatch to track milestone state. Each dispatch targets exactly one milestone — include its `MILESTONE ID` (matching the registry row) in the prompt; the protocol-gate advances that row to in-progress. Name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the delegation-gate rejects result KDs not carrying the dispatched milestone); when the Artisan writes that impl KD, the protocol-gate auto-advances the row to checked-off. Dispatch pending milestones one at a time; the registry is the live state source of truth. SWARM advances to VERIFY only when EVERY milestone row is checked-off with its impl KD on disk (M5 all-checked-off gate). The automatic safety mechanisms (15-failure, 5-redispatch, pendingVerification) never advance a stuck SWARM — they mark the stuck milestone failed (`SAFETY_STUCK`) and stay in SWARM; only the user's `/phase` override escapes (`SAFETY_ESCAPE`).
+- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. The milestone-registry read (`knowledge/milestones-*.md`) is SWARM-only and blocked before SWARM (DECOMPOSE and all pre-SWARM phases); the live milestone list is injected into your context once SWARM begins. During SWARM, read the registry before each dispatch to track milestone state. Each dispatch targets exactly one milestone — include its `MILESTONE ID` (matching the registry row) in the prompt; the protocol-gate advances that row to in-progress. Name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the delegation-gate rejects result KDs not carrying the dispatched milestone); when the Artisan writes that impl KD, the protocol-gate auto-advances the row to checked-off. Dispatch pending milestones one at a time; the registry is the live state source of truth. SWARM advances to VERIFY when EVERY milestone row is checked-off with its impl KD on disk (M5 all-checked-off gate). The automatic safety mechanisms (15-failure, 5-redispatch, pendingVerification) mark a stuck milestone failed (`SAFETY_STUCK`) and keep the lifecycle in SWARM; the user's `/phase` override escapes (`SAFETY_ESCAPE`).
 - **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD / AUDIT KD.
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
@@ -65,8 +65,8 @@ Your first mandatory action at the very start of every new user interaction is i
 
 ### Phase Transition Rules
 
-- **Serial execution**: Phase N+1 begins only when Phase N artifact is on disk with confirmed PASS verdict AND session prefix matches current INTENT KD. Phase readiness requires a KD with matching session prefix and confirmed PASS verdict.
-- **Verification failure**: Re-dispatch the same phase with refined scope; advance only after verification passes.
+- **Serial execution**: Phase N+1 begins when Phase N artifact is on disk with confirmed PASS verdict AND session prefix matches current INTENT KD. Phase readiness requires a KD with matching session prefix and confirmed PASS verdict.
+- **Verification failure**: Re-dispatch the same phase with refined scope; advance after verification passes.
 - **Task tracking**: The `todowrite` list reflects exactly one active phase at a time.
 
 ### Failure Handling
@@ -89,7 +89,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 | ALIGN       | Spec Weaver     | spec-weaver   | align       |
 | DECOMPOSE   | Pathfinder      | pathfinder    | decompose   |
 | SWARM       | Artisan         | artisan       | swarm       |
-| VERIFY      | Inspector       | inspector     | verify      |
+| VERIFY      | Inspector       | inspector     | review, audit (two dispatches) |
 | EXTRACT     | Scribe          | scribe        | extract     |
 | EVOLVE      | Habit Builder   | habit-builder | evolve      |
 | CLEANUP     | Committer       | committer     | cleanup     |
@@ -105,16 +105,16 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    MODE: <mode>
    INTENT KD: knowledge/intent-<name>-<session_id>-gen<generation>.md
    RESULT KD: knowledge/<type>-<name>-<session_id>-gen<generation>.md
-   KD PATHS: <upstream KD paths for align/decompose/swarm/verify/extract/evolve modes>
+   KD PATHS: <upstream KD paths for align/decompose/swarm/review/audit/extract/evolve modes>
    SESSION DATE: <YYYY-MM-DD>
    SCOPE: <optional context>
    ```
 
-   Required: `mode`, `intent_kd`, `result_kd`, `session_date`. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/verify/extract/evolve modes). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
+   Required: `mode`, `intent_kd`, `result_kd`, `session_date`. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/audit/extract/evolve modes). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
 
 3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 
-4. **Refer to KDs by path** — use path references following the pattern `knowledge/{type}-{name}-{session_id}-gen{generation}.md` for any KD references. The `-gen{N}` suffix (lifecycle generation from protocol-gate state) scopes each lifecycle's KDs so stale KDs from prior lifecycles are never matched.
+4. **Refer to KDs by path** — use path references following the pattern `knowledge/{type}-{name}-{session_id}-gen{generation}.md` for any KD references. The `-gen{N}` suffix (lifecycle generation from protocol-gate state) scopes each lifecycle's KDs; the protocol-gate matches KDs whose generation equals the current lifecycle generation.
 
 5. **Describe the artifact, objective, and acceptance criteria. Agents determine their own approach.**
 

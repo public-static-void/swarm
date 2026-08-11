@@ -36,7 +36,7 @@ superseded_by: null
 
 ## Process Friction
 
-_This section is optional — include only if friction was encountered during work._
+_This section is optional — include it when friction was encountered during work._
 
 | ID     | Issue                       | Severity            | Status                  | Fixed by            |
 | ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |

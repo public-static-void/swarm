@@ -20,6 +20,17 @@ Covers comprehensive testing strategy across all levels of the test pyramid: uni
 - Coverage targets: 80%+ line coverage for business logic modules, 60%+ for infrastructure/glue code. Coverage is a minimum threshold; meaningful assertions take priority over meeting arbitrary percentages.
 - TDD workflow: write a failing test that describes the desired behavior -> implement the minimal code to pass -> refactor while keeping tests green. Write a failing test before implementing production code in TDD mode.
 
+## BEHAVIOR-BASED TESTING
+
+Tests verify behavior — what the code does — rather than the wording of rules, docs, or comments. A suite that asserts exact prose breaks on any legitimate reframe and grows without adding coverage.
+
+- Group tests by behavior — one test group per behavior, with each test covering one meaningful case of that behavior.
+- Name each test after the behavior it verifies, e.g., `rejects orders with zero quantity`.
+- Keep test names and comments free of requirement-ID codes (R/AC/M); the REVIEW traceability matrix in KDs carries the mapping, so test files stay readable and reframes stay cheap.
+- Grow the suite when a new behavior appears, not when a requirement count suggests volume; consolidate overlapping groups and delete stale cases as part of normal maintenance.
+- Static guards over configuration files are behavior tests when they protect a runtime contract: assert the contract (file existence, permission scoping, gitignore coverage), not the sentence describing it.
+- Coverage thresholds measure exploration, not volume; a meaningful assertion beats a batch of duplicate cases.
+
 ## CHECKLIST
 
 - [ ] Tests follow Arrange-Act-Assert structure with clear separation of setup, execution, and verification
@@ -83,10 +94,10 @@ const orderWithZeroQty = createOrder({
 
 ### Mock vs Stub Selection
 
-Use stubs when you only need a fixed return value. Use mocks when you need to verify interaction patterns (call count, arguments).
+Use stubs when you need a fixed return value. Use mocks when you need to verify interaction patterns (call count, arguments).
 
 ```typescript
-// Stub — we only care about the return value
+// Stub — the return value is what matters
 const inventoryStub = { checkAvailability: () => Promise.resolve(true) };
 
 // Mock — we need to verify the service called it with correct arguments
@@ -119,4 +130,4 @@ Systematically identify edge cases by varying input dimensions.
 - Include negative test cases for every code path.
 - Use coverage as a minimum threshold; measure quality by assertion meaningfulness.
 - Write deterministic tests with seeded random data and explicit timing control.
-- Test only your integration with third-party libraries.
+- Test your integration with third-party libraries.

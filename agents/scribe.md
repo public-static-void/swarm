@@ -9,12 +9,14 @@ permission:
     "*": deny
     "knowledge/*.md": allow
     "knowledge/memory/*.json": allow
+    "knowledge/issues/*.md": deny
     "README.md": allow
     "AGENTS.md": allow
   edit:
     "*": deny
     "knowledge/*.md": allow
     "knowledge/memory/*.json": allow
+    "knowledge/issues/*.md": deny
     "README.md": allow
     "AGENTS.md": allow
   glob: allow

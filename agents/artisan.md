@@ -105,11 +105,11 @@ Read the specification and plan, implement each step, write tests, produce an im
 2. Scan project for existing conventions — detect tech stack, file structure, coding patterns
 3. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
 4. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
-5. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD, named milestone-scoped per the M4 naming contract: `knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the dispatched milestone ID is the first token after `impl-` (e.g. `knowledge/impl-M4-checkoff-ses_abc-gen0.md`). Writing that impl KD checks the milestone off in the registry (protocol-gate auto-advances it to checked-off — the KD on disk is the verifiable evidence of completion). The M5 all-checked-off gate reads those impl KDs back: the SWARM→VERIFY transition fires only when every registry milestone row is checked-off AND its impl KD is on disk, so each impl KD you write is also the gate input that eventually releases the lifecycle to VERIFY. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with the delegation fields as `KEY: value` lines inside the `prompt` parameter (see Dispatching Committer). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification).
+5. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD, named milestone-scoped per the M4 naming contract: `knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the dispatched milestone ID is the first token after `impl-` (e.g. `knowledge/impl-M4-checkoff-ses_abc-gen0.md`). Writing that impl KD checks the milestone off in the registry (protocol-gate auto-advances it to checked-off — the KD on disk is the verifiable evidence of completion). The M5 all-checked-off gate reads those impl KDs back: the SWARM→VERIFY transition fires when every registry milestone row is checked-off AND its impl KD is on disk, so each impl KD you write is also the gate input that eventually releases the lifecycle to VERIFY. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with the delegation fields as `KEY: value` lines inside the `prompt` parameter (see Dispatching Committer). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification).
 
    ### Dispatching Committer
 
-   Delegate to the Committer with the delegation fields as `KEY: value` lines **inside the `prompt` parameter**, one per line, matching the checkpoint field set. The `task` call itself carries only `subagent_type`, `description`, and `prompt` — every delegation field lives in the prompt text:
+   Delegate to the Committer with the delegation fields as `KEY: value` lines **inside the `prompt` parameter**, one per line, matching the checkpoint field set. The `task` call itself carries `subagent_type`, `description`, and `prompt` — every delegation field lives in the prompt text:
 
    ```
    task({
@@ -125,7 +125,7 @@ RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
    })
    ```
 
-   The delegation-gate plugin extracts these fields from the prompt text and renders the checkpoint dispatch from its template; it does not read structured fields from top-level `task()` arguments. `intent_kd` is not part of the checkpoint field set — the checkpoint template renders no INTENT KD reference, so it must be omitted for committer-owned modes. `description` and `prompt` always carry real values; placeholder text is rejected by the delegation-gate.
+   The delegation-gate plugin extracts these fields from the prompt text and renders the checkpoint dispatch from its template; it does not read structured fields from top-level `task()` arguments. `intent_kd` is not part of the checkpoint field set — the checkpoint template renders no INTENT KD reference, so omit it for committer-owned modes. `description` and `prompt` carry real values; placeholder text is rejected by the delegation-gate.
 
    ### Checkpoint Verification
 
@@ -154,9 +154,9 @@ RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
    - **Comment Rationale**: Remove comments that restate what the code does — git history tracks changes
    - **Match project language**: Comments and naming must match the project's primary language. Before writing any comment, detect the predominant comment language from existing code
    - **Substantive Comments**: Add comments to explain rationale that is unobvious from the code itself. Comments explain the reasoning behind the code
-   - **External References**: Reference only public APIs, specs, or external documentation in code
+   - **External References**: Reference public APIs, specs, or external documentation in code
    - **Self-check**: Review all added comments. Verify against these examples:
-     - ✅ `// Uses BigNumber to avoid floating-point precision errors` (comment WHY)
+     - ✅ `// Uses BigNumber to keep floating-point arithmetic exact` (comment WHY)
      - ✅ No comment above `function calculateTotal()` (self-documenting code)
      - ✅ Comments match the project's predominant language
 
@@ -169,7 +169,7 @@ RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
 ## Constraints
 
 - Strictly follow all instructions from the loaded domain skill
-- Modify only files within your assigned scope
+- Modify files within your assigned scope
 - Detect tools and conventions dynamically from the project context
 - Every file you write must be complete and functional
 - Prefer `edit` and `read` tools over bash for file operations

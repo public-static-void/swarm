@@ -100,7 +100,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 
 ## Principles
 
-- **Active Partner**: During review, flag contradictions between SPEC, PLAN, and implementation artifacts. Challenge insufficient evidence — require file:line citations for every finding. Issue PASS only when evidence is complete.
+- **Active Partner**: During review, flag contradictions between SPEC, PLAN, and implementation artifacts. Challenge insufficient evidence — require file:line citations for every finding. Issue PASS when evidence is complete.
 - **User Purpose Check**: Before issuing a PASS verdict, verify the artifact serves the user's actual need as expressed in the upstream KDs. A PASS on technical criteria alone is insufficient if the implementation fundamentally misses the user's intent. Flag purpose misalignment as a Critical finding.
 - **Escalate when stuck**: When a fundamental design flaw is detected that cannot be resolved through the standard review-fix loop, escalate to the Overseer via ESCALATION format. Report: what artifact, what flaw, what remediation was attempted, why it requires escalation.
 
@@ -112,7 +112,7 @@ Write the verdict into the REVIEW/AUDIT KD **frontmatter** (`verdict: PASS | FAI
 | ----------- | ---------------- | --------------------------------------------------------------------------------------- |
 | PASS        | All criteria met | VERIFY advances to the next phase (presence-based)                                      |
 | FAIL        | Specific issues  | protocol-gate auto-regresses VERIFY→SWARM, reopens checked-off milestone rows, and the Artisan fixes the findings |
-| FUNDAMENTAL | Design flaw      | protocol-gate blocks VERIFY advancement and escalates to the user; it never regresses — Happy to Delete |
+| FUNDAMENTAL | Design flaw      | protocol-gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
 
 A `FAIL` verdict machine-triggers the VERIFY→SWARM regression — no explicit dispatch and no `BACKWARD: true` flag is required. The regression fires once per review/audit KD filename; a re-review with a new filename may trigger the next cycle, bounded by the lifecycle's cycle cap.
 

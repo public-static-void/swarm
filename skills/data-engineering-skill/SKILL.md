@@ -13,7 +13,7 @@ Covers all aspects of data layer development including relational and NoSQL sche
 
 - Detect the project's database technology (PostgreSQL, MySQL, SQLite, MongoDB, Redis, etc.) and ORM/query builder (Prisma, TypeORM, Sequelize, SQLAlchemy, Mongoose, raw SQL) before applying patterns.
 - Schema naming follows the project convention: tables use plural snake_case (`user_orders`), columns use singular snake_case (`created_at`), primary keys are `id` (auto-incrementing integer or UUID), foreign keys follow `{referenced_table}_id`.
-- Include `created_at` and `updated_at` timestamps on all tables; omit only with documented justification.
+- Include `created_at` and `updated_at` timestamps on all tables; omit with documented justification.
 - Migrations are versioned, reversible, and idempotent. Each migration has a forward and backward operation.
 - Indexes are created based on actual query patterns verified via EXPLAIN ANALYZE. Composite indexes follow the leftmost-prefix principle with equality columns before range columns.
 - Data access is abstracted behind repository interfaces or ORM models. Raw queries are confined to dedicated query files with clear documentation of their purpose and performance characteristics.
@@ -31,8 +31,8 @@ Covers all aspects of data layer development including relational and NoSQL sche
 - [ ] Migrations are versioned, reversible, and idempotent — applied migrations remain immutable
 - [ ] Business logic accesses data through repository interfaces or ORM models
 - [ ] N+1 query problems identified and resolved (eager loading, batching, or denormalization where appropriate)
-- [ ] Large result sets use pagination (offset/limit or cursor-based) — always limit result sets with pagination
-- [ ] Test fixtures are deterministic, idempotent, and contain only the minimum required data
+- [ ] Large result sets use pagination (offset/limit or cursor-based) — pagination caps result-set sizes
+- [ ] Test fixtures are deterministic, idempotent, and contain the minimum required data
 - [ ] Sensitive data columns are encrypted at rest if they contain PII or secrets
 - [ ] Connection pooling configured appropriately for the expected concurrency level
 
@@ -116,9 +116,9 @@ const seedUser = (overrides?: Partial<User>) => ({
 ## CONSTRAINTS
 
 - Create a new migration for every schema change.
-- Add indexes only after verifying their benefit through query plan analysis (EXPLAIN).
+- Add indexes after verifying their benefit through query plan analysis (EXPLAIN).
 - Confine raw SQL to repository implementations or dedicated query modules.
-- Always apply pagination or limiting on list queries.
+- Apply pagination or limiting on list queries.
 - Encrypt or hash sensitive data before storage.
 - Abstract database-specific features behind an interface layer.
-- Drop columns or tables only after a deprecation migration phase.
+- Drop columns or tables after a deprecation migration phase.

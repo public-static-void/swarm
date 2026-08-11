@@ -15,7 +15,7 @@ superseded_by: null
 
 <!-- Filename: knowledge/intent-{{name}}-{{session_id}}-gen{{generation}}.md -->
 <!-- GENERATION: {{generation}} is the lifecycle counter from protocol-gate state. Each lifecycle's KDs are scoped to its generation (`-genN-` after the session ID) so stale KDs from prior lifecycles are never matched. Use the generation value provided by the dispatcher. -->
-<!-- Template has no decision points — the Overseer writes Raw Request verbatim only. -->
+<!-- Template has no decision points — the Overseer writes Raw Request verbatim. -->
 <!-- Triage Notes are pre-filled; the Explorer fills them after dispatch. -->
 
 # INTENT: {{title}}

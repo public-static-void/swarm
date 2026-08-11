@@ -49,6 +49,6 @@ Structured reasoning techniques for agents that need to weigh options, reason fr
 ## CONSTRAINTS
 
 - Generate at least one alternative approach before choosing
-- Always verify the solution solves the user's actual problem
+- Verify the solution solves the user's actual problem
 - Document trade-offs during the decision process
 - Treat conventions as defaults; evaluate whether they serve the current context

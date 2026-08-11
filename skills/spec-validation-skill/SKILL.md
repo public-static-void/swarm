@@ -104,5 +104,5 @@ Validate each API endpoint against a completeness template:
 - Validate specification quality (completeness, clarity, testability, consistency).
 - Distinguish between intentional flexibility and genuine ambiguity.
 - Skip coverage checks for out-of-scope items that the spec explicitly excludes.
-- Flag undefined terms as terminology gaps; use only knowledge documented in the spec.
+- Flag undefined terms as terminology gaps; use knowledge documented in the spec.
 - Treat examples as illustrations that support formal definitions.
