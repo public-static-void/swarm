@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { readFileSync, mkdtempSync, rmSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import pluginModule from "../../../plugins/delegation-gate/index.js";
+
+// Absolute path to the plugin's disk templates — used to assert the deleted
+// audit template stays gone (audit merged into review).
+const PLUGIN_TEMPLATES_DIR = fileURLToPath(new URL("../../../plugins/delegation-gate/templates", import.meta.url));
 
 // Consolidated delegation-gate suite: 106 → 53 tests. Issue-labeled
 // one-off describes are folded into the core describes they exercise;
@@ -624,7 +629,6 @@ ${c.branch ? `BRANCH: ${c.branch}\n` : ""}${c.kdPaths ? `KD PATHS: ${c.kdPaths}`
         { mode: "decompose", agent: "pathfinder", kd: "knowledge/plan-foo.md" },
         { mode: "swarm", agent: "artisan", kd: "knowledge/impl-M1-foo.md", milestoneId: "M1" },
         { mode: "review", agent: "inspector", kd: "knowledge/review-foo.md" },
-        { mode: "audit", agent: "inspector", kd: "knowledge/audit-foo.md" },
         { mode: "extract", agent: "scribe", kd: "knowledge/composed-foo.md" },
         { mode: "evolve", agent: "habit-builder", kd: "knowledge/process-foo.md" },
       ];
@@ -800,10 +804,10 @@ RESULT KD: knowledge/impl-foo.md`;
       expect(output.args.description).toContain("Delegation Prompt Format:");
       expect(output.args.description).toContain("DISPATCH TO: artisan");
       expect(output.args.description).toContain("MODE: checkpoint");
-      // Only current mode's KD prefix is injected — not all 11 modes
+      // Only current mode's KD prefix is injected — not all 10 modes
       expect(output.args.description).toContain("RESULT KD: knowledge/checkpoint-<name>-<session_id>.md");
       expect(output.args.description).toContain("- checkpoint: knowledge/checkpoint-<name>-<session_id>.md");
-      for (const other of ["exploration", "analysis", "spec", "plan", "impl", "review", "audit", "composed", "process", "preflight", "cleanup"]) {
+      for (const other of ["exploration", "analysis", "spec", "plan", "impl", "review", "composed", "process", "preflight", "cleanup"]) {
         expect(output.args.description).not.toContain(other);
       }
       // Genuine variables use parenthetical wording — the defused hint keeps no
@@ -833,7 +837,7 @@ RESULT KD: knowledge/impl-foo.md`;
 
     it("injects only the current mode's KD prefixes for investigate and preflight modes", async () => {
       const cases = [
-        { agent: "analyzer", mode: "investigate", result: "knowledge/analysis-<name>-<session_id>.md", other: ["exploration", "review", "audit"] },
+        { agent: "analyzer", mode: "investigate", result: "knowledge/analysis-<name>-<session_id>.md", other: ["exploration", "review"] },
         { agent: "committer", mode: "preflight", result: "knowledge/preflight-<name>-<session_id>.md", other: ["checkpoint", "cleanup"] },
       ];
       for (const c of cases) {
@@ -858,30 +862,25 @@ ${c.mode === "preflight" ? "BRANCH: fix/swarm-gate" : ""}`;
       }
     });
 
-    it("injects the single KD prefix for review and audit modes separately", async () => {
-      const cases = [
-        { mode: "review", kd: "knowledge/review-<name>-<session_id>.md", otherPrefix: "audit" },
-        { mode: "audit", kd: "knowledge/audit-<name>-<session_id>.md", otherPrefix: "review" },
-      ];
-
-      for (const c of cases) {
-        const prompt = `AGENT: inspector
-MODE: ${c.mode}
+    it("injects the single review KD prefix — the audit prefix is gone", async () => {
+      const prompt = `AGENT: inspector
+MODE: review
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
-SCOPE: ${c.mode} implementation
-RESULT KD: knowledge/${c.mode}-foo.md`;
+SCOPE: Review implementation
+RESULT KD: knowledge/review-foo.md`;
 
-        const output = { args: { prompt } };
-        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
 
-        expect(output.args.description).toContain(`MODE: ${c.mode}`);
-        expect(output.args.description).toContain(`RESULT KD: ${c.kd}`);
-        expect(output.args.description).toContain(`- ${c.mode}: ${c.kd}`);
-        expect(output.args.description).toContain("RESULT KD Naming Convention:");
-        expect(output.args.description).not.toContain("RESULT KD Naming Conventions:");
-        expect(output.args.description).not.toContain(`knowledge/${c.otherPrefix}-`);
-      }
+      expect(output.args.description).toContain("MODE: review");
+      expect(output.args.description).toContain("RESULT KD: knowledge/review-<name>-<session_id>.md");
+      expect(output.args.description).toContain("- review: knowledge/review-<name>-<session_id>.md");
+      expect(output.args.description).toContain("RESULT KD Naming Convention:");
+      expect(output.args.description).not.toContain("RESULT KD Naming Conventions:");
+      // The merged review+audit surface shows ONE naming hint — no audit- prefix,
+      // no dual naming conventions (audit merged into review).
+      expect(output.args.description).not.toContain("knowledge/audit-");
     });
 
     it("falls back to the <type> placeholder for unknown modes", async () => {
@@ -902,6 +901,58 @@ RESULT KD: knowledge/unknown-foo.md`;
       expect(output.args.description).toContain("MODE: unknown");
       expect(output.args.description).toContain("RESULT KD: knowledge/<type>-<name>-<session_id>.md");
       expect(output.args.description).toContain("- unknown: knowledge/<type>-<name>-<session_id>.md");
+    });
+
+    it("rejects an audit dispatch as an unknown mode (audit merged into review)", async () => {
+      const prompt = `AGENT: inspector
+MODE: audit
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Audit implementation
+RESULT KD: knowledge/audit-foo.md`;
+
+      const output = { args: { prompt } };
+      // audit is no longer a recognized mode: it is not in KNOWN_MODES, has no
+      // KD-producing entry, and its template file is deleted — so the dispatch
+      // is rejected at template lookup like any unknown mode.
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output)
+      ).rejects.toThrow("No template found for mode: audit");
+
+      expect(output.args.prompt).toContain("MODE: audit");
+      expect(output.args.description).toContain("knowledge/<type>-<name>-<session_id>.md");
+    });
+
+    it("renders the merged review instruction and FAIL-citation mandate from templates/review.json", async () => {
+      const prompt = `AGENT: inspector
+MODE: review
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-07-15
+SCOPE: Review implementation
+RESULT KD: knowledge/review-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+
+      // Merged surface: one review dispatch instructs the security audit AND the
+      // review — the audit is a section of the review KD, not a separate KD.
+      expect(output.args.prompt).toContain("run the security audit per the scope above");
+      expect(output.args.prompt).toContain("Produce a REVIEW KD (review findings + audit section)");
+      // Single naming-convention hint on the merged surface — generation renders
+      // when the dispatch carries one; the prefix hint is review-only.
+      expect(output.args.prompt).toContain("knowledge/review-<name>-<session_id>-gen");
+      // Verdict + OQ-4 citation mandate surfaced to the Inspector.
+      expect(output.args.prompt).toContain("verdict: PASS | FAIL | FUNDAMENTAL");
+      expect(output.args.prompt).toContain("CITATION MANDATE");
+      expect(output.args.prompt).toContain("every FAIL finding MUST cite at least one milestone token");
+      expect(output.args.prompt).toContain("MALFORMED");
+      // No audit-specific dispatch remains on the surface.
+      expect(output.args.prompt).not.toMatch(/MODE: audit/);
+    });
+
+    it("has no templates/audit.json on disk", () => {
+      expect(existsSync(join(PLUGIN_TEMPLATES_DIR, "audit.json"))).toBe(false);
+      expect(existsSync(join(PLUGIN_TEMPLATES_DIR, "review.json"))).toBe(true);
     });
 
     it("injects the MILESTONE ID requirement and milestone token into the swarm tool doc only", async () => {
@@ -1168,7 +1219,6 @@ SCOPE: Test partial match`;
         { mode: "preflight", agent: "committer", scope: "Setup workspace", branch: "fix/swarm-gate" },
         { mode: "align", agent: "spec-weaver", scope: "Align requirements" },
         { mode: "review", agent: "inspector", scope: "Review implementation" },
-        { mode: "audit", agent: "inspector", scope: "Audit implementation" },
         { mode: "extract", agent: "scribe", scope: "Extract documentation" },
         { mode: "evolve", agent: "habit-builder", scope: "Evolve process" },
         { mode: "cleanup", agent: "committer", scope: "Commit changes", branch: "chore/version-bump-2" }
