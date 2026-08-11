@@ -61,9 +61,10 @@ const RAW_INTENT_MAX_MESSAGES = 10;
 // special cases (VERIFY, DECOMPOSE).
 // Used by in-flight dispatch tracking so the guard can correctly match pending
 // KDs against the disk pattern.
-// VERIFY produces TWO KDs (review + audit); DECOMPOSE produces the plan KD plus
-// the milestone registry (milestones-). Multi-KD phases are stored as arrays;
-// all other phases use a single string for backward compatibility.
+// VERIFY produces ONE KD (review — the audit is a section of the review KD);
+// DECOMPOSE produces the plan KD plus the milestone registry (milestones-).
+// Multi-KD phases are stored as arrays; all other phases use a single string
+// for backward compatibility.
 const KD_TYPE_PREFIXES = {
   [STATES.INTENT]: "intent",
   [STATES.PREFLIGHT]: "preflight",
@@ -72,14 +73,14 @@ const KD_TYPE_PREFIXES = {
   [STATES.ALIGN]: "spec",
   [STATES.DECOMPOSE]: ["plan", "milestones"],
   [STATES.SWARM]: "impl",
-  [STATES.VERIFY]: ["review", "audit"],
+  [STATES.VERIFY]: ["review"],
   [STATES.EXTRACT]: "composed",
   [STATES.EVOLVE]: "process",
   [STATES.CLEANUP]: "cleanup"
 };
 
 // Normalize a prefix value from KD_TYPE_PREFIXES to always return an array.
-// VERIFY phase stores ["review", "audit"]; all others store a single string.
+// VERIFY phase stores ["review"]; all others store a single string.
 // Consumers use this to uniformly iterate over expected prefixes.
 function getPrefixes(phase) {
   const val = KD_TYPE_PREFIXES[phase];
@@ -244,6 +245,20 @@ function cleanupLifecycleKDs(sessionID, generation = 0) {
     }
   }
   debug(`Cleanup of ${stale.length} stale KDs for session ${sessionID} (generation ${gen})`);
+  // Lifecycle-end cleanup also clears the session's short-term memory store
+  // (R020/R006): promotion already copies selected notes to long-term memory
+  // at EXTRACT, so the scratch notes are disposable here. Recursive + force,
+  // failure non-blocking (mirrors the KD cleanup loop above). Long-term
+  // knowledge/memory/ is untouched.
+  const shortTermDir = join(knowledgeDir, "short-term", sessionID);
+  try {
+    if (existsSync(shortTermDir)) {
+      rmSync(shortTermDir, { recursive: true, force: true });
+      debug(`Cleanup of short-term store for session ${sessionID} (generation ${gen})`);
+    }
+  } catch (e) {
+    debug(`cleanupLifecycleKDs: failed to remove short-term store for ${sessionID}: ${e.message}`);
+  }
   return stale.length;
 }
 
@@ -700,8 +715,8 @@ function toProjectRelative(filePath) {
 // (between the leading `---` and the next `---` line) is inspected; a body
 // Verdict section is human-readable and never read. Returns "PASS", "FAIL", or
 // "FUNDAMENTAL", or null when the field is absent or its value is not one of
-// the three valid verdicts (missing/invalid is treated as PASS with a warning
-// at the call site).
+// the three valid verdicts (missing/invalid blocks advancement — the MISSING
+// rule in evaluateVerifyVerdict, never treated as PASS).
 function readVerdictFrontmatter(filePath) {
   try {
     const content = readFileSync(filePath, "utf8");
@@ -716,22 +731,23 @@ function readVerdictFrontmatter(filePath) {
   }
 }
 
-// Finds the newest review/audit KD among the session's KDs. "Newest" is
+// Finds the newest review KD among the session's KDs. "Newest" is
 // deterministic: greatest file mtime, tie-break by greatest filename. Returns
 // { filename, verdict } (verdict read from the newest KD's frontmatter) or
-// null when no review/audit KD exists — the caller then falls back to the
-// presence-based result (false).
+// null when no review KD exists — the caller then falls back to the
+// presence-based result (false). Legacy audit- KDs are inert: the merged
+// review+audit surface reads verdicts from review- only.
 function findNewestVerdictKD(sessionFiles) {
-  const reviewAuditFiles = sessionFiles.filter(f => /^review-|^audit-/i.test(f));
-  if (reviewAuditFiles.length === 0) return null;
+  const reviewFiles = sessionFiles.filter(f => /^review-/i.test(f));
+  if (reviewFiles.length === 0) return null;
   const knowledgeDir = getKnowledgeDir();
-  reviewAuditFiles.sort((a, b) => {
+  reviewFiles.sort((a, b) => {
     let mtimeDiff = 0;
     try { mtimeDiff = statSync(join(knowledgeDir, b)).mtimeMs - statSync(join(knowledgeDir, a)).mtimeMs; } catch (_) {}
     if (mtimeDiff !== 0) return mtimeDiff;
     return b > a ? 1 : b < a ? -1 : 0;
   });
-  const filename = reviewAuditFiles[0];
+  const filename = reviewFiles[0];
   return { filename, verdict: readVerdictFrontmatter(join(knowledgeDir, filename)) };
 }
 
@@ -752,7 +768,7 @@ function findNewestEvidenceKD(sessionPhaseMap, sessionID, phase) {
     [STATES.ALIGN]: /^spec-/i,
     [STATES.DECOMPOSE]: /^plan-|^milestones-/i,
     [STATES.SWARM]: /^impl-/i,
-    [STATES.VERIFY]: /^review-|^audit-/i,
+    [STATES.VERIFY]: /^review-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
     [STATES.CLEANUP]: /^cleanup-/i
@@ -774,81 +790,171 @@ function findNewestEvidenceKD(sessionPhaseMap, sessionID, phase) {
   return newest;
 }
 
-// On a FAIL auto-regression every checked-off milestone row of the session
-// registry re-opens to in-progress, so the all-checked-off gate cannot
-// re-advance SWARM→VERIFY before fresh impl KDs land. Idempotent for rows
-// already in-progress; a missing/empty registry is a no-op and the SWARM gate
-// fails closed on REGISTRY_EMPTY/MISSING. updateMilestoneRegistry's reopen
-// semantics preserve the registry row's own casing.
-function reopenCheckedOffMilestones(sessionID, sessionPhaseMap) {
+// On a FAIL auto-regression the milestone rows CITED by the review KD re-open
+// to in-progress, so the all-checked-off gate cannot re-advance SWARM→VERIFY
+// before fresh impl KDs land. Scoped reopen (R012): citedMilestoneIds are the
+// registry-resolvable milestone tokens parsed from the review KD's Findings
+// section — the intersection with registry row ids reopens exactly; unrelated
+// checked-off rows are untouched. Idempotent for rows already in-progress; a
+// missing/empty registry is a no-op and the SWARM gate fails closed on
+// REGISTRY_EMPTY/MISSING. updateMilestoneRegistry's reopen semantics preserve
+// the registry row's own casing.
+function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds) {
   const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
     debug(`reopen: no milestone registry for session ${sessionID} — nothing to reopen`);
     return;
   }
+  const cited = new Set((citedMilestoneIds || []).map(id => String(id).toUpperCase()));
   for (const row of registry.rows) {
-    if (row.state === "checked-off") {
+    if (row.state === "checked-off" && cited.has(String(row.id).toUpperCase())) {
       const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"], { reopen: true });
       debug(`reopen: milestone ${row.id} checked-off → in-progress (${JSON.stringify(result)})`);
     }
   }
 }
 
+// Parses milestone tokens from a review KD's Findings section — the provenance
+// for scoped reopen (R012): `impl-<milestone-id>-` path tokens and bare
+// `M\d+` milestone ids. Tokens are deduplicated and case-preserved; a KD with
+// no Findings section yields zero citations (fail-closed for the malformed-FAIL
+// rule).
+function extractMilestoneCitationsFromReviewKD(content) {
+  if (typeof content !== "string") return [];
+  const headingMatch = content.match(/^## Findings[^\n]*\n?/m);
+  if (!headingMatch) return [];
+  // Search the next `## ` heading AFTER the Findings heading itself — starting
+  // from the heading line would match the heading at index 0 and yield an
+  // empty section.
+  const rest = content.slice(headingMatch.index + headingMatch[0].length);
+  const nextHeading = rest.search(/^## /m);
+  const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
+  const tokens = new Set();
+  let m;
+  const implPattern = /impl-([A-Za-z0-9_-]+)-/gi;
+  while ((m = implPattern.exec(section)) !== null) tokens.add(m[1]);
+  const idPattern = /\bM\d+\b/g;
+  while ((m = idPattern.exec(section)) !== null) tokens.add(m[0]);
+  return [...tokens];
+}
+
+// Filters cited milestone tokens down to the registry's row ids
+// (case-insensitive) — tokens not in the registry are dropped so only real
+// milestones can reopen. A missing registry yields an empty list.
+function registryResolvableMilestones(sessionID, sessionPhaseMap, citedMilestoneIds) {
+  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!registry || !Array.isArray(citedMilestoneIds)) return [];
+  return citedMilestoneIds.filter(id => registry.rows.some(r => String(r.id).toUpperCase() === String(id).toUpperCase()));
+}
+
+// Newest session-scoped impl KD mtime — the freshness baseline for the
+// fresh-PASS-after-fix and fix-cycle-tied regression rules. -Infinity when no
+// impl KD exists (no fix cycle has ever landed, so freshness is trivially met).
+function newestImplMtimeMs(sessionFiles) {
+  const implFiles = sessionFiles.filter(f => /^impl-/i.test(f));
+  if (implFiles.length === 0) return -Infinity;
+  const knowledgeDir = getKnowledgeDir();
+  let newest = -Infinity;
+  for (const f of implFiles) {
+    const m = getFileMtimeMs(join(knowledgeDir, f));
+    if (m > newest) newest = m;
+  }
+  return newest;
+}
+
+// Reads a review KD's full content for citation parsing. Returns "" on read
+// failure — the malformed-FAIL rule then fails closed (zero citations).
+function readReviewKdContent(filename) {
+  try {
+    return readFileSync(join(getKnowledgeDir(), filename), "utf8");
+  } catch (_) {
+    return "";
+  }
+}
+
 // FAIL-verdict auto-regression. Regresses VERIFY→SWARM via the existing
 // backward-transition path — no `BACKWARD: true` flag and no explicit dispatch
-// — then re-opens checked-off milestone rows. The once-per-KD guard records
-// the KD filename that fired the regression so re-evaluating the same KD never
-// regresses again. The cycle cap in backwardTransition bounds repeated fix
-// cycles. Returns true when a regression fired, false when this KD filename
-// was already seen.
-function regressVerifyOnFail(sessionID, kdFilename, sessionPhaseMap, verdictRegressedKDs, backwardTransition) {
-  let seen = verdictRegressedKDs.get(sessionID);
-  if (!seen) {
-    seen = new Set();
-    verdictRegressedKDs.set(sessionID, seen);
+// — then re-opens the cited checked-off milestone rows. The fix-cycle-tied
+// guard records { kdFilename, regressedAt } per session: an absent guard or a
+// different kdFilename always regresses (a NEW FAIL KD); the same KD regresses
+// again only when a fix cycle landed after regressedAt (newest impl-* KD mtime
+// > regressedAt). The cycle cap in backwardTransition bounds repeated fix
+// cycles. Returns true when a regression fired, false when the same KD has no
+// new fix cycle.
+function regressVerifyOnFail(sessionID, kdFilename, sessionFiles, sessionPhaseMap, citedMilestoneIds, verdictRegressedKDs, backwardTransition) {
+  const guard = verdictRegressedKDs.get(sessionID);
+  // Monotonic regressedAt: two regressions may land in the same millisecond
+  // (fast local writes), but the fix-cycle guard needs the second regression's
+  // timestamp to be strictly greater — bump by 1ms when Date.now() ties.
+  const now = Math.max(Date.now(), (guard && typeof guard.regressedAt === "number" ? guard.regressedAt + 1 : 0));
+  if (guard && guard.kdFilename === kdFilename) {
+    const newestImpl = newestImplMtimeMs(sessionFiles);
+    if (!(newestImpl > guard.regressedAt)) {
+      debug(`FAIL current, no new fix cycle — same KD ${kdFilename} blocked (regressedAt=${guard.regressedAt}, newest impl mtime=${newestImpl})`);
+      return false;
+    }
   }
-  if (seen.has(kdFilename)) return false;
-  seen.add(kdFilename);
+  verdictRegressedKDs.set(sessionID, { kdFilename, regressedAt: now });
   debug(`VERDICT_FAIL: KD ${kdFilename} verdict=FAIL — auto-regressing VERIFY→SWARM (no BACKWARD flag)`);
   backwardTransition(sessionID, STATES.VERIFY, STATES.SWARM);
-  reopenCheckedOffMilestones(sessionID, sessionPhaseMap);
+  reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds);
   return true;
 }
 
 // Module-level verdict-aware VERIFY gate body. checkDiskAdvancement delegates
-// the FAIL verdict here; f1Options carries the server-local regression
+// the VERIFY verdict here; f1Options carries the server-local regression
 // dependencies ({ verdictRegressedKDs, backwardTransition }) so direct unit-test
 // calls without a handler stay blocked-but-safe (no regression side effect).
 function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options) {
   const hasReview = sessionFiles.some(f => /^review-/i.test(f));
-  const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
   const verdictInfo = findNewestVerdictKD(sessionFiles);
   if (verdictInfo && verdictInfo.verdict === "FAIL") {
+    // OQ-4 malformed-FAIL rule: a FAIL review must cite at least one
+    // registry-resolvable milestone token in its Findings section, or it is
+    // malformed — blocked with NO regression and NO reopen. A citation-less
+    // FAIL never enters the state machine (no regress, and forward advance is
+    // impossible while the newest verdict is FAIL), so it cannot deadlock.
+    const resolvable = registryResolvableMilestones(sessionID, sessionPhaseMap, extractMilestoneCitationsFromReviewKD(readReviewKdContent(verdictInfo.filename)));
+    if (resolvable.length === 0) {
+      debug(`MALFORMED_FAIL: FAIL review KD ${verdictInfo.filename} carries no registry-resolvable milestone citations — blocked, no regression, no reopen`);
+      return false;
+    }
     let regressed = false;
     if (f1Options && f1Options.verdictRegressedKDs && typeof f1Options.backwardTransition === "function") {
-      regressed = regressVerifyOnFail(sessionID, verdictInfo.filename, sessionPhaseMap, f1Options.verdictRegressedKDs, f1Options.backwardTransition);
+      regressed = regressVerifyOnFail(sessionID, verdictInfo.filename, sessionFiles, sessionPhaseMap, resolvable, f1Options.verdictRegressedKDs, f1Options.backwardTransition);
     }
-    debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} verdict=FAIL → ${regressed ? "regressed to SWARM" : "blocked (once-per-KD guard or no regression handler)"}`);
+    debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} verdict=FAIL → ${regressed ? "regressed to SWARM" : "blocked (fix-cycle guard or no regression handler)"}`);
     return false;
   }
   if (verdictInfo && verdictInfo.verdict === "FUNDAMENTAL") {
-    const escalation = `FUNDAMENTAL_ESCALATION: review/audit KD ${verdictInfo.filename} carries verdict FUNDAMENTAL — VERIFY advancement blocked; escalate to user (Happy to Delete) or override with /phase`;
+    const escalation = `FUNDAMENTAL_ESCALATION: review KD ${verdictInfo.filename} carries verdict FUNDAMENTAL — VERIFY advancement blocked; escalate to user (Happy to Delete) or override with /phase`;
     debug(escalation);
     process.stderr.write(`[protocol-gate] ${escalation}\n`);
     debug(`Disk check VERIFY: blocked by FUNDAMENTAL verdict on ${verdictInfo.filename}`);
     return false;
   }
-  if (verdictInfo && !verdictInfo.verdict) {
-    debug(`VERDICT_MISSING: newest review/audit KD ${verdictInfo.filename} lacks a valid verdict field — treated as PASS`);
+  if (!verdictInfo || !verdictInfo.verdict) {
+    // MISSING: an absent/invalid verdict field blocks advancement — the
+    // Inspector must emit a real verdict. Never treated as PASS.
+    debug(`VERDICT_MISSING: newest review KD ${verdictInfo ? verdictInfo.filename : "(none)"} lacks a valid verdict field — advancement blocked`);
+    return false;
   }
-  // Advancement requires BOTH KDs because the Inspector produces both
-  // (verify.json:3, inspector.md:70) — EXTRACT must not start without the
-  // audit KD's security posture. The regression side stays OR
-  // (checkPhaseStateConsistency, lines 1042/1064) so a single-KD VERIFY holds
-  // instead of directly regressing to SWARM — otherwise the unbounded
-  // VERIFY⇄SWARM loop returns.
-  const result = hasReview && hasAudit;
-  debug(`Disk check VERIFY: review=${hasReview}, audit=${hasAudit} → ${result}`);
+  // Fresh-PASS-after-fix (R010): a PASS verdict advances only when it is at
+  // least as new as the newest impl-* KD. A fix cycle that landed after the
+  // review (newer impl KD) makes the PASS stale — a fresh review is required
+  // before EXTRACT starts. No impl KD ⇒ no fix cycle ⇒ trivially fresh.
+  const verdictMtime = getFileMtimeMs(join(getKnowledgeDir(), verdictInfo.filename));
+  const newestImpl = newestImplMtimeMs(sessionFiles);
+  if (newestImpl > verdictMtime) {
+    debug(`STALE_PASS: verdict KD ${verdictInfo.filename} mtime=${verdictMtime} < newest impl KD mtime=${newestImpl} — fresh review required after last fix`);
+    return false;
+  }
+  // The merged review+audit surface advances on a single review KD (R010).
+  // The regression side stays OR (checkPhaseStateConsistency) so a single-KD
+  // VERIFY holds instead of directly regressing to SWARM — otherwise the
+  // unbounded VERIFY⇄SWARM loop returns.
+  const result = hasReview;
+  debug(`Disk check VERIFY: review=${hasReview} → ${result}`);
   return result;
 }
 
@@ -932,7 +1038,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     [STATES.INVESTIGATE]: /^analysis-/i,
     [STATES.ALIGN]: /^spec-/i,
     [STATES.SWARM]: /^impl-/i,
-    [STATES.VERIFY]: /^review-|^audit-/i,
+    [STATES.VERIFY]: /^review-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
     [STATES.CLEANUP]: /^cleanup-/i
@@ -964,15 +1070,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   if (!pattern) return false;
 
   // The verdict-aware VERIFY gate — see evaluateVerifyVerdict.
-  // The newest review/audit KD's frontmatter verdict decides advancement; only
+  // The newest review KD's frontmatter verdict decides advancement; only
   // the newest KD's frontmatter is read. Under an override at VERIFY,
-  // the newest review/audit KD's mtime is the evidence timestamp — a stale
+  // the newest review KD's mtime is the evidence timestamp — a stale
   // verdict KD never re-advances VERIFY (contract #5).
   if (phase === STATES.VERIFY) {
     if (overrideActive) {
       const verdictInfo = findNewestVerdictKD(sessionFiles);
       if (!verdictInfo) {
-        debug(`Disk check VERIFY: no review/audit KD — cannot advance under override (since=${overrideUntil.since})`);
+        debug(`Disk check VERIFY: no review KD — cannot advance under override (since=${overrideUntil.since})`);
         return false;
       }
       const mtime = getFileMtimeMs(join(knowledgeDir, verdictInfo.filename));
@@ -1053,7 +1159,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     [STATES.ALIGN]: /^spec-/i,
     [STATES.DECOMPOSE]: /^plan-/i,
     [STATES.SWARM]: /^impl-/i,
-    [STATES.VERIFY]: /^review-|^audit-/i,
+    [STATES.VERIFY]: /^review-/i,
     [STATES.EXTRACT]: /^composed-/i,
     [STATES.EVOLVE]: /^process-/i,
     [STATES.CLEANUP]: /^cleanup-/i
@@ -1075,7 +1181,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
 
   // Skip regression when a subagent dispatch is in-flight for this phase.
   // The KD is pending creation, not deleted — false regression would loop.
-  // inFlightDispatches stores an array of prefixes (e.g., ["review", "audit"] for VERIFY).
+  // inFlightDispatches stores an array of prefixes (e.g., ["review"] for VERIFY).
   const inFlightPrefixes = inFlightDispatches?.get(sessionID);
   if (inFlightPrefixes && Array.isArray(inFlightPrefixes) && inFlightPrefixes.some(p => currentPattern.test(`${p}-`))) {
     debug(`Consistency check: skipped — in-flight dispatch for ${getPhaseName(currentPhase)} KD (prefixes=${JSON.stringify(inFlightPrefixes)})`);
@@ -1103,13 +1209,12 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   // Check if current phase's KD is still present on disk
   if (currentPhase === STATES.VERIFY) {
     const hasReview = sessionFiles.some(f => /^review-/i.test(f));
-    const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
-    // VERIFY regression-side OR: a single review/audit KD keeps VERIFY
+    // VERIFY regression-side OR: a single review KD keeps VERIFY
     // "phase is fine". MUST stay OR — an AND here would regress a single-KD
     // VERIFY directly to SWARM via the set() below (bypassing the backward
     // cycle cap), reintroducing the unbounded VERIFY⇄SWARM loop.
-    // Advancement is gated separately by the AND in evaluateVerifyVerdict.
-    if (hasReview || hasAudit) return false; // current phase is fine
+    // Advancement is gated separately in evaluateVerifyVerdict.
+    if (hasReview) return false; // current phase is fine
   } else {
     if (sessionFiles.some(f => currentPattern.test(f))) return false; // current phase is fine
   }
@@ -1130,13 +1235,12 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
 
     if (phase === STATES.VERIFY) {
       const hasReview = sessionFiles.some(f => /^review-/i.test(f));
-      const hasAudit = sessionFiles.some(f => /^audit-/i.test(f));
-      // VERIFY backward-walk OR: a surviving single review/audit KD
+      // VERIFY backward-walk OR: a surviving single review KD
       // anchors VERIFY during the backward walk. MUST stay OR — aligning it to
       // AND would let a missing second KD regress VERIFY directly to SWARM via
       // the set() below (bypassing handleBackwardTransition and the cycle cap),
       // reintroducing the unbounded loop.
-      if (hasReview || hasAudit) {
+      if (hasReview) {
         regressedPhase = phase;
         foundEarlierKD = true;
         break;
@@ -1230,13 +1334,14 @@ export default {
     // Track agent type for ALL sessions (including subagents) to enforce
     // checkpoint KD restrictions. Populated in chatParams for every session.
     const sessionAgentMap = new Map();
-    // Once-per-KD regression guard — per-session set of review/audit
-    // KD filenames that already triggered a FAIL auto-regression. Re-evaluating
-    // the same KD must not regress again (no infinite FAIL→SWARM→VERIFY loop);
-    // a re-review writes a new filename which may trigger the next regression.
-    // In-memory only (like freshAdvancement) — the cap is re-established from
-    // disk on restart via the cycle counter semantics.
-    const verdictRegressedKDs = new Map(); // sessionID → Set<filename>
+    // Fix-cycle-tied FAIL regression guard — per-session
+    // { kdFilename, regressedAt } for the review KD that fired a FAIL
+    // auto-regression. Re-evaluating the same KD regresses again only when a
+    // new fix cycle landed after regressedAt (newest impl-* KD mtime >);
+    // without one it blocks (no infinite FAIL→SWARM→VERIFY loop); a NEW FAIL KD
+    // always regresses. In-memory only (like freshAdvancement) — the cap is
+    // re-established from disk on restart via the cycle counter semantics.
+    const verdictRegressedKDs = new Map(); // sessionID → { kdFilename, regressedAt }
     // One-shot phase-transition announcements — sessionID →
     // { from, to, reason }. Set at the disk-advancement site when the phase
     // increments; consumed+deleted in the first systemTransform that runs after
@@ -2273,7 +2378,7 @@ export default {
               }
 
               // Skip consistency check when write/task is creating expected KD.
-              // For VERIFY phase, match against ANY prefix in the array (review OR audit).
+              // For VERIFY phase, match against ANY prefix in the array (review).
               let isCreatingExpectedKD = tool === "write" && currentPhasePrefixes.some(p =>
                 (args?.filePath || "").includes(`${p}-`) || (args?.content || "").includes(`${p}-`)
               );
@@ -2577,7 +2682,8 @@ export default {
     // --- Helper: expected-KD existence for a recorded dispatch ---
     // Explicit RESULT KD paths are checked directly; dispatches without one
     // fall back to a prefix scan of the phase's expected KD prefixes
-    // (multi-KD phases like VERIFY = review+audit are covered by the scan).
+    // (multi-KD phases like DECOMPOSE = plan+milestones, VERIFY = review are
+    // covered by the scan).
     // The RESULT KD path is project-relative (e.g. `knowledge/impl-...`), so
     // the leading `knowledge/` segment is stripped before joining with
     // getKnowledgeDir(). A missing knowledge/ dir is not an error — returns false.
@@ -2780,6 +2886,7 @@ export default {
       findNewestVerdictKD,
       reopenCheckedOffMilestones,
       regressVerifyOnFail,
+      extractMilestoneCitationsFromReviewKD,
       verdictRegressedKDs,
       collectParentSessionCandidates,
       getPersistedGeneration,
