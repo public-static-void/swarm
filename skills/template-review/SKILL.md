@@ -1,6 +1,6 @@
 ---
 name: template-review
-description: "KD template for creating REVIEW documents. Load this skill, then use the template body as your KD structure reference."
+description: "KD template for creating REVIEW documents (merged review + audit: the review KD carries both the Review Findings and the Audit sections). Load this skill, then use the template body as your KD structure reference."
 ---
 
 ---
@@ -23,11 +23,24 @@ verdict: {{PASS | FAIL | FUNDAMENTAL}}
 
 {{PASS / FAIL / FUNDAMENTAL}}
 
-The `verdict` frontmatter field above is the machine source — protocol-gate
-reads it during VERIFY. `FAIL` auto-regresses VERIFY→SWARM; `FUNDAMENTAL`
-blocks advancement and escalates; `PASS` advances.
+The `verdict` frontmatter field above is the single machine source — protocol-gate
+reads it during VERIFY. `MISSING` (absent or invalid) blocks VERIFY with a
+diagnostic and is not treated as PASS; `PASS` advances when this review KD is
+newer than the newest `impl-*` KD (fresh PASS after the last fix — a stale PASS
+blocks); `FAIL` auto-regresses VERIFY→SWARM and reopens exactly the milestone
+row(s) its findings cite; `FUNDAMENTAL` blocks advancement and escalates.
 
-## Findings
+## Verdict Rules (citation mandate — OQ-4)
+
+- Every **FAIL** finding MUST cite at least one milestone token (`M\d+` id like
+  `M3`, or an `impl-<milestone-id>-` path like `impl-M3-short-term-store-...`).
+  The protocol-gate parses these tokens to reopen exactly the cited milestone
+  rows when a FAIL regresses VERIFY→SWARM.
+- A FAIL verdict with **zero milestone citations** is **MALFORMED**: the gate
+  blocks with a diagnostic, regresses nothing, and reopens nothing. Re-dispatch
+  the review with proper citations rather than relying on a citation-less FAIL.
+
+## Review Findings
 
 ### F001: {{finding title}}
 
@@ -37,10 +50,45 @@ blocks advancement and escalates; `PASS` advances.
 - **Severity**: {{critical / major / minor}}
 - **Status**: {{PASS / FAIL}}
 - **Detail**: {{what's wrong and why}}
+- **Milestone citation** (FAIL findings): {{M\d+ or impl-<id>- token}}
 
 ### F002: ...
 
-### Test Results (optional)
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact          | Test/Check       | Status      |
+| ------ | --------- | ----------------- | ---------------- | ----------- |
+| R001   | P001      | `src/...`         | `npm test ...`   | PASS / FAIL |
+| R002   | P002      | `src/...`         | `npm test ...`   | PASS / FAIL |
+
+## Audit
+
+### Scope
+
+{{What was audited — code, config, dependencies, infrastructure, secrets,
+third-party dependency versions, SAST/dependency scan output}}
+
+### Risk Summary
+
+- **Critical**: {{count}}
+- **High**: {{count}}
+- **Medium**: {{count}}
+- **Low**: {{count}}
+
+### Security Findings
+
+### A001: {{vulnerability}}
+
+- **Severity**: {{critical / high / medium / low}}
+- **CWE**: {{CWE-ID if applicable}}
+- **File**: {{path}}
+- **Description**: {{the vulnerability}}
+- **Remediation**: {{how to fix}}
+- **Milestone citation** (FAIL findings): {{M\d+ or impl-<id>- token}}
+
+### A002: ...
+
+## Test Results (optional)
 
 Summarize test execution results relevant to each finding.
 
@@ -48,7 +96,7 @@ Summarize test execution results relevant to each finding.
 | ---------- | --------- | ------ | ------ | -------- |
 |            |           |        |        |          |
 
-### Pass Rate (optional)
+## Pass Rate (optional)
 
 Overall acceptance criteria pass rate.
 
