@@ -1,17 +1,19 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { join } from "path";
 import { tmpdir } from "os";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 
 // The plugin reads its data dirs from KNOWLEDGE_GATE_MEMORY_DIR /
-// KNOWLEDGE_GATE_ISSUES_DIR env overrides (test seam in the plugin). We point
-// them at real temp dirs — no vi.mock("fs") needed. The previous approach
-// mocked the fs module process-wide, which leaked into sibling suites under
-// bun's test runner and made every protocol-gate disk check fail.
+// KNOWLEDGE_GATE_ISSUES_DIR / KNOWLEDGE_GATE_SHORT_TERM_DIR env overrides
+// (test seam in the plugin). We point them at real temp dirs — no
+// vi.mock("fs") needed. The previous approach mocked the fs module
+// process-wide, which leaked into sibling suites under bun's test runner and
+// made every protocol-gate disk check fail.
 
 let tempRoot;
 let MEMORY_DIR;
 let ISSUES_DIR;
+let SHORT_TERM_DIR;
 let pluginModule;
 let hooks;
 
@@ -63,8 +65,10 @@ describe("Knowledge-Gate Plugin", () => {
     tempRoot = mkdtempSync(join(tmpdir(), "kg-test-"));
     MEMORY_DIR = join(tempRoot, "memory");
     ISSUES_DIR = join(tempRoot, "issues");
+    SHORT_TERM_DIR = join(tempRoot, "short-term");
     process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
     process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+    process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
     // Single static import — no query-string module-identity hack. Each
     // server() call owns a fresh memory cache (the cache lives in the server
     // closure), so per-test module re-imports are unnecessary.
@@ -75,8 +79,10 @@ describe("Knowledge-Gate Plugin", () => {
     // Reset the temp dirs so each test starts from empty state
     rmSync(MEMORY_DIR, { recursive: true, force: true });
     rmSync(ISSUES_DIR, { recursive: true, force: true });
+    rmSync(SHORT_TERM_DIR, { recursive: true, force: true });
     mkdirSync(MEMORY_DIR, { recursive: true });
     mkdirSync(ISSUES_DIR, { recursive: true });
+    mkdirSync(SHORT_TERM_DIR, { recursive: true });
     // Env overrides are read at transform call time — reset them
     // per test so no cap/audience leaks between tests. The dir overrides set
     // in beforeAll are deliberately left untouched.
@@ -89,6 +95,7 @@ describe("Knowledge-Gate Plugin", () => {
   afterAll(() => {
     delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
     delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+    delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
     rmSync(tempRoot, { recursive: true, force: true });
   });
 
@@ -1631,6 +1638,215 @@ Body`;
 
     it("does not export validateMemoryEntry as a named export", () => {
       expect(pluginModule.validateMemoryEntry).toBeUndefined();
+    });
+  });
+
+  describe("short-term memory tools (memory_note family)", () => {
+    // Exercised through the registered executes with an explicit agent
+    // context — matching the memory_write/memory_delete suite pattern. All
+    // file expectations are verified from disk under the temp short-term root
+    // (no fs mocking).
+
+    it("exposes the four short-term tools with description, args, and execute", () => {
+      for (const name of ["memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete"]) {
+        expect(hooks.tool[name]).toBeTruthy();
+        expect(typeof hooks.tool[name].description).toBe("string");
+        expect(hooks.tool[name].args).toBeTruthy();
+        expect(typeof hooks.tool[name].execute).toBe("function");
+      }
+    });
+
+    it("memory_note writes note-001.json with the R002 schema into the caller's namespace", async () => {
+      const result = await hooks.tool.memory_note.execute(
+        { topic: "In-flight step", content: "Phase SWARM, pending P005, todo list open", tags: ["state"] },
+        { agent: "artisan", sessionID: "note-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("written");
+      expect(parsed.id).toBe("ST-note-session-artisan-001");
+
+      const note = JSON.parse(readFileSync(join(SHORT_TERM_DIR, "note-session", "artisan", "note-001.json"), "utf8"));
+      expect(note.id).toBe("ST-note-session-artisan-001");
+      expect(note.agent).toBe("artisan");
+      expect(note.session).toBe("note-session");
+      expect(note.topic).toBe("In-flight step");
+      expect(note.content).toBe("Phase SWARM, pending P005, todo list open");
+      expect(note.tags).toEqual(["state"]);
+      expect(note.version).toBe("1.0.0");
+      expect(note.created).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    });
+
+    it("sequentially numbers notes per agent namespace", async () => {
+      await hooks.tool.memory_note.execute({ topic: "One", content: "first" }, { agent: "artisan", sessionID: "seq-session" });
+      const second = await hooks.tool.memory_note.execute({ topic: "Two", content: "second" }, { agent: "artisan", sessionID: "seq-session" });
+      const parsed = JSON.parse(second);
+      expect(parsed.id).toBe("ST-seq-session-artisan-002");
+      expect(readdirSync(join(SHORT_TERM_DIR, "seq-session", "artisan")).filter(f => f.endsWith(".json"))).toHaveLength(2);
+    });
+
+    it("rejects oversized topic/content and invalid tags with nothing persisted", async () => {
+      const longTopic = "x".repeat(101);
+      const r1 = await hooks.tool.memory_note.execute({ topic: longTopic, content: "ok" }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(r1).error).toContain("topic");
+
+      const longContent = "x".repeat(2001);
+      const r2 = await hooks.tool.memory_note.execute({ topic: "ok", content: longContent }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(r2).error).toContain("content");
+
+      const r3 = await hooks.tool.memory_note.execute({ topic: "ok", content: "ok", tags: ["a", "b", "c", "d", "e", "f"] }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(r3).error).toContain("tags");
+
+      // Nothing persisted for any rejection
+      expect(readdirSync(SHORT_TERM_DIR)).toHaveLength(0);
+    });
+
+    it("writes only into the caller's namespace (structural cross-agent write boundary)", async () => {
+      // memory_note takes no agent/session args — the namespace is derived
+      // from caller identity, so a write can never target another agent's
+      // namespace (R003 boundary is structural).
+      await hooks.tool.memory_note.execute({ topic: "mine", content: "only" }, { agent: "artisan", sessionID: "note-session" });
+      expect(readdirSync(join(SHORT_TERM_DIR, "note-session"))).toEqual(["artisan"]);
+      expect(existsSync(join(SHORT_TERM_DIR, "note-session", "scribe"))).toBe(false);
+      expect(existsSync(join(SHORT_TERM_DIR, "other-session"))).toBe(false);
+    });
+
+    it("rejects traversal-shaped session/agent tokens before any path join", async () => {
+      const r1 = await hooks.tool.memory_note.execute({ topic: "x", content: "y" }, { agent: "../evil", sessionID: "note-session" });
+      expect(JSON.parse(r1).error).toContain("Invalid");
+      // Nothing was written outside the short-term root
+      expect(readdirSync(SHORT_TERM_DIR)).toHaveLength(0);
+
+      const r2 = await hooks.tool.memory_note.execute({ topic: "x", content: "y" }, { agent: "artisan", sessionID: "../escape" });
+      expect(JSON.parse(r2).error).toContain("Invalid");
+      expect(readdirSync(SHORT_TERM_DIR)).toHaveLength(0);
+    });
+
+    it("lets the owner read its own note by id", async () => {
+      const w = await hooks.tool.memory_note.execute({ topic: "own", content: "readable" }, { agent: "artisan", sessionID: "note-session" });
+      const id = JSON.parse(w).id;
+      const r = await hooks.tool.memory_note_read.execute({ id }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(r).id).toBe(id);
+    });
+
+    it("rejects cross-agent reads by id for non-Scribe callers", async () => {
+      await hooks.tool.memory_note.execute({ topic: "scribe note", content: "private" }, { agent: "scribe", sessionID: "note-session" });
+      const r = await hooks.tool.memory_note_read.execute({ id: "ST-note-session-scribe-001" }, { agent: "artisan", sessionID: "note-session" });
+      const parsed = JSON.parse(r);
+      expect(parsed.error).toContain("Permission denied");
+      expect(parsed.error).toContain("artisan");
+    });
+
+    it("lets Scribe read any agent's note by id (promotion path)", async () => {
+      await hooks.tool.memory_note.execute({ topic: "artisan note", content: "for promotion" }, { agent: "artisan", sessionID: "note-session" });
+      const r = await hooks.tool.memory_note_read.execute({ id: "ST-note-session-artisan-001" }, { agent: "scribe", sessionID: "note-session" });
+      expect(JSON.parse(r).id).toBe("ST-note-session-artisan-001");
+    });
+
+    it("allows namespace reads only for Scribe", async () => {
+      await hooks.tool.memory_note.execute({ topic: "t", content: "c" }, { agent: "artisan", sessionID: "note-session" });
+      const denied = await hooks.tool.memory_note_read.execute({ agent: "artisan" }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(denied).error).toContain("Permission denied");
+
+      const allowed = await hooks.tool.memory_note_read.execute({ agent: "artisan", session: "note-session" }, { agent: "scribe", sessionID: "note-session" });
+      expect(JSON.parse(allowed)).toHaveLength(1);
+    });
+
+    it("memory_notes_list: owner sees only its own notes; Scribe sees all agents", async () => {
+      await hooks.tool.memory_note.execute({ topic: "a1", content: "c" }, { agent: "artisan", sessionID: "note-session" });
+      await hooks.tool.memory_note.execute({ topic: "s1", content: "c" }, { agent: "scribe", sessionID: "note-session" });
+
+      const ownerList = await hooks.tool.memory_notes_list.execute({}, { agent: "artisan", sessionID: "note-session" });
+      const ownerParsed = JSON.parse(ownerList);
+      expect(ownerParsed).toHaveLength(1);
+      expect(ownerParsed[0].agent).toBe("artisan");
+
+      const scribeList = await hooks.tool.memory_notes_list.execute({}, { agent: "scribe", sessionID: "note-session" });
+      expect(JSON.parse(scribeList)).toHaveLength(2);
+    });
+
+    it("memory_notes_list: Scribe can list every agent's notes in a session (promotion scan)", async () => {
+      await hooks.tool.memory_note.execute({ topic: "a1", content: "c" }, { agent: "artisan", sessionID: "note-session" });
+      await hooks.tool.memory_note.execute({ topic: "s1", content: "c" }, { agent: "scribe", sessionID: "note-session" });
+      const all = await hooks.tool.memory_notes_list.execute({ session: "note-session" }, { agent: "scribe", sessionID: "note-session" });
+      const parsed = JSON.parse(all);
+      expect(parsed).toHaveLength(2);
+      expect(parsed.map(n => n.topic).sort()).toEqual(["a1", "s1"]);
+    });
+
+    it("memory_notes_list: owner cannot list another agent's notes", async () => {
+      await hooks.tool.memory_note.execute({ topic: "s1", content: "c" }, { agent: "scribe", sessionID: "note-session" });
+      const r = await hooks.tool.memory_notes_list.execute({ agent: "scribe" }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(r).error).toContain("Permission denied");
+    });
+
+    it("memory_note_delete: owner deletes own note; cross-agent delete rejected", async () => {
+      const w = await hooks.tool.memory_note.execute({ topic: "doomed", content: "gone" }, { agent: "artisan", sessionID: "note-session" });
+      const id = JSON.parse(w).id;
+      const r = await hooks.tool.memory_note_delete.execute({ id }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(r).message).toContain("deleted");
+      expect(readdirSync(join(SHORT_TERM_DIR, "note-session", "artisan"))).toHaveLength(0);
+
+      await hooks.tool.memory_note.execute({ topic: "scribe's", content: "protected" }, { agent: "scribe", sessionID: "note-session" });
+      const denied = await hooks.tool.memory_note_delete.execute({ id: "ST-note-session-scribe-001" }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(denied).error).toContain("Permission denied");
+      expect(existsSync(join(SHORT_TERM_DIR, "note-session", "scribe", "note-001.json"))).toBe(true);
+    });
+
+    it("memory_note_delete: Scribe may delete any agent's note", async () => {
+      await hooks.tool.memory_note.execute({ topic: "t", content: "c" }, { agent: "artisan", sessionID: "note-session" });
+      const r = await hooks.tool.memory_note_delete.execute({ id: "ST-note-session-artisan-001" }, { agent: "scribe", sessionID: "note-session" });
+      expect(JSON.parse(r).message).toContain("deleted");
+      expect(existsSync(join(SHORT_TERM_DIR, "note-session", "artisan", "note-001.json"))).toBe(false);
+    });
+
+    it("100-note cap: the 101st write evicts the oldest note", async () => {
+      const ctx = { agent: "artisan", sessionID: "cap-session" };
+      for (let i = 1; i <= 101; i++) {
+        const r = await hooks.tool.memory_note.execute({ topic: `note ${i}`, content: `content ${i}` }, ctx);
+        // The 101st write must still succeed — eviction happens before the write
+        expect(JSON.parse(r).id).toBe(`ST-cap-session-artisan-${String(i).padStart(3, "0")}`);
+      }
+      const files = readdirSync(join(SHORT_TERM_DIR, "cap-session", "artisan")).filter(f => f.endsWith(".json"));
+      expect(files).toHaveLength(100);
+      // Oldest evicted, newest present
+      expect(files).not.toContain("note-001.json");
+      expect(files).toContain("note-101.json");
+    });
+
+    it("short-term notes never appear in memory_search and never reuse MEM-* IDs", async () => {
+      await hooks.tool.memory_note.execute({ topic: "resume state", content: "pending step" }, { agent: "artisan", sessionID: "note-session" });
+      // Long-term search reads MEMORY_DIR only — structurally excludes the
+      // short-term store (R001: notes never surface in memory_search).
+      const search = await hooks.tool.memory_search.execute({ tags: [], topic: "resume", limit: 20 }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(search)).toEqual([]);
+
+      // Note files live under the ST- namespace, disjoint from MEM-* files
+      const noteFiles = readdirSync(join(SHORT_TERM_DIR, "note-session", "artisan"));
+      expect(noteFiles[0]).toMatch(/^note-\d{3}\.json$/);
+
+      // A seeded long-term entry keeps its MEM-* id — no id collision
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { topic: "resume" })]);
+      const results = JSON.parse(await hooks.tool.memory_search.execute({ tags: [], topic: "resume", limit: 20 }, { agent: "artisan", sessionID: "s" }));
+      expect(results.map(r => r.id)).toEqual(["MEM-001"]);
+    });
+
+    it("skips malformed note JSON when listing (mirror loadEntriesFromDisk)", async () => {
+      const dir = join(SHORT_TERM_DIR, "note-session", "artisan");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "note-001.json"), "{ not valid json", "utf8");
+      writeFileSync(join(dir, "note-002.json"), JSON.stringify({ id: "ST-note-session-artisan-002", agent: "artisan", session: "note-session", created: "2026-08-11T00:00:00.000Z", topic: "good", content: "ok", version: "1.0.0" }), "utf8");
+      const list = await hooks.tool.memory_notes_list.execute({}, { agent: "artisan", sessionID: "note-session" });
+      const parsed = JSON.parse(list);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].topic).toBe("good");
+    });
+
+    it("returns not found for unknown note ids on read and delete", async () => {
+      const r = await hooks.tool.memory_note_read.execute({ id: "ST-note-session-artisan-999" }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(r).error).toContain("not found");
+
+      const d = await hooks.tool.memory_note_delete.execute({ id: "ST-note-session-artisan-999" }, { agent: "artisan", sessionID: "note-session" });
+      expect(JSON.parse(d).error).toContain("not found");
     });
   });
 });
