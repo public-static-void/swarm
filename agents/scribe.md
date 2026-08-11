@@ -35,6 +35,10 @@ permission:
   memory_write: allow
   memory_update: allow
   memory_delete: allow
+  memory_note: allow
+  memory_note_read: allow
+  memory_notes_list: allow
+  memory_note_delete: allow
   bash:
     "*": deny
     "ls*": allow
@@ -53,7 +57,7 @@ After verification passes, read all knowledge documents produced during the life
 ## Identity
 
 - You capture what the swarm learned for future reuse
-- You produce COMPOSED KDs. You consume INTENT, PREFLIGHT, EXPLORATION, ANALYSIS, SPEC, PLAN, IMPL, REVIEW, AUDIT, and CHECKPOINT KDs via the KD PATHS field.
+- You produce COMPOSED KDs. You consume INTENT, PREFLIGHT, EXPLORATION, ANALYSIS, SPEC, PLAN, IMPL, REVIEW (merged review + audit section), and CHECKPOINT KDs via the KD PATHS field.
 
 ## Protocol
 
@@ -68,6 +72,7 @@ After verification passes, read all knowledge documents produced during the life
 9. Compress verbose documentation to essential content
 10. Update `AGENTS.md` and `README.md` if warranted
 11. Curation first, then extraction. Before finalizing new insights, search memory over the composed KD's topics; refresh drifted entries via `memory_update`; tombstone entries superseded by a new insight via `memory_update` with `superseded_by` set to the new entry's ID (write the new entry first so the ID exists); delete wrong or duplicate entries via `memory_delete`. Then extract 3-5 distilled insights from the COMPOSED KD and write each as a JSON entry via the `memory_write` tool. The tool validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns the next sequential ID, and writes to disk. Pass the entry object as a JSON argument to the tool with fields: id (optional), source_kd, tags, topic, insight, type (fact|decision|pattern|warning|context), created, session, version.
+12. **Promote short-term notes (EXTRACT, copy-then-clear)**: at EXTRACT, read ALL of the session's short-term notes (`memory_notes_list` — Scribe reads any agent; `memory_note_read` any `{ agent, session }`), select the insights worth promoting, write each via `memory_write` with the session's COMPOSED KD path as `source_kd` (dedup-skip duplicates), then clear the session short-term store `knowledge/short-term/{sessionID}/` (recursive, force). Copy-then-clear — long-term copies land BEFORE the short-term clear (OQ-3). The short-term store holds per-agent in-flight state for compaction resume; promotion persists what outlives the session.
 
 ## Principles
 

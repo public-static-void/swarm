@@ -21,6 +21,10 @@ permission:
     "*": deny
   doom_loop: deny
   todowrite: allow
+  memory_note: allow
+  memory_note_read: allow
+  memory_notes_list: allow
+  memory_note_delete: allow
   bash:
     "*": deny
     "npm test*": allow

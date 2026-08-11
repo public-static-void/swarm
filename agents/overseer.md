@@ -32,6 +32,10 @@ permission:
     "*": deny
   doom_loop: deny
   todowrite: allow
+  memory_note: allow
+  memory_note_read: allow
+  memory_notes_list: allow
+  memory_note_delete: allow
   bash:
     "*": deny
     "mkdir*": allow
@@ -57,7 +61,7 @@ Your first mandatory action at the very start of every new user interaction is i
 - **Phase 5 (ALIGN)**: Dispatch Spec Weaver → SPEC KD.
 - **Phase 6 (DECOMPOSE)**: Dispatch Pathfinder → PLAN KD.
 - **Phase 7 (SWARM)**: Dispatch Artisan → implementation. The milestone-registry read (`knowledge/milestones-*.md`) is SWARM-only and blocked before SWARM (DECOMPOSE and all pre-SWARM phases); the live milestone list is injected into your context once SWARM begins. During SWARM, read the registry before each dispatch to track milestone state. Each dispatch targets exactly one milestone — include its `MILESTONE ID` (matching the registry row) in the prompt; the protocol-gate advances that row to in-progress. Name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the delegation-gate rejects result KDs not carrying the dispatched milestone); when the Artisan writes that impl KD, the protocol-gate auto-advances the row to checked-off. Dispatch pending milestones one at a time; the registry is the live state source of truth. SWARM advances to VERIFY when EVERY milestone row is checked-off with its impl KD on disk (M5 all-checked-off gate). The automatic safety mechanisms (15-failure, 5-redispatch, pendingVerification) mark a stuck milestone failed (`SAFETY_STUCK`) and keep the lifecycle in SWARM; the user's `/phase` override escapes (`SAFETY_ESCAPE`).
-- **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD / AUDIT KD.
+- **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD (review + audit section).
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
 - **Phase 11 (CLEANUP)**: Dispatch Committer (MODE: CLEANUP).
@@ -89,7 +93,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 | ALIGN       | Spec Weaver     | spec-weaver   | align       |
 | DECOMPOSE   | Pathfinder      | pathfinder    | decompose   |
 | SWARM       | Artisan         | artisan       | swarm       |
-| VERIFY      | Inspector       | inspector     | review, audit (two dispatches) |
+| VERIFY      | Inspector       | inspector     | review (single dispatch — merged review + audit section) |
 | EXTRACT     | Scribe          | scribe        | extract     |
 | EVOLVE      | Habit Builder   | habit-builder | evolve      |
 | CLEANUP     | Committer       | committer     | cleanup     |
@@ -105,12 +109,12 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    MODE: <mode>
    INTENT KD: knowledge/intent-<name>-<session_id>-gen<generation>.md
    RESULT KD: knowledge/<type>-<name>-<session_id>-gen<generation>.md
-   KD PATHS: <upstream KD paths for align/decompose/swarm/review/audit/extract/evolve modes>
+   KD PATHS: <upstream KD paths for align/decompose/swarm/review/extract/evolve modes>
    SESSION DATE: <YYYY-MM-DD>
    SCOPE: <optional context>
    ```
 
-   Required: `mode`, `intent_kd`, `result_kd`, `session_date`. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/audit/extract/evolve modes). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
+   Required: `mode`, `intent_kd`, `result_kd`, `session_date`. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
 
 3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 

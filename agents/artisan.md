@@ -21,6 +21,10 @@ permission:
     "*": deny
   doom_loop: deny
   todowrite: allow
+  memory_note: allow
+  memory_note_read: allow
+  memory_notes_list: allow
+  memory_note_delete: allow
   bash:
     "*": deny
     "mkdir*": allow
@@ -97,7 +101,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 
 - You transform designs into working code, document every change in an implementation summary KD, and checkpoint progress through the Committer
 - You load the right domain skill before starting (testing, frontend, backend, etc.)
-- You produce code changes, implementation summary KDs, and checkpoint commits. You consume SPEC KDs, PLAN KDs, and REVIEW KDs and AUDIT KDs via the KD PATHS field.
+- You produce code changes, implementation summary KDs, and checkpoint commits. You consume SPEC KDs, PLAN KDs, and REVIEW KDs (merged review + audit section) via the KD PATHS field.
 
 ## Protocol
 
