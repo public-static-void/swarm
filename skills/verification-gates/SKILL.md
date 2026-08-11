@@ -76,7 +76,7 @@ Phase Output ──► Gate ──► Next Phase
 | Spec Weaver                  | SPEC KD                        | Inspector (Spec) | REVIEW — requirements quality                      |
 | Pathfinder                   | PLAN KD                        | Inspector (Plan) | REVIEW — plan feasibility                          |
 | Artisan                      | Code + IMPL KD                 | Inspector (Code) | REVIEW — implementation quality                    |
-| Artisan (security-sensitive) | Code                           | Inspector        | AUDIT — vulnerability scan                         |
+| Artisan (security-sensitive) | Code                           | Inspector        | REVIEW — vulnerability scan (Audit section of the review KD)   |
 | ---                          | ---                            | ---              | ---                                                |
 
 ## Gate Checklist
@@ -132,8 +132,8 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 2. Inspector iterates through each acceptance criterion
 3. For each criterion, record PASS or FAIL with evidence
 4. If FAIL, trace to specific requirement (R001, P001, file:line)
-5. Write the verdict into the REVIEW/AUDIT KD frontmatter (`verdict: PASS | FAIL | FUNDAMENTAL`) — the machine source for the VERIFY gate
-6. Produce REVIEW KD
+5. Write the verdict into the REVIEW KD frontmatter (`verdict: PASS | FAIL | FUNDAMENTAL`) — the single machine source for the VERIFY gate
+6. Produce ONE REVIEW KD containing the Review Findings (with traceability matrix) and the Audit section (Scope, Risk Summary, Security Findings)
 7. On FAIL, protocol-gate machine-regresses VERIFY→SWARM automatically (no `BACKWARD: true` flag, no explicit dispatch): the producer fixes the findings, re-submits, and the Inspector re-reviews — repeat until PASS or diminishing returns
 8. On stalled progress (2-3 cycles without improvement), the Inspector issues a FUNDAMENTAL verdict, which blocks VERIFY advancement and escalates to the user (Happy to Delete)
 
@@ -145,7 +145,7 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 | FAIL        | Specific fixable issues | protocol-gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; producer fixes |
 | FUNDAMENTAL | Design-level flaw       | protocol-gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
 
-A `FAIL` verdict in the newest review/audit KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). A `FUNDAMENTAL` verdict blocks advancement and escalates; the phase stays at VERIFY.
+A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). Every FAIL finding MUST cite at least one milestone token (`M\d+` or `impl-<id>-`); a FAIL verdict with zero milestone citations is MALFORMED — the gate blocks, regresses nothing, and reopens nothing (re-dispatch the review with citations). A `FUNDAMENTAL` verdict blocks advancement and escalates; the phase stays at VERIFY.
 
 During protocol-gate vitest runs, `FUNDAMENTAL_ESCALATION` lines are asserted test output from the F1 AC104 fixture (`tests/plugins/protocol-gate/index.test.js`). Verify the line against the test source before treating it as a lifecycle anomaly.
 
@@ -177,4 +177,4 @@ Run separately from code reviews when:
 - External dependencies are added
 - Database queries change
 
-Security audit uses AUDIT KD type separate from REVIEW to keep concerns separated.
+Security audit findings land in the `## Audit` section of the review KD (Scope, Risk Summary, Security Findings A001… with Severity/CWE/File/Description/Remediation) — one Inspector pass, one KD, one verdict.
