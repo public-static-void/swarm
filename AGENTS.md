@@ -7,6 +7,7 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 ## Core Principles
 
 - **Focused Agent**: One responsibility per agent. Focus on one responsibility at a time.
+- **Knowledge Ownership**: Scribe manages memories; Habit Builder manages issues.
 - **KD Communication**: All state passes through KDs. Agents delegate via structured dispatches and reference KDs by path.
 - **Feedback Flip**: Every output must be independently verified by another agent.
 - **Chain of Small Steps**: Break complex work into verified increments.
@@ -33,6 +34,15 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 - **Quote gate-log evidence inline**: when a KD, issue file, or report cites `plugins/logs/*.log` evidence, quote the relevant content into the citing document at capture time. Bare `file:line` citations rot — logs are gitignored (`*.log`) and rotated between sessions.
 - **Dispatch audit trail**: delegation-gate logs dispatch RAW PROMPT/RAW DESCRIPTION in full — the log is the dispatch audit trail. Logs remain gitignored (`*.log`) and rotated between sessions.
 - **Persist cross-lifecycle content durably**: content that must outlive a lifecycle lives in memory entries (Scribe), `knowledge/issues/` files, or committed artifacts (git). Lifecycle-end cleanup deletes every `*-{sessionID}-gen{N}.md` KD except the report at REPORT write, and `knowledge/` KDs are gitignored by design — carry cross-lifecycle evidence in durable stores (memory entries, issue files, committed artifacts).
+
+## Post-Compaction Resume
+
+Context compaction truncates the active conversation; agents resume with the anchored summary. Persist in-flight protocol state to disk before each checkpoint so a resumed session continues from disk:
+
+- Persist the current phase, the pending step, the open TODO list, and the paths of the KDs anchoring the work.
+- On resume, re-read the persisted KDs and the TODO list.
+- Confirm the phase from the protocol-gate state.
+- Continue from the pending step the persisted state names.
 
 ## Test and Security Scan Workflow
 
