@@ -13,7 +13,7 @@
 //    and injects them into the Overseer's system prompt for Triage Notes
 //
 // Debug logging: set KNOWLEDGE_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 // tool() registers custom tools with the runtime via the plugin `tool` hook
@@ -1268,6 +1268,97 @@ export default {
       })
     };
 
+    // Promotion helper (R007 / OQ-3 copy-then-clear): reads every short-term
+    // note for a session, writes each selected note into the long-term store
+    // with the session's COMPOSED KD as source_kd, then clears the session's
+    // short-term store. The Scribe systemTransform instruction describes the
+    // same contract in tool terms; this function is the deterministic
+    // implementation exercised by the promotion tests. Clear failure is logged
+    // and non-fatal (mirrors KD cleanup) — R020 lifecycle-end cleanup remains
+    // the safety net for sessions that never reach EXTRACT.
+    function promoteShortTermNotes(sessionID, composedKdPath, options = {}) {
+      const select = typeof options.select === "function" ? options.select : () => true;
+      const promoted = [];
+      const skipped = [];
+      const safeSession = sanitizeToken(sessionID);
+      if (!safeSession) return { promoted, skipped, cleared: false, error: "Invalid session token" };
+
+      // read-all: every agent namespace under the session tree
+      const sessionRoot = join(SHORT_TERM_DIR, safeSession);
+      const notes = [];
+      try {
+        const entries = existsSync(sessionRoot) ? readdirSync(sessionRoot, { withFileTypes: true }) : [];
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const safeAgent = sanitizeToken(entry.name);
+          if (!safeAgent) continue;
+          for (const note of readNotesFromDisk(safeSession, safeAgent)) notes.push(note);
+        }
+      } catch (e) {
+        debug(`promoteShortTermNotes: failed to read ${sessionRoot}: ${e.message}`);
+        return { promoted, skipped, cleared: false };
+      }
+
+      // write: each selected note becomes a long-term entry (copy). The
+      // long-term schema is stricter than the note schema, so promotion
+      // adapts: id is assigned up front (validation requires MEM-\d{3}),
+      // tags are padded to the 2-tag minimum with controlled-vocabulary
+      // defaults, and content is truncated to the 500-char insight bound.
+      for (const note of notes) {
+        if (!select(note)) {
+          skipped.push({ id: note.id, reason: "not selected" });
+          continue;
+        }
+        const tags = note.tags && note.tags.length >= 2
+          ? note.tags
+          : [...(note.tags || []), "context", "lifecycle"];
+        const entry = {
+          id: getNextMemoryId(),
+          type: "fact",
+          source_kd: composedKdPath,
+          tags,
+          topic: note.topic,
+          insight: note.content.length > 500 ? `${note.content.slice(0, 497)}...` : note.content,
+          created: note.created,
+          session: safeSession,
+          version: "1.0.0"
+        };
+        const validation = validateMemoryEntry(entry);
+        if (!validation.valid) {
+          debug(`promoteShortTermNotes: skipping ${note.id} — ${validation.error}`);
+          skipped.push({ id: note.id, reason: validation.error });
+          continue;
+        }
+        const duplicate = checkDuplicateMemory(entry);
+        if (duplicate && duplicate.id !== entry.id) {
+          debug(`promoteShortTermNotes: duplicate for ${note.id} — existing ${duplicate.id}, skipped`);
+          skipped.push({ id: note.id, reason: `duplicate of ${duplicate.id}` });
+          continue;
+        }
+        try {
+          writeFileSync(join(MEMORY_DIR, `entry-${entry.id.replace("MEM-", "")}.json`), JSON.stringify(entry, null, 2), "utf8");
+          memoryCache.entries = null;
+          memoryCache.lastLoaded = null;
+          promoted.push({ noteId: note.id, entryId: entry.id });
+        } catch (e) {
+          debug(`promoteShortTermNotes: write failed for ${note.id} — ${e.message}`);
+          skipped.push({ id: note.id, reason: `write failed: ${e.message}` });
+        }
+      }
+
+      // clear (copy-then-clear, OQ-3): remove the whole session store after
+      // the copies land. Failure is non-fatal — R020 cleanup runs at lifecycle end.
+      let cleared = true;
+      try {
+        if (existsSync(sessionRoot)) rmSync(sessionRoot, { recursive: true, force: true });
+      } catch (e) {
+        cleared = false;
+        debug(`promoteShortTermNotes: clear failed for ${sessionRoot} — ${e.message}`);
+      }
+
+      return { promoted, skipped, cleared };
+    }
+
     // --- Hook: chat.params ---
     // Track which agent is running in each session for memory_search routing.
     async function chatParams(input, output) {
@@ -1360,6 +1451,17 @@ export default {
           `via the memory_write tool. The tool validates schema, checks tags against ` +
           `controlled vocabulary, deduplicates, auto-assigns sequential ID, and writes to disk.`
         );
+        // Promotion step (R007): Scribe is only dispatched at EXTRACT, so this
+        // agent-gated instruction is effectively phase-gated. Copy-then-clear
+        // (OQ-3): long-term copies land BEFORE the short-term notes are deleted.
+        output.system.push(
+          `[Knowledge Gate] At EXTRACT, promote important short-term notes to long-term ` +
+          `before composing the COMPOSED KD: list the session's notes with memory_notes_list, ` +
+          `read each with memory_note_read (any agent), then write the important ones via ` +
+          `memory_write with source_kd = the session's COMPOSED KD path and tags from the ` +
+          `controlled vocabulary (duplicate notes are skipped by dedup). After the copies ` +
+          `land, clear the session's short-term notes with memory_note_delete.`
+        );
       }
 
       // During EVOLVE phase, inject issue tracking instructions for habit-builder:
@@ -1439,6 +1541,7 @@ export default {
       deriveSearchHints,
       generateHintLines,
       checkDuplicateMemory,
+      promoteShortTermNotes,
       MEMORY_DIR,
       ISSUES_DIR
     };

@@ -1893,4 +1893,96 @@ Body`;
       expect(JSON.parse(d).error).toContain("not found");
     });
   });
+
+  describe("short-term promotion (promoteShortTermNotes)", () => {
+    it("promotes notes into long-term memory with the COMPOSED KD as source_kd, then clears the session store", async () => {
+      await hooks.tool.memory_note.execute({ topic: "Session insight one", content: "A distilled insight worth keeping for later sessions.", tags: ["auth"] }, { agent: "artisan", sessionID: "promo-session" });
+      await hooks.tool.memory_note.execute({ topic: "Session insight two", content: "Another important finding for the memory store." }, { agent: "scribe", sessionID: "promo-session" });
+
+      const result = hooks.promoteShortTermNotes("promo-session", "knowledge/composed-promo-ses_abc.md");
+
+      expect(result.promoted).toHaveLength(2);
+      expect(result.skipped).toHaveLength(0);
+      expect(result.cleared).toBe(true);
+
+      // Long-term entries exist with the COMPOSED KD as source_kd (copy-then-clear)
+      const files = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"));
+      expect(files).toHaveLength(2);
+      for (const f of files) {
+        const entry = JSON.parse(readFileSync(join(MEMORY_DIR, f), "utf8"));
+        expect(entry.source_kd).toBe("knowledge/composed-promo-ses_abc.md");
+        expect(entry.session).toBe("promo-session");
+      }
+
+      // The short-term session store is cleared after the copies land (OQ-3)
+      expect(existsSync(join(SHORT_TERM_DIR, "promo-session"))).toBe(false);
+    });
+
+    it("skips duplicate promotions without error and keeps one long-term entry", async () => {
+      await hooks.tool.memory_note.execute({ topic: "Duplicate insight", content: "Same insight content as the seeded entry.", tags: ["auth", "testing"] }, { agent: "artisan", sessionID: "promo-session" });
+      // Seed a long-term entry that the promoted note duplicates (shared tags + overlapping topic)
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { tags: ["auth", "testing"], topic: "Duplicate insight", source_kd: "knowledge/composed-promo-ses_abc.md" })
+      ]);
+
+      const result = hooks.promoteShortTermNotes("promo-session", "knowledge/composed-promo-ses_abc.md");
+
+      expect(result.promoted).toHaveLength(0);
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0].reason).toContain("duplicate");
+      // Only the seeded entry remains — no duplicate long-term entry
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"))).toHaveLength(1);
+      // Copy-then-clear still holds: the store is cleared
+      expect(existsSync(join(SHORT_TERM_DIR, "promo-session"))).toBe(false);
+    });
+
+    it("promotes only notes selected by the select predicate", async () => {
+      await hooks.tool.memory_note.execute({ topic: "Keep me", content: "Important insight." }, { agent: "artisan", sessionID: "promo-session" });
+      await hooks.tool.memory_note.execute({ topic: "Drop me", content: "Transient detail." }, { agent: "artisan", sessionID: "promo-session" });
+
+      const result = hooks.promoteShortTermNotes("promo-session", "knowledge/composed-promo-ses_abc.md", {
+        select: note => note.topic === "Keep me"
+      });
+
+      expect(result.promoted).toHaveLength(1);
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0].reason).toBe("not selected");
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"))).toHaveLength(1);
+      expect(existsSync(join(SHORT_TERM_DIR, "promo-session"))).toBe(false);
+    });
+
+    it("truncates long note content to the 500-char insight bound", async () => {
+      await hooks.tool.memory_note.execute({ topic: "Long insight", content: "x".repeat(600), tags: ["auth", "testing"] }, { agent: "artisan", sessionID: "promo-session" });
+
+      const result = hooks.promoteShortTermNotes("promo-session", "knowledge/composed-promo-ses_abc.md");
+      expect(result.promoted).toHaveLength(1);
+      const file = readdirSync(MEMORY_DIR).find(f => f.endsWith(".json"));
+      const entry = JSON.parse(readFileSync(join(MEMORY_DIR, file), "utf8"));
+      expect(entry.insight.length).toBeLessThanOrEqual(500);
+      expect(entry.insight.endsWith("...")).toBe(true);
+    });
+
+    it("rejects traversal-shaped session tokens without writing or clearing", async () => {
+      const result = hooks.promoteShortTermNotes("../escape", "knowledge/composed-promo-ses_abc.md");
+      expect(result.error).toBe("Invalid session token");
+      expect(result.cleared).toBe(false);
+      expect(readdirSync(MEMORY_DIR)).toHaveLength(0);
+    });
+
+    it("injects the Scribe promotion instruction via systemTransform", async () => {
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"](
+        { sessionID: "test-session", agent: "scribe" },
+        output
+      );
+      const promo = output.system.find(s => s.includes("promote important short-term notes"));
+      expect(promo).toBeTruthy();
+      expect(promo).toContain("memory_notes_list");
+      expect(promo).toContain("memory_note_read");
+      expect(promo).toContain("memory_write");
+      expect(promo).toContain("COMPOSED KD");
+      expect(promo).toContain("memory_note_delete");
+      expect(promo).toContain("After the copies land");
+    });
+  });
 });
