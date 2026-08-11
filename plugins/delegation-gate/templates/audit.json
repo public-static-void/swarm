@@ -1,4 +1,0 @@
-{
-  "mode": "audit",
-  "template": "DISPATCH TO: {agent}\nMODE: audit\nINTENT KD: {intent_kd}\nSESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nKD PATHS: {kd_paths}\n\n---\n\nLoad the kd-system skill. Read the INTENT KD at {intent_kd}. Read SPEC KDs, PLAN KDs, and IMPL KDs from KD PATHS. Audit the implementation per the scope above. Produce an AUDIT KD at {result_kd} using the naming convention: knowledge/audit-<name>-<session_id>-gen{generation}.md"
-}
