@@ -74,7 +74,7 @@ function debug(msg) {
 const TAG_TAXONOMY = {
   plugin: ["protocol-gate", "delegation-gate", "knowledge-gate"],
   agent: ["overseer", "scribe", "analyzer", "artisan", "inspector", "committer", "explorer", "pathfinder", "spec-weaver", "habit-builder"],
-  mode: ["explore", "investigate", "align", "decompose", "swarm", "review", "audit", "extract", "evolve"],
+  mode: ["explore", "investigate", "align", "decompose", "swarm", "review", "extract", "evolve"],
   domain: ["permissions", "auth", "state-machine", "phase-transition", "bug", "testing", "commit", "template", "scope", "lifecycle", "regression", "cache", "injection", "hook", "schema", "validation"],
   severity: ["critical", "major", "minor"],
   type: ["fact", "decision", "pattern", "warning", "context"]
@@ -91,7 +91,6 @@ const MODE_TAG_MAP = {
   decompose: ["planning", "tasks", "dependencies"],
   swarm: ["implementation", "code", "pattern"],
   review: ["review", "quality"],
-  audit: ["audit", "quality"],
   extract: ["knowledge", "insight", "documentation"],
   evolve: ["process", "friction", "improvement"]
 };
@@ -104,7 +103,7 @@ const AGENT_TAG_MAP = {
   "spec-weaver": ["specification", "design"],
   pathfinder: ["planning", "decomposition"],
   artisan: ["implementation", "code"],
-  inspector: ["review", "audit"],
+  inspector: ["review", "quality"],
   scribe: ["knowledge", "documentation"],
   overseer: ["orchestration", "process"],
   "habit-builder": ["process", "friction"]
@@ -1484,7 +1483,7 @@ export default {
           output.system.push(
             `[Knowledge Gate] Open issues detected:\n${issueSummary}\n` +
             `Apply the Close Issues step (agents/habit-builder.md step 6): for each open issue ` +
-            `whose Recommended Fix is verified addressed in lifecycle KDs (impl/review/audit/composed) ` +
+            `whose Recommended Fix is verified addressed in lifecycle KDs (impl/review/composed) ` +
             `— no heavy investigation needed — flip status to resolved and append a ` +
             `## Resolution (YYYY-MM-DD) section referencing the closing evidence. ` +
             `Closing without evidence is prohibited; keep the issue schema intact.`
