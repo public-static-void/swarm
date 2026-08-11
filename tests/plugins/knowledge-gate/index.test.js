@@ -501,6 +501,50 @@ Body`;
       expect(hintLines).toHaveLength(0);
     });
 
+    it("injects a ≤300-byte short-term resume hint when notes exist", async () => {
+      await hooks.tool.memory_note.execute(
+        { topic: "pending step", content: "M3 promotion work" },
+        { agent: "artisan", sessionID: "test-session" }
+      );
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"](
+        { sessionID: "test-session", agent: "artisan" },
+        output
+      );
+      const hint = output.system.find(s => s.includes("short-term memory note"));
+      expect(hint).toBeTruthy();
+      expect(hint).toContain("memory_note_read");
+      expect(hint).toContain("1 short-term memory note(s)");
+      expect(Buffer.byteLength(hint, "utf8")).toBeLessThanOrEqual(300);
+    });
+
+    it("injects no short-term resume hint when zero notes exist", async () => {
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"](
+        { sessionID: "test-session", agent: "artisan" },
+        output
+      );
+      const hints = output.system.filter(s => s.includes("short-term memory note"));
+      expect(hints).toHaveLength(0);
+    });
+
+    it("counts all of the agent's notes in the hint", async () => {
+      for (let i = 0; i < 3; i++) {
+        await hooks.tool.memory_note.execute(
+          { topic: `note ${i}`, content: `content ${i}` },
+          { agent: "artisan", sessionID: "test-session" }
+        );
+      }
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"](
+        { sessionID: "test-session", agent: "artisan" },
+        output
+      );
+      const hint = output.system.find(s => s.includes("short-term memory note"));
+      expect(hint).toContain("3 short-term memory note(s)");
+    });
+
     it("surfaces open issues and prompts the Close Issues step for habit-builder", async () => {
       writeEntries(ISSUES_DIR, [
         addIssueFile(1, { severity: "medium", title: "Open issue A" }),

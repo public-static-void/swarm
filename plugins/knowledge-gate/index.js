@@ -1331,6 +1331,19 @@ export default {
         `prior session insights from knowledge/memory/.`
       );
 
+      // Short-term resume hint — the mechanical compaction-amnesia mitigation
+      // (R005). Regenerated on every LLM call, so a post-compaction model can
+      // not forget the re-read instruction: any agent with ≥1 note in the
+      // current session is told to read them back. Zero notes → no hint.
+      const resumeNoteCount = agent ? readNotesFromDisk(sessionID, agent).length : 0;
+      if (resumeNoteCount > 0) {
+        output.system.push(
+          `[Knowledge Gate] You have ${resumeNoteCount} short-term memory note(s) for this session. ` +
+          `Read them with memory_note_read to resume in-flight state.`
+        );
+        debug(`systemTransform: resume hint injected for ${agent} (${resumeNoteCount} note(s))`);
+      }
+
       // Dynamic memory hint: derive from agent context and append if relevant
       // At systemTransform time, mode/scope are not available (they come at dispatch),
       // so we use agent-type-only tags per PF-001
