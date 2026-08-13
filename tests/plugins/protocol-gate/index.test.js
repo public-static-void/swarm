@@ -103,8 +103,13 @@ ${table}
   // Builds a REVIEW KD with the machine-readable verdict frontmatter field the
   // VERIFY gate reads (P012). The optional findings body carries milestone
   // citations (`impl-<milestone-id>-` tokens / M\d+ ids) — the provenance the
-  // scoped-reopen + malformed-FAIL rules parse (P014/P015). Content beyond the
-  // frontmatter and Findings section is irrelevant to the gate.
+  // scoped-reopen + malformed-FAIL rules parse (P014/P015). The findings
+  // section uses the TEMPLATE-CONFORMANT `## Review Findings` header
+  // (skills/template-review/SKILL.md, inspector.md) — regression guard: if the
+  // citation parser drifts back to only accepting the legacy `## Findings`
+  // header, the FAIL fixtures below yield zero citations and the scoped-reopen
+  // tests fail. Content beyond the frontmatter and Review Findings section is
+  // irrelevant to the gate.
   function reviewKD(verdict, findings = "") {
     return `---
 title: "REVIEW: test"
@@ -123,7 +128,7 @@ verdict: ${verdict}
 
 ${verdict}
 
-## Findings
+## Review Findings
 
 ${findings}
 `;
@@ -3230,6 +3235,162 @@ milestones:
       rows = regressedRegistryRows(s);
       expect(rows.M1).toBe("in-progress"); // still only the cited row
       expect(rows.M2).toBe("checked-off");
+    });
+
+    describe("template-conformant Review Findings header regression", () => {
+      // The citation parser previously matched only the legacy `## Findings`
+      // header while the merged template and inspector mandate
+      // `## Review Findings` — a template-conformant FAIL review parsed as
+      // zero citations → MALFORMED → no regression, no reopen. The reviewKD()
+      // fixture above now uses the canonical header (all FAIL tests are
+      // implicit regressions); these tests pin the parser contract explicitly,
+      // both for the canonical and the legacy header.
+
+      it("the citation parser accepts the template-conformant `## Review Findings` header", async () => {
+        const s = sid("f001-parser-canonical");
+        await initOverseer(s);
+        // Template-shaped body — Verdict → Review Findings → Audit section
+        // order (skills/template-review/SKILL.md:22/43/64) — with both citation
+        // token shapes the scoped-reopen rule parses (M\d+ and impl-<id>-).
+        const content = `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M2 and impl-M3-promotion
+
+## Audit
+
+### Scope
+
+audited
+`;
+        const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+        expect(citations).toEqual(expect.arrayContaining(["M2", "M3"]));
+      });
+
+      it("the citation parser keeps accepting the legacy `## Findings` header (backward compat)", async () => {
+        const s = sid("f001-parser-legacy");
+        await initOverseer(s);
+        const content = `## Findings
+
+impl-M1-short-term-store is broken and M2 too
+`;
+        const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+        expect(citations).toEqual(expect.arrayContaining(["M1", "M2"]));
+      });
+
+      it("a template-conformant merged FAIL review (Review Findings + Audit sections) regresses and reopens exactly the cited rows", async () => {
+        const s = sid("f001-gate-template");
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+        // Full template shape: the traceability matrix lives INSIDE Review
+        // Findings (template SKILL.md:57-62) and the Audit section follows —
+        // the section slicing must stop at `## Audit` and still cite M2.
+        createKD(
+          `review-fail-${s}.md`,
+          `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M2
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact | Test/Check | Status |
+| ------ | --------- | -------- | ---------- | ------ |
+| R001   | P001      | x        | test       | PASS   |
+
+## Audit
+
+### Scope
+
+audited
+`
+        );
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        const rows = regressedRegistryRows(s);
+        expect(rows.M2).toBe("in-progress");
+        expect(rows.M1).toBe("checked-off");
+        expect(rows.M3).toBe("checked-off");
+      });
+
+      it("gate-level backward compat: a legacy `## Findings` FAIL review still regresses and reopens cited rows", async () => {
+        const s = sid("f001-gate-legacy");
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createRegistry(s, [["M1", "checked-off"]]);
+        createKD(
+          `review-fail-${s}.md`,
+          `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Findings
+
+impl-M1-short-term-store has a defect
+`
+        );
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        expect(regressedRegistryRows(s).M1).toBe("in-progress");
+      });
     });
   });
 
