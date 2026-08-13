@@ -113,7 +113,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 
    ### Dispatching Committer
 
-   Delegate to the Committer with the delegation fields as `KEY: value` lines **inside the `prompt` parameter**, one per line, matching the checkpoint field set. The `task` call itself carries `subagent_type`, `description`, and `prompt` — every delegation field lives in the prompt text:
+   Delegate to the Committer with the delegation fields as `KEY: value` lines **inside the `prompt` parameter**, one per line, matching the checkpoint field set. The `task` call itself carries `subagent_type`, `description`, and `prompt` — every delegation field lives in the prompt text. Follow the **Point the Target** pattern: frame the dispatch positively — say what should happen so the prompt is unambiguous and directly executable.
 
    ```
    task({
