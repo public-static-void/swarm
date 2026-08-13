@@ -3391,6 +3391,91 @@ impl-M1-short-term-store has a defect
         expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
         expect(regressedRegistryRows(s).M1).toBe("in-progress");
       });
+
+      it("the citation parser ignores milestone tokens inside the Traceability Matrix (PASS-row provenance is not a FAIL citation)", async () => {
+        const s = sid("f001-matrix-guard");
+        await initOverseer(s);
+        // Template shape (skills/template-review/SKILL.md:57-62): the matrix
+        // sits INSIDE Review Findings and its PASS-row Artifact cells carry
+        // milestone tokens — those are provenance, not FAIL citations, and
+        // must not enter the reopen set.
+        const content = `## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M2
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact                 | Test/Check | Status |
+| ------ | --------- | ------------------------ | ---------- | ------ |
+| R001   | P001      | impl-M1-short-term-store | test       | PASS   |
+
+## Audit
+
+### Scope
+
+audited
+`;
+        const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+        expect(citations).toEqual(["M2"]);
+      });
+
+      it("a FAIL review with milestone tokens in PASS-row matrix cells reopens only the cited row", async () => {
+        const s = sid("f001-gate-matrix-guard");
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+        createKD(
+          `review-fail-${s}.md`,
+          `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M2
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact                 | Test/Check | Status |
+| ------ | --------- | ------------------------ | ---------- | ------ |
+| R001   | P001      | impl-M1-short-term-store | test       | PASS   |
+| R002   | P001      | impl-M3-promotion        | test       | PASS   |
+
+## Audit
+
+### Scope
+
+audited
+`
+        );
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        const rows = regressedRegistryRows(s);
+        expect(rows.M2).toBe("in-progress");
+        expect(rows.M1).toBe("checked-off");
+        expect(rows.M3).toBe("checked-off");
+      });
     });
   });
 
