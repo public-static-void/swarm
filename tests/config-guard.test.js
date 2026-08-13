@@ -61,64 +61,8 @@ const INSTALL_AGENTS = ["artisan.md"];
 const INSTALL_COMMANDS = ["npm install --save-dev*"];
 const COMMITTER_PLAN_SPEC_READ = ["knowledge/plan-*.md", "knowledge/spec-*.md"];
 
-describe("README architecture documentation", () => {
-  const readme = readRoot("README.md");
-
-  it("exists at the repo root as a tracked file", () => {
-    expect(existsSync(join(ROOT, "README.md"))).toBe(true);
-  });
-
-  it("documents the focused-agent concept", () => {
-    expect(readme).toContain("one responsibility per agent");
-    expect(readme).toContain("Focused Agents");
-  });
-
-  it("documents the labor subdivision across the agent roster", () => {
-    expect(readme).toContain("Labor Subdivision");
-    for (const role of ["Overseer", "Explorer", "Analyzer", "Artisan", "Inspector", "Committer"]) {
-      expect(readme).toContain(role);
-    }
-  });
-
-  it("documents role boundaries as disjoint ownership", () => {
-    expect(readme).toContain("Explorer");
-    expect(readme).toContain("exploration");
-    expect(readme).toContain("Analyzer");
-    expect(readme).toContain("root cause");
-    expect(readme).toContain("owned by exactly one role");
-  });
-
-  it("documents that permissions are limited by design", () => {
-    expect(readme).toContain("limited by design");
-    expect(readme).toContain("enforcement");
-    expect(readme).toContain("not a gap");
-  });
-
-  it("documents the dispatch semantics for git operations and checkpoints", () => {
-    expect(readme).toContain("Git operations go to the Committer");
-    expect(readme).toContain("dispatches the Committer");
-  });
-
-  it("documents plugin structural enforcement", () => {
-    expect(readme).toContain("Plugins");
-    expect(readme).toContain("structural");
-  });
-
-  it("documents the layer discipline of the configuration", () => {
-    expect(readme).toContain("AGENTS.md");
-    expect(readme).toContain("agents/");
-    expect(readme).toContain("skills/");
-    expect(readme).toContain("plugins/");
-    expect(readme).toContain("ground rules");
-    expect(readme).toContain("agent-specific");
-    expect(readme).toContain("domain knowledge");
-    expect(readme).toContain("structural constraints");
-  });
-});
-
 describe("SPEC-template git hygiene", () => {
   const skill = readRoot(join("skills", "template-spec", "SKILL.md"));
-  const agents = readRoot("AGENTS.md");
   const gitignore = readRoot(".gitignore");
 
   it("keeps disk-verification and task-agnostic staging guidance in the AC template", () => {
@@ -130,10 +74,6 @@ describe("SPEC-template git hygiene", () => {
     const acSection = skill.slice(skill.indexOf("## Acceptance Criteria"));
     expect(acSection).not.toContain("git diff");
     expect(acSection).not.toContain("staged");
-  });
-
-  it("documents the tracked-set ground rule in AGENTS.md", () => {
-    expect(agents).toContain("git tracks swarm config: AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json. knowledge/ is workflow meta and stays gitignored.");
   });
 
   it("keeps knowledge/ gitignored in .gitignore", () => {

@@ -4,6 +4,7 @@ description: "KD template for creating SPEC documents. Load this skill, then use
 ---
 
 ---
+
 title: "SPEC: {{feature name}}"
 version: 1.0.0
 status: draft

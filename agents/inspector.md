@@ -97,9 +97,14 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 
 1. Scan codebase, dependencies, and configs against OWASP Top 10 and CVSS standards
 2. Check for hardcoded secrets (API keys, passwords, tokens)
-3. Audit third-party dependencies for known vulnerabilities (npm audit, SAST per AGENTS.md "Test and Security Scan Workflow")
-4. Document findings with severity (Critical / High / Medium / Low), CWE identifier, and remediation guidance
-5. Record the findings in the review KD's `## Audit` section (Scope, Risk Summary, Security Findings A001…)
+3. Audit third-party dependencies for known vulnerabilities (npm audit, SAST per the workflow below)
+4. Run the test and security scan workflow:
+   - Run the full test suite with the tech stack's test framework.
+   - Run the dependency scan with the tech stack's test framework. Exit 0 = no high/critical findings; non-zero = high/critical findings must be resolved or justified before the lifecycle advances. Low/medium findings are recorded in the review KD's Audit section and pass through as non-blocking. A reachable registry is required — a connectivity failure is not a vulnerability finding and the outcome is recorded in the review KD's Audit section.
+   - Run the SAST scan with the tech stack's test framework. Warnings are scan findings to record in the review KD's Audit section; errors (syntax or error-level rules) must be resolved or justified.
+   - The review KD's Audit section records the actual scan output (commands, exit codes, findings) instead of a "no SAST tooling" caveat — the scan tooling above is part of the repo baseline.
+5. Document findings with severity (Critical / High / Medium / Low), CWE identifier, and remediation guidance
+6. Record the findings in the review KD's `## Audit` section (Scope, Risk Summary, Security Findings A001…)
 
 ## Principles
 
@@ -111,16 +116,16 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 
 Write the verdict into the REVIEW KD **frontmatter** (`verdict: PASS | FAIL | FUNDAMENTAL`) — it is the single machine source the protocol-gate VERIFY gate reads. Keep the body Verdict section for human readability.
 
-| Verdict     | Meaning          | Machine behavior                                                                        |
-| ----------- | ---------------- | --------------------------------------------------------------------------------------- |
-| PASS        | All criteria met | VERIFY advances to the next phase when this review KD is fresh (newer than the newest impl KD) |
-| FAIL        | Specific issues  | protocol-gate auto-regresses VERIFY→SWARM, reopens the cited milestone rows, and the Artisan fixes the findings |
+| Verdict     | Meaning          | Machine behavior                                                                                                                      |
+| ----------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| PASS        | All criteria met | VERIFY advances to the next phase when this review KD is fresh (newer than the newest impl KD)                                        |
+| FAIL        | Specific issues  | protocol-gate auto-regresses VERIFY→SWARM, reopens the cited milestone rows, and the Artisan fixes the findings                       |
 | FUNDAMENTAL | Design flaw      | protocol-gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
 
 - **MISSING** (absent or invalid `verdict`) blocks VERIFY with a diagnostic — not treated as PASS.
 - **Fresh PASS contract**: a `PASS` verdict advances when this review KD's mtime is ≥ the newest `impl-*` KD mtime; a stale PASS (older than the newest impl KD) blocks — re-review required.
 - **FAIL citation mandate (binding)**: every FAIL finding MUST cite at least one milestone token (`M\d+` id like `M3`, or an `impl-<milestone-id>-` path). The gate parses these tokens to reopen exactly the cited milestone rows. A FAIL verdict with zero milestone citations is **MALFORMED** — the gate blocks, regresses nothing, and reopens nothing; re-dispatch the review with proper citations.
-- A `FAIL` verdict machine-triggers the VERIFY→SWARM regression — no explicit dispatch and no `BACKWARD: true` flag is required. The regression fires once per review KD filename; a re-review with a new filename may trigger the next cycle, bounded by the lifecycle's cycle cap. A single review KD (with both sections) is the sole VERIFY surface — legacy `audit-*` KDs are inert.
+- A `FAIL` verdict machine-triggers the VERIFY→SWARM regression — no explicit dispatch and no `BACKWARD: true` flag is required. The regression fires once per review KD filename; a re-review with a new filename may trigger the next cycle, bounded by the lifecycle's cycle cap. A single review KD (with both sections) is the sole VERIFY surface.
 
 ## Constraints
 

@@ -4,6 +4,7 @@ description: "KD template for creating REVIEW documents (merged review + audit: 
 ---
 
 ---
+
 title: "REVIEW: {{artifact reviewed}}"
 version: 1.0.0
 status: draft
@@ -30,7 +31,7 @@ newer than the newest `impl-*` KD (fresh PASS after the last fix — a stale PAS
 blocks); `FAIL` auto-regresses VERIFY→SWARM and reopens exactly the milestone
 row(s) its findings cite; `FUNDAMENTAL` blocks advancement and escalates.
 
-## Verdict Rules (citation mandate — OQ-4)
+## Verdict Rules (citation mandate)
 
 - Every **FAIL** finding MUST cite at least one milestone token (`M\d+` id like
   `M3`, or an `impl-<milestone-id>-` path like `impl-M3-short-term-store-...`).
@@ -56,10 +57,10 @@ row(s) its findings cite; `FUNDAMENTAL` blocks advancement and escalates.
 
 ### Traceability Matrix
 
-| Req ID | Plan Step | Artifact          | Test/Check       | Status      |
-| ------ | --------- | ----------------- | ---------------- | ----------- |
-| R001   | P001      | `src/...`         | `npm test ...`   | PASS / FAIL |
-| R002   | P002      | `src/...`         | `npm test ...`   | PASS / FAIL |
+| Req ID | Plan Step | Artifact  | Test/Check     | Status      |
+| ------ | --------- | --------- | -------------- | ----------- |
+| R001   | P001      | `src/...` | `npm test ...` | PASS / FAIL |
+| R002   | P002      | `src/...` | `npm test ...` | PASS / FAIL |
 
 ## Audit
 

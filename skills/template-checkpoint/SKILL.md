@@ -4,6 +4,7 @@ description: "KD template for creating CHECKPOINT documents. Load this skill, th
 ---
 
 ---
+
 title: "CHECKPOINT: {{description}}"
 version: 1.0.0
 status: draft

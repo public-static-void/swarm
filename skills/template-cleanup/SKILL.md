@@ -4,6 +4,7 @@ description: "KD template for creating CLEANUP documents. Load this skill, then 
 ---
 
 ---
+
 title: "CLEANUP: {{description}}"
 version: 1.0.0
 status: draft

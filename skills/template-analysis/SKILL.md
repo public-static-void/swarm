@@ -4,6 +4,7 @@ description: "KD template for creating ANALYSIS documents. Load this skill, then
 ---
 
 ---
+
 title: "ANALYSIS: {{topic investigated}}"
 version: 1.0.0
 status: draft

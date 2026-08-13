@@ -4,6 +4,7 @@ description: "KD template for creating PLAN documents. Load this skill, then use
 ---
 
 ---
+
 title: "PLAN: {{feature name}}"
 version: 1.0.0
 status: draft

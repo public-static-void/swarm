@@ -1,6 +1,6 @@
 ---
 name: kd-system
-description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, milestone registry, review (merged review+audit), analysis, report, process, implementation summary, checkpoint, or cleanup documents."
+description: "Knowledge Document System for the Agentic Swarm. Use when creating, updating, or managing Knowledge Documents (KDs) — intent, spec, plan, milestone registry, review, analysis, report, process, implementation summary, checkpoint, or cleanup documents."
 ---
 
 # KD System — Agentic Swarm
@@ -11,25 +11,25 @@ The Knowledge Document System (KDS) is the communication backbone of the Agentic
 
 ## KD Types
 
-| Type                   | Prefix         | Producer      | Consumer                                                  | Template Skill                                  |
-| ---------------------- | -------------- | ------------- | --------------------------------------------------------- | ---------------------------------------------- |
-| INTENT                 | `intent-`      | Overseer      | Explorer, Analyzer, Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Habit Builder | `template-intent` |
-| PREFLIGHT              | `preflight-`   | Committer     | Scribe, Habit Builder                                     | `template-preflight`              |
-| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector, Scribe, Habit Builder     | `template-spec`                   |
-| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector, Scribe, Habit Builder                 | `template-plan`                   |
-| MILESTONE REGISTRY     | `milestones-`  | Pathfinder    | Overseer, Artisan, Inspector                              | `template-milestones`             |
-| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe, Habit Builder                          | `template-impl` |
-| REVIEW                 | `review-`      | Inspector     | Artisan, Scribe, Habit Builder                            | `template-review`                 |
-| AUDIT                  | (merged into `review-`) | Inspector | — (audit content is a section of the review KD)       | `template-review` (audit section) |
-| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Scribe, Habit Builder                        | `template-analysis`              |
-| REPORT                 | `report-`      | Overseer      | User                                                       | `template-report`                 |
-| PROCESS                | `process-`     | Habit Builder | User                                                       | `template-process`                |
-| COMPOSED               | `composed-`    | Scribe        | Habit Builder                                              | `template-composed`              |
-| EXPLORATION            | `exploration-` | Explorer      | Analyzer, Spec Weaver, Scribe, Habit Builder               | `template-exploration`    |
-| CHECKPOINT             | `checkpoint-`  | Committer     | Scribe, Habit Builder                                      | `template-checkpoint`             |
-| CLEANUP                | `cleanup-`     | Committer     |                                                           | `template-cleanup`                |
+| Type                   | Prefix         | Producer      | Consumer                                                                               | Template Skill         |
+| ---------------------- | -------------- | ------------- | -------------------------------------------------------------------------------------- | ---------------------- |
+| INTENT                 | `intent-`      | Overseer      | Explorer, Analyzer, Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Habit Builder | `template-intent`      |
+| PREFLIGHT              | `preflight-`   | Committer     | Scribe, Habit Builder                                                                  | `template-preflight`   |
+| SPEC                   | `spec-`        | Spec Weaver   | Pathfinder, Artisan, Inspector, Scribe, Habit Builder                                  | `template-spec`        |
+| PLAN                   | `plan-`        | Pathfinder    | Artisan, Inspector, Scribe, Habit Builder                                              | `template-plan`        |
+| MILESTONE REGISTRY     | `milestones-`  | Pathfinder    | Overseer, Artisan, Inspector                                                           | `template-milestones`  |
+| IMPLEMENTATION SUMMARY | `impl-`        | Artisan       | Inspector, Scribe, Habit Builder                                                       | `template-impl`        |
+| REVIEW                 | `review-`      | Inspector     | Artisan, Scribe, Habit Builder                                                         | `template-review`      |
+| ANALYSIS               | `analysis-`    | Analyzer      | Spec Weaver, Scribe, Habit Builder                                                     | `template-analysis`    |
+| REPORT                 | `report-`      | Overseer      | User                                                                                   | `template-report`      |
+| PROCESS                | `process-`     | Habit Builder | User                                                                                   | `template-process`     |
+| COMPOSED               | `composed-`    | Scribe        | Habit Builder                                                                          | `template-composed`    |
+| EXPLORATION            | `exploration-` | Explorer      | Analyzer, Spec Weaver, Scribe, Habit Builder                                           | `template-exploration` |
+| CHECKPOINT             | `checkpoint-`  | Committer     | Scribe, Habit Builder                                                                  | `template-checkpoint`  |
+| CLEANUP                | `cleanup-`     | Committer     |                                                                                        | `template-cleanup`     |
 
 **Consumer legend:**
+
 - Agents: Spec Weaver, Pathfinder, Artisan, Inspector, Scribe, Analyzer, Habit Builder, Explorer, User
 - Plugins read all KDs for disk checks — not listed as consumers
 - Overseer writes INTENT/REPORT. Input comes from the user and from issue files surfaced by the Knowledge Gate plugin

@@ -28,7 +28,7 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
        6. On pull failure: report the failure reason, proceed to step 4 from the current state.
    - **Dirty repo**:
      - **Stash**: Run `git stash push` to save pending changes.
-        - If stash fails: log the error with details about what prevented the stash (files preventing stash, merge conflicts, etc.) and abort. Attempt pull after the working tree is stable.
+       - If stash fails: log the error with details about what prevented the stash (files preventing stash, merge conflicts, etc.) and abort. Attempt pull after the working tree is stable.
      - **Pull flow**: Apply the same default-branch pull flow as the clean-repo remote-configured path (steps 1-5 above), including the detached HEAD check.
      - **Restore**: The stash is popped in step 4 after the working branch is established.
 
@@ -52,13 +52,13 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 
 Task-dependent branch prefix derived from the dispatch SCOPE (used when no `BRANCH` is provided):
 
-| Task | Branch prefix |
-| ---- | ------------- |
-| Bugfix | `fix/…` |
-| Version bump | `chore/…` |
-| Feature | `feature/…` |
-| Investigation | `investigate/…` |
-| General improvement | `improve/…` |
+| Task                | Branch prefix   |
+| ------------------- | --------------- |
+| Bugfix              | `fix/…`         |
+| Version bump        | `chore/…`       |
+| Feature             | `feature/…`     |
+| Investigation       | `investigate/…` |
+| General improvement | `improve/…`     |
 
 ## Exit
 

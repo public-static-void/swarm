@@ -105,7 +105,7 @@ Investigate bugs or suspicious patterns, assess feasibility. Read relevant docum
 ## Protocol
 
 1. Load relevant investigation references
-2. Read relevant skills, KDs and source code — INTENT KD, ANALYSIS KD, or code artifacts
+2. Load relevant skills, read relevant KDs and source code — INTENT KD, ANALYSIS KD, or code artifacts
 3. Investigate systematically: trace from observed behavior to root cause
 4. Document every finding with evidence: file:line, actual state, expected state
 5. Categorize by severity: Critical, Major, Minor

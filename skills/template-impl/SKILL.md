@@ -4,6 +4,7 @@ description: "KD template for creating IMPLEMENTATION SUMMARY documents. Load th
 ---
 
 ---
+
 title: "IMPLEMENTATION SUMMARY: {{feature name}} — {{step reference}}"
 version: 1.0.0
 status: draft

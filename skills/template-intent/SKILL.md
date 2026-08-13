@@ -4,6 +4,7 @@ description: "KD template for creating INTENT documents. Load this skill, then u
 ---
 
 ---
+
 title: "INTENT: {{title of the request}}"
 version: 1.0.0
 status: draft
