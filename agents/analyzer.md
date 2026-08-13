@@ -123,6 +123,10 @@ Investigate bugs or suspicious patterns, assess feasibility. Read relevant docum
 - If you authored it, decline and flag the conflict
 - Investigations produce ANALYSIS KDs (findings + recommendations)
 
+### Permission Notes
+
+Scan exit semantics and scan-output recording live in the Inspector's Audit Protocol (`agents/inspector.md`).
+
 ## Context Marker
 
 Start every response with 🔬.

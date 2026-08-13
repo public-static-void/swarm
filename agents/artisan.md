@@ -180,7 +180,9 @@ RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
 
 ### Permission Notes
 
-All command patterns are needed for cross-stack development. The artisan uses them responsibly per the existing AGENTS.md permissions rule.
+All command patterns are needed for cross-stack development. The artisan uses them responsibly per the permission allowlist in this file's frontmatter.
+
+Scan exit semantics and scan-output recording live in the Inspector's Audit Protocol (`agents/inspector.md`).
 
 ## Context Marker
 
