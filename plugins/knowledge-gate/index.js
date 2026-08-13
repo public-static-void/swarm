@@ -219,10 +219,6 @@ function formatMemoryEntry(entry, format) {
 
 // --- Issue scanning ---
 
-/**
- * Scans knowledge/issues/ for open, high-severity issues.
- * Returns array of parsed issue objects.
- */
 function ensureIssuesDir() {
   try {
     mkdirSync(ISSUES_DIR, { recursive: true });
@@ -231,7 +227,10 @@ function ensureIssuesDir() {
   }
 }
 
-function scanHighSeverityIssues() {
+// Shared registry read: one readdir + filter + read + parse pass with
+// per-file failure isolation, behind both issue scans so ordering, filtering,
+// and error handling cannot diverge between them.
+function readAllIssueFiles() {
   ensureIssuesDir();
   if (!existsSync(ISSUES_DIR)) return [];
 
@@ -239,23 +238,29 @@ function scanHighSeverityIssues() {
   try {
     files = readdirSync(ISSUES_DIR).filter(f => f.startsWith("issue-") && f.endsWith(".md"));
   } catch (e) {
-    debug(`scanHighSeverityIssues: failed to read issues dir: ${e.message}`);
+    debug(`issue scan: failed to read issues dir: ${e.message}`);
     return [];
   }
 
-  const highSeverity = [];
+  const issues = [];
   for (const file of files) {
     try {
       const raw = readFileSync(join(ISSUES_DIR, file), "utf8");
       const issue = parseIssueFile(raw, file);
-      if (issue && issue.severity === "high" && issue.status === "open") {
-        highSeverity.push(issue);
-      }
+      if (issue) issues.push(issue);
     } catch (e) {
-      debug(`scanHighSeverityIssues: skipping ${file}: ${e.message}`);
+      debug(`issue scan: skipping ${file}: ${e.message}`);
     }
   }
-  return highSeverity;
+  return issues;
+}
+
+// Scans knowledge/issues/ for open, high-severity issues (exported hook).
+function scanHighSeverityIssues() {
+  // Derive from the shared open-issue scan: same read path and failure
+  // isolation, plus a deterministic severity/id order (the previous
+  // implementation iterated in filesystem-dependent readdir order).
+  return scanOpenIssues().filter(issue => issue.severity === "high");
 }
 
 /**
@@ -353,29 +358,7 @@ function parseQuotedValue(raw) {
  *   issues taken AFTER the stable severity/id sort; undefined/0/invalid → no cap.
  */
 function scanOpenIssues(options = {}) {
-  ensureIssuesDir();
-  if (!existsSync(ISSUES_DIR)) return [];
-
-  let files;
-  try {
-    files = readdirSync(ISSUES_DIR).filter(f => f.startsWith("issue-") && f.endsWith(".md"));
-  } catch (e) {
-    debug(`scanOpenIssues: failed to read issues dir: ${e.message}`);
-    return [];
-  }
-
-  const openIssues = [];
-  for (const file of files) {
-    try {
-      const raw = readFileSync(join(ISSUES_DIR, file), "utf8");
-      const issue = parseIssueFile(raw, file);
-      if (issue && issue.status === "open") {
-        openIssues.push(issue);
-      }
-    } catch (e) {
-      debug(`scanOpenIssues: skipping ${file}: ${e.message}`);
-    }
-  }
+  const openIssues = readAllIssueFiles().filter(issue => issue && issue.status === "open");
   // readdirSync order is filesystem-dependent, so surfacing is non-deterministic
   // without an explicit sort. Rank by severity (high → medium → low) and break
   // ties by ascending numeric id so INTENT/EVOLVE injection is stable.
