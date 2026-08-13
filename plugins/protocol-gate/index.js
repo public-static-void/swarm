@@ -468,7 +468,13 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
   const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!located) return { ok: false, reason: "no-registry" };
 
-  const rowPattern = new RegExp(`^\\s*${escapeRegExp(milestoneId)}:\\s*([A-Za-z-]+)\\s*$`, "mi");
+  // `[ \t]*$` (not `\s*$`) so the trailing newline is never part of the match:
+  // when the row being updated is the LAST line in the block, `\s*$` consumes
+  // the newline at end-of-input and the replacement glues the closing ``` fence
+  // to the row (`M1: in-progress```) — malformed registry YAML. `[ \t]*` stays
+  // on the row line, `$` matches before the line terminator (multiline) or at
+  // end of input, and the newline survives the replace.
+  const rowPattern = new RegExp(`^\\s*${escapeRegExp(milestoneId)}:\\s*([A-Za-z-]+)[ \\t]*$`, "mi");
   const rowMatch = located.block.match(rowPattern);
   if (!rowMatch) return { ok: false, reason: "milestone-not-found" };
 
@@ -818,10 +824,13 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 // for scoped reopen (R012): `impl-<milestone-id>-` path tokens and bare
 // `M\d+` milestone ids. Tokens are deduplicated and case-preserved; a KD with
 // no Findings section yields zero citations (fail-closed for the malformed-FAIL
-// rule).
+// rule). The heading regex accepts both the template-conformant
+// `## Review Findings` header (skills/template-review/SKILL.md, inspector.md)
+// and the legacy `## Findings` header — a template-conformant FAIL review KD
+// must parse or the OQ-4 FAIL contract is machine-inert (regression guard).
 function extractMilestoneCitationsFromReviewKD(content) {
   if (typeof content !== "string") return [];
-  const headingMatch = content.match(/^## Findings[^\n]*\n?/m);
+  const headingMatch = content.match(/^## (?:Review )?Findings[^\n]*\n?/m);
   if (!headingMatch) return [];
   // Search the next `## ` heading AFTER the Findings heading itself — starting
   // from the heading line would match the heading at index 0 and yield an
