@@ -839,11 +839,21 @@ function extractMilestoneCitationsFromReviewKD(content) {
   const nextHeading = rest.search(/^## /m);
   const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
   const tokens = new Set();
-  let m;
-  const implPattern = /impl-([A-Za-z0-9_-]+)-/gi;
-  while ((m = implPattern.exec(section)) !== null) tokens.add(m[1]);
-  const idPattern = /\bM\d+\b/g;
-  while ((m = idPattern.exec(section)) !== null) tokens.add(m[0]);
+  // Split the Findings section into `### ` subsections so the Traceability
+  // Matrix can be excluded: the merged template places the matrix inside the
+  // Review Findings section, and a bare milestone token in a PASS-row matrix
+  // cell is provenance, not a FAIL citation — scanning it would reopen that
+  // row on a FAIL verdict. The matrix block is identified by its own header,
+  // so excluding it never drops tokens from real FAIL findings (which live in
+  // `### F\d+` subsections or raw body text).
+  for (const sub of section.split(/^### /m)) {
+    if (/^Traceability Matrix/i.test(sub)) continue;
+    let m;
+    const implPattern = /impl-([A-Za-z0-9_-]+)-/gi;
+    while ((m = implPattern.exec(sub)) !== null) tokens.add(m[1]);
+    const idPattern = /\bM\d+\b/g;
+    while ((m = idPattern.exec(sub)) !== null) tokens.add(m[0]);
+  }
   return [...tokens];
 }
 
