@@ -120,12 +120,12 @@ Read the specification and plan, implement each step, write tests, produce an im
      subagent_type: "committer",
      description: "Checkpoint commit for plan step 1",
      prompt: `DISPATCH TO: committer
-     MODE: checkpoint
-     SESSION DATE: 2026-08-03
-     SESSION ID: ses_abc123
-     GENERATION: 0
-     SCOPE: Implement feature X — files modified, nature of changes (feat/fix/refactor)
-     RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
+MODE: checkpoint
+SESSION DATE: 2026-08-03
+SESSION ID: ses_abc123
+GENERATION: 0
+SCOPE: Implement feature X — files modified, nature of changes (feat/fix/refactor)
+RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
    })
    ```
 
