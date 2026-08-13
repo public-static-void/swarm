@@ -13,7 +13,7 @@
 //    and injects them into the Overseer's system prompt for Triage Notes
 //
 // Debug logging: set KNOWLEDGE_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 // tool() registers custom tools with the runtime via the plugin `tool` hook
@@ -35,6 +35,11 @@ const MEMORY_DIR = process.env.KNOWLEDGE_GATE_MEMORY_DIR
 const ISSUES_DIR = process.env.KNOWLEDGE_GATE_ISSUES_DIR
   ? resolve(process.env.KNOWLEDGE_GATE_ISSUES_DIR)
   : join(PROJECT_ROOT, "knowledge", "issues");
+// Short-term layer seam: session-scoped scratch notes live outside the
+// long-term memory store and are excluded from memory_search by structure.
+const SHORT_TERM_DIR = process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR
+  ? resolve(process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR)
+  : join(PROJECT_ROOT, "knowledge", "short-term");
 
 // --- Debug logging ---
 
@@ -69,7 +74,7 @@ function debug(msg) {
 const TAG_TAXONOMY = {
   plugin: ["protocol-gate", "delegation-gate", "knowledge-gate"],
   agent: ["overseer", "scribe", "analyzer", "artisan", "inspector", "committer", "explorer", "pathfinder", "spec-weaver", "habit-builder"],
-  mode: ["explore", "investigate", "align", "decompose", "swarm", "review", "audit", "extract", "evolve"],
+  mode: ["explore", "investigate", "align", "decompose", "swarm", "review", "extract", "evolve"],
   domain: ["permissions", "auth", "state-machine", "phase-transition", "bug", "testing", "commit", "template", "scope", "lifecycle", "regression", "cache", "injection", "hook", "schema", "validation"],
   severity: ["critical", "major", "minor"],
   type: ["fact", "decision", "pattern", "warning", "context"]
@@ -86,7 +91,6 @@ const MODE_TAG_MAP = {
   decompose: ["planning", "tasks", "dependencies"],
   swarm: ["implementation", "code", "pattern"],
   review: ["review", "quality"],
-  audit: ["audit", "quality"],
   extract: ["knowledge", "insight", "documentation"],
   evolve: ["process", "friction", "improvement"]
 };
@@ -99,7 +103,7 @@ const AGENT_TAG_MAP = {
   "spec-weaver": ["specification", "design"],
   pathfinder: ["planning", "decomposition"],
   artisan: ["implementation", "code"],
-  inspector: ["review", "audit"],
+  inspector: ["review", "quality"],
   scribe: ["knowledge", "documentation"],
   overseer: ["orchestration", "process"],
   "habit-builder": ["process", "friction"]
@@ -459,6 +463,158 @@ function getNextIssueId() {
   }
 
   return `ISSUE-${String(maxNum + 1).padStart(3, "0")}`;
+}
+
+// --- Short-term memory (session-scoped scratch notes) ---
+//
+// knowledge/short-term/{sessionID}/{agent}/note-{NNN}.json — per-agent
+// per-session notes every agent can write into its own namespace and the
+// owner plus Scribe can read (the promotion path). Notes are session-scoped
+// scratch state: bounded by the per-agent cap with oldest-first eviction,
+// structurally excluded from long-term memory_search, and cleared at
+// lifecycle end by protocol-gate. All short-term logic lives here — no
+// cross-plugin imports.
+
+const NOTE_VERSION = "1.0.0";
+const NOTE_CAP = 100;
+
+// Rejects path traversal in session/agent tokens before they become directory
+// names under the short-term store (mirrors sanitizeSessionID in
+// protocol-gate — session IDs reach file paths and can be attacker-influenced).
+function sanitizeToken(token) {
+  if (typeof token !== "string" || token.length === 0) return null;
+  if (token === "." || token === "..") return null;
+  if (/[\\/\0]/.test(token)) return null;
+  return token;
+}
+
+// Resolves the agent namespace directory for a session+agent pair, or null
+// when either token fails sanitization (the traversal guard).
+function noteDirFor(session, agent) {
+  const safeSession = sanitizeToken(session);
+  const safeAgent = sanitizeToken(agent);
+  if (!safeSession || !safeAgent) return null;
+  return join(SHORT_TERM_DIR, safeSession, safeAgent);
+}
+
+// Resolves the note file for a session+agent+sequence number, or null when
+// the tokens fail sanitization.
+function noteFilePath(session, agent, num) {
+  const dir = noteDirFor(session, agent);
+  if (!dir) return null;
+  return join(dir, `note-${String(num).padStart(3, "0")}.json`);
+}
+
+// Builds the canonical note id: ST-{session}-{agent}-{NNN}. The id embeds the
+// same tokens the path uses, so a read/delete by id round-trips to the file.
+function noteIdFor(session, agent, num) {
+  return `ST-${session}-${agent}-${String(num).padStart(3, "0")}`;
+}
+
+// Parses a canonical note id back into { session, agent, num }. The greedy
+// session group absorbs extra hyphens so hyphenated agent names round-trip:
+// `ST-ses_1-spec-weaver-007` → session ses_1, agent spec-weaver, num 007.
+function parseNoteId(id) {
+  if (typeof id !== "string" || !id.startsWith("ST-")) return null;
+  const m = id.slice(3).match(/^(.+)-(.+)-(\d{3})$/);
+  if (!m) return null;
+  return { session: m[1], agent: m[2], num: m[3] };
+}
+
+// Validates a note against the short-term schema. The long-term validator
+// (validateMemoryEntry) stays untouched — the two layers have disjoint
+// schemas and id namespaces by design.
+function validateNote(note) {
+  if (!note || typeof note !== "object") {
+    return { valid: false, error: "Note must be a non-null object" };
+  }
+  if (typeof note.id !== "string" || !parseNoteId(note.id)) {
+    return { valid: false, error: `id must match ST-{session}-{agent}-{NNN}, got "${note.id}"` };
+  }
+  if (typeof note.agent !== "string" || !note.agent) {
+    return { valid: false, error: "agent must be a non-empty string" };
+  }
+  if (typeof note.session !== "string" || !note.session) {
+    return { valid: false, error: "session must be a non-empty string" };
+  }
+  if (typeof note.created !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(note.created)) {
+    return { valid: false, error: `created must be ISO 8601 with time, got "${note.created}"` };
+  }
+  if (typeof note.topic !== "string" || note.topic.length > 100) {
+    return { valid: false, error: `topic must be a string ≤100 chars, got length ${note.topic?.length || 0}` };
+  }
+  if (typeof note.content !== "string" || note.content.length > 2000) {
+    return { valid: false, error: `content must be a string ≤2000 chars, got length ${note.content?.length || 0}` };
+  }
+  if (note.tags !== undefined) {
+    if (!Array.isArray(note.tags) || note.tags.length > 5) {
+      return { valid: false, error: "tags must be an array with 0-5 items" };
+    }
+    if (note.tags.some(t => typeof t !== "string")) {
+      return { valid: false, error: "tags must contain only strings" };
+    }
+  }
+  if (note.version !== NOTE_VERSION) {
+    return { valid: false, error: `version must be "${NOTE_VERSION}"` };
+  }
+  return { valid: true };
+}
+
+// Lists the note sequence numbers in an agent namespace, ascending. The count
+// reflects physical note-*.json files (malformed content still occupies a
+// bounded slot); readers skip malformed files.
+function listNoteNumbers(session, agent) {
+  const dir = noteDirFor(session, agent);
+  if (!dir || !existsSync(dir)) return [];
+  let files;
+  try {
+    files = readdirSync(dir).filter(f => /^note-\d{3}\.json$/.test(f));
+  } catch (e) {
+    debug(`listNoteNumbers: failed to read ${dir}: ${e.message}`);
+    return [];
+  }
+  return files
+    .map(f => parseInt(f.match(/note-(\d{3})\.json/)[1], 10))
+    .sort((a, b) => a - b);
+}
+
+// Next sequence number for an agent namespace: max on disk + 1 (starts at 1).
+function getNextNoteNumber(session, agent) {
+  const nums = listNoteNumbers(session, agent);
+  return nums.reduce((m, n) => Math.max(m, n), 0) + 1;
+}
+
+// Reads every note in a namespace, ascending by sequence number. Malformed
+// note JSON is skipped with a debug log (mirrors loadEntriesFromDisk).
+function readNotesFromDisk(session, agent) {
+  const notes = [];
+  for (const num of listNoteNumbers(session, agent)) {
+    const filePath = noteFilePath(session, agent, num);
+    try {
+      notes.push(JSON.parse(readFileSync(filePath, "utf8")));
+    } catch (e) {
+      debug(`readNotesFromDisk: skipping malformed ${filePath}: ${e.message}`);
+    }
+  }
+  return notes;
+}
+
+// Enforces the per-agent per-session cap: when the namespace holds NOTE_CAP
+// notes, the oldest (lowest sequence number) is evicted before the next write.
+// The scratch store stays bounded; eviction is logged. Race tolerance: two
+// same-agent writes in one tick can momentarily reach cap+1, and the next
+// write restores the steady state.
+function evictOldestIfAtCap(session, agent) {
+  const nums = listNoteNumbers(session, agent);
+  if (nums.length < NOTE_CAP) return;
+  const oldest = nums[0];
+  const filePath = noteFilePath(session, agent, oldest);
+  try {
+    unlinkSync(filePath);
+    debug(`evictOldestIfAtCap: evicted ${filePath} (cap ${NOTE_CAP})`);
+  } catch (e) {
+    debug(`evictOldestIfAtCap: eviction failed for ${filePath}: ${e.message}`);
+  }
 }
 
 // --- Main plugin export ---
@@ -911,8 +1067,296 @@ export default {
             return JSON.stringify({ error: `Failed to delete memory entry: ${e.message}` });
           }
         }
+      }),
+      memory_note: tool({
+        description: "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings). Returns { message, id } or { error }.",
+        args: {
+          topic: tool.schema.string().describe("Topic ≤100 chars"),
+          content: tool.schema.string().describe("Content ≤2000 chars"),
+          tags: tool.schema.array(tool.schema.string()).optional().describe("Optional tags 0-5")
+        },
+        async execute(args, context) {
+          const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+          const session = context.sessionID || "";
+          const { topic = "", content = "", tags } = args;
+
+          if (!agent || !session) {
+            return JSON.stringify({ error: "Unable to determine caller agent or session" });
+          }
+
+          // Cheap write path — validates only the note schema + cap, with no
+          // long-term search or dedup, so agents persist in-flight state
+          // without predicting compaction.
+          if (typeof topic !== "string" || topic.length > 100) {
+            return JSON.stringify({ error: `topic must be a string ≤100 chars, got length ${topic?.length || 0}` });
+          }
+          if (typeof content !== "string" || content.length > 2000) {
+            return JSON.stringify({ error: `content must be a string ≤2000 chars, got length ${content?.length || 0}` });
+          }
+          if (tags !== undefined) {
+            if (!Array.isArray(tags) || tags.length > 5 || tags.some(t => typeof t !== "string")) {
+              return JSON.stringify({ error: "tags must be an array with 0-5 string items" });
+            }
+          }
+
+          // The namespace is derived from caller identity — memory_note takes
+          // no agent/session args, so a write can never target another agent's
+          // namespace. Sanitization rejects traversal-shaped tokens before the
+          // path join (the tool-level write boundary, mirroring memory_write).
+          const dir = noteDirFor(session, agent);
+          if (!dir) {
+            debug(`memory_note: rejected tokens session="${session}" agent="${agent}"`);
+            return JSON.stringify({ error: "Invalid session or agent token" });
+          }
+
+          evictOldestIfAtCap(session, agent);
+          const next = getNextNoteNumber(session, agent);
+          const note = {
+            id: noteIdFor(session, agent, next),
+            agent,
+            session,
+            created: new Date().toISOString(),
+            topic,
+            content,
+            version: NOTE_VERSION
+          };
+          if (tags !== undefined) note.tags = tags;
+
+          try {
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(noteFilePath(session, agent, next), JSON.stringify(note, null, 2), "utf8");
+            debug(`memory_note: written ${noteFilePath(session, agent, next)}`);
+            return JSON.stringify({ message: "Short-term note written", id: note.id });
+          } catch (e) {
+            debug(`memory_note: write failed — ${e.message}`);
+            return JSON.stringify({ error: `Failed to write short-term note: ${e.message}` });
+          }
+        }
+      }),
+      memory_note_read: tool({
+        description: "Read short-term memory notes from knowledge/short-term/. Args: id (string ST-...) to read one note; agent and/or session (strings) to read a namespace (Scribe only — the promotion path). Agents may read only their own notes; Scribe may read any agent's notes. Returns the note object, an array of note objects, or { error }.",
+        args: {
+          id: tool.schema.string().optional().describe("Note ID (ST-{session}-{agent}-{NNN})"),
+          agent: tool.schema.string().optional().describe("Agent namespace to read (Scribe only)"),
+          session: tool.schema.string().optional().describe("Session for the namespace read, defaults to the current session (Scribe only)")
+        },
+        async execute(args, context) {
+          const caller = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+          const currentSession = context.sessionID || "";
+          const { id, agent, session } = args;
+
+          if (id) {
+            const parsed = parseNoteId(id);
+            if (!parsed) {
+              debug(`memory_note_read: invalid id — ${id}`);
+              return JSON.stringify({ error: "Invalid note id: " + id });
+            }
+            // Owner reads own; Scribe reads any (promotion path prerequisite).
+            if (caller !== "scribe" && parsed.agent !== caller) {
+              debug(`memory_note_read: rejected — ${caller} tried to read ${parsed.agent}'s note`);
+              return JSON.stringify({ error: "Permission denied: agents may read only their own short-term notes. Called by: " + (caller || "unknown") });
+            }
+            const filePath = noteFilePath(parsed.session, parsed.agent, Number(parsed.num));
+            if (!filePath || !existsSync(filePath)) {
+              return JSON.stringify({ error: "Short-term note not found: " + id });
+            }
+            try {
+              return JSON.stringify(JSON.parse(readFileSync(filePath, "utf8")), null, 2);
+            } catch (e) {
+              debug(`memory_note_read: malformed note ${filePath}: ${e.message}`);
+              return JSON.stringify({ error: "Short-term note not found: " + id });
+            }
+          }
+
+          // Namespace read — Scribe only.
+          if (agent !== undefined || session !== undefined) {
+            if (caller !== "scribe") {
+              debug(`memory_note_read: rejected — non-Scribe ${caller} requested a namespace read`);
+              return JSON.stringify({ error: "Permission denied: only Scribe may read other agents' short-term notes. Called by: " + (caller || "unknown") });
+            }
+            if (agent === undefined) {
+              return JSON.stringify({ error: "Namespace read requires an agent; list a whole session with memory_notes_list" });
+            }
+            const notes = readNotesFromDisk(session || currentSession, agent);
+            return JSON.stringify(notes, null, 2);
+          }
+
+          return JSON.stringify({ error: "Specify id or agent to read" });
+        }
+      }),
+      memory_notes_list: tool({
+        description: "List short-term memory notes in knowledge/short-term/. Returns a summary array [{ id, agent, created, topic }]. Non-Scribe agents see only their own notes in the current session; Scribe sees any agent's notes — or all agents' notes in a session when no agent is given.",
+        args: {
+          agent: tool.schema.string().optional().describe("Agent namespace to list (Scribe only)"),
+          session: tool.schema.string().optional().describe("Session to list, defaults to the current session (Scribe only)")
+        },
+        async execute(args, context) {
+          const caller = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+          const currentSession = context.sessionID || "";
+          const { agent, session } = args || {};
+
+          const targetSession = session || currentSession;
+          const targetAgent = agent || caller;
+
+          // Owner scope: a non-Scribe may list only its own namespace.
+          if (caller !== "scribe" && (targetAgent !== caller || targetSession !== currentSession)) {
+            debug(`memory_notes_list: rejected — ${caller} requested ${targetAgent}/${targetSession}`);
+            return JSON.stringify({ error: "Permission denied: agents may list only their own short-term notes. Called by: " + (caller || "unknown") });
+          }
+
+          const toSummary = note => ({ id: note.id, agent: note.agent, created: note.created, topic: note.topic });
+
+          if (caller === "scribe" && agent === undefined) {
+            // Scribe listing a whole session — the promotion path scans every
+            // agent namespace under the session tree.
+            const safeSession = sanitizeToken(targetSession);
+            if (!safeSession) return JSON.stringify({ error: "Invalid session token" });
+            const sessionRoot = join(SHORT_TERM_DIR, safeSession);
+            let entries = [];
+            try {
+              entries = existsSync(sessionRoot) ? readdirSync(sessionRoot, { withFileTypes: true }) : [];
+            } catch (e) {
+              debug(`memory_notes_list: failed to read ${sessionRoot}: ${e.message}`);
+              return JSON.stringify([]);
+            }
+            const summaries = [];
+            for (const entry of entries) {
+              if (!entry.isDirectory()) continue;
+              const safeAgent = sanitizeToken(entry.name);
+              if (!safeAgent) continue;
+              for (const note of readNotesFromDisk(safeSession, safeAgent)) summaries.push(toSummary(note));
+            }
+            return JSON.stringify(summaries, null, 2);
+          }
+
+          const notes = readNotesFromDisk(targetSession, targetAgent);
+          return JSON.stringify(notes.map(toSummary), null, 2);
+        }
+      }),
+      memory_note_delete: tool({
+        description: "Delete a short-term memory note from knowledge/short-term/. Args: id (string ST-...). The owner may delete own notes; Scribe may delete any agent's notes. Removes note-{NNN}.json permanently — the short-term store is session-scoped scratch state.",
+        args: {
+          id: tool.schema.string().describe("Note ID to delete (ST-{session}-{agent}-{NNN})")
+        },
+        async execute(args, context) {
+          const { id } = args;
+          const caller = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+          const parsed = parseNoteId(id);
+          if (!parsed) {
+            debug(`memory_note_delete: invalid id — ${id}`);
+            return JSON.stringify({ error: "Invalid note id: " + id });
+          }
+          // Owner deletes own; Scribe deletes any (promotion path cleanup).
+          if (caller !== "scribe" && parsed.agent !== caller) {
+            debug(`memory_note_delete: rejected — ${caller} tried to delete ${parsed.agent}'s note`);
+            return JSON.stringify({ error: "Permission denied: agents may delete only their own short-term notes. Called by: " + (caller || "unknown") });
+          }
+          const filePath = noteFilePath(parsed.session, parsed.agent, Number(parsed.num));
+          if (!filePath || !existsSync(filePath)) {
+            return JSON.stringify({ error: "Short-term note not found: " + id });
+          }
+          try {
+            unlinkSync(filePath);
+            debug(`memory_note_delete: deleted ${filePath}`);
+            return JSON.stringify({ message: "Short-term note deleted", id });
+          } catch (e) {
+            debug(`memory_note_delete: delete failed — ${e.message}`);
+            return JSON.stringify({ error: `Failed to delete short-term note: ${e.message}` });
+          }
+        }
       })
     };
+
+    // Promotion helper (R007 / OQ-3 copy-then-clear): reads every short-term
+    // note for a session, writes each selected note into the long-term store
+    // with the session's COMPOSED KD as source_kd, then clears the session's
+    // short-term store. The Scribe systemTransform instruction describes the
+    // same contract in tool terms; this function is the deterministic
+    // implementation exercised by the promotion tests. Clear failure is logged
+    // and non-fatal (mirrors KD cleanup) — R020 lifecycle-end cleanup remains
+    // the safety net for sessions that never reach EXTRACT.
+    function promoteShortTermNotes(sessionID, composedKdPath, options = {}) {
+      const select = typeof options.select === "function" ? options.select : () => true;
+      const promoted = [];
+      const skipped = [];
+      const safeSession = sanitizeToken(sessionID);
+      if (!safeSession) return { promoted, skipped, cleared: false, error: "Invalid session token" };
+
+      // read-all: every agent namespace under the session tree
+      const sessionRoot = join(SHORT_TERM_DIR, safeSession);
+      const notes = [];
+      try {
+        const entries = existsSync(sessionRoot) ? readdirSync(sessionRoot, { withFileTypes: true }) : [];
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const safeAgent = sanitizeToken(entry.name);
+          if (!safeAgent) continue;
+          for (const note of readNotesFromDisk(safeSession, safeAgent)) notes.push(note);
+        }
+      } catch (e) {
+        debug(`promoteShortTermNotes: failed to read ${sessionRoot}: ${e.message}`);
+        return { promoted, skipped, cleared: false };
+      }
+
+      // write: each selected note becomes a long-term entry (copy). The
+      // long-term schema is stricter than the note schema, so promotion
+      // adapts: id is assigned up front (validation requires MEM-\d{3}),
+      // tags are padded to the 2-tag minimum with controlled-vocabulary
+      // defaults, and content is truncated to the 500-char insight bound.
+      for (const note of notes) {
+        if (!select(note)) {
+          skipped.push({ id: note.id, reason: "not selected" });
+          continue;
+        }
+        const tags = note.tags && note.tags.length >= 2
+          ? note.tags
+          : [...(note.tags || []), "context", "lifecycle"];
+        const entry = {
+          id: getNextMemoryId(),
+          type: "fact",
+          source_kd: composedKdPath,
+          tags,
+          topic: note.topic,
+          insight: note.content.length > 500 ? `${note.content.slice(0, 497)}...` : note.content,
+          created: note.created,
+          session: safeSession,
+          version: "1.0.0"
+        };
+        const validation = validateMemoryEntry(entry);
+        if (!validation.valid) {
+          debug(`promoteShortTermNotes: skipping ${note.id} — ${validation.error}`);
+          skipped.push({ id: note.id, reason: validation.error });
+          continue;
+        }
+        const duplicate = checkDuplicateMemory(entry);
+        if (duplicate && duplicate.id !== entry.id) {
+          debug(`promoteShortTermNotes: duplicate for ${note.id} — existing ${duplicate.id}, skipped`);
+          skipped.push({ id: note.id, reason: `duplicate of ${duplicate.id}` });
+          continue;
+        }
+        try {
+          writeFileSync(join(MEMORY_DIR, `entry-${entry.id.replace("MEM-", "")}.json`), JSON.stringify(entry, null, 2), "utf8");
+          memoryCache.entries = null;
+          memoryCache.lastLoaded = null;
+          promoted.push({ noteId: note.id, entryId: entry.id });
+        } catch (e) {
+          debug(`promoteShortTermNotes: write failed for ${note.id} — ${e.message}`);
+          skipped.push({ id: note.id, reason: `write failed: ${e.message}` });
+        }
+      }
+
+      // clear (copy-then-clear, OQ-3): remove the whole session store after
+      // the copies land. Failure is non-fatal — R020 cleanup runs at lifecycle end.
+      let cleared = true;
+      try {
+        if (existsSync(sessionRoot)) rmSync(sessionRoot, { recursive: true, force: true });
+      } catch (e) {
+        cleared = false;
+        debug(`promoteShortTermNotes: clear failed for ${sessionRoot} — ${e.message}`);
+      }
+
+      return { promoted, skipped, cleared };
+    }
 
     // --- Hook: chat.params ---
     // Track which agent is running in each session for memory_search routing.
@@ -939,6 +1383,26 @@ export default {
         output.description = "Write a validated memory entry to knowledge/memory/. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk. Only Scribe agent has permission to write.";
         debug(`toolDefinition: provided description for memory_write`);
       }
+
+      if (toolID === "memory_note") {
+        output.description = "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings). Returns { message, id } or { error }.";
+        debug(`toolDefinition: provided description for memory_note`);
+      }
+
+      if (toolID === "memory_note_read") {
+        output.description = "Read short-term memory notes from knowledge/short-term/. Args: id (string ST-...) to read one note; agent and/or session (strings) to read a namespace (Scribe only — the promotion path). Agents may read only their own notes; Scribe may read any agent's notes. Returns the note object, an array of note objects, or { error }.";
+        debug(`toolDefinition: provided description for memory_note_read`);
+      }
+
+      if (toolID === "memory_notes_list") {
+        output.description = "List short-term memory notes in knowledge/short-term/. Returns a summary array [{ id, agent, created, topic }]. Non-Scribe agents see only their own notes in the current session; Scribe sees any agent's notes — or all agents' notes in a session when no agent is given.";
+        debug(`toolDefinition: provided description for memory_notes_list`);
+      }
+
+      if (toolID === "memory_note_delete") {
+        output.description = "Delete a short-term memory note from knowledge/short-term/. Args: id (string ST-...). The owner may delete own notes; Scribe may delete any agent's notes. Removes note-{NNN}.json permanently — the short-term store is session-scoped scratch state.";
+        debug(`toolDefinition: provided description for memory_note_delete`);
+      }
     }
 
     // --- Hook: experimental.chat.system.transform ---
@@ -957,6 +1421,19 @@ export default {
         `prior session insights from knowledge/memory/.`
       );
 
+      // Short-term resume hint — the mechanical compaction-amnesia mitigation
+      // (R005). Regenerated on every LLM call, so a post-compaction model can
+      // not forget the re-read instruction: any agent with ≥1 note in the
+      // current session is told to read them back. Zero notes → no hint.
+      const resumeNoteCount = agent ? readNotesFromDisk(sessionID, agent).length : 0;
+      if (resumeNoteCount > 0) {
+        output.system.push(
+          `[Knowledge Gate] You have ${resumeNoteCount} short-term memory note(s) for this session. ` +
+          `Read them with memory_note_read to resume in-flight state.`
+        );
+        debug(`systemTransform: resume hint injected for ${agent} (${resumeNoteCount} note(s))`);
+      }
+
       // Dynamic memory hint: derive from agent context and append if relevant
       // At systemTransform time, mode/scope are not available (they come at dispatch),
       // so we use agent-type-only tags per PF-001
@@ -972,6 +1449,17 @@ export default {
           `[Knowledge Gate] After composing a COMPOSED KD, write distilled insights ` +
           `via the memory_write tool. The tool validates schema, checks tags against ` +
           `controlled vocabulary, deduplicates, auto-assigns sequential ID, and writes to disk.`
+        );
+        // Promotion step (R007): Scribe is only dispatched at EXTRACT, so this
+        // agent-gated instruction is effectively phase-gated. Copy-then-clear
+        // (OQ-3): long-term copies land BEFORE the short-term notes are deleted.
+        output.system.push(
+          `[Knowledge Gate] At EXTRACT, promote important short-term notes to long-term ` +
+          `before composing the COMPOSED KD: list the session's notes with memory_notes_list, ` +
+          `read each with memory_note_read (any agent), then write the important ones via ` +
+          `memory_write with source_kd = the session's COMPOSED KD path and tags from the ` +
+          `controlled vocabulary (duplicate notes are skipped by dedup). After the copies ` +
+          `land, clear the session's short-term notes with memory_note_delete.`
         );
       }
 
@@ -995,7 +1483,7 @@ export default {
           output.system.push(
             `[Knowledge Gate] Open issues detected:\n${issueSummary}\n` +
             `Apply the Close Issues step (agents/habit-builder.md step 6): for each open issue ` +
-            `whose Recommended Fix is verified addressed in lifecycle KDs (impl/review/audit/composed) ` +
+            `whose Recommended Fix is verified addressed in lifecycle KDs (impl/review/composed) ` +
             `— no heavy investigation needed — flip status to resolved and append a ` +
             `## Resolution (YYYY-MM-DD) section referencing the closing evidence. ` +
             `Closing without evidence is prohibited; keep the issue schema intact.`
@@ -1052,6 +1540,7 @@ export default {
       deriveSearchHints,
       generateHintLines,
       checkDuplicateMemory,
+      promoteShortTermNotes,
       MEMORY_DIR,
       ISSUES_DIR
     };

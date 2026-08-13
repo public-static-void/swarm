@@ -100,6 +100,40 @@ ${table}
     createKD(`milestones-feature-${s}.md`, registryContent(rows));
   }
 
+  // Builds a REVIEW KD with the machine-readable verdict frontmatter field the
+  // VERIFY gate reads (P012). The optional findings body carries milestone
+  // citations (`impl-<milestone-id>-` tokens / M\d+ ids) — the provenance the
+  // scoped-reopen + malformed-FAIL rules parse (P014/P015). The findings
+  // section uses the TEMPLATE-CONFORMANT `## Review Findings` header
+  // (skills/template-review/SKILL.md, inspector.md) — regression guard: if the
+  // citation parser drifts back to only accepting the legacy `## Findings`
+  // header, the FAIL fixtures below yield zero citations and the scoped-reopen
+  // tests fail. Content beyond the frontmatter and Review Findings section is
+  // irrelevant to the gate.
+  function reviewKD(verdict, findings = "") {
+    return `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: ${verdict}
+---
+
+# REVIEW: test
+
+## Verdict
+
+${verdict}
+
+## Review Findings
+
+${findings}
+`;
+  }
+
   function removeKD(filename) {
     try { rmSync(join(knowledgeDir, filename)); } catch (_) {}
   }
@@ -172,10 +206,9 @@ ${table}
     createKD(`impl-M1-a${suffix}`);
     await todo(s, "c9");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
-    // Dual-KD gate: EXTRACT requires BOTH the review- and audit- KDs
-    // (the Inspector produces both), so create them together before c10.
-    createKD(`review-a${suffix}`);
-    createKD(`audit-a${suffix}`);
+    // VERIFY→EXTRACT advances on a single fresh PASS review KD (the merged
+    // review+audit surface; legacy audit- KDs are inert), so create it before c10.
+    createKD(`review-a${suffix}`, reviewKD("PASS"));
     await todo(s, "c10");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
     createKD(`composed-a${suffix}`);
@@ -739,6 +772,24 @@ ${table}
         expect(existsSync(join(knowledgeDir, file))).toBe(c.survivors.includes(f));
       }
     }
+  });
+
+  it("cleanupLifecycleKDs also removes the session's short-term store; long-term memory untouched", () => {
+    const s = sid("cleanup-short-term");
+    const shortTermDir = join(knowledgeDir, "short-term", s, "artisan");
+    mkdirSync(shortTermDir, { recursive: true });
+    writeFileSync(join(shortTermDir, "note-001.json"), "{}");
+    createKD(`intent-cleanup-${s}.md`);
+    createKD(`intent-cleanup-${s}-gen2.md`);
+
+    const removed = hooks.cleanupLifecycleKDs(s, 2);
+    expect(removed).toBe(1); // only the ending-generation KD
+    expect(existsSync(join(knowledgeDir, `intent-cleanup-${s}.md`))).toBe(true);
+    expect(existsSync(join(knowledgeDir, `intent-cleanup-${s}-gen2.md`))).toBe(false);
+    // The session short-term store is gone (R020/R006); long-term memory/
+    // (never created here) is untouched by the cleanup.
+    expect(existsSync(join(knowledgeDir, "short-term", s))).toBe(false);
+    expect(existsSync(join(knowledgeDir, "memory"))).toBe(false);
   });
 
   it("a stray REPORT write or edit with ending generation 1 deletes only gen1 KDs — gen2 KDs survive byte-identical", async () => {
@@ -1366,14 +1417,14 @@ ${table}
     expect(hooks.getCurrentGeneration(s)).toBe(1);
   });
 
-  // Dual-KD gate (replaces the single-KD OR test): VERIFY advances to
-  // EXTRACT only when BOTH a current-generation review- KD AND an audit- KD
-  // exist — the Inspector produces both (verify.json:3, inspector.md:70).
-  // A single KD must hold VERIFY without consistency-regressing to SWARM (the
-  // regression-side ORs in checkPhaseStateConsistency are preserved), or the
-  // unbounded VERIFY⇄SWARM loop returns.
-  it("VERIFY advances to EXTRACT only when BOTH current-generation review- and audit- KDs exist", async () => {
-    const s = sid("verify-dual");
+  // Review-only VERIFY surface (R010/R013): a single fresh PASS review KD
+  // advances VERIFY→EXTRACT — the audit is a section of the review KD, not a
+  // separate KD. Legacy audit- KDs are inert (never verdict KDs, never gate
+  // evidence). A single KD must hold VERIFY without consistency-regressing to
+  // SWARM (the regression-side ORs in checkPhaseStateConsistency are
+  // preserved), or the unbounded VERIFY⇄SWARM loop returns.
+  it("VERIFY advances to EXTRACT on a single fresh review KD; legacy audit- KDs are inert", async () => {
+    const s = sid("verify-review-only");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
     hooks.sessionPhaseMap.set(`${s}:sid`, s);
@@ -1384,49 +1435,39 @@ ${table}
     );
     const gate = () => hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount);
 
-    // review- alone: no advancement and no consistency regression to
-    // SWARM across repeated hook invocations.
-    createKD(`review-only-${s}.md`);
-    expect(gate()).toBe(false);
-    await hookGlob();
-    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
-    await hookGlob();
-    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
-
-    // audit- alone: no advancement.
-    removeKD(`review-only-${s}.md`);
+    // audit- alone: inert — not a verdict KD, so no advancement and no
+    // consistency regression to SWARM across repeated hook invocations.
     createKD(`audit-only-${s}.md`);
     expect(gate()).toBe(false);
     await hookGlob();
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+    await hookGlob();
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
 
-    // both current-gen: advancement. With PROTOCOL_GATE_DEBUG=1 the
-    // disk-check log reports both flags accurately.
-    createKD(`review-both-${s}.md`);
+    // A single fresh review KD advances (merged review+audit surface).
+    createKD(`review-pass-${s}.md`, reviewKD("PASS"));
     expect(gate()).toBe(true);
     try { rmSync(logPath); } catch (_) {}
     process.env.PROTOCOL_GATE_DEBUG = "1";
     try {
       await hookGlob();
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
-      expect(readFileSync(logPath, "utf8")).toContain("Disk check VERIFY: review=true, audit=true → true");
+      expect(readFileSync(logPath, "utf8")).toContain("Disk check VERIFY: review=true → true");
     } finally {
       delete process.env.PROTOCOL_GATE_DEBUG;
       try { rmSync(logPath); } catch (_) {}
     }
 
-    // Generation scoping: a current-gen review with a stale
-    // prior-gen audit is still blocked (only the review matches) until a
-    // current-gen audit lands.
-    const s2 = sid("verify-dual-gen");
+    // Generation scoping: a prior-gen review is inert (only current-gen
+    // matches); a current-gen review advances regardless of any audit KD.
+    const s2 = sid("verify-review-gen");
     await initOverseer(s2);
     hooks.sessionPhaseMap.set(s2, hooks.STATES.VERIFY);
     hooks.sessionPhaseMap.set(`${s2}:sid`, s2);
     hooks.sessionPhaseMap.set(`${s2}:gen`, 2);
-    createKD(`review-cur-${s2}-gen2.md`);
-    createKD(`audit-stale-${s2}-gen1.md`);
+    createKD(`review-stale-${s2}-gen1.md`, reviewKD("PASS"));
     expect(hooks.checkDiskAdvancement(s2, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
-    createKD(`audit-cur-${s2}-gen2.md`);
+    createKD(`review-cur-${s2}-gen2.md`, reviewKD("PASS"));
     expect(hooks.checkDiskAdvancement(s2, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
@@ -2786,54 +2827,37 @@ milestones:
   });
 
   describe("verdict-aware VERIFY gate", () => {
-    // Builds a REVIEW/AUDIT KD with the machine-readable verdict frontmatter
-    // field the VERIFY gate reads. Content beyond the frontmatter is
-    // irrelevant to the gate — the body Verdict section is human-readable only.
-    function verdictKD(verdict) {
-      return `---
-title: "REVIEW: test"
-version: 1.0.0
-status: draft
-type: review
-session_id: "ses_test"
-author: Inspector
-superseded_by: null
-verdict: ${verdict}
----
-
-# REVIEW: test
-
-## Verdict
-
-${verdict}
-`;
+    // Delegates to the shared reviewKD builder — FAIL fixtures pass milestone
+    // citations in the Findings section (the scoped-reopen provenance).
+    function verdictKD(verdict, findings = "") {
+      return reviewKD(verdict, findings);
     }
 
-    it("a FAIL review/audit KD auto-regresses VERIFY→SWARM without BACKWARD: true", async () => {
-      for (const prefix of ["review", "audit"]) {
-        const s = sid(`f1-ac101-${prefix}`);
-        await initOverseer(s);
-        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
-        hooks.sessionPhaseMap.set(`${s}:sid`, s);
-        createKD(`${prefix}-fail-${s}.md`, verdictKD("FAIL"));
+    it("a FAIL review KD auto-regresses VERIFY→SWARM without BACKWARD: true", async () => {
+      const s = sid("f1-ac101");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`review-fail-${s}.md`, verdictKD("FAIL", "impl-M1-short-term-store has a defect"));
 
-        // The next lifecycle tool call evaluates the gate — no BACKWARD flag,
-        // no explicit dispatch, in any prompt.
-        await hooks["tool.execute.before"](
-          { tool: "glob", sessionID: s, callID: "c1" },
-          { args: { pattern: "knowledge/*.md" } }
-        );
-        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
-        expect(hooks.verdictRegressedKDs.get(s)).toContain(`${prefix}-fail-${s}.md`);
-      }
+      // The next lifecycle tool call evaluates the gate — no BACKWARD flag,
+      // no explicit dispatch, in any prompt.
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.verdictRegressedKDs.get(s).kdFilename).toBe(`review-fail-${s}.md`);
     });
 
-    it("re-evaluating the same FAIL review KD does not regress again (once-per-KD guard)", async () => {
+    it("re-evaluating the same FAIL review KD without a new fix cycle does not regress again", async () => {
       const s = sid("f1-ac102");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      createKD(`review-fail-${s}.md`, verdictKD("FAIL"));
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`review-fail-${s}.md`, verdictKD("FAIL", "impl-M1 defect"));
 
       // First evaluation regresses VERIFY→SWARM.
       await hooks["tool.execute.before"](
@@ -2841,43 +2865,50 @@ ${verdict}
         { args: { pattern: "knowledge/*.md" } }
       );
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const regressedAt = hooks.verdictRegressedKDs.get(s).regressedAt;
 
       // A later re-advance to VERIFY re-evaluates the SAME filename — the
-      // once-per-KD guard must suppress a second regression (no infinite loop).
+      // fix-cycle guard suppresses a second regression when no new impl KD
+      // landed after regressedAt (no infinite FAIL→SWARM→VERIFY loop).
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c2" },
         { args: { pattern: "knowledge/*.md" } }
       );
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
-      // Exactly one KD filename recorded.
-      expect(hooks.verdictRegressedKDs.get(s).size).toBe(1);
+      // Guard still records the same KD with the same regressedAt.
+      const guard = hooks.verdictRegressedKDs.get(s);
+      expect(guard.kdFilename).toBe(`review-fail-${s}.md`);
+      expect(guard.regressedAt).toBe(regressedAt);
     });
 
-    it("FAIL regression reopens checked-off milestone rows and the SWARM gate stays closed", async () => {
+    it("FAIL regression reopens ONLY the cited checked-off milestone rows and the SWARM gate stays closed", async () => {
       const s = sid("f1-ac103");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
       createKD(`impl-M1-feature-${s}.md`);
       createKD(`impl-M2-feature-${s}.md`);
+      createKD(`impl-M3-feature-${s}.md`);
       // All rows checked-off with impl KDs on disk — the SWARM→VERIFY gate
       // would advance if the lifecycle were still in SWARM.
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
 
-      createKD(`review-fail-${s}.md`, verdictKD("FAIL"));
+      // FAIL review cites ONLY M1 and M2 — M3 must stay checked-off.
+      createKD(`review-fail-${s}.md`, verdictKD("FAIL", "- impl-M1-short-term-store has a defect\n- impl-M2-resume-hint has a defect"));
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c1" },
         { args: { pattern: "knowledge/*.md" } }
       );
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
 
-      // Rows re-opened to in-progress — the gate fails closed until
-      // fresh impl KDs are on disk.
+      // Only cited rows re-open to in-progress; the unrelated checked-off row
+      // is untouched — the gate fails closed until fresh impl KDs land.
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: in-progress");
       expect(content).toContain("  M2: in-progress");
+      expect(content).toContain("  M3: checked-off");
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
     });
 
@@ -2911,25 +2942,30 @@ ${verdict}
       }
     });
 
-    it("PASS and legacy (no-verdict) KDs keep presence-based advancement", async () => {
-      for (const [name, content] of [
-        ["pass", verdictKD("PASS")],
-        ["legacy", "test content"],
-      ]) {
-        const s = sid(`f1-ac105-${name}`);
-        await initOverseer(s);
-        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
-        hooks.sessionPhaseMap.set(`${s}:sid`, s);
-        createKD(`review-${name}-${s}.md`, content);
-        // Dual-KD gate: EXTRACT also requires an audit- KD.
-        createKD(`audit-${name}-${s}.md`);
+    it("a fresh PASS review KD advances on the merged surface; a MISSING verdict blocks", async () => {
+      // Fresh PASS advances — single review KD, no audit KD required (R010).
+      const pass = sid("f1-ac105-pass");
+      await initOverseer(pass);
+      hooks.sessionPhaseMap.set(pass, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${pass}:sid`, pass);
+      createKD(`review-pass-${pass}.md`, verdictKD("PASS"));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: pass, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(pass)).toBe(hooks.STATES.EXTRACT);
 
-        await hooks["tool.execute.before"](
-          { tool: "glob", sessionID: s, callID: "c1" },
-          { args: { pattern: "knowledge/*.md" } }
-        );
-        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
-      }
+      // MISSING (no verdict field) blocks — never treated as PASS (P012).
+      const missing = sid("f1-ac105-missing");
+      await initOverseer(missing);
+      hooks.sessionPhaseMap.set(missing, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${missing}:sid`, missing);
+      createKD(`review-legacy-${missing}.md`, "test content");
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: missing, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(missing)).toBe(hooks.STATES.VERIFY);
     });
 
     it("more than 3 FAIL regression cycles surface CYCLE_LIMIT_EXCEEDED instead of looping", async () => {
@@ -2937,9 +2973,10 @@ ${verdict}
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
 
       for (let i = 1; i <= 3; i++) {
-        createKD(`review-cycle${i}-${s}.md`, verdictKD("FAIL"));
+        createKD(`review-cycle${i}-${s}.md`, verdictKD("FAIL", "impl-M1 defect"));
         await hooks["tool.execute.before"](
           { tool: "glob", sessionID: s, callID: `c${i}` },
           { args: { pattern: "knowledge/*.md" } }
@@ -2950,7 +2987,7 @@ ${verdict}
       }
 
       // The 4th distinct FAIL KD exceeds the 3-cycle cap.
-      createKD(`review-cycle4-${s}.md`, verdictKD("FAIL"));
+      createKD(`review-cycle4-${s}.md`, verdictKD("FAIL", "impl-M1 defect"));
       const err = await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c4" },
         { args: { pattern: "knowledge/*.md" } }
@@ -2959,16 +2996,14 @@ ${verdict}
       expect(err.code).toBe("CYCLE_LIMIT_EXCEEDED");
     });
 
-    it("the newest review/audit KD wins; a missing verdict is treated as PASS with a warning", async () => {
+    it("the newest review KD wins; a missing verdict blocks advancement (MISSING)", async () => {
       const s = sid("f1-ec01");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      createKD(`review-older-${s}.md`, verdictKD("FAIL"));
+      createRegistry(s, [["M1", "in-progress"]]);
+      createKD(`review-older-${s}.md`, verdictKD("FAIL", "impl-M1 defect"));
       createKD(`review-newer-${s}.md`, "no verdict frontmatter");
-      // Dual-KD gate: EXTRACT also requires an audit- KD. It is created
-      // BEFORE the mtime bump so review-newer stays decisively newest.
-      createKD(`audit-${s}.md`);
       // Make the newer KD decisively newest via mtime so the filename
       // tie-break is not load-bearing (newest wins).
       utimesSync(join(knowledgeDir, `review-newer-${s}.md`), new Date(), new Date(Date.now() + 5000));
@@ -2980,8 +3015,9 @@ ${verdict}
           { tool: "glob", sessionID: s, callID: "c1" },
           { args: { pattern: "knowledge/*.md" } }
         );
-        // Newest has no verdict → treated as PASS → advances to EXTRACT.
-        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+        // Newest has no verdict → MISSING → blocked (never treated as PASS);
+        // the older FAIL verdict does not fire because newest wins.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
         expect(readFileSync(logPath, "utf8")).toContain("VERDICT_MISSING");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
@@ -2989,10 +3025,488 @@ ${verdict}
       }
     });
 
-    it("REVIEW and AUDIT templates carry the verdict frontmatter field", async () => {
-      for (const tplPath of ["skills/template-review/SKILL.md", "skills/template-audit/SKILL.md"]) {
-        const tpl = readFileSync(join(process.cwd(), tplPath), "utf8");
-        expect(tpl).toMatch(/^verdict\s*:\s*\{\{PASS \| FAIL \| FUNDAMENTAL\}\}\s*$/m);
+    it("the REVIEW template carries the verdict frontmatter field", async () => {
+      const tpl = readFileSync(join(process.cwd(), "skills/template-review/SKILL.md"), "utf8");
+      expect(tpl).toMatch(/^verdict\s*:\s*\{\{PASS \| FAIL \| FUNDAMENTAL\}\}\s*$/m);
+    });
+  });
+
+  describe("issue-46: verdict freshness and fix-cycle regression (P012/P013)", () => {
+    it("a: FAIL regresses after a prior same-KD regression when a fix cycle landed", async () => {
+      const s = sid("i46a");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-v1-${s}.md`);
+      const reviewName = `review-fail-${s}.md`;
+      createKD(reviewName, reviewKD("FAIL", "impl-M1 defect"));
+
+      // First evaluation regresses VERIFY→SWARM and records the guard.
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const firstGuard = hooks.verdictRegressedKDs.get(s);
+      expect(firstGuard.kdFilename).toBe(reviewName);
+
+      // Re-advance to VERIFY. A fix cycle lands AFTER regressedAt.
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      createKD(`impl-M1-v2-${s}.md`);
+      utimesSync(join(knowledgeDir, `impl-M1-v2-${s}.md`), new Date(), new Date(Date.now() + 5000));
+
+      // The same FAIL KD regresses again — the landed fix cycle makes the
+      // stale FAIL verdict current once more.
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.verdictRegressedKDs.get(s).regressedAt).toBeGreaterThan(firstGuard.regressedAt);
+    });
+
+    it("b: a stale PASS verdict KD does not advance VERIFY; a fresh PASS advances", async () => {
+      const s = sid("i46b");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      // The review lands BEFORE the fix: the PASS is stale relative to the
+      // newest impl KD (a fix cycle landed after the review).
+      const reviewName = `review-pass-${s}.md`;
+      createKD(reviewName, reviewKD("PASS"));
+      createKD(`impl-M1-after-${s}.md`);
+      utimesSync(join(knowledgeDir, `impl-M1-after-${s}.md`), new Date(), new Date(Date.now() + 5000));
+
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY); // stale PASS blocked
+
+      // A fresh review (newer than the newest impl KD) advances.
+      utimesSync(join(knowledgeDir, reviewName), new Date(), new Date(Date.now() + 10000));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+    });
+
+    it("c: a MISSING verdict is blocked (never treated as PASS)", async () => {
+      const s = sid("i46c");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`review-noverdict-${s}.md`, "test content");
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
+    });
+
+    it("d: /phase forward advance is blocked while the newest verdict is FAIL", async () => {
+      const s = sid("i46d");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      // Pin the override at VERIFY, then a FRESH FAIL review lands after the
+      // override's since marker.
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "VERIFY" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1 defect"));
+
+      // No forward advance while the newest verdict is FAIL — the override
+      // evaluates the verdict after freshness, and the FAIL regresses to SWARM.
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+    });
+  });
+
+  describe("issue-49: scoped milestone reopen + malformed-FAIL (P014/P015)", () => {
+    // Parses the registry's machine-readable YAML block back into row states.
+    function regressedRegistryRows(s) {
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      const rows = {};
+      const re = /^\s*([A-Za-z0-9_-]+):\s*([A-Za-z-]+)\s*$/gm;
+      let m;
+      while ((m = re.exec(content)) !== null) rows[m[1]] = m[2];
+      return rows;
+    }
+
+    it("a: single-milestone FAIL reopens only the cited row", async () => {
+      const s = sid("i49a");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+      createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M2-resume-hint is broken"));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const rows = regressedRegistryRows(s);
+      expect(rows.M2).toBe("in-progress");
+      expect(rows.M1).toBe("checked-off");
+      expect(rows.M3).toBe("checked-off");
+    });
+
+    it("b: multi-milestone FAIL reopens only the cited rows", async () => {
+      const s = sid("i49b");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"], ["M4", "checked-off"]]);
+      createKD(`review-fail-${s}.md`, reviewKD("FAIL", "M2 and M3 fail: impl-M2-resume-hint, impl-M3-promotion"));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const rows = regressedRegistryRows(s);
+      expect(rows.M2).toBe("in-progress");
+      expect(rows.M3).toBe("in-progress");
+      expect(rows.M1).toBe("checked-off");
+      expect(rows.M4).toBe("checked-off");
+    });
+
+    it("c: unprovenanced FAIL is MALFORMED — no regress, no reopen, no advance", async () => {
+      const s = sid("i49c");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+      createKD(`review-fail-${s}.md`, reviewKD("FAIL", "no milestone tokens here"));
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Blocked in VERIFY: no regression, no reopen, no forward advance.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
+        const rows = regressedRegistryRows(s);
+        expect(rows.M1).toBe("checked-off");
+        expect(rows.M2).toBe("checked-off");
+        expect(readFileSync(logPath, "utf8")).toContain("MALFORMED_FAIL");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("d: unrelated checked-off rows stay checked-off across repeated FAIL evaluations", async () => {
+      const s = sid("i49d");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+      createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1 defect"));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      let rows = regressedRegistryRows(s);
+      expect(rows.M1).toBe("in-progress");
+      expect(rows.M2).toBe("checked-off");
+
+      // A fix cycle lands and the same FAIL KD re-evaluates (regresses again
+      // per P013) — still only the cited row re-opens.
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      createKD(`impl-M1-fix-${s}.md`);
+      utimesSync(join(knowledgeDir, `impl-M1-fix-${s}.md`), new Date(), new Date(Date.now() + 5000));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      rows = regressedRegistryRows(s);
+      expect(rows.M1).toBe("in-progress"); // still only the cited row
+      expect(rows.M2).toBe("checked-off");
+    });
+
+    describe("template-conformant Review Findings header regression", () => {
+      // The citation parser previously matched only the legacy `## Findings`
+      // header while the merged template and inspector mandate
+      // `## Review Findings` — a template-conformant FAIL review parsed as
+      // zero citations → MALFORMED → no regression, no reopen. The reviewKD()
+      // fixture above now uses the canonical header (all FAIL tests are
+      // implicit regressions); these tests pin the parser contract explicitly,
+      // both for the canonical and the legacy header.
+
+      it("the citation parser accepts the template-conformant `## Review Findings` header", async () => {
+        const s = sid("f001-parser-canonical");
+        await initOverseer(s);
+        // Template-shaped body — Verdict → Review Findings → Audit section
+        // order (skills/template-review/SKILL.md:22/43/64) — with both citation
+        // token shapes the scoped-reopen rule parses (M\d+ and impl-<id>-).
+        const content = `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M2 and impl-M3-promotion
+
+## Audit
+
+### Scope
+
+audited
+`;
+        const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+        expect(citations).toEqual(expect.arrayContaining(["M2", "M3"]));
+      });
+
+      it("the citation parser keeps accepting the legacy `## Findings` header (backward compat)", async () => {
+        const s = sid("f001-parser-legacy");
+        await initOverseer(s);
+        const content = `## Findings
+
+impl-M1-short-term-store is broken and M2 too
+`;
+        const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+        expect(citations).toEqual(expect.arrayContaining(["M1", "M2"]));
+      });
+
+      it("a template-conformant merged FAIL review (Review Findings + Audit sections) regresses and reopens exactly the cited rows", async () => {
+        const s = sid("f001-gate-template");
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+        // Full template shape: the traceability matrix lives INSIDE Review
+        // Findings (template SKILL.md:57-62) and the Audit section follows —
+        // the section slicing must stop at `## Audit` and still cite M2.
+        createKD(
+          `review-fail-${s}.md`,
+          `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M2
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact | Test/Check | Status |
+| ------ | --------- | -------- | ---------- | ------ |
+| R001   | P001      | x        | test       | PASS   |
+
+## Audit
+
+### Scope
+
+audited
+`
+        );
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        const rows = regressedRegistryRows(s);
+        expect(rows.M2).toBe("in-progress");
+        expect(rows.M1).toBe("checked-off");
+        expect(rows.M3).toBe("checked-off");
+      });
+
+      it("gate-level backward compat: a legacy `## Findings` FAIL review still regresses and reopens cited rows", async () => {
+        const s = sid("f001-gate-legacy");
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createRegistry(s, [["M1", "checked-off"]]);
+        createKD(
+          `review-fail-${s}.md`,
+          `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Findings
+
+impl-M1-short-term-store has a defect
+`
+        );
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        expect(regressedRegistryRows(s).M1).toBe("in-progress");
+      });
+
+      it("the citation parser ignores milestone tokens inside the Traceability Matrix (PASS-row provenance is not a FAIL citation)", async () => {
+        const s = sid("f001-matrix-guard");
+        await initOverseer(s);
+        // Template shape (skills/template-review/SKILL.md:57-62): the matrix
+        // sits INSIDE Review Findings and its PASS-row Artifact cells carry
+        // milestone tokens — those are provenance, not FAIL citations, and
+        // must not enter the reopen set.
+        const content = `## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M2
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact                 | Test/Check | Status |
+| ------ | --------- | ------------------------ | ---------- | ------ |
+| R001   | P001      | impl-M1-short-term-store | test       | PASS   |
+
+## Audit
+
+### Scope
+
+audited
+`;
+        const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+        expect(citations).toEqual(["M2"]);
+      });
+
+      it("a FAIL review with milestone tokens in PASS-row matrix cells reopens only the cited row", async () => {
+        const s = sid("f001-gate-matrix-guard");
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+        createKD(
+          `review-fail-${s}.md`,
+          `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M2
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact                 | Test/Check | Status |
+| ------ | --------- | ------------------------ | ---------- | ------ |
+| R001   | P001      | impl-M1-short-term-store | test       | PASS   |
+| R002   | P001      | impl-M3-promotion        | test       | PASS   |
+
+## Audit
+
+### Scope
+
+audited
+`
+        );
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        const rows = regressedRegistryRows(s);
+        expect(rows.M2).toBe("in-progress");
+        expect(rows.M1).toBe("checked-off");
+        expect(rows.M3).toBe("checked-off");
+      });
+    });
+  });
+
+  describe("merged-KD advancement/regression asymmetry (P011/P016)", () => {
+    it("a single review KD advances on fresh PASS (no audit KD required)", async () => {
+      const s = sid("merged-advance");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`review-pass-${s}.md`, reviewKD("PASS"));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+    });
+
+    it("regression side stays OR — a single review KD holds VERIFY without an unbounded VERIFY⇄SWARM loop", async () => {
+      const s = sid("merged-hold");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // A MISSING-verdict review blocks advancement (P012) but must NOT
+      // consistency-regress to SWARM — the regression-side OR holds the phase.
+      createKD(`review-noverdict-${s}.md`, "test content");
+      for (let i = 1; i <= 5; i++) {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: `c${i}` },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
       }
     });
   });
@@ -3387,7 +3901,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
 
-    it("a /phase VERIFY override requires the NEWEST review/audit KD to be fresh", async () => {
+    it("a /phase VERIFY override requires the NEWEST review KD to be fresh", async () => {
       const s = sid("override-verify");
       await initOverseer(s);
       createKD(`review-old-${s}.md`);
@@ -3401,10 +3915,9 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await todo(s, "v1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
 
-      // Fresh KDs (no verdict → treated as PASS) advance + clear: the
-      // dual-KD gate requires BOTH a fresh review- and a fresh audit- KD.
-      createKD(`review-fresh-${s}.md`);
-      createKD(`audit-fresh-${s}.md`);
+      // A fresh PASS review KD advances + clears: the merged surface needs a
+      // single fresh review KD (no separate audit KD).
+      createKD(`review-fresh-${s}.md`, reviewKD("PASS"));
       await todo(s, "v2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);

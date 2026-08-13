@@ -37,12 +37,11 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 
 ## Post-Compaction Resume
 
-Context compaction truncates the active conversation; agents resume with the anchored summary. Persist in-flight protocol state to disk before each checkpoint so a resumed session continues from disk:
+Context compaction truncates the active conversation; agents resume with the anchored summary. The two-layer memory model makes resume mechanical instead of prose-driven:
 
-- Persist the current phase, the pending step, the open TODO list, and the paths of the KDs anchoring the work.
-- On resume, re-read the persisted KDs and the TODO list.
-- Confirm the phase from the protocol-gate state.
-- Continue from the pending step the persisted state names.
+- **Short-term layer (in-flight state)**: every agent persists its per-session scratch via `memory_note` at natural checkpoints — the current phase, the pending step, the open TODO list, and the paths of the KDs anchoring the work. Notes live in `knowledge/short-term/{sessionID}/{agent}/` and are read back with `memory_note_read`. The knowledge-gate resume hint (regenerated on every LLM call) reminds any agent with notes to read them, so the re-read instruction survives compaction.
+- **On resume**: read your short-term notes first, re-read the anchoring KDs they name, confirm the phase from the protocol-gate state, then continue from the pending step the notes name.
+- **Long-term layer (cross-lifecycle knowledge)**: curated insights written only by Scribe via `memory_write` into `knowledge/memory/`; all agents read with `memory_search`. Scribe promotes important short-term notes to long-term at EXTRACT.
 
 ## Test and Security Scan Workflow
 
