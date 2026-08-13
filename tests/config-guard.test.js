@@ -4,12 +4,12 @@ import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../plugins/delegation-gate/index.js";
 
-// Static guards for the swarm configuration surface: the README architecture
-// documentation, the SPEC-template git hygiene contract, agent permission
-// allowlists, and the delegation examples in agent docs. Each group verifies a
-// runtime contract — files exist, the tracked set stays gitignored,
-// permissions stay scoped, dispatch examples stay valid — without pinning the
-// exact prose of the rules themselves.
+// Static guards for the swarm configuration surface: SPEC-template git
+// hygiene, agent permission allowlists, the git force-add staging guard, the
+// committer plan/spec read contract, memory tool ownership, agents delegation
+// dispatch docs, and delegation-gate integration. Each group verifies a
+// runtime contract — files exist, permissions stay scoped, dispatch examples
+// stay valid — without pinning the exact prose of the rules themselves.
 
 const ROOT = process.cwd();
 const AGENTS_DIR = join(ROOT, "agents");
