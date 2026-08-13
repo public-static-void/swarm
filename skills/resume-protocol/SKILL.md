@@ -7,7 +7,7 @@ description: "Post-Compaction Resume protocol for the Agentic Swarm. Load after 
 
 ## Overview
 
-Context compaction truncates the active conversation; agents resume with the anchored summary. The two-layer memory model makes resume mechanical instead of prose-driven. This skill is the home of the full protocol — the documented mitigation for the compaction-amnesia issues (47/48) — preserved outside the auto-injected ground-rules file.
+Context compaction truncates the active conversation; agents resume with the anchored summary. The two-layer memory model makes resume mechanical instead of prose-driven. This skill is the home of the full protocol — the documented mitigation for the compaction-amnesia issues — preserved outside the auto-injected ground-rules file.
 
 ## When to Load This Skill
 
@@ -36,4 +36,4 @@ Context compaction truncates the active conversation; agents resume with the anc
 
 ## Compaction-Amnesia Mitigation
 
-The two-layer model is the documented mitigation for compaction amnesia (issues 47/48). The short-term layer anchors in-flight state; the knowledge-gate hint re-triggers the re-read instruction on every LLM call; the long-term layer carries cross-lifecycle insights. This skill preserves the full protocol in an on-demand home so the mitigation survives ground-rules trims.
+The two-layer model is the documented mitigation for compaction amnesia. The short-term layer anchors in-flight state; the knowledge-gate hint re-triggers the re-read instruction on every LLM call; the long-term layer carries cross-lifecycle insights. This skill preserves the full protocol in an on-demand home so the mitigation survives ground-rules trims.

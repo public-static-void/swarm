@@ -4,6 +4,7 @@ description: "KD template for creating COMPOSED documents. Load this skill, then
 ---
 
 ---
+
 title: "COMPOSED: Context for {{target agent}} — {{task}}"
 version: 1.0.0
 status: draft

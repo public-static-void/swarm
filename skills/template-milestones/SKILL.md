@@ -4,6 +4,7 @@ description: "KD template for creating MILESTONE REGISTRY documents. Load this s
 ---
 
 ---
+
 title: "MILESTONE REGISTRY: {{feature name}}"
 version: 1.0.0
 status: draft
@@ -34,15 +35,15 @@ milestones:
 
 **State transitions**:
 
-| From | To | Writer | Condition |
-|------|-----|--------|-----------|
-| (creation) | pending | Pathfinder | registry written at DECOMPOSE |
-| pending / in-progress / failed | assigned | protocol-gate | SWARM task dispatch with matching MILESTONE_ID |
-| assigned | in-progress | protocol-gate | SWARM task dispatch fires — same pass as assigned (M3) |
-| in-progress | checked-off | protocol-gate | Artisan writes the milestone-scoped impl KD `impl-<milestone_id>-<name>-<session_id>[-gen{N}].md` — the KD on disk is the verifiable evidence; in-progress rows complete on that evidence (M4) |
-| assigned / in-progress | failed | protocol-gate | automatic safety trigger during SWARM (M5): 15-failure force-advance, 5-redispatch cap, or pendingVerification timeout marks the stuck row(s) failed, logs SAFETY_STUCK, and STAYS in SWARM — no automatic advance to VERIFY |
-| assigned / in-progress | failed | Artisan | escalation without completion |
-| checked-off | (no transition) | protocol-gate | checked-off rows stay checked-off across re-dispatch; a backward transition to SWARM (BACKWARD: true) resets dispatch counters and keeps checked-off rows checked-off |
+| From                           | To              | Writer        | Condition                                                                                                                                                                                                                    |
+| ------------------------------ | --------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| (creation)                     | pending         | Pathfinder    | registry written at DECOMPOSE                                                                                                                                                                                                |
+| pending / in-progress / failed | assigned        | protocol-gate | SWARM task dispatch with matching MILESTONE_ID                                                                                                                                                                               |
+| assigned                       | in-progress     | protocol-gate | SWARM task dispatch fires — same pass as assigned (M3)                                                                                                                                                                       |
+| in-progress                    | checked-off     | protocol-gate | Artisan writes the milestone-scoped impl KD `impl-<milestone_id>-<name>-<session_id>[-gen{N}].md` — the KD on disk is the verifiable evidence; in-progress rows complete on that evidence (M4)                               |
+| assigned / in-progress         | failed          | protocol-gate | automatic safety trigger during SWARM (M5): 15-failure force-advance, 5-redispatch cap, or pendingVerification timeout marks the stuck row(s) failed, logs SAFETY_STUCK, and STAYS in SWARM — no automatic advance to VERIFY |
+| assigned / in-progress         | failed          | Artisan       | escalation without completion                                                                                                                                                                                                |
+| checked-off                    | (no transition) | protocol-gate | checked-off rows stay checked-off across re-dispatch; a backward transition to SWARM (BACKWARD: true) resets dispatch counters and keeps checked-off rows checked-off                                                        |
 
 ## SWARM→VERIFY Gate (M5)
 

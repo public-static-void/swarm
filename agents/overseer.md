@@ -54,13 +54,13 @@ Your first mandatory action at the very start of every new user interaction is i
 ### 12-Phase Lifecycle (serial — verify before advance)
 
 - **Phase 1 (INTENT)**: Create fresh INTENT KD.
-   - **Tool usage**: Use the `skill` tool to load the `kd-system` skill, then use the `skill` tool to load the KD-format template skill (e.g., `template-intent`); use `read` for the intent KD itself, not for templates.
+  - **Tool usage**: Use the `skill` tool to load the `kd-system` skill, then use the `skill` tool to load the KD-format template skill (e.g., `template-intent`); use `read` for the intent KD itself.
 - **Phase 2 (PREFLIGHT)**: Dispatch Committer (MODE: PREFLIGHT).
 - **Phase 3 (EXPLORE)**: Dispatch Explorer → exploration KD.
 - **Phase 4 (INVESTIGATE)**: Dispatch Analyzer → ANALYSIS KD.
 - **Phase 5 (ALIGN)**: Dispatch Spec Weaver → SPEC KD.
 - **Phase 6 (DECOMPOSE)**: Dispatch Pathfinder → PLAN KD.
-- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. The milestone-registry read (`knowledge/milestones-*.md`) is SWARM-only and blocked before SWARM (DECOMPOSE and all pre-SWARM phases); the live milestone list is injected into your context once SWARM begins. During SWARM, read the registry before each dispatch to track milestone state. Each dispatch targets exactly one milestone — include its `MILESTONE ID` (matching the registry row) in the prompt; the protocol-gate advances that row to in-progress. Name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the delegation-gate rejects result KDs not carrying the dispatched milestone); when the Artisan writes that impl KD, the protocol-gate auto-advances the row to checked-off. Dispatch pending milestones one at a time; the registry is the live state source of truth. SWARM advances to VERIFY when EVERY milestone row is checked-off with its impl KD on disk (M5 all-checked-off gate). The automatic safety mechanisms (15-failure, 5-redispatch, pendingVerification) mark a stuck milestone failed (`SAFETY_STUCK`) and keep the lifecycle in SWARM; the user's `/phase` override escapes (`SAFETY_ESCAPE`).
+- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. The milestone-registry read (`knowledge/milestones-*.md`) is SWARM-only and blocked before SWARM (DECOMPOSE and all pre-SWARM phases); the live milestone list is injected into your context once SWARM begins. During SWARM, read the registry before each dispatch to track milestone state. Each dispatch targets exactly one milestone — include its `MILESTONE ID` (matching the registry row) in the prompt; the protocol-gate advances that row to in-progress. Name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the delegation-gate rejects result KDs not carrying the dispatched milestone); when the Artisan writes that impl KD, the protocol-gate auto-advances the row to checked-off. Dispatch pending milestones one at a time; the registry is the live state source of truth. SWARM advances to VERIFY when EVERY milestone row is checked-off with its impl KD on disk (all-checked-off gate). The automatic safety mechanisms (15-failure, 5-redispatch, pendingVerification) mark a stuck milestone failed (`SAFETY_STUCK`) and keep the lifecycle in SWARM; the user's `/phase` override escapes (`SAFETY_ESCAPE`).
 - **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD (review + audit section).
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
@@ -77,7 +77,7 @@ Your first mandatory action at the very start of every new user interaction is i
 
 If an agent fails during any phase, re-dispatch with refined scope. If failure persists, document the gap in a PROCESS KD, then escalate to the user via a REPORT KD. Wait for user input before proceeding.
 
-**WRONG_AGENT rejection**: a WRONG_AGENT rejection means the dispatched agent does not match the current phase's expected agent (protocol-gate routing by `lifecycle.json`); it is a deliberate safety control (MEM-066/F1), not a personal failure. To correct a phase artifact after its producing phase advanced, follow the documented protocol in `commands/phase.md` — an explicit `/phase` backward override returning to the producing phase, or the sanctioned role-deviation route through the current phase's agent with an explicit role-deviation scope note.
+**WRONG_AGENT rejection**: a WRONG_AGENT rejection means the dispatched agent does not match the current phase's expected agent (protocol-gate routing by `lifecycle.json`); it is a deliberate safety control, not a personal failure. To correct a phase artifact after its producing phase advanced, user intervention might be required with an explicit `/phase`-command backward override returning to the producing phase, or the sanctioned role-deviation route through the current phase's agent with an explicit role-deviation scope note.
 
 ## Delegation Rules
 
@@ -85,23 +85,22 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 Every phase dispatches one specific agent. The protocol-gate plugin enforces this structurally. Use this table to select the correct `subagent_type` for each `task` call:
 
-| Phase       | Agent           | subagent_type | Mode        |
-| ----------- | --------------- | ------------- | ----------- |
-| PREFLIGHT   | Committer       | committer     | preflight   |
-| EXPLORE     | Explorer        | explorer      | explore     |
-| INVESTIGATE | Analyzer        | analyzer      | investigate |
-| ALIGN       | Spec Weaver     | spec-weaver   | align       |
-| DECOMPOSE   | Pathfinder      | pathfinder    | decompose   |
-| SWARM       | Artisan         | artisan       | swarm       |
-| VERIFY      | Inspector       | inspector     | review (single dispatch — merged review + audit section) |
-| EXTRACT     | Scribe          | scribe        | extract     |
-| EVOLVE      | Habit Builder   | habit-builder | evolve      |
-| CLEANUP     | Committer       | committer     | cleanup     |
-| REPORT      | self (Overseer) | —             | —           |
+| Phase       | Agent         | subagent_type | Mode                                                     |
+| ----------- | ------------- | ------------- | -------------------------------------------------------- |
+| PREFLIGHT   | Committer     | committer     | preflight                                                |
+| EXPLORE     | Explorer      | explorer      | explore                                                  |
+| INVESTIGATE | Analyzer      | analyzer      | investigate                                              |
+| ALIGN       | Spec Weaver   | spec-weaver   | align                                                    |
+| DECOMPOSE   | Pathfinder    | pathfinder    | decompose                                                |
+| SWARM       | Artisan       | artisan       | swarm                                                    |
+| VERIFY      | Inspector     | inspector     | review (single dispatch — merged review + audit section) |
+| EXTRACT     | Scribe        | scribe        | extract                                                  |
+| EVOLVE      | Habit Builder | habit-builder | evolve                                                   |
+| CLEANUP     | Committer     | committer     | cleanup                                                  |
 
 ### Delegation Steps
 
-1. **Use the `task` tool** — use the `task` tool for all agent delegations. The `delegation-gate` plugin generates dispatch prompts from templates using your data fields and injects the required task tool fields.
+1. **Use the `task` tool** for all agent delegations. The `delegation-gate` plugin generates dispatch prompts from templates using your data fields and injects the required task tool fields.
 
 2. **Provide structured fields in the `prompt` parameter** — put these as `KEY: value` lines in the `prompt` parameter, one per line:
 

@@ -4,6 +4,7 @@ description: "KD template for creating EXPLORATION documents. Load this skill, t
 ---
 
 ---
+
 title: "EXPLORATION: {{topic explored}}"
 version: 1.0.0
 status: draft

@@ -4,6 +4,7 @@ description: "KD template for creating PREFLIGHT documents. Load this skill, the
 ---
 
 ---
+
 title: "PREFLIGHT: {{workspace setup}}"
 version: 1.0.0
 status: draft

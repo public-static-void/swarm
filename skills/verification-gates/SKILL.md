@@ -71,13 +71,13 @@ Phase Output ──► Gate ──► Next Phase
 
 ## Verification Matrix
 
-| Producer                     | Artifact                       | Verified By      | Gate Type                                          |
-| ---------------------------- | ------------------------------ | ---------------- | -------------------------------------------------- |
-| Spec Weaver                  | SPEC KD                        | Inspector (Spec) | REVIEW — requirements quality                      |
-| Pathfinder                   | PLAN KD                        | Inspector (Plan) | REVIEW — plan feasibility                          |
-| Artisan                      | Code + IMPL KD                 | Inspector (Code) | REVIEW — implementation quality                    |
-| Artisan (security-sensitive) | Code                           | Inspector        | REVIEW — vulnerability scan (Audit section of the review KD)   |
-| ---                          | ---                            | ---              | ---                                                |
+| Producer                     | Artifact       | Verified By      | Gate Type                                                    |
+| ---------------------------- | -------------- | ---------------- | ------------------------------------------------------------ |
+| Spec Weaver                  | SPEC KD        | Inspector (Spec) | REVIEW — requirements quality                                |
+| Pathfinder                   | PLAN KD        | Inspector (Plan) | REVIEW — plan feasibility                                    |
+| Artisan                      | Code + IMPL KD | Inspector (Code) | REVIEW — implementation quality                              |
+| Artisan (security-sensitive) | Code           | Inspector        | REVIEW — vulnerability scan (Audit section of the review KD) |
+| ---                          | ---            | ---              | ---                                                          |
 
 ## Gate Checklist
 
@@ -139,10 +139,10 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 
 ## Verdicts
 
-| Verdict     | Meaning                 | Machine behavior                                                                          |
-| ----------- | ----------------------- | ----------------------------------------------------------------------------------------- |
-| PASS        | All criteria met, clean | VERIFY advances to the next phase (presence-based)                                        |
-| FAIL        | Specific fixable issues | protocol-gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; producer fixes |
+| Verdict     | Meaning                 | Machine behavior                                                                                                                      |
+| ----------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| PASS        | All criteria met, clean | VERIFY advances to the next phase (presence-based)                                                                                    |
+| FAIL        | Specific fixable issues | protocol-gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; producer fixes                                      |
 | FUNDAMENTAL | Design-level flaw       | protocol-gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
 
 A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). Every FAIL finding MUST cite at least one milestone token (`M\d+` or `impl-<id>-`); a FAIL verdict with zero milestone citations is MALFORMED — the gate blocks, regresses nothing, and reopens nothing (re-dispatch the review with citations). A `FUNDAMENTAL` verdict blocks advancement and escalates; the phase stays at VERIFY.

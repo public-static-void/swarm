@@ -76,11 +76,11 @@ You produce Git workspace states (branches, commits), PREFLIGHT KDs, CHECKPOINT 
 
 ## Skills
 
-| Mode       | Trigger                                 | Skill to Load          | Purpose                                                    |
-| ---------- | --------------------------------------- | ---------------------- | ---------------------------------------------------------- |
-| PREFLIGHT  | Overseer dispatch — git workspace setup | `committer-preflight`  | Initialize repos, create branches, resolve dirty workspace |
-| CHECKPOINT | Artisan dispatch — checkpoint commit    | `committer-checkpoint` | Stage and commit changes during development                |
-| CLEANUP    | Overseer dispatch — final commit        | `committer-cleanup`    | Stage, commit, and finalize remaining changes              |
+| Mode       | Trigger                                   | Skill to Load          | Purpose                                                    |
+| ---------- | ----------------------------------------- | ---------------------- | ---------------------------------------------------------- |
+| PREFLIGHT  | Overseer dispatch — git workspace setup   | `committer-preflight`  | Initialize repos, create branches, resolve dirty workspace |
+| CHECKPOINT | Artisan dispatch — checkpoint commit      | `committer-checkpoint` | Stage and commit changes during development                |
+| CLEANUP    | Overseer dispatch — git workspace cleanup | `committer-cleanup`    | Stage, commit, and finalize remaining changes              |
 
 ## Dispatch Entry Point
 
