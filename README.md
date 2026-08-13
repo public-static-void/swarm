@@ -37,12 +37,12 @@ The swarm divides the work of a software lifecycle into focused roles. Each resp
 ## Dispatch Semantics
 
 - The **Overseer** delegates _what_ to do. Dispatches describe the artifact to produce, the objective, and the acceptance criteria, referencing KDs by path. Each agent loads its own skills and determines its own approach.
-- **Git operations go to the Committer.** The Committer owns the git lifecycle: preflight, staging, checkpoint commits, resets, and cleanup. An agent that needs a checkpoint dispatches the Committer; an agent that needs git lifecycle work dispatches the Committer. This keeps the git lifecycle in one focused role with one verified workflow.
+- **Git operations go to the Committer.** The Overseer dispatches the Committer for git lifecycle work (preflight, cleanup); the Artisan dispatches the Committer for checkpoint commits. This keeps the git lifecycle in one focused role with one verified workflow.
 - Agents accept WHAT-level dispatches and produce their results as KDs on disk.
 
 ## Permissions Are Limited by Design
 
-Permissions are limited by design. Every agent's permission allowlist matches its role exactly. Permissions are the enforcement of the division of labor, not a gap to be widened: when work belongs to another role, the correct action is to dispatch that role's agent. A denial is a signal to re-dispatch correctly, not a prompt to widen access. Keeping permissions tight is what makes the architecture verifiable.
+Permissions are limited by design. Only the Overseer and the Artisan hold the task tool — delegation is a fixed lifecycle channel, not a general capability. When a denial blocks a task, the affected agent stops, documents the gap, and escalates to the Overseer, who re-dispatches the correct owner. Permissions are the enforcement of the division of labor, not a gap to be widened: keeping permissions tight is what makes the architecture verifiable.
 
 ## Plugins Enforce the Architecture Structurally
 
