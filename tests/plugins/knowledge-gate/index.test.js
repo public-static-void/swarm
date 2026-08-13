@@ -224,6 +224,36 @@ describe("Knowledge-Gate Plugin", () => {
       const results = hooks.scanHighSeverityIssues();
       expect(results).toEqual([]);
     });
+
+    it("returns issues in stable severity/id order regardless of write order", () => {
+      // Write order permuted against the ids so a filesystem-order read
+      // cannot satisfy the expectation (scanHighSeverityIssues derives from
+      // the shared sorted scan, not from readdir order).
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(3, { severity: "high", title: "High C" }),
+        addIssueFile(1, { severity: "high", title: "High A" }),
+        addIssueFile(2, { severity: "high", title: "High B" })
+      ]);
+
+      const results = hooks.scanHighSeverityIssues();
+      expect(results.map(i => i.id)).toEqual(["ISSUE-001", "ISSUE-002", "ISSUE-003"]);
+    });
+
+    it("ignores non-issue files and subdirectories in the registry dir", () => {
+      // Naming-trap guard: only issue-*.md files are scanned. Any derived
+      // artifact with another name (or in a subdirectory) stays invisible to
+      // both scans.
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(1, { severity: "high", title: "Real issue" }),
+        addIssueFile(2, { severity: "low", title: "Low issue" }),
+        { fileName: "README.md", content: "not an issue" }
+      ]);
+      mkdirSync(join(ISSUES_DIR, "search-index"), { recursive: true });
+      writeFileSync(join(ISSUES_DIR, "search-index", "index.json"), "{}");
+
+      expect(hooks.scanHighSeverityIssues()).toHaveLength(1);
+      expect(hooks.scanOpenIssues()).toHaveLength(2);
+    });
   });
 
   describe("Vestigial hook removal", () => {
