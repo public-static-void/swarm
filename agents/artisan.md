@@ -60,6 +60,7 @@ permission:
     "cargo test*": allow
     "cargo check*": allow
     "cargo clippy*": allow
+    "cargo fmt*": allow
     "cmake --build*": allow
     "composer install*": allow
     "make test*": allow
