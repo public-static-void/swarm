@@ -61,6 +61,16 @@ Every milestone is an independently dispatchable unit: one Artisan dispatch comp
 - **Completion**: {{condition}}
 - **Output**: {{artifacts}}
 
+## Binding Resolutions
+
+User-confirmed resolutions recorded here are binding and supersede any contrary language in the SPEC's `## Open Questions`.
+
+| Resolution | OQ ref | Source (user decision) |
+| ---------- | ------ | ---------------------- |
+| {{resolved contract}} | {{OQ-N}} | {{user decision / INTENT ref}} |
+
+Pathfinder records every user-confirmed OQ resolution from the SPEC here at DECOMPOSE.
+
 ## Process Friction
 
 _This section is optional — include it when friction was encountered during work._

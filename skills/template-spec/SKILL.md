@@ -47,6 +47,8 @@ Acceptance criteria for gitignored artifacts (`knowledge/`, `knowledge/issues/`,
 
 - {{Question that needs resolution}}
 
+Unresolved OQ options remain open until the user resolves them. Binding resolutions land in the PLAN KD's `## Binding Resolutions` and supersede this section; consumers must read the PLAN for the authoritative resolved contract.
+
 ## Process Friction
 
 _This section is optional — include it when friction was encountered during work._
