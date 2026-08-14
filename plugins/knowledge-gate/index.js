@@ -13,7 +13,7 @@
 //    and injects them into the Overseer's system prompt for Triage Notes
 //
 // Debug logging: set KNOWLEDGE_GATE_DEBUG=1 in environment to enable.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 // tool() registers custom tools with the runtime via the plugin `tool` hook
@@ -40,6 +40,15 @@ const ISSUES_DIR = process.env.KNOWLEDGE_GATE_ISSUES_DIR
 const SHORT_TERM_DIR = process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR
   ? resolve(process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR)
   : join(PROJECT_ROOT, "knowledge", "short-term");
+
+// Derived memory search index (R001). The .jsonl filename is the R001.2
+// naming constraint in action: it must NOT match f.endsWith(".json") and
+// must NOT start with "entry-", so every existing .json/entry- filter in
+// the plugin (isCacheValid, loadEntriesFromDisk, getNextMemoryId) and the
+// test suite stays intact. The index is a rebuildable projection — the
+// entry files remain the single source of truth (R001.1).
+const MEMORY_INDEX_FILE = "memory-search-index.jsonl";
+const MEMORY_INDEX_PATH = join(MEMORY_DIR, MEMORY_INDEX_FILE);
 
 // --- Debug logging ---
 
@@ -675,6 +684,121 @@ export default {
       return entries;
     }
 
+    // --- Derived memory search index (R001) ---
+    // The index is a derived projection of the entry files: it never replaces
+    // them as the source of truth, and rebuilding it never modifies an entry.
+
+    // R001.4 — the same file-count signal isCacheValid already uses (L645)
+    function getMemoryEntryFileCount() {
+      try {
+        return readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json")).length;
+      } catch (_) {
+        return 0;
+      }
+    }
+
+    // R001.4 — usable iff it exists, parses, version === 1, and entryCount
+    // matches the on-disk entry file count. `updated` is diagnostics-only.
+    function isMemoryIndexValid(doc) {
+      if (!doc || typeof doc !== "object") return false;
+      if (doc.version !== 1) return false;
+      if (!Number.isInteger(doc.entryCount) || doc.entryCount < 0) return false;
+      if (!Array.isArray(doc.entries)) return false;
+      return doc.entryCount === getMemoryEntryFileCount();
+    }
+
+    // R001.3 — the exact searchable projection searchMemory needs, plus the
+    // tombstone marker. Tombstoned entries stay in the index with
+    // superseded_by preserved; the unchanged !e.superseded_by filter in
+    // searchMemory remains the exclusion mechanism.
+    function projectMemoryEntry(e) {
+      return {
+        id: e.id,
+        source_kd: e.source_kd,
+        tags: e.tags || [],
+        topic: e.topic || "",
+        insight: e.insight || "",
+        type: e.type,
+        created: e.created,
+        session: e.session,
+        version: e.version,
+        superseded_by: e.superseded_by ?? null
+      };
+    }
+
+    // R001.5 backfill builder — reuses the existing readdir+parse scan; entry
+    // files are never modified by a rebuild.
+    function buildMemoryIndexDoc() {
+      const entries = loadEntriesFromDisk();
+      return {
+        version: 1,
+        updated: new Date().toISOString(),
+        entryCount: memoryCache.fileCount,
+        entries: entries.map(projectMemoryEntry)
+      };
+    }
+
+    // R001.5 atomicity — tmp-file + rename so a crash never leaves a
+    // truncated-but-parseable index; a truncated file is corrupt and rebuilds
+    // on the next miss. Non-throwing: a failed index write is logged and the
+    // scan-backed cache remains the fallback (failure isolation).
+    function writeMemoryIndex(doc) {
+      const tmpPath = `${MEMORY_INDEX_PATH}.tmp`;
+      try {
+        writeFileSync(tmpPath, JSON.stringify(doc), "utf8");
+        renameSync(tmpPath, MEMORY_INDEX_PATH);
+        return true;
+      } catch (e) {
+        debug(`memory index: write failed — ${e.message}`);
+        try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch (_) {}
+        return false;
+      }
+    }
+
+    // R001.5 — single rebuild path for write-through and backfill. Guarded
+    // by the existing memoryCache.isLoading flag; the sync body makes a real
+    // overlap impossible, but the guard pins the contract. Never throws:
+    // a rebuild failure leaves the store fully functional and the missing/
+    // stale index self-heals on the next cache miss.
+    function rebuildMemoryIndex() {
+      if (memoryCache.isLoading) return memoryCache.entries || [];
+      memoryCache.isLoading = true;
+      try {
+        const doc = buildMemoryIndexDoc();
+        if (writeMemoryIndex(doc)) {
+          debug(`memory index: rebuilt ${doc.entryCount} entries`);
+        } else {
+          debug("memory index: rebuild write failed — scan fallback remains");
+        }
+        return doc.entries;
+      } finally {
+        memoryCache.isLoading = false;
+      }
+    }
+
+    // R001.6 — cache-miss load path: serve from the single index document
+    // when valid, otherwise rebuild (backfill) and serve. All scoring, sort,
+    // limit, and result-shaping in searchMemory stays unchanged.
+    function loadEntriesForSearch() {
+      let doc;
+      try {
+        if (!existsSync(MEMORY_INDEX_PATH)) return rebuildMemoryIndex();
+        doc = JSON.parse(readFileSync(MEMORY_INDEX_PATH, "utf8"));
+      } catch (e) {
+        debug(`memory index: corrupt or unreadable — ${e.message}; rebuilding`);
+        return rebuildMemoryIndex();
+      }
+      if (!isMemoryIndexValid(doc)) {
+        debug("memory index: invalid (version/count mismatch) — rebuilding");
+        return rebuildMemoryIndex();
+      }
+      debug(`memory index: serving ${doc.entryCount} entries`);
+      memoryCache.entries = doc.entries;
+      memoryCache.lastLoaded = Date.now();
+      memoryCache.fileCount = doc.entryCount;
+      return memoryCache.entries;
+    }
+
     // --- Memory search ---
 
     /**
@@ -691,8 +815,11 @@ export default {
         entries = memoryCache.entries;
         debug(`searchMemory: cache hit (${entries.length} entries)`);
       } else {
-        entries = loadEntriesFromDisk();
-        debug(`searchMemory: cache miss, loaded ${entries.length} entries from disk`);
+        // R001.6: on a cache miss read the single index document instead of
+        // readdir + JSON.parse of every entry file; an invalid index is
+        // rebuilt (backfilled) from the entries before serving.
+        entries = loadEntriesForSearch();
+        debug(`searchMemory: cache miss, loaded ${entries.length} entries`);
       }
 
       // Exclude superseded entries (tombstoned via memory_update superseded_by)
@@ -916,6 +1043,8 @@ export default {
             // Invalidate cache so next search picks up the new entry
             memoryCache.entries = null;
             memoryCache.lastLoaded = null;
+            // R001.5 write-through: rebuild the derived index after the write
+            rebuildMemoryIndex();
             debug(`memory_write: written ${filePath}`);
             return JSON.stringify({ message: "Memory entry written", id: entry.id });
           } catch (e) {
@@ -1004,6 +1133,8 @@ export default {
             // Invalidate cache so next search picks up the updated entry
             memoryCache.entries = null;
             memoryCache.lastLoaded = null;
+            // R001.5 write-through: rebuild the derived index after the update
+            rebuildMemoryIndex();
             debug(`memory_update: updated ${filePath}`);
             return JSON.stringify({ message: "Memory entry updated", id: existing.id });
           } catch (e) {
@@ -1043,6 +1174,8 @@ export default {
             // Invalidate cache so next search drops the deleted entry
             memoryCache.entries = null;
             memoryCache.lastLoaded = null;
+            // R001.5 write-through: rebuild the derived index after the delete
+            rebuildMemoryIndex();
             debug(`memory_delete: deleted ${filePath}`);
             return JSON.stringify({ message: "Memory entry deleted", id });
           } catch (e) {
@@ -1326,6 +1459,12 @@ export default {
           debug(`promoteShortTermNotes: write failed for ${note.id} — ${e.message}`);
           skipped.push({ id: note.id, reason: `write failed: ${e.message}` });
         }
+      }
+
+      // R001.5 write-through: rebuild the derived index once after the write
+      // loop (only when at least one entry was promoted), not per note.
+      if (promoted.length > 0) {
+        rebuildMemoryIndex();
       }
 
       // clear (copy-then-clear, OQ-3): remove the whole session store after

@@ -1705,6 +1705,205 @@ Body`;
     });
   });
 
+  describe("memory search index (R001 derived index)", () => {
+    // The index (memory-search-index.jsonl) is a derived, rebuildable
+    // projection of the entry files — never the source of truth. Its name
+    // must NOT end in ".json" and must NOT start with "entry-" so every
+    // existing filter/count assertion stays intact (R001.2). All file
+    // expectations are verified from disk under the temp MEMORY_DIR seam.
+
+    it("creates a compliant index on memory_write and leaves the entry unmodified", async () => {
+      const entry = { id: "MEM-020", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight for index write.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
+      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      expect(JSON.parse(result).message).toContain("written");
+
+      // Write-through produced the index with a naming-compliant filename
+      expect(existsSync(join(MEMORY_DIR, "memory-search-index.jsonl"))).toBe(true);
+      expect("memory-search-index.jsonl".endsWith(".json")).toBe(false);
+      expect("memory-search-index.jsonl".startsWith("entry-")).toBe(false);
+      // The .json count filters still see exactly the one entry file
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"))).toEqual(["entry-020.json"]);
+      // Atomic write leaves no tmp file behind
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".tmp"))).toEqual([]);
+
+      // The entry written by the same call is unmodified (source of truth)
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-020.json"), "utf8"));
+      expect(onDisk.topic).toBe("Test topic");
+      expect(onDisk.insight).toBe("Test insight for index write.");
+    });
+
+    it("index has schema v1 with the searchable projection and tombstone field", async () => {
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design", source_kd: "knowledge/composed-a.md" })
+      ]);
+      // Cold cache + no index → first search backfills the index
+      await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
+
+      const doc = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
+      expect(doc.version).toBe(1);
+      expect(doc.updated).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+      expect(Number.isInteger(doc.entryCount)).toBe(true);
+      expect(doc.entryCount).toBe(1);
+      expect(doc.entries).toHaveLength(1);
+      expect(doc.entries[0]).toEqual({
+        id: "MEM-001",
+        source_kd: "knowledge/composed-a.md",
+        tags: ["auth", "permissions"],
+        topic: "Auth token design",
+        insight: "This is test insight 1 for verification purposes.",
+        type: "fact",
+        created: "2026-07-21T00:00:00.000Z",
+        session: "ses_test_1",
+        version: "1.0.0",
+        superseded_by: null
+      });
+    });
+
+    it("reflects a superseded_by tombstone in the index and excludes the entry from search", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      await hooks.tool.memory_update.execute(
+        { id: "MEM-001", entry: { superseded_by: "MEM-002" } },
+        { agent: "scribe", sessionID: "scribe-session" }
+      );
+
+      // Write-through on update preserves the tombstone in the index
+      const doc = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
+      expect(doc.entries[0].superseded_by).toBe("MEM-002");
+      expect(doc.entries[0].id).toBe("MEM-001");
+
+      // The unchanged !superseded_by search filter still excludes it
+      const search = await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(search)).toEqual([]);
+    });
+
+    it("drops a deleted entry from the index and decreases entryCount", async () => {
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" }),
+        addMemoryEntry(2, { tags: ["cache", "testing"], topic: "Cache invalidation" })
+      ]);
+      await hooks.tool.memory_search.execute({ tags: [] }, { agent: "artisan", sessionID: "s" });
+
+      let doc = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
+      expect(doc.entryCount).toBe(2);
+
+      await hooks.tool.memory_delete.execute({ id: "MEM-001" }, { agent: "scribe", sessionID: "scribe-session" });
+
+      doc = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
+      expect(doc.entryCount).toBe(1);
+      expect(doc.entries.map(e => e.id)).toEqual(["MEM-002"]);
+
+      const search = await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(search)).toEqual([]);
+    });
+
+    it("reflects promoted notes in the index with the composed KD as source_kd", async () => {
+      await hooks.tool.memory_note.execute(
+        { topic: "Session insight", content: "A distilled insight worth keeping.", tags: ["auth", "testing"] },
+        { agent: "artisan", sessionID: "promo-session" }
+      );
+
+      const result = hooks.promoteShortTermNotes("promo-session", "knowledge/composed-promo-ses_abc.md");
+      expect(result.promoted).toHaveLength(1);
+
+      // Write-through runs once after the promotion loop (≥1 entry promoted)
+      const doc = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
+      expect(doc.entryCount).toBe(1);
+      expect(doc.entries[0].source_kd).toBe("knowledge/composed-promo-ses_abc.md");
+      expect(doc.entries[0].topic).toBe("Session insight");
+    });
+
+    it("rebuilds a missing index on cache miss and serves correct results", async () => {
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { tags: ["target-tag", "mock", "sample"], topic: "Alpha" }),
+        addMemoryEntry(2, { tags: ["other", "unrelated"], topic: "Beta" })
+      ]);
+
+      // Cold cache + no index → cache miss rebuilds (backfill) before serving
+      const result = await hooks.tool.memory_search.execute({ tags: ["target-tag"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(result)).toHaveLength(1);
+      expect(JSON.parse(result)[0].id).toBe("MEM-001");
+      expect(existsSync(join(MEMORY_DIR, "memory-search-index.jsonl"))).toBe(true);
+
+      // Delete the index and force a cache miss via an external file change —
+      // the next search rebuilds it again
+      rmSync(join(MEMORY_DIR, "memory-search-index.jsonl"));
+      writeEntries(MEMORY_DIR, [addMemoryEntry(3, { tags: ["target-tag"], topic: "Gamma" })]);
+
+      const again = await hooks.tool.memory_search.execute({ tags: ["target-tag"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(again).map(r => r.id)).toEqual(["MEM-003", "MEM-001"]);
+      expect(existsSync(join(MEMORY_DIR, "memory-search-index.jsonl"))).toBe(true);
+      const rebuilt = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
+      expect(rebuilt.entryCount).toBe(3);
+    });
+
+    it("rebuilds a corrupt index on cache miss", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+      writeFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "{ not valid json", "utf8");
+
+      const result = await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(result).map(e => e.id)).toEqual(["MEM-001"]);
+
+      // The corrupt file was replaced by a valid rebuild
+      const doc = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
+      expect(doc.version).toBe(1);
+      expect(doc.entryCount).toBe(1);
+    });
+
+    it("rebuilds a version- or count-mismatched index on cache miss (validity gate)", async () => {
+      writeEntries(MEMORY_DIR, [addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
+
+      // Version mismatch (version: 2) → invalid per R001.4 → rebuild
+      writeFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), JSON.stringify({ version: 2, updated: new Date().toISOString(), entryCount: 1, entries: [] }), "utf8");
+      const r1 = await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(r1).map(e => e.id)).toEqual(["MEM-001"]);
+
+      // Count mismatch (entryCount 5 but 1 entry on disk) + external change
+      // forces a cache miss → invalid per R001.4 → rebuild
+      writeFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), JSON.stringify({ version: 1, updated: new Date().toISOString(), entryCount: 5, entries: [] }), "utf8");
+      writeEntries(MEMORY_DIR, [addMemoryEntry(2, { tags: ["auth", "testing"], topic: "Auth refresh tokens" })]);
+      const r2 = await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
+      expect(JSON.parse(r2).map(e => e.id)).toEqual(["MEM-002", "MEM-001"]);
+
+      const doc = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
+      expect(doc.version).toBe(1);
+      expect(doc.entryCount).toBe(2);
+    });
+
+    it("serves the same result set and order as the scan path (search parity)", async () => {
+      writeEntries(MEMORY_DIR, [
+        addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" }),
+        addMemoryEntry(2, { tags: ["cache", "testing"], topic: "Cache invalidation strategy" }),
+        addMemoryEntry(3, { tags: ["auth", "testing"], topic: "Auth refresh tokens" })
+      ]);
+
+      // Query auth: MEM-003 (1 tag overlap) and MEM-001 (1 tag overlap) score
+      // equally, so recency breaks the tie (MEM-003 newest first). MEM-002
+      // scores 0 and drops out. Scoring/order are identical whether entries
+      // come from the scan or the index.
+      const result = await hooks.tool.memory_search.execute({ tags: ["auth"], limit: 5 }, { agent: "artisan", sessionID: "s" });
+      const parsed = JSON.parse(result);
+      expect(parsed.map(r => r.id)).toEqual(["MEM-003", "MEM-001"]);
+      expect(parsed[0]).toEqual({ id: "MEM-003", source_kd: "knowledge/composed-test-3.md", tags: ["auth", "testing"], topic: "Auth refresh tokens", insight: "This is test insight 3 for verification purposes." });
+
+      // The projected index entries are field-for-field the on-disk sources
+      const doc = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
+      expect(doc.entries).toHaveLength(3);
+      expect(doc.entries.map(e => e.id).sort()).toEqual(["MEM-001", "MEM-002", "MEM-003"]);
+      expect(doc.entries[0]).toEqual({
+        id: "MEM-001",
+        source_kd: "knowledge/composed-test-1.md",
+        tags: ["auth", "permissions"],
+        topic: "Auth token design",
+        insight: "This is test insight 1 for verification purposes.",
+        type: "fact",
+        created: "2026-07-21T00:00:00.000Z",
+        session: "ses_test_1",
+        version: "1.0.0",
+        superseded_by: null
+      });
+    });
+  });
+
   describe("No named exports (v2.0.0)", () => {
     it("does not export searchMemory as a named export", () => {
       expect(pluginModule.searchMemory).toBeUndefined();
