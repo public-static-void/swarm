@@ -54,6 +54,7 @@ permission:
     "cargo test*": allow
     "cargo check*": allow
     "cargo clippy*": allow
+    "cargo fmt --check*": allow
     "pytest tests*": allow
     "go test*": allow
     "php -l *": allow
