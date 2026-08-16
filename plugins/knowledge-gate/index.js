@@ -483,6 +483,119 @@ function getNextIssueId() {
   return `ISSUE-${String(maxNum + 1).padStart(3, "0")}`;
 }
 
+/**
+ * Gets the next numeric issue ID within ONE store dir (R003 per-store
+ * assignment): `max(numeric id)+1`, tolerating legacy padded ids. The
+ * frontmatter id wins when parseable; a malformed file falls back to the
+ * numeric part of its filename. Returns 1 for an empty/missing dir.
+ */
+function getNextIssueIdForStore(issuesDir) {
+  if (!existsSync(issuesDir)) return 1;
+
+  let files;
+  try {
+    files = readdirSync(issuesDir).filter(f => f.startsWith("issue-") && f.endsWith(".md"));
+  } catch (_) {
+    return 1;
+  }
+
+  let maxNum = 0;
+  for (const file of files) {
+    let num = NaN;
+    try {
+      const issue = parseIssueFile(readFileSync(join(issuesDir, file), "utf8"), file);
+      if (issue && issue.id !== undefined) {
+        const n = parseInt(String(issue.id).replace(/\D/g, ""), 10);
+        if (!Number.isNaN(n)) num = n;
+      }
+    } catch (_) {
+      // Malformed file — fall through to the filename below
+    }
+    if (Number.isNaN(num)) {
+      const m = file.match(/issue-(\d+)\.md/);
+      if (m) num = parseInt(m[1], 10);
+    }
+    if (!Number.isNaN(num) && num > maxNum) maxNum = num;
+  }
+  return maxNum + 1;
+}
+
+/**
+ * Validates an issue against the persisted frontmatter schema (R003).
+ * `scope: "project"|"swarm"` is REQUIRED — a write without a resolvable
+ * scope is rejected, never inferred (R002/NFR002). `id` is optional;
+ * when present it must be a positive integer (auto-assigned per store
+ * otherwise). Body fields are optional strings. Returns
+ * { valid, error? } mirroring validateMemoryEntry.
+ */
+function validateIssue(issue) {
+  if (!issue || typeof issue !== "object") {
+    return { valid: false, error: "Issue must be a non-null object" };
+  }
+  if (issue.id !== undefined && (!Number.isInteger(issue.id) || issue.id < 1)) {
+    return { valid: false, error: `id must be a positive integer, got "${issue.id}"` };
+  }
+  if (typeof issue.title !== "string" || !issue.title.trim()) {
+    return { valid: false, error: "title must be a non-empty string" };
+  }
+  if (!["high", "medium", "low"].includes(issue.severity)) {
+    return { valid: false, error: `severity must be one of: high, medium, low, got "${issue.severity}"` };
+  }
+  if (issue.status !== undefined && issue.status !== "open") {
+    return { valid: false, error: `status must be "open" at creation, got "${issue.status}"` };
+  }
+  if (typeof issue.created !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(issue.created)) {
+    return { valid: false, error: `created must be a YYYY-MM-DD date, got "${issue.created}"` };
+  }
+  if (typeof issue.session !== "string" || !issue.session) {
+    return { valid: false, error: "session must be a non-empty string" };
+  }
+  if (issue.assigned_to !== undefined && issue.assigned_to !== null && typeof issue.assigned_to !== "string") {
+    return { valid: false, error: "assigned_to must be a string or null" };
+  }
+  if (issue.tags !== undefined && (!Array.isArray(issue.tags) || issue.tags.some(t => typeof t !== "string"))) {
+    return { valid: false, error: "tags must be an array of strings" };
+  }
+  if (issue.scope !== "project" && issue.scope !== "swarm") {
+    return { valid: false, error: `scope must be one of: project, swarm, got "${issue.scope}"` };
+  }
+  for (const field of ["description", "source_kd_reference", "recommended_fix", "acceptance_criteria"]) {
+    if (issue[field] !== undefined && typeof issue[field] !== "string") {
+      return { valid: false, error: `${field} must be a string` };
+    }
+  }
+  return { valid: true };
+}
+
+/**
+ * Serializes an issue to the on-disk markdown form (R003): YAML frontmatter
+ * (persisted schema incl. `scope`) + `# Issue {id}: {title}` heading and the
+ * canonical body sections (Description, Source KD Reference, Recommended Fix,
+ * Acceptance Criteria). Quoted values round-trip through parseIssueFile.
+ */
+function serializeIssueFile(doc, bodySections = []) {
+  const lines = ["---"];
+  lines.push(`id: ${doc.id}`);
+  lines.push(`title: ${JSON.stringify(doc.title)}`);
+  lines.push(`severity: ${doc.severity}`);
+  lines.push(`status: ${doc.status}`);
+  lines.push(`created: ${doc.created}`);
+  lines.push(`session: ${doc.session}`);
+  if (doc.assigned_to !== undefined) lines.push(`assigned_to: ${JSON.stringify(doc.assigned_to)}`);
+  if (doc.tags !== undefined) lines.push(`tags: [${doc.tags.join(", ")}]`);
+  lines.push(`scope: ${doc.scope}`);
+  lines.push("---");
+  lines.push("");
+  lines.push(`# Issue ${doc.id}: ${doc.title}`);
+  for (const [heading, text] of bodySections) {
+    lines.push("");
+    lines.push(`## ${heading}`);
+    lines.push("");
+    lines.push(text.replace(/\s+$/, ""));
+  }
+  return lines.join("\n") + "\n";
+}
+
 // --- Short-term memory (session-scoped scratch notes) ---
 //
 // knowledge/short-term/{sessionID}/{agent}/note-{NNN}.json — per-agent
@@ -650,6 +763,15 @@ export default {
     const PROJECT_STORE_ROOT = process.env.KNOWLEDGE_GATE_PROJECT_ROOT
       ? resolve(process.env.KNOWLEDGE_GATE_PROJECT_ROOT)
       : (input && input.directory ? resolve(input.directory) : process.cwd());
+
+    // Classification → store root (R002). Explicit scope only: an invalid
+    // scope maps to null so the write path can reject it loudly instead of
+    // silently routing to a default store.
+    function storeRootForScope(scope) {
+      if (scope === "project") return PROJECT_STORE_ROOT;
+      if (scope === "swarm") return CONFIG_STORE_ROOT;
+      return null;
+    }
 
     // --- In-memory cache (per server instance) ---
     // The cache lives in the server closure, not module scope, so every
@@ -994,12 +1116,13 @@ export default {
 
     debug("Knowledge Gate loaded");
 
-    // --- Registered tools: memory_search + memory_write ---
+    // --- Registered tools: memory tools + issue tools ---
     // Custom tools are registered through the plugin `tool` hook map so they
-    // appear in the agent's callable tool list. Scribe-only gating uses
-    // ToolContext.agent (the runtime passes it per call), falling back to
-    // the session map when the context omits it.
-    const memoryTools = {
+    // appear in the agent's callable tool list. Scribe-only gating (memory)
+    // and Habit-Builder-only gating (issues) use ToolContext.agent (the
+    // runtime passes it per call), falling back to the session map when the
+    // context omits it.
+    const pluginTools = {
       memory_search: tool({
         description: "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5). Returns JSON array of matching entries.",
         args: {
@@ -1216,6 +1339,197 @@ export default {
           } catch (e) {
             debug(`memory_delete: delete failed — ${e.message}`);
             return JSON.stringify({ error: `Failed to delete memory entry: ${e.message}` });
+          }
+        }
+      }),
+      issue_write: tool({
+        description: "Write a validated issue to the store named by scope (project|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.",
+        args: {
+          issue: tool.schema.object({
+            id: tool.schema.number().int().optional().describe("Per-store numeric ID — auto-assigned if omitted"),
+            title: tool.schema.string().describe("Issue title"),
+            severity: tool.schema.enum(["high", "medium", "low"]).describe("Severity"),
+            status: tool.schema.enum(["open"]).describe("Creation status (open only)"),
+            created: tool.schema.string().describe("Created date YYYY-MM-DD"),
+            session: tool.schema.string().describe("Session ID"),
+            assigned_to: tool.schema.string().optional().nullable().describe("Assigned agent or role"),
+            tags: tool.schema.array(tool.schema.string()).optional().describe("Tags"),
+            scope: tool.schema.enum(["project", "swarm"]).describe("Store classification — required"),
+            description: tool.schema.string().optional().describe("Issue description"),
+            source_kd_reference: tool.schema.string().optional().describe("Source KD reference"),
+            recommended_fix: tool.schema.string().optional().describe("Recommended fix"),
+            acceptance_criteria: tool.schema.string().optional().describe("Acceptance criteria")
+          })
+        },
+        async execute(args, context) {
+          const issue = args.issue;
+          const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // Permission check: only Habit Builder can write issues (mirrors
+          // the memory_write Scribe gate — agent check, no opencode
+          // permission surface).
+          if (agent !== "habit-builder") {
+            debug(`issue_write: rejected — called by non-habit-builder agent "${agent}"`);
+            return JSON.stringify({ error: "Only Habit Builder agent has permission to write issues. Called by: " + (agent || "unknown") });
+          }
+
+          // Validation covers the required scope — missing/invalid scope is
+          // rejected here, never inferred (R002/NFR002).
+          const validation = validateIssue(issue);
+          if (!validation.valid) {
+            debug(`issue_write: validation failed — ${validation.error}`);
+            return JSON.stringify({ error: validation.error });
+          }
+
+          const issuesDir = storeDirFor("issues", storeRootForScope(issue.scope));
+          // mkdir -p on write: the target store's issues dir may not exist yet
+          try { mkdirSync(issuesDir, { recursive: true }); } catch (_) {}
+
+          // Per-store numeric ID assignment (R003): explicit id honored,
+          // otherwise max(id)+1 within the target store.
+          const id = issue.id !== undefined ? issue.id : getNextIssueIdForStore(issuesDir);
+
+          const issueDoc = {
+            id,
+            title: issue.title,
+            severity: issue.severity,
+            status: "open",
+            created: issue.created,
+            session: issue.session,
+            scope: issue.scope
+          };
+          if (issue.assigned_to !== undefined && issue.assigned_to !== null) issueDoc.assigned_to = issue.assigned_to;
+          if (issue.tags !== undefined) issueDoc.tags = issue.tags;
+
+          const bodySections = [];
+          if (issue.description !== undefined) bodySections.push(["Description", issue.description]);
+          if (issue.source_kd_reference !== undefined) bodySections.push(["Source KD Reference", issue.source_kd_reference]);
+          if (issue.recommended_fix !== undefined) bodySections.push(["Recommended Fix", issue.recommended_fix]);
+          if (issue.acceptance_criteria !== undefined) bodySections.push(["Acceptance Criteria", issue.acceptance_criteria]);
+
+          const filePath = join(issuesDir, `issue-${id}.md`);
+          try {
+            writeFileSync(filePath, serializeIssueFile(issueDoc, bodySections), "utf8");
+            debug(`issue_write: written ${filePath}`);
+            return JSON.stringify({ message: "Issue written", id, scope: issue.scope, path: filePath });
+          } catch (e) {
+            debug(`issue_write: write failed — ${e.message}`);
+            return JSON.stringify({ error: `Failed to write issue: ${e.message}` });
+          }
+        }
+      }),
+      issue_update: tool({
+        description: "Update an existing issue in the store named by scope, or search both stores by id when scope is omitted. Only Habit Builder may update. Args: id (number), scope (optional project|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.",
+        args: {
+          id: tool.schema.number().int().describe("Numeric issue ID to update"),
+          scope: tool.schema.enum(["project", "swarm"]).optional().describe("Store to search — omitted searches both stores by id"),
+          changes: tool.schema.object({
+            status: tool.schema.enum(["open", "resolved"]).optional().describe("New status (resolved closes the issue)"),
+            resolution: tool.schema.string().optional().describe("Resolution text appended as a ## Resolution (YYYY-MM-DD) section"),
+            assigned_to: tool.schema.string().optional().nullable().describe("New assigned_to value")
+          })
+        },
+        async execute(args, context) {
+          const { id, scope, changes } = args;
+          const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // Permission check: only Habit Builder can update issues
+          if (agent !== "habit-builder") {
+            debug(`issue_update: rejected — called by non-habit-builder agent "${agent}"`);
+            return JSON.stringify({ error: "Only Habit Builder agent has permission to update issues. Called by: " + (agent || "unknown") });
+          }
+
+          // id must be a positive integer (also guards path traversal into
+          // the store dirs, mirroring the memory_write id-guard)
+          if (!Number.isInteger(id) || id < 1) {
+            return JSON.stringify({ error: `id must be a positive integer, got "${id}"` });
+          }
+          if (scope !== undefined && scope !== "project" && scope !== "swarm") {
+            return JSON.stringify({ error: `scope must be "project" or "swarm", got "${scope}"` });
+          }
+          if (!changes || typeof changes !== "object") {
+            return JSON.stringify({ error: "changes must be an object" });
+          }
+          if (changes.status !== undefined && !["open", "resolved"].includes(changes.status)) {
+            return JSON.stringify({ error: `status must be "open" or "resolved", got "${changes.status}"` });
+          }
+          if (changes.resolution !== undefined && typeof changes.resolution !== "string") {
+            return JSON.stringify({ error: "resolution must be a string" });
+          }
+          if (changes.assigned_to !== undefined && changes.assigned_to !== null && typeof changes.assigned_to !== "string") {
+            return JSON.stringify({ error: "assigned_to must be a string or null" });
+          }
+          if (changes.status === undefined && changes.resolution === undefined && changes.assigned_to === undefined) {
+            return JSON.stringify({ error: "Nothing to update" });
+          }
+
+          // Locate: the named store first, then both stores by id (a
+          // mirrored id targets the config-store copy unless scope is given,
+          // matching the memory_update cross-store contract).
+          const lookupScopes = scope !== undefined ? [scope] : ["swarm", "project"];
+          let found = null;
+          for (const s of lookupScopes) {
+            const candidate = join(storeDirFor("issues", storeRootForScope(s)), `issue-${id}.md`);
+            if (existsSync(candidate)) {
+              found = { scope: s, filePath: candidate };
+              break;
+            }
+          }
+          if (!found) {
+            const searched = scope !== undefined ? `store "${scope}"` : "either store (swarm, project)";
+            return JSON.stringify({ error: `Issue ${id} not found in ${searched}` });
+          }
+
+          let raw;
+          try {
+            raw = readFileSync(found.filePath, "utf8");
+          } catch (e) {
+            return JSON.stringify({ error: `Failed to read issue ${id}: ${e.message}` });
+          }
+          const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+          if (!fmMatch) {
+            return JSON.stringify({ error: `Issue ${id} has no valid frontmatter` });
+          }
+
+          // Surgical frontmatter update: replace only the touched lines and
+          // keep every other frontmatter field byte-identical, so the issue
+          // schema is preserved (P004). A resolution implies closing.
+          const newStatus = changes.status !== undefined ? changes.status : (changes.resolution !== undefined ? "resolved" : null);
+          const outLines = [];
+          let statusReplaced = false;
+          let assignedReplaced = false;
+          for (const line of fmMatch[1].split("\n")) {
+            if (newStatus !== null && /^status:/.test(line)) {
+              outLines.push(`status: ${newStatus}`);
+              statusReplaced = true;
+              continue;
+            }
+            if (changes.assigned_to !== undefined && /^assigned_to:/.test(line)) {
+              outLines.push(`assigned_to: ${changes.assigned_to === null ? "" : JSON.stringify(changes.assigned_to)}`);
+              assignedReplaced = true;
+              continue;
+            }
+            outLines.push(line);
+          }
+          if (newStatus !== null && !statusReplaced) outLines.push(`status: ${newStatus}`);
+          if (changes.assigned_to !== undefined && !assignedReplaced) {
+            outLines.push(`assigned_to: ${changes.assigned_to === null ? "" : JSON.stringify(changes.assigned_to)}`);
+          }
+
+          const body = raw.slice(fmMatch[0].length).replace(/^\n+/, "");
+          let newContent = `---\n${outLines.join("\n")}\n---\n\n${body.replace(/\s+$/, "")}\n`;
+          if (changes.resolution !== undefined) {
+            const resolutionDate = new Date().toISOString().slice(0, 10);
+            newContent += `\n## Resolution (${resolutionDate})\n\n${changes.resolution.replace(/\s+$/, "")}\n`;
+          }
+
+          try {
+            writeFileSync(found.filePath, newContent, "utf8");
+            debug(`issue_update: updated ${found.filePath} (status ${newStatus || "unchanged"})`);
+            return JSON.stringify({ message: "Issue updated", id, path: found.filePath });
+          } catch (e) {
+            debug(`issue_update: write failed — ${e.message}`);
+            return JSON.stringify({ error: `Failed to update issue ${id}: ${e.message}` });
           }
         }
       }),
@@ -1525,9 +1839,9 @@ export default {
     }
 
     // --- Hook: tool.definition ---
-    // Re-assert the memory tool descriptions on every LLM call. The tools are
-    // registered via the tool hook (memoryTools above); this hook keeps the
-    // LLM-facing description stable across tool.definition passes.
+    // Re-assert the memory/issue tool descriptions on every LLM call. The
+    // tools are registered via the tool hook (pluginTools above); this hook
+    // keeps the LLM-facing description stable across tool.definition passes.
     async function toolDefinition(input, output) {
       const { toolID } = input;
 
@@ -1559,6 +1873,16 @@ export default {
       if (toolID === "memory_note_delete") {
         output.description = "Delete a short-term memory note from knowledge/short-term/. Args: id (string ST-...). The owner may delete own notes; Scribe may delete any agent's notes. Removes note-{NNN}.json permanently — the short-term store is session-scoped scratch state.";
         debug(`toolDefinition: provided description for memory_note_delete`);
+      }
+
+      if (toolID === "issue_write") {
+        output.description = "Write a validated issue to the store named by scope (project|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.";
+        debug(`toolDefinition: provided description for issue_write`);
+      }
+
+      if (toolID === "issue_update") {
+        output.description = "Update an existing issue in the store named by scope, or search both stores by id when scope is omitted. Only Habit Builder may update. Args: id (number), scope (optional project|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.";
+        debug(`toolDefinition: provided description for issue_update`);
       }
     }
 
@@ -1684,15 +2008,17 @@ export default {
       "tool.definition": toolDefinition,
       "experimental.chat.system.transform": systemTransform,
       // Registered custom tools — exposed to the agent's callable tool list
-      tool: memoryTools,
+      tool: pluginTools,
       // Test-accessible internals
       searchMemory,
       scanHighSeverityIssues,
       scanOpenIssues,
       parseIssueFile,
       getNextIssueId,
+      getNextIssueIdForStore,
       getNextMemoryId,
       validateMemoryEntry,
+      validateIssue,
       formatMemoryEntry,
       deriveSearchHints,
       generateHintLines,
@@ -1705,7 +2031,8 @@ export default {
       ISSUES_DIR,
       CONFIG_STORE_ROOT,
       PROJECT_STORE_ROOT,
-      storeDirFor
+      storeDirFor,
+      storeRootForScope
     };
   }
 };
