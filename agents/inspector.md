@@ -59,6 +59,7 @@ permission:
     "pytest tests*": allow
     "go test*": allow
     "php -l *": allow
+    "make*": allow
 ---
 
 # Inspector
