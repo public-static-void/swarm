@@ -1402,6 +1402,20 @@ Body`;
       expect(hooks.tool.memory_delete.args).toBeTruthy();
       expect(typeof hooks.tool.memory_delete.execute).toBe("function");
     });
+
+    it("exposes issue_write with description, args, and execute", () => {
+      expect(hooks.tool.issue_write).toBeTruthy();
+      expect(typeof hooks.tool.issue_write.description).toBe("string");
+      expect(hooks.tool.issue_write.args).toBeTruthy();
+      expect(typeof hooks.tool.issue_write.execute).toBe("function");
+    });
+
+    it("exposes issue_update with description, args, and execute", () => {
+      expect(hooks.tool.issue_update).toBeTruthy();
+      expect(typeof hooks.tool.issue_update.description).toBe("string");
+      expect(hooks.tool.issue_update.args).toBeTruthy();
+      expect(typeof hooks.tool.issue_update.execute).toBe("function");
+    });
   });
 
   describe("memory_write tool (registered execute)", () => {
@@ -1668,6 +1682,362 @@ Body`;
       const parsed = JSON.parse(result);
       expect(parsed.error).toContain("not found");
       expect(readdirSync(MEMORY_DIR)).toHaveLength(0);
+    });
+  });
+
+  describe("issue_write tool (registered execute)", () => {
+    // NOTE: the suite-level KNOWLEDGE_GATE_ISSUES_DIR seam collapses both
+    // stores onto one temp dir, so these tests exercise gate, scope
+    // classification, schema validation, ID assignment, and frontmatter
+    // persistence. True physical per-store separation (two dirs, independent
+    // counters) is covered by the fresh-module describe at the end.
+    function issueFor(overrides = {}) {
+      return {
+        title: "Test issue",
+        severity: "high",
+        created: "2026-08-16",
+        session: "ses_test",
+        scope: "swarm",
+        ...overrides
+      };
+    }
+
+    it("rejects writes from non-habit-builder agents with no file written", async () => {
+      const result = await hooks.tool.issue_write.execute(
+        { issue: issueFor() },
+        { agent: "artisan", sessionID: "artisan-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("permission");
+      expect(readdirSync(ISSUES_DIR).filter(f => f.startsWith("issue-"))).toHaveLength(0);
+    });
+
+    it("rejects a write with missing scope (no inference)", async () => {
+      const issue = issueFor();
+      delete issue.scope;
+      const result = await hooks.tool.issue_write.execute(
+        { issue },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("scope");
+      expect(readdirSync(ISSUES_DIR).filter(f => f.startsWith("issue-"))).toHaveLength(0);
+    });
+
+    it("rejects an invalid scope with an error listing the valid values", async () => {
+      const result = await hooks.tool.issue_write.execute(
+        { issue: issueFor({ scope: "other" }) },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("project");
+      expect(parsed.error).toContain("swarm");
+      expect(readdirSync(ISSUES_DIR).filter(f => f.startsWith("issue-"))).toHaveLength(0);
+    });
+
+    it("rejects invalid schema (bad severity) with no write", async () => {
+      const result = await hooks.tool.issue_write.execute(
+        { issue: issueFor({ severity: "critical" }) },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("severity");
+      expect(readdirSync(ISSUES_DIR).filter(f => f.startsWith("issue-"))).toHaveLength(0);
+    });
+
+    it("rejects a non-open status at creation", async () => {
+      const result = await hooks.tool.issue_write.execute(
+        { issue: issueFor({ status: "resolved" }) },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("status");
+      expect(readdirSync(ISSUES_DIR).filter(f => f.startsWith("issue-"))).toHaveLength(0);
+    });
+
+    it("writes exactly one file and returns { message, id, scope, path } from habit-builder", async () => {
+      const result = await hooks.tool.issue_write.execute(
+        { issue: issueFor() },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("written");
+      expect(parsed.id).toBe(1);
+      expect(parsed.scope).toBe("swarm");
+      expect(parsed.path).toContain("issue-1.md");
+      const files = readdirSync(ISSUES_DIR).filter(f => f.startsWith("issue-"));
+      expect(files).toHaveLength(1);
+      expect(files[0]).toBe("issue-1.md");
+    });
+
+    it("persists the full frontmatter schema including scope and the body sections", async () => {
+      const result = await hooks.tool.issue_write.execute(
+        {
+          issue: issueFor({
+            title: "Persist test",
+            severity: "medium",
+            assigned_to: "inspector",
+            tags: ["test", "mock"],
+            description: "The description.",
+            source_kd_reference: "knowledge/spec-test.md",
+            recommended_fix: "Do the fix.",
+            acceptance_criteria: "Tests pass."
+          })
+        },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      expect(JSON.parse(result).id).toBe(1);
+      const raw = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+      const parsed = hooks.parseIssueFile(raw, "issue-1.md");
+      expect(parsed.id).toBe("1");
+      expect(parsed.title).toBe("Persist test");
+      expect(parsed.severity).toBe("medium");
+      expect(parsed.status).toBe("open");
+      expect(parsed.created).toBe("2026-08-16");
+      expect(parsed.session).toBe("ses_test");
+      expect(parsed.assigned_to).toBe("inspector");
+      expect(parsed.tags).toEqual(["test", "mock"]);
+      expect(parsed.scope).toBe("swarm");
+      expect(raw).toContain("# Issue 1: Persist test");
+      expect(raw).toContain("## Description");
+      expect(raw).toContain("## Source KD Reference");
+      expect(raw).toContain("## Recommended Fix");
+      expect(raw).toContain("## Acceptance Criteria");
+    });
+
+    it("auto-assigns sequential numeric IDs", async () => {
+      const r1 = JSON.parse(await hooks.tool.issue_write.execute(
+        { issue: issueFor({ title: "One" }) },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      ));
+      const r2 = JSON.parse(await hooks.tool.issue_write.execute(
+        { issue: issueFor({ title: "Two" }) },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      ));
+      expect(r1.id).toBe(1);
+      expect(r2.id).toBe(2);
+    });
+
+    it("honors an explicit id", async () => {
+      const result = JSON.parse(await hooks.tool.issue_write.execute(
+        { issue: issueFor({ id: 7, title: "Explicit" }) },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      ));
+      expect(result.id).toBe(7);
+      expect(existsSync(join(ISSUES_DIR, "issue-7.md"))).toBe(true);
+    });
+  });
+
+  describe("issue_update tool (registered execute)", () => {
+    async function seedIssue(id = 1, overrides = {}) {
+      await hooks.tool.issue_write.execute(
+        {
+          issue: {
+            id,
+            title: `Seed ${id}`,
+            severity: "medium",
+            created: "2026-08-16",
+            session: "ses_test",
+            assigned_to: "inspector",
+            tags: ["test", "mock"],
+            scope: "swarm",
+            ...overrides
+          }
+        },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+    }
+
+    it("rejects updates from non-habit-builder agents with no file modified", async () => {
+      await seedIssue(1);
+      const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+      const result = await hooks.tool.issue_update.execute(
+        { id: 1, scope: "swarm", changes: { status: "resolved" } },
+        { agent: "artisan", sessionID: "artisan-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("permission");
+      expect(readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8")).toBe(before);
+    });
+
+    it("flips status to resolved and appends a Resolution section for an issue in the named store", async () => {
+      await seedIssue(1);
+      const result = await hooks.tool.issue_update.execute(
+        { id: 1, scope: "swarm", changes: { status: "resolved", resolution: "Fixed in impl KD." } },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("updated");
+      expect(parsed.id).toBe(1);
+      expect(parsed.path).toContain("issue-1.md");
+      const raw = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+      expect(raw).toMatch(/status: resolved/);
+      expect(raw).toMatch(/## Resolution \(\d{4}-\d{2}-\d{2}\)/);
+      expect(raw).toContain("Fixed in impl KD.");
+    });
+
+    it("closes via resolution alone (status implied) and preserves the issue schema", async () => {
+      await seedIssue(1);
+      const result = await hooks.tool.issue_update.execute(
+        { id: 1, scope: "swarm", changes: { resolution: "Done in review KD." } },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      expect(JSON.parse(result).message).toContain("updated");
+      const raw = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+      const parsed = hooks.parseIssueFile(raw, "issue-1.md");
+      expect(parsed.status).toBe("resolved");
+      expect(parsed.id).toBe("1");
+      expect(parsed.title).toBe("Seed 1");
+      expect(parsed.severity).toBe("medium");
+      expect(parsed.created).toBe("2026-08-16");
+      expect(parsed.session).toBe("ses_test");
+      expect(parsed.assigned_to).toBe("inspector");
+      expect(parsed.tags).toEqual(["test", "mock"]);
+      expect(parsed.scope).toBe("swarm");
+    });
+
+    it("locates an issue across both stores by id when scope is omitted", async () => {
+      await seedIssue(3);
+      const result = await hooks.tool.issue_update.execute(
+        { id: 3, changes: { resolution: "Cross-store close." } },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("updated");
+      expect(parsed.id).toBe(3);
+      const raw = readFileSync(join(ISSUES_DIR, "issue-3.md"), "utf8");
+      expect(raw).toMatch(/status: resolved/);
+      expect(raw).toContain("Cross-store close.");
+    });
+
+    it("returns an error naming the stores searched for a missing id", async () => {
+      const result = await hooks.tool.issue_update.execute(
+        { id: 99, changes: { status: "resolved" } },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("not found");
+      expect(parsed.error).toContain("swarm");
+      expect(parsed.error).toContain("project");
+    });
+
+    it("rejects invalid changes values with no file modified", async () => {
+      await seedIssue(1);
+      const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+      const result = await hooks.tool.issue_update.execute(
+        { id: 1, scope: "swarm", changes: { status: "bogus" } },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("status");
+      expect(readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8")).toBe(before);
+    });
+
+    it("rejects an empty changes object", async () => {
+      await seedIssue(1);
+      const result = await hooks.tool.issue_update.execute(
+        { id: 1, scope: "swarm", changes: {} },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      expect(JSON.parse(result).error).toContain("Nothing to update");
+    });
+
+    it("rejects an invalid scope", async () => {
+      const result = await hooks.tool.issue_update.execute(
+        { id: 1, scope: "other", changes: { status: "resolved" } },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      expect(JSON.parse(result).error).toContain("scope");
+    });
+
+    it("updates assigned_to", async () => {
+      await seedIssue(1);
+      await hooks.tool.issue_update.execute(
+        { id: 1, scope: "swarm", changes: { assigned_to: "pathfinder" } },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const raw = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+      expect(raw).toContain("pathfinder");
+    });
+  });
+
+  // Per-store physical separation — the one deliberate exception to this
+  // file's single-import convention. Store roots (CONFIG_STORE_ROOT) and the
+  // legacy per-dir seams (SEAM_DIR_OVERRIDES) are module-load constants the
+  // main import already captured, and the suite-level ISSUES_DIR seam
+  // collapses both stores onto one temp dir. To ground-truth that
+  // `issue_write`/`issue_update` route to physically distinct store dirs
+  // with independent per-store ID counters, re-import the plugin fresh —
+  // without the seams — and point each store root at its own temp dir.
+  describe("issue tools — per-store physical separation (fresh module instance)", () => {
+    let storeHooks;
+    let configRoot;
+    let projectRoot;
+
+    beforeAll(async () => {
+      configRoot = mkdtempSync(join(tmpdir(), "kg-config-"));
+      projectRoot = mkdtempSync(join(tmpdir(), "kg-project-"));
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+      const fresh = await import("../../../plugins/knowledge-gate/index.js?per-store");
+      storeHooks = await fresh.default.server({}, {});
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      rmSync(configRoot, { recursive: true, force: true });
+      rmSync(projectRoot, { recursive: true, force: true });
+    });
+
+    it("writes scope:swarm to the config store and scope:project to the project store, each with its own issue-1.md", async () => {
+      const base = { title: "Sep", severity: "high", created: "2026-08-16", session: "ses_sep" };
+      const swarm = JSON.parse(await storeHooks.tool.issue_write.execute(
+        { issue: { ...base, scope: "swarm" } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      const project = JSON.parse(await storeHooks.tool.issue_write.execute(
+        { issue: { ...base, scope: "project" } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(swarm.id).toBe(1);
+      expect(project.id).toBe(1);
+      expect(existsSync(join(configRoot, "knowledge", "issues", "issue-1.md"))).toBe(true);
+      expect(existsSync(join(projectRoot, "knowledge", "issues", "issue-1.md"))).toBe(true);
+      const swarmRaw = readFileSync(join(configRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+      const projectRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+      expect(swarmRaw).toContain("scope: swarm");
+      expect(projectRaw).toContain("scope: project");
+    });
+
+    it("assigns IDs per store — each store's counter advances independently", async () => {
+      const swarm2 = JSON.parse(await storeHooks.tool.issue_write.execute(
+        { issue: { title: "Swarm 2", severity: "low", created: "2026-08-16", session: "s", scope: "swarm" } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      const project2 = JSON.parse(await storeHooks.tool.issue_write.execute(
+        { issue: { title: "Project 2", severity: "low", created: "2026-08-16", session: "s", scope: "project" } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(swarm2.id).toBe(2);
+      expect(project2.id).toBe(2);
+      expect(existsSync(join(configRoot, "knowledge", "issues", "issue-2.md"))).toBe(true);
+      expect(existsSync(join(projectRoot, "knowledge", "issues", "issue-2.md"))).toBe(true);
+    });
+
+    it("closes an issue in the project store by scope without touching the swarm copy", async () => {
+      const result = JSON.parse(await storeHooks.tool.issue_update.execute(
+        { id: 1, scope: "project", changes: { resolution: "Closed from the config workspace." } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(result.message).toContain("updated");
+      const projectRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+      expect(projectRaw).toMatch(/status: resolved/);
+      expect(projectRaw).toContain("Closed from the config workspace.");
+      const swarmRaw = readFileSync(join(configRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+      expect(swarmRaw).toMatch(/status: open/);
     });
   });
 
