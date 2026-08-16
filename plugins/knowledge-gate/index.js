@@ -23,23 +23,49 @@ import { tool } from "@opencode-ai/plugin";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
-const PROJECT_ROOT = join(PLUGIN_DIR, "..", "..");
 
-// Test seam: KNOWLEDGE_GATE_MEMORY_DIR / KNOWLEDGE_GATE_ISSUES_DIR override
-// the data directories so the test suite can point the plugin at isolated
-// temp dirs instead of mocking the fs module process-wide (which leaks into
-// sibling suites under bun). Production defaults are unchanged.
-const MEMORY_DIR = process.env.KNOWLEDGE_GATE_MEMORY_DIR
-  ? resolve(process.env.KNOWLEDGE_GATE_MEMORY_DIR)
-  : join(PROJECT_ROOT, "knowledge", "memory");
-const ISSUES_DIR = process.env.KNOWLEDGE_GATE_ISSUES_DIR
-  ? resolve(process.env.KNOWLEDGE_GATE_ISSUES_DIR)
-  : join(PROJECT_ROOT, "knowledge", "issues");
+// --- Two-store scheme (R001) ---
+// CONFIG_STORE_ROOT owns swarm-config issues/memories — the historical
+// default store (all existing issues belong here and stay put). It resolves
+// from the plugin location, which is known at module load.
+// PROJECT_STORE_ROOT owns project issues/memories and is captured at server
+// init instead: `input` (and thus input.directory) is unavailable at import
+// time, and an eager process.cwd() at module load is fragile (precedents:
+// impl-agent-autoload-2026-07-06, analysis-logging-path-resolution-2026-07-16).
+const CONFIG_STORE_ROOT = process.env.KNOWLEDGE_GATE_CONFIG_ROOT
+  ? resolve(process.env.KNOWLEDGE_GATE_CONFIG_ROOT)
+  : join(PLUGIN_DIR, "..", "..");
+
+// Test seam: KNOWLEDGE_GATE_MEMORY_DIR / KNOWLEDGE_GATE_ISSUES_DIR /
+// KNOWLEDGE_GATE_SHORT_TERM_DIR override the corresponding dir in BOTH
+// stores so the test suite can point the plugin at isolated temp dirs
+// instead of mocking the fs module process-wide (which leaks into sibling
+// suites under bun). Production defaults are unchanged. Read once at module
+// load — the suite sets them in beforeAll before the static import.
+const SEAM_DIR_OVERRIDES = {
+  memory: process.env.KNOWLEDGE_GATE_MEMORY_DIR ? resolve(process.env.KNOWLEDGE_GATE_MEMORY_DIR) : null,
+  issues: process.env.KNOWLEDGE_GATE_ISSUES_DIR ? resolve(process.env.KNOWLEDGE_GATE_ISSUES_DIR) : null,
+  "short-term": process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR ? resolve(process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR) : null
+};
+
+// Per-store dir resolution (R001): maps {storeRoot}/knowledge/{issues|memory|short-term}
+// for either store root (config or project). The legacy seam overrides the
+// corresponding dir in BOTH stores when set, so the single-store test setup
+// stays hermetic. `storeRoot` for the project store is captured at server
+// init (see knowledgeGateServer).
+function storeDirFor(kind, storeRoot) {
+  const seam = SEAM_DIR_OVERRIDES[kind];
+  if (seam) return seam;
+  return join(storeRoot, "knowledge", kind);
+}
+
+// Config-store dirs (swarm scope) — the historical single-store defaults,
+// routed through the per-store helper so both stores share the seam.
+const MEMORY_DIR = storeDirFor("memory", CONFIG_STORE_ROOT);
+const ISSUES_DIR = storeDirFor("issues", CONFIG_STORE_ROOT);
 // Short-term layer seam: session-scoped scratch notes live outside the
 // long-term memory store and are excluded from memory_search by structure.
-const SHORT_TERM_DIR = process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR
-  ? resolve(process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR)
-  : join(PROJECT_ROOT, "knowledge", "short-term");
+const SHORT_TERM_DIR = storeDirFor("short-term", CONFIG_STORE_ROOT);
 
 // Derived memory search index (R001). The .jsonl filename is the R001.2
 // naming constraint in action: it must NOT match f.endsWith(".json") and
@@ -615,6 +641,15 @@ export default {
   id: "knowledge-gate",
   server: async function knowledgeGateServer(input, options) {
     const sessionAgentMap = new Map(); // sessionID → agent name
+
+    // Project store root (R001): captured once per server instance at init.
+    // Precedence: env KNOWLEDGE_GATE_PROJECT_ROOT ?? input.directory ??
+    // process.cwd() — env first (test seam), then the opencode PluginInput
+    // workspace, then the cwd fallback (tests call server({}, {})). When
+    // cwd == config dir the two stores coincide (NFR001).
+    const PROJECT_STORE_ROOT = process.env.KNOWLEDGE_GATE_PROJECT_ROOT
+      ? resolve(process.env.KNOWLEDGE_GATE_PROJECT_ROOT)
+      : (input && input.directory ? resolve(input.directory) : process.cwd());
 
     // --- In-memory cache (per server instance) ---
     // The cache lives in the server closure, not module scope, so every
@@ -1663,8 +1698,14 @@ export default {
       generateHintLines,
       checkDuplicateMemory,
       promoteShortTermNotes,
+      // Store resolution internals (R001): config-store dirs retained for
+      // backward compat; the two store roots + per-store helper exposed for
+      // dual-store tests (M6).
       MEMORY_DIR,
-      ISSUES_DIR
+      ISSUES_DIR,
+      CONFIG_STORE_ROOT,
+      PROJECT_STORE_ROOT,
+      storeDirFor
     };
   }
 };
