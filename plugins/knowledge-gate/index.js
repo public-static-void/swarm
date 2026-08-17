@@ -76,6 +76,39 @@ const SHORT_TERM_DIR = storeDirFor("short-term", CONFIG_STORE_ROOT);
 const MEMORY_INDEX_FILE = "memory-search-index.jsonl";
 const MEMORY_INDEX_PATH = join(MEMORY_DIR, MEMORY_INDEX_FILE);
 
+// --- Scope resolution helpers (R005) ---
+// Reads the `scope` field from a KD file's YAML frontmatter. Returns
+// "project"|"swarm" or null when the file is missing, unreadable, or
+// has no scope field. Used by the memory-write fallback chain: the writer
+// copies scope from the source KD when the caller omits it.
+function readSourceKdScope(sourceKd) {
+  if (!sourceKd || typeof sourceKd !== "string") return null;
+  // source_kd is a path relative to the knowledge dir (e.g.
+  // "knowledge/composed-ses_abc-gen0.md"). Resolve from process.cwd()
+  // which matches the knowledge-dir root for the active session.
+  const fullPath = join(process.cwd(), sourceKd);
+  try {
+    const raw = readFileSync(fullPath, "utf8");
+    const match = raw.match(/^---\n([\s\S]*?)\n---/);
+    if (!match) return null;
+    for (const line of match[1].split("\n")) {
+      const m = line.match(/^scope:\s*(project|swarm)\s*$/);
+      if (m) return m[1];
+    }
+  } catch (_) {}
+  return null;
+}
+
+// Resolves the target store from an explicit scope, source-KD frontmatter,
+// or the documented "swarm" default. The fallback chain is deterministic
+// (never a heuristic) — R002/NFR002.
+function resolveMemoryScope(explicitScope, sourceKd) {
+  if (explicitScope === "project" || explicitScope === "swarm") return explicitScope;
+  const fromSource = readSourceKdScope(sourceKd);
+  if (fromSource) return fromSource;
+  return "swarm";
+}
+
 // --- Debug logging ---
 
 let _logFile = null;
@@ -773,28 +806,52 @@ export default {
       return null;
     }
 
-    // --- In-memory cache (per server instance) ---
-    // The cache lives in the server closure, not module scope, so every
-    // server() call yields a fresh cache — tests get clean state without
-    // re-importing the module (bun's equivalent of vi.resetModules).
-    const memoryCache = {
-      entries: null,
-      lastLoaded: null,
-      ttlMs: parseInt(process.env.MEMORY_CACHE_TTL_MS || "30000", 10),
-      isLoading: false,
-      fileCount: 0
+    // Per-store memory dir resolution (R005): resolves the memory directory
+    // for a given store scope. The legacy seam overrides apply to both stores.
+    function memoryDirForScope(scope) {
+      return storeDirFor("memory", storeRootForScope(scope));
+    }
+
+    // Per-store memory index path (R006): each store owns its own
+    // memory-search-index.jsonl.
+    function memoryIndexPathForScope(scope) {
+      return join(memoryDirForScope(scope), MEMORY_INDEX_FILE);
+    }
+
+    // --- Per-store in-memory cache (R006, per server instance) ---
+    // Each store gets its own cache with its own TTL, file count, and entry
+    // list. The cache lives in the server closure, not module scope, so every
+    // server() call yields fresh caches — tests get clean state without
+    // re-importing the module.
+    function makeCache() {
+      return {
+        entries: null,
+        lastLoaded: null,
+        ttlMs: parseInt(process.env.MEMORY_CACHE_TTL_MS || "30000", 10),
+        isLoading: false,
+        fileCount: 0
+      };
+    }
+    const perStoreCaches = {
+      project: makeCache(),
+      swarm: makeCache()
     };
 
-    function isCacheValid() {
-      if (memoryCache.entries === null || memoryCache.lastLoaded === null) return false;
-      if ((Date.now() - memoryCache.lastLoaded) >= memoryCache.ttlMs) return false;
+    function getCacheForScope(scope) {
+      return perStoreCaches[scope] || perStoreCaches.swarm;
+    }
+
+    function isCacheValid(scope) {
+      const cache = getCacheForScope(scope);
+      if (cache.entries === null || cache.lastLoaded === null) return false;
+      if ((Date.now() - cache.lastLoaded) >= cache.ttlMs) return false;
       // Detect external file changes by comparing file count
-      // Uses readdirSync but avoids re-parsing all entries when count is unchanged
+      const dir = memoryDirForScope(scope);
       try {
-        const currentCount = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json")).length;
-        if (currentCount !== memoryCache.fileCount) {
-          memoryCache.entries = null;
-          memoryCache.lastLoaded = null;
+        const currentCount = readdirSync(dir).filter(f => f.endsWith(".json")).length;
+        if (currentCount !== cache.fileCount) {
+          cache.entries = null;
+          cache.lastLoaded = null;
           return false;
         }
       } catch (_) {
@@ -803,31 +860,33 @@ export default {
       return true;
     }
 
-    function loadEntriesFromDisk() {
-      if (!existsSync(MEMORY_DIR)) {
-        debug("loadEntriesFromDisk: memory dir does not exist");
+    function loadEntriesFromDisk(scope) {
+      const dir = memoryDirForScope(scope);
+      const cache = getCacheForScope(scope);
+      if (!existsSync(dir)) {
+        debug(`loadEntriesFromDisk: memory dir does not exist for scope ${scope}`);
         return [];
       }
 
       let files;
       try {
-        files = readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"));
+        files = readdirSync(dir).filter(f => f.endsWith(".json"));
       } catch (e) {
         debug(`loadEntriesFromDisk: failed to read memory dir: ${e.message}`);
         return [];
       }
 
       // Detect file count change — invalidates cache
-      if (memoryCache.entries !== null && files.length !== memoryCache.fileCount) {
-        debug(`loadEntriesFromDisk: file count changed (${memoryCache.fileCount} → ${files.length}), cache invalidated`);
-        memoryCache.entries = null;
-        memoryCache.lastLoaded = null;
+      if (cache.entries !== null && files.length !== cache.fileCount) {
+        debug(`loadEntriesFromDisk: file count changed (${cache.fileCount} → ${files.length}), cache invalidated`);
+        cache.entries = null;
+        cache.lastLoaded = null;
       }
 
       const entries = [];
       for (const file of files) {
         try {
-          const raw = readFileSync(join(MEMORY_DIR, file), "utf8");
+          const raw = readFileSync(join(dir, file), "utf8");
           const entry = JSON.parse(raw);
           entries.push(entry);
         } catch (e) {
@@ -835,9 +894,9 @@ export default {
         }
       }
 
-      memoryCache.entries = entries;
-      memoryCache.lastLoaded = Date.now();
-      memoryCache.fileCount = files.length;
+      cache.entries = entries;
+      cache.lastLoaded = Date.now();
+      cache.fileCount = files.length;
       return entries;
     }
 
@@ -846,9 +905,10 @@ export default {
     // them as the source of truth, and rebuilding it never modifies an entry.
 
     // R001.4 — the same file-count signal isCacheValid already uses (L645)
-    function getMemoryEntryFileCount() {
+    function getMemoryEntryFileCount(scope) {
+      const dir = memoryDirForScope(scope);
       try {
-        return readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json")).length;
+        return readdirSync(dir).filter(f => f.endsWith(".json")).length;
       } catch (_) {
         return 0;
       }
@@ -856,12 +916,12 @@ export default {
 
     // R001.4 — usable iff it exists, parses, version === 1, and entryCount
     // matches the on-disk entry file count. `updated` is diagnostics-only.
-    function isMemoryIndexValid(doc) {
+    function isMemoryIndexValid(doc, scope) {
       if (!doc || typeof doc !== "object") return false;
       if (doc.version !== 1) return false;
       if (!Number.isInteger(doc.entryCount) || doc.entryCount < 0) return false;
       if (!Array.isArray(doc.entries)) return false;
-      return doc.entryCount === getMemoryEntryFileCount();
+      return doc.entryCount === getMemoryEntryFileCount(scope);
     }
 
     // R001.3 — the exact searchable projection searchMemory needs, plus the
@@ -885,12 +945,13 @@ export default {
 
     // R001.5 backfill builder — reuses the existing readdir+parse scan; entry
     // files are never modified by a rebuild.
-    function buildMemoryIndexDoc() {
-      const entries = loadEntriesFromDisk();
+    function buildMemoryIndexDoc(scope) {
+      const entries = loadEntriesFromDisk(scope);
+      const cache = getCacheForScope(scope);
       return {
         version: 1,
         updated: new Date().toISOString(),
-        entryCount: memoryCache.fileCount,
+        entryCount: cache.fileCount,
         entries: entries.map(projectMemoryEntry)
       };
     }
@@ -899,95 +960,115 @@ export default {
     // truncated-but-parseable index; a truncated file is corrupt and rebuilds
     // on the next miss. Non-throwing: a failed index write is logged and the
     // scan-backed cache remains the fallback (failure isolation).
-    function writeMemoryIndex(doc) {
-      const tmpPath = `${MEMORY_INDEX_PATH}.tmp`;
+    function writeMemoryIndex(doc, scope) {
+      const indexPath = memoryIndexPathForScope(scope);
+      const tmpPath = `${indexPath}.tmp`;
       try {
         writeFileSync(tmpPath, JSON.stringify(doc), "utf8");
-        renameSync(tmpPath, MEMORY_INDEX_PATH);
+        renameSync(tmpPath, indexPath);
         return true;
       } catch (e) {
-        debug(`memory index: write failed — ${e.message}`);
+        debug(`memory index: write failed for scope ${scope} — ${e.message}`);
         try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch (_) {}
         return false;
       }
     }
 
     // R001.5 — single rebuild path for write-through and backfill. Guarded
-    // by the existing memoryCache.isLoading flag; the sync body makes a real
+    // by the existing cache.isLoading flag; the sync body makes a real
     // overlap impossible, but the guard pins the contract. Never throws:
     // a rebuild failure leaves the store fully functional and the missing/
     // stale index self-heals on the next cache miss.
-    function rebuildMemoryIndex() {
-      if (memoryCache.isLoading) return memoryCache.entries || [];
-      memoryCache.isLoading = true;
+    function rebuildMemoryIndex(scope) {
+      const cache = getCacheForScope(scope);
+      if (cache.isLoading) return cache.entries || [];
+      cache.isLoading = true;
       try {
-        const doc = buildMemoryIndexDoc();
-        if (writeMemoryIndex(doc)) {
-          debug(`memory index: rebuilt ${doc.entryCount} entries`);
+        const doc = buildMemoryIndexDoc(scope);
+        if (writeMemoryIndex(doc, scope)) {
+          debug(`memory index: rebuilt ${doc.entryCount} entries for scope ${scope}`);
         } else {
-          debug("memory index: rebuild write failed — scan fallback remains");
+          debug(`memory index: rebuild write failed for scope ${scope} — scan fallback remains`);
         }
         return doc.entries;
       } finally {
-        memoryCache.isLoading = false;
+        cache.isLoading = false;
       }
     }
 
     // R001.6 — cache-miss load path: serve from the single index document
     // when valid, otherwise rebuild (backfill) and serve. All scoring, sort,
     // limit, and result-shaping in searchMemory stays unchanged.
-    function loadEntriesForSearch() {
+    function loadEntriesForSearch(scope) {
+      const indexPath = memoryIndexPathForScope(scope);
       let doc;
       try {
-        if (!existsSync(MEMORY_INDEX_PATH)) return rebuildMemoryIndex();
-        doc = JSON.parse(readFileSync(MEMORY_INDEX_PATH, "utf8"));
+        if (!existsSync(indexPath)) return rebuildMemoryIndex(scope);
+        doc = JSON.parse(readFileSync(indexPath, "utf8"));
       } catch (e) {
-        debug(`memory index: corrupt or unreadable — ${e.message}; rebuilding`);
-        return rebuildMemoryIndex();
+        debug(`memory index: corrupt or unreadable for scope ${scope} — ${e.message}; rebuilding`);
+        return rebuildMemoryIndex(scope);
       }
-      if (!isMemoryIndexValid(doc)) {
-        debug("memory index: invalid (version/count mismatch) — rebuilding");
-        return rebuildMemoryIndex();
+      if (!isMemoryIndexValid(doc, scope)) {
+        debug(`memory index: invalid for scope ${scope} (version/count mismatch) — rebuilding`);
+        return rebuildMemoryIndex(scope);
       }
-      debug(`memory index: serving ${doc.entryCount} entries`);
-      memoryCache.entries = doc.entries;
-      memoryCache.lastLoaded = Date.now();
-      memoryCache.fileCount = doc.entryCount;
-      return memoryCache.entries;
+      debug(`memory index: serving ${doc.entryCount} entries for scope ${scope}`);
+      const cache = getCacheForScope(scope);
+      cache.entries = doc.entries;
+      cache.lastLoaded = Date.now();
+      cache.fileCount = doc.entryCount;
+      return cache.entries;
     }
 
     // --- Memory search ---
 
     /**
      * Scans knowledge/memory/ for JSON entries matching query parameters.
-     * Uses in-memory cache with configurable TTL to reduce disk I/O.
+     * Uses per-store in-memory cache with configurable TTL to reduce disk I/O.
      * Returns entries sorted by tag-match count (descending), then recency.
+     * When store is omitted, searches both stores and merges results; each
+     * result carries a `store: "project"|"swarm"` field (R006).
      */
     function searchMemory(query) {
-      const { tags = [], topic = "", limit = 5 } = query;
+      const { tags = [], topic = "", limit = 5, store: storeFilter } = query;
 
-      // Load from cache or disk
-      let entries;
-      if (isCacheValid()) {
-        entries = memoryCache.entries;
-        debug(`searchMemory: cache hit (${entries.length} entries)`);
-      } else {
-        // R001.6: on a cache miss read the single index document instead of
-        // readdir + JSON.parse of every entry file; an invalid index is
-        // rebuilt (backfilled) from the entries before serving.
-        entries = loadEntriesForSearch();
-        debug(`searchMemory: cache miss, loaded ${entries.length} entries`);
+      // Determine which stores to search
+      const scopes = storeFilter ? [storeFilter] : ["swarm", "project"];
+
+      // Collect entries from all target stores, each tagged with its scope.
+      // Deduplicate by ID when the same entry exists in both stores (can
+      // happen when both stores resolve to the same dir under the test seam);
+      // swarm takes precedence for backward compatibility.
+      const seenIds = new Set();
+      let allEntries = [];
+      for (const scope of scopes) {
+        const cache = getCacheForScope(scope);
+        let entries;
+        if (isCacheValid(scope)) {
+          entries = cache.entries;
+          debug(`searchMemory: cache hit for ${scope} (${entries.length} entries)`);
+        } else {
+          entries = loadEntriesForSearch(scope);
+          debug(`searchMemory: cache miss for ${scope}, loaded ${entries.length} entries`);
+        }
+        for (const e of entries) {
+          if (!seenIds.has(e.id)) {
+            seenIds.add(e.id);
+            allEntries.push({ ...e, _store: scope });
+          }
+        }
       }
 
       // Exclude superseded entries (tombstoned via memory_update superseded_by)
       // before scoring — a tombstoned entry no longer participates in search,
       // dedup matching (checkDuplicateMemory), or hint derivation.
-      entries = entries.filter(e => !e.superseded_by);
+      allEntries = allEntries.filter(e => !e.superseded_by);
 
-      if (entries.length === 0) return [];
+      if (allEntries.length === 0) return [];
 
       // Score each entry by tag overlap count
-      const scored = entries.map(entry => {
+      const scored = allEntries.map(entry => {
         const entryTags = entry.tags || [];
         const tagOverlap = tags.filter(t => entryTags.includes(t)).length;
         // Topic match: substring check, case-insensitive
@@ -1013,7 +1094,8 @@ export default {
           source_kd: s.entry.source_kd,
           tags: s.entry.tags || [],
           topic: s.entry.topic || "",
-          insight: s.entry.insight || ""
+          insight: s.entry.insight || "",
+          store: s.entry._store
         }));
     }
 
@@ -1124,24 +1206,26 @@ export default {
     // context omits it.
     const pluginTools = {
       memory_search: tool({
-        description: "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5). Returns JSON array of matching entries.",
+        description: "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5), store (optional project|swarm — restricts search to one store). Returns JSON array of matching entries, each carrying a store field.",
         args: {
           tags: tool.schema.array(tool.schema.string()).optional().describe("Tags to match against entry tags"),
           topic: tool.schema.string().optional().describe("Topic substring to match"),
-          limit: tool.schema.number().int().optional().describe("Maximum number of results (default 5)")
+          limit: tool.schema.number().int().optional().describe("Maximum number of results (default 5)"),
+          store: tool.schema.enum(["project", "swarm"]).optional().describe("Restrict search to one store — omitted searches both stores")
         },
         async execute(args) {
           const query = {
             tags: args.tags || [],
             topic: args.topic || "",
-            limit: args.limit || 5
+            limit: args.limit || 5,
+            store: args.store
           };
           const results = searchMemory(query);
           return JSON.stringify(results, null, 2);
         }
       }),
       memory_write: tool({
-        description: "Write a validated memory entry to knowledge/memory/. Only Scribe may write. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk.",
+        description: "Write a validated memory entry to knowledge/memory/. Only Scribe may write. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version), scope (optional project|swarm). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk.",
         args: {
           entry: tool.schema.object({
             id: tool.schema.string().optional().describe("Auto-assigned if omitted"),
@@ -1153,7 +1237,8 @@ export default {
             created: tool.schema.string().describe("ISO 8601 timestamp"),
             session: tool.schema.string().describe("Session ID"),
             version: tool.schema.string().describe("Schema version (1.0.0)")
-          })
+          }),
+          scope: tool.schema.enum(["project", "swarm"]).optional().describe("Store classification — falls back to source_kd scope, then 'swarm' default")
         },
         async execute(args, context) {
           const entry = args.entry;
@@ -1165,12 +1250,32 @@ export default {
             return JSON.stringify({ error: "Only Scribe agent has permission to write memory entries. Called by: " + (agent || "unknown") });
           }
 
+          // Scope resolution (R005): explicit → source_kd frontmatter → "swarm"
+          const scope = resolveMemoryScope(args.scope, entry.source_kd);
+          const targetDir = memoryDirForScope(scope);
+
           // Ensure memory directory exists
-          try { mkdirSync(MEMORY_DIR, { recursive: true }); } catch (_) {}
+          try { mkdirSync(targetDir, { recursive: true }); } catch (_) {}
 
           // Auto-assign ID before validation — so validateMemoryEntry sees a valid ID
           if (!entry.id || entry.id === "MEM-XXX") {
-            entry.id = getNextMemoryId();
+            // Per-store ID assignment: scan the target store for the next ID
+            const cache = getCacheForScope(scope);
+            let files;
+            try {
+              files = readdirSync(targetDir).filter(f => f.startsWith("entry-") && f.endsWith(".json"));
+            } catch (_) {
+              files = [];
+            }
+            let maxNum = 0;
+            for (const file of files) {
+              const numMatch = file.match(/entry-(\d+)\.json/);
+              if (numMatch) {
+                const num = parseInt(numMatch[1], 10);
+                if (num > maxNum) maxNum = num;
+              }
+            }
+            entry.id = `MEM-${String(maxNum + 1).padStart(3, "0")}`;
           }
 
           // Validate entry against canonical schema
@@ -1195,16 +1300,17 @@ export default {
 
           // Write entry to disk
           const entryId = entry.id.replace("MEM-", "");
-          const filePath = join(MEMORY_DIR, `entry-${entryId}.json`);
+          const filePath = join(targetDir, `entry-${entryId}.json`);
           try {
             writeFileSync(filePath, JSON.stringify(entry, null, 2), "utf8");
             // Invalidate cache so next search picks up the new entry
-            memoryCache.entries = null;
-            memoryCache.lastLoaded = null;
+            const cache = getCacheForScope(scope);
+            cache.entries = null;
+            cache.lastLoaded = null;
             // R001.5 write-through: rebuild the derived index after the write
-            rebuildMemoryIndex();
-            debug(`memory_write: written ${filePath}`);
-            return JSON.stringify({ message: "Memory entry written", id: entry.id });
+            rebuildMemoryIndex(scope);
+            debug(`memory_write: written ${filePath} (scope: ${scope})`);
+            return JSON.stringify({ message: "Memory entry written", id: entry.id, scope });
           } catch (e) {
             debug(`memory_write: write failed — ${e.message}`);
             return JSON.stringify({ error: `Failed to write memory entry: ${e.message}` });
@@ -1212,7 +1318,7 @@ export default {
         }
       }),
       memory_update: tool({
-        description: "Update an existing memory entry in knowledge/memory/. Only Scribe may update. Args: id (string MEM-XXX), entry (object with any of: topic, insight, tags, source_kd, type, superseded_by). Preserves id/created/session/version. Setting superseded_by to a MEM-XXX ID tombstones the entry: it is excluded from future memory_search results. Passing \"\" or null as superseded_by clears the tombstone and restores the entry to search visibility.",
+        description: "Update an existing memory entry in knowledge/memory/. Only Scribe may update. Args: id (string MEM-XXX), entry (object with any of: topic, insight, tags, source_kd, type, superseded_by), scope (optional project|swarm). Preserves id/created/session/version. Setting superseded_by to a MEM-XXX ID tombstones the entry: it is excluded from future memory_search results. Passing \"\" or null as superseded_by clears the tombstone and restores the entry to search visibility.",
         args: {
           id: tool.schema.string().describe("Memory entry ID to update (MEM-XXX)"),
           entry: tool.schema.object({
@@ -1222,10 +1328,11 @@ export default {
             source_kd: tool.schema.string().optional().describe("Source KD path"),
             type: tool.schema.enum(["fact", "decision", "pattern", "warning", "context"]).optional().describe("Entry type"),
             superseded_by: tool.schema.string().optional().nullable().describe("Optional tombstone: MEM-XXX ID of the replacing entry; pass \"\" or null to clear")
-          })
+          }),
+          scope: tool.schema.enum(["project", "swarm"]).optional().describe("Store to search — omitted searches both stores by id")
         },
         async execute(args, context) {
-          const { id, entry } = args;
+          const { id, entry, scope: explicitScope } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
 
           // Permission check: only Scribe can update memory entries
@@ -1239,9 +1346,23 @@ export default {
             debug(`memory_update: invalid or missing id — ${id}`);
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
-          const filePath = join(MEMORY_DIR, `entry-${id.replace("MEM-", "")}.json`);
-          if (!existsSync(filePath)) {
-            debug(`memory_update: entry not found — ${id}`);
+
+          // Locate: named store first, then both stores by id (R005 cross-store).
+          // When scope is given, search only that store; when omitted, search
+          // swarm first then project — an id found in both targets the config
+          // store copy (matching the legacy single-store default).
+          const lookupScopes = explicitScope ? [explicitScope] : ["swarm", "project"];
+          let found = null;
+          for (const s of lookupScopes) {
+            const candidate = join(memoryDirForScope(s), `entry-${id.replace("MEM-", "")}.json`);
+            if (existsSync(candidate)) {
+              found = { scope: s, filePath: candidate };
+              break;
+            }
+          }
+          if (!found) {
+            const searched = explicitScope ? `store "${explicitScope}"` : "either store (swarm, project)";
+            debug(`memory_update: entry not found — ${id} in ${searched}`);
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
 
@@ -1266,9 +1387,9 @@ export default {
           // Load the existing entry and merge the partial patch
           let existing;
           try {
-            existing = JSON.parse(readFileSync(filePath, "utf8"));
+            existing = JSON.parse(readFileSync(found.filePath, "utf8"));
           } catch (e) {
-            debug(`memory_update: failed to read ${filePath} — ${e.message}`);
+            debug(`memory_update: failed to read ${found.filePath} — ${e.message}`);
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
 
@@ -1287,14 +1408,15 @@ export default {
           }
 
           try {
-            writeFileSync(filePath, JSON.stringify(merged, null, 2), "utf8");
+            writeFileSync(found.filePath, JSON.stringify(merged, null, 2), "utf8");
             // Invalidate cache so next search picks up the updated entry
-            memoryCache.entries = null;
-            memoryCache.lastLoaded = null;
+            const cache = getCacheForScope(found.scope);
+            cache.entries = null;
+            cache.lastLoaded = null;
             // R001.5 write-through: rebuild the derived index after the update
-            rebuildMemoryIndex();
-            debug(`memory_update: updated ${filePath}`);
-            return JSON.stringify({ message: "Memory entry updated", id: existing.id });
+            rebuildMemoryIndex(found.scope);
+            debug(`memory_update: updated ${found.filePath} (scope: ${found.scope})`);
+            return JSON.stringify({ message: "Memory entry updated", id: existing.id, scope: found.scope });
           } catch (e) {
             debug(`memory_update: write failed — ${e.message}`);
             return JSON.stringify({ error: `Failed to update memory entry: ${e.message}` });
@@ -1302,12 +1424,13 @@ export default {
         }
       }),
       memory_delete: tool({
-        description: "Delete a memory entry from knowledge/memory/. Only Scribe may delete. Args: id (string MEM-XXX). Removes entry-{num}.json permanently — there is no VCS recovery (knowledge/ is gitignored). Prefer memory_update with superseded_by for supersession.",
+        description: "Delete a memory entry from knowledge/memory/. Only Scribe may delete. Args: id (string MEM-XXX), scope (optional project|swarm). Removes entry-{num}.json permanently — there is no VCS recovery (knowledge/ is gitignored). Prefer memory_update with superseded_by for supersession.",
         args: {
-          id: tool.schema.string().describe("Memory entry ID to delete (MEM-XXX)")
+          id: tool.schema.string().describe("Memory entry ID to delete (MEM-XXX)"),
+          scope: tool.schema.enum(["project", "swarm"]).optional().describe("Store to search — omitted searches both stores by id")
         },
         async execute(args, context) {
-          const { id } = args;
+          const { id, scope: explicitScope } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
 
           // Permission check: only Scribe can delete memory entries
@@ -1321,21 +1444,33 @@ export default {
             debug(`memory_delete: invalid or missing id — ${id}`);
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
-          const filePath = join(MEMORY_DIR, `entry-${id.replace("MEM-", "")}.json`);
-          if (!existsSync(filePath)) {
-            debug(`memory_delete: entry not found — ${id}`);
+
+          // Locate: named store first, then both stores by id (R005 cross-store).
+          const lookupScopes = explicitScope ? [explicitScope] : ["swarm", "project"];
+          let found = null;
+          for (const s of lookupScopes) {
+            const candidate = join(memoryDirForScope(s), `entry-${id.replace("MEM-", "")}.json`);
+            if (existsSync(candidate)) {
+              found = { scope: s, filePath: candidate };
+              break;
+            }
+          }
+          if (!found) {
+            const searched = explicitScope ? `store "${explicitScope}"` : "either store (swarm, project)";
+            debug(`memory_delete: entry not found — ${id} in ${searched}`);
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
 
           try {
-            unlinkSync(filePath);
+            unlinkSync(found.filePath);
             // Invalidate cache so next search drops the deleted entry
-            memoryCache.entries = null;
-            memoryCache.lastLoaded = null;
+            const cache = getCacheForScope(found.scope);
+            cache.entries = null;
+            cache.lastLoaded = null;
             // R001.5 write-through: rebuild the derived index after the delete
-            rebuildMemoryIndex();
-            debug(`memory_delete: deleted ${filePath}`);
-            return JSON.stringify({ message: "Memory entry deleted", id });
+            rebuildMemoryIndex(found.scope);
+            debug(`memory_delete: deleted ${found.filePath} (scope: ${found.scope})`);
+            return JSON.stringify({ message: "Memory entry deleted", id, scope: found.scope });
           } catch (e) {
             debug(`memory_delete: delete failed — ${e.message}`);
             return JSON.stringify({ error: `Failed to delete memory entry: ${e.message}` });
@@ -1742,6 +1877,8 @@ export default {
     // the safety net for sessions that never reach EXTRACT.
     function promoteShortTermNotes(sessionID, composedKdPath, options = {}) {
       const select = typeof options.select === "function" ? options.select : () => true;
+      const scope = options.scope || "swarm";
+      const targetDir = memoryDirForScope(scope);
       const promoted = [];
       const skipped = [];
       const safeSession = sanitizeToken(sessionID);
@@ -1800,9 +1937,10 @@ export default {
           continue;
         }
         try {
-          writeFileSync(join(MEMORY_DIR, `entry-${entry.id.replace("MEM-", "")}.json`), JSON.stringify(entry, null, 2), "utf8");
-          memoryCache.entries = null;
-          memoryCache.lastLoaded = null;
+          writeFileSync(join(targetDir, `entry-${entry.id.replace("MEM-", "")}.json`), JSON.stringify(entry, null, 2), "utf8");
+          const cache = getCacheForScope(scope);
+          cache.entries = null;
+          cache.lastLoaded = null;
           promoted.push({ noteId: note.id, entryId: entry.id });
         } catch (e) {
           debug(`promoteShortTermNotes: write failed for ${note.id} — ${e.message}`);
@@ -1813,7 +1951,7 @@ export default {
       // R001.5 write-through: rebuild the derived index once after the write
       // loop (only when at least one entry was promoted), not per note.
       if (promoted.length > 0) {
-        rebuildMemoryIndex();
+        rebuildMemoryIndex(scope);
       }
 
       // clear (copy-then-clear, OQ-3): remove the whole session store after
@@ -1846,7 +1984,7 @@ export default {
       const { toolID } = input;
 
       if (toolID === "memory_search") {
-        output.description = "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5). Returns JSON array of matching entries.";
+        output.description = "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5), store (optional project|swarm — restricts search to one store). Returns JSON array of matching entries, each carrying a store field.";
         debug(`toolDefinition: provided description for memory_search`);
       }
 
@@ -2032,7 +2170,13 @@ export default {
       CONFIG_STORE_ROOT,
       PROJECT_STORE_ROOT,
       storeDirFor,
-      storeRootForScope
+      storeRootForScope,
+      // Per-store memory internals (R005/R006): exposed for M3 tests
+      memoryDirForScope,
+      perStoreCaches,
+      getCacheForScope,
+      memoryIndexPathForScope,
+      resolveMemoryScope
     };
   }
 };
