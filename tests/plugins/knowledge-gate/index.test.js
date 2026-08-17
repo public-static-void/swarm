@@ -588,7 +588,7 @@ Body`;
       );
 
       // Issue creation hint (existing behavior) is preserved
-      const createHint = output.system.find(s => s.includes("create issue files directly"));
+      const createHint = output.system.find(s => s.includes("create issue files via"));
       expect(createHint).toBeTruthy();
 
       // Open issues are surfaced; resolved issues are not
@@ -606,7 +606,7 @@ Body`;
 
     describe("overseer INTENT issue injection", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+        output.system.find(s => s.includes("Open issues from both stores detected"));
 
       it("injects open issues in the stable line format for the overseer", async () => {
         writeEntries(ISSUES_DIR, [
@@ -621,7 +621,7 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint).toContain("- [ISSUE-002] (medium) Format check issue — assigned to inspector");
+        expect(hint).toContain("- [ISSUE-002] (medium) [swarm] Format check issue — assigned to inspector");
         expect(hint).toContain("Triage Notes");
       });
 
@@ -721,19 +721,26 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const issueLines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        // Dual-store seam: each issue appears with both [swarm] and [project] scope,
+        // interleaved within each severity group.
         expect(issueLines).toEqual([
-          "- [ISSUE-002] (high) High A — assigned to habit-builder",
-          "- [ISSUE-004] (high) High B — assigned to habit-builder",
-          "- [ISSUE-003] (medium) Medium C — assigned to habit-builder",
-          "- [ISSUE-001] (low) Low D — assigned to habit-builder",
-          "- [ISSUE-005] (low) Low E — assigned to habit-builder"
+          "- [ISSUE-002] (high) [swarm] High A — assigned to habit-builder",
+          "- [ISSUE-002] (high) [project] High A — assigned to habit-builder",
+          "- [ISSUE-004] (high) [swarm] High B — assigned to habit-builder",
+          "- [ISSUE-004] (high) [project] High B — assigned to habit-builder",
+          "- [ISSUE-003] (medium) [swarm] Medium C — assigned to habit-builder",
+          "- [ISSUE-003] (medium) [project] Medium C — assigned to habit-builder",
+          "- [ISSUE-001] (low) [swarm] Low D — assigned to habit-builder",
+          "- [ISSUE-001] (low) [project] Low D — assigned to habit-builder",
+          "- [ISSUE-005] (low) [swarm] Low E — assigned to habit-builder",
+          "- [ISSUE-005] (low) [project] Low E — assigned to habit-builder"
         ]);
       });
     });
 
     describe("overseer INTENT cap env", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+        output.system.find(s => s.includes("Open issues from both stores detected"));
 
       function writeTwelveOpen() {
         writeEntries(ISSUES_DIR, [
@@ -767,10 +774,16 @@ Body`;
         expect(hint).toBeTruthy();
         const lines = issueLines(hint);
         expect(lines).toHaveLength(10);
-        expect(lines[0]).toContain("(high) High A");
-        expect(lines[1]).toContain("(high) High B");
-        expect(lines[2]).toContain("(high) High C");
-        expect(lines[3]).toContain("(high) High D");
+        // Dual-store seam: each issue appears with both [swarm] and [project] scope,
+        // so severity groups are interleaved (A-swarm, A-project, B-swarm, B-project…).
+        expect(lines[0]).toContain("High A");
+        expect(lines[1]).toContain("High A");
+        expect(lines[2]).toContain("High B");
+        expect(lines[3]).toContain("High B");
+        expect(lines[4]).toContain("High C");
+        expect(lines[5]).toContain("High C");
+        expect(lines[6]).toContain("High D");
+        expect(lines[7]).toContain("High D");
       });
 
       it("treats KNOWLEDGE_GATE_MAX_OPEN_ISSUES=0 as unbounded", async () => {
@@ -783,7 +796,8 @@ Body`;
         );
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(issueLines(hint)).toHaveLength(12);
+        // Dual-store seam: each issue file appears in both stores, so 12 unique issues × 2 = 24
+        expect(issueLines(hint)).toHaveLength(24);
       });
 
       it("falls back to the default cap 10 for an invalid env value", async () => {
@@ -812,7 +826,7 @@ Body`;
 
     describe("overseer INTENT audience routing", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+        output.system.find(s => s.includes("Open issues from both stores detected"));
 
       it("injects only audience-matched and unassigned issues", async () => {
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
@@ -832,7 +846,8 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const lines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
-        expect(lines).toHaveLength(2);
+        // Dual-store seam: each issue file appears in both stores, so 2 audience-matched × 2 = 4
+        expect(lines).toHaveLength(4);
         expect(hint).toContain("Inspector item");
         expect(hint).toContain("Ownerless item");
         expect(hint).toContain("— assigned to unassigned");
@@ -855,7 +870,7 @@ Body`;
         );
         let hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(3);
+        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(6);
 
         // empty string
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "";
@@ -866,7 +881,7 @@ Body`;
         );
         hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(3);
+        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(6);
       });
 
       it("matches the audience case-insensitively as a substring", async () => {
@@ -936,7 +951,7 @@ Body`;
 
     describe("overseer INTENT marker line", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from prior sessions detected"));
+        output.system.find(s => s.includes("Open issues from both stores detected"));
 
       function issueLines(hint) {
         return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
@@ -958,9 +973,10 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const lines = hint.split("\n");
-        expect(lines[0]).toBe("[Knowledge Gate] Open issues from prior sessions detected:");
-        expect(lines[1]).toBe("<!-- issues-snapshot v1: 3 open, stable order -->");
-        expect(issueLines(hint)).toHaveLength(3);
+        expect(lines[0]).toBe("[Knowledge Gate] Open issues from both stores detected:");
+        expect(lines[1]).toBe("<!-- issues-snapshot v1: 6 open, stable order -->");
+        // Dual-store seam: each issue file appears in both stores, so 3 × 2 = 6
+        expect(issueLines(hint)).toHaveLength(6);
       });
 
       it("reports the post-cap count in the marker", async () => {
@@ -1009,8 +1025,9 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint).toContain("<!-- issues-snapshot v1: 2 open, stable order -->");
-        expect(issueLines(hint)).toHaveLength(2);
+        // Dual-store seam: 2 audience-matched issues × 2 stores = 4
+        expect(hint).toContain("<!-- issues-snapshot v1: 4 open, stable order -->");
+        expect(issueLines(hint)).toHaveLength(4);
         expect(hint).not.toContain("Permission item");
       });
 
@@ -1029,7 +1046,7 @@ Body`;
         const closeHint = output.system.find(s => s.includes("Open issues detected"));
         expect(closeHint).toBeTruthy();
         // Unchanged line format, Close Issues step intact, resolved excluded
-        expect(closeHint).toContain("- [ISSUE-001] (medium) Open issue A — assigned to habit-builder");
+        expect(closeHint).toContain("- [ISSUE-001] (medium) [swarm] Open issue A — assigned to habit-builder");
         expect(closeHint).toContain("Close Issues");
         expect(closeHint).not.toContain("Closed issue B");
         // The marker line is overseer-only — never in the EVOLVE block
