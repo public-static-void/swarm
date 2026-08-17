@@ -27,9 +27,18 @@ function getStateDir() {
 }
 
 function getKnowledgeDir() {
-  return process.env.PROTOCOL_GATE_KNOWLEDGE_DIR
-    ? resolve(process.env.PROTOCOL_GATE_KNOWLEDGE_DIR)
-    : join(process.cwd(), "knowledge");
+  // R008: shared project-root seam with knowledge-gate. The precedence is:
+  // 1. PROTOCOL_GATE_KNOWLEDGE_DIR — explicit override (tests, production seam)
+  // 2. KNOWLEDGE_GATE_PROJECT_ROOT — shared env seam with knowledge-gate so
+  //    a session's lifecycle KDs and its issues/memories resolve to the same root
+  // 3. join(process.cwd(), "knowledge") — cwd fallback (unchanged default)
+  if (process.env.PROTOCOL_GATE_KNOWLEDGE_DIR) {
+    return resolve(process.env.PROTOCOL_GATE_KNOWLEDGE_DIR);
+  }
+  if (process.env.KNOWLEDGE_GATE_PROJECT_ROOT) {
+    return join(resolve(process.env.KNOWLEDGE_GATE_PROJECT_ROOT), "knowledge");
+  }
+  return join(process.cwd(), "knowledge");
 }
 
 const STATES = {

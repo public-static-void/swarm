@@ -1967,6 +1967,45 @@ export default {
       return { promoted, skipped, cleared };
     }
 
+    // --- Merged issue scan (R007) ---
+    // Scans open issues from both stores and tags each with its scope. Used by
+    // the systemTransform EVOLVE (habit-builder) and INTENT (overseer) branches
+    // so both agents see the full picture across stores. The cap and audience
+    // filter are applied by the caller (overseer applies cap+filter; habit-builder
+    // shows all).
+    function scanOpenIssuesMerged() {
+      const allIssues = [];
+      for (const [scope, storeRoot] of [["swarm", CONFIG_STORE_ROOT], ["project", PROJECT_STORE_ROOT]]) {
+        const issuesDir = storeDirFor("issues", storeRoot);
+        try {
+          if (!existsSync(issuesDir)) continue;
+          const files = readdirSync(issuesDir).filter(f => f.startsWith("issue-") && f.endsWith(".md"));
+          for (const file of files) {
+            try {
+              const raw = readFileSync(join(issuesDir, file), "utf8");
+              const issue = parseIssueFile(raw, file);
+              if (issue && issue.status === "open") {
+                issue.scope = scope;
+                allIssues.push(issue);
+              }
+            } catch (e) {
+              debug(`scanOpenIssuesMerged: skipping ${scope}/${file}: ${e.message}`);
+            }
+          }
+        } catch (e) {
+          debug(`scanOpenIssuesMerged: failed to read ${scope} issues dir: ${e.message}`);
+        }
+      }
+      // Sort by severity (high→medium→low) then numeric id, matching
+      // scanOpenIssues ordering.
+      allIssues.sort((a, b) => {
+        const bySeverity = issueSeverityRank(a.severity) - issueSeverityRank(b.severity);
+        if (bySeverity !== 0) return bySeverity;
+        return issueNumericId(a) - issueNumericId(b);
+      });
+      return allIssues;
+    }
+
     // --- Hook: chat.params ---
     // Track which agent is running in each session for memory_search routing.
     async function chatParams(input, output) {
@@ -2037,7 +2076,8 @@ export default {
       output.system.push(
         `[Knowledge Gate] You have access to the memory_search tool. ` +
         `Call it with tags (array), topic (string), or limit (integer) to query ` +
-        `prior session insights from knowledge/memory/.`
+        `prior session insights from knowledge/memory/. Results are store-tagged ` +
+        `(store: project|swarm) and may come from either store.`
       );
 
       // Short-term resume hint — the mechanical compaction-amnesia mitigation
@@ -2066,7 +2106,9 @@ export default {
       if (agent === "scribe") {
         output.system.push(
           `[Knowledge Gate] After composing a COMPOSED KD, write distilled insights ` +
-          `via the memory_write tool. The tool validates schema, checks tags against ` +
+          `via the memory_write tool. Copy the scope from the COMPOSED KD frontmatter ` +
+          `(scope: project|swarm) when writing — the tool routes to the correct store. ` +
+          `The tool validates schema, checks tags against ` +
           `controlled vocabulary, deduplicates, auto-assigns sequential ID, and writes to disk.`
         );
         // Promotion step (R007): Scribe is only dispatched at EXTRACT, so this
@@ -2086,33 +2128,35 @@ export default {
       // creation (step 5 "Track Issues") and closing (step 6 "Close Issues").
       if (agent === "habit-builder") {
         output.system.push(
-          `[Knowledge Gate] When process friction requires tracking, create issue files directly. ` +
-          `Write to knowledge/issues/issue-{id}.md with YAML frontmatter: id, title, severity, status, created, session, assigned_to, tags. ` +
-          `Include body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria. ` +
-          `Use the next sequential issue ID from existing files in knowledge/issues/.`
+          `[Knowledge Gate] When process friction requires tracking, create issue files via ` +
+          `the issue_write tool with scope copied from the source KD frontmatter. ` +
+          `The tool validates schema, auto-assigns per-store numeric IDs, and writes ` +
+          `{store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.`
         );
 
-        // Surface open issues so the habit-builder can close ones whose fix is
-        // already demonstrated in lifecycle KDs — mirrors the INTENT loop below.
-        const openIssues = scanOpenIssues();
-        if (openIssues.length > 0) {
-          const issueSummary = openIssues.map(i =>
-            `- [${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
+        // Surface open issues from both stores so the habit-builder can close
+        // ones whose fix is already demonstrated in lifecycle KDs. Each line
+        // carries its scope so the close targets the correct store via
+        // issue_update.
+        const mergedIssues = scanOpenIssuesMerged();
+        if (mergedIssues.length > 0) {
+          const issueSummary = mergedIssues.map(i =>
+            `- [${i.id}] (${i.severity}) [${i.scope}] ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
           ).join("\n");
           output.system.push(
             `[Knowledge Gate] Open issues detected:\n${issueSummary}\n` +
             `Apply the Close Issues step (agents/habit-builder.md step 6): for each open issue ` +
             `whose Recommended Fix is verified addressed in lifecycle KDs (impl/review/composed) ` +
-            `— no heavy investigation needed — flip status to resolved and append a ` +
-            `## Resolution (YYYY-MM-DD) section referencing the closing evidence. ` +
+            `— no heavy investigation needed — use issue_update to flip status to resolved ` +
+            `and append a ## Resolution (YYYY-MM-DD) section referencing the closing evidence. ` +
             `Closing without evidence is prohibited; keep the issue schema intact.`
           );
-          debug(`EVOLVE: surfaced ${openIssues.length} open issues to habit-builder`);
+          debug(`EVOLVE: surfaced ${mergedIssues.length} open issues to habit-builder`);
         }
       }
 
       // On every Overseer systemTransform (not phase-gated), scan for open issues from
-      // prior sessions and surface them in Triage Notes. The guard is agent === "overseer"
+      // both stores and surface them in Triage Notes. The guard is agent === "overseer"
       // only — injection is intentionally NOT phase-gated, so issues stay visible across
       // the whole lifecycle. This closes the issue tracking feedback loop.
       // The injected set is bounded (KNOWLEDGE_GATE_MAX_OPEN_ISSUES cap,
@@ -2120,18 +2164,18 @@ export default {
       // the filter runs BEFORE the cap so the cap measures the audience-matched set.
       // The habit-builder EVOLVE branch above stays unfiltered and uncapped.
       if (agent === "overseer") {
-        let openIssues = filterByAudience(scanOpenIssues(), process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
+        let openIssues = filterByAudience(scanOpenIssuesMerged(), process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
         openIssues = applyCap(openIssues, envOpenIssueCap());
         if (openIssues.length > 0) {
           const issueSummary = openIssues.map(i =>
-            `- [${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
+            `- [${i.id}] (${i.severity}) [${i.scope}] ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
           ).join("\n");
           // The machine-checkable marker line starts the injected block.
           // {count} equals the number of lines actually injected (post
           // audience-filter/cap) so an INTENT KD transcription can be verified
           // against the issue registry.
           output.system.push(
-            `[Knowledge Gate] Open issues from prior sessions detected:\n` +
+            `[Knowledge Gate] Open issues from both stores detected:\n` +
             `<!-- issues-snapshot v1: ${openIssues.length} open, stable order -->\n${issueSummary}\n` +
             `Include these in the Triage Notes section of your intent KD. ` +
             `Reference the issue IDs and recommend which ones to address in this session.`
@@ -2151,6 +2195,7 @@ export default {
       searchMemory,
       scanHighSeverityIssues,
       scanOpenIssues,
+      scanOpenIssuesMerged,
       parseIssueFile,
       getNextIssueId,
       getNextIssueIdForStore,
