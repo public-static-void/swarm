@@ -2253,7 +2253,7 @@ Body`;
       const result = await hooks.tool.memory_search.execute({ tags: ["auth"], limit: 5 }, { agent: "artisan", sessionID: "s" });
       const parsed = JSON.parse(result);
       expect(parsed.map(r => r.id)).toEqual(["MEM-003", "MEM-001"]);
-      expect(parsed[0]).toEqual({ id: "MEM-003", source_kd: "knowledge/composed-test-3.md", tags: ["auth", "testing"], topic: "Auth refresh tokens", insight: "This is test insight 3 for verification purposes." });
+      expect(parsed[0]).toEqual({ id: "MEM-003", source_kd: "knowledge/composed-test-3.md", tags: ["auth", "testing"], topic: "Auth refresh tokens", insight: "This is test insight 3 for verification purposes.", store: "swarm" });
 
       // The projected index entries are field-for-field the on-disk sources
       const doc = JSON.parse(readFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), "utf8"));
@@ -2582,6 +2582,277 @@ Body`;
       expect(promo).toContain("COMPOSED KD");
       expect(promo).toContain("memory_note_delete");
       expect(promo).toContain("After the copies land");
+    });
+  });
+
+  // --- M3: Memory scope support + per-store index (R005/R006) ---
+  describe("Memory scope support (M3 — R005)", () => {
+    // M3 tests use the existing seam setup. The legacy memory seam overrides
+    // both stores to the same dir, so we test scope routing via return values
+    // and the store field on search results — the full dual-store routing
+    // tests live in M6 (P011).
+
+    it("memory_write returns scope in the result", async () => {
+      const result = JSON.parse(await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-test.md",
+          tags: ["test", "scope"],
+          topic: "Scope result test",
+          insight: "Returns scope in result",
+          type: "fact",
+          created: "2026-08-16T00:00:00.000Z",
+          session: "ses_m3_scope",
+          version: "1.0.0"
+        },
+        scope: "project"
+      }, { agent: "scribe", sessionID: "s" }));
+
+      expect(result.error).toBeUndefined();
+      expect(result.scope).toBe("project");
+      expect(result.id).toMatch(/^MEM-\d{3}$/);
+    });
+
+    it("memory_write returns scope: swarm for explicit swarm scope", async () => {
+      const result = JSON.parse(await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-test.md",
+          tags: ["test", "scope"],
+          topic: "Swarm scope result",
+          insight: "Returns swarm scope",
+          type: "fact",
+          created: "2026-08-16T00:00:00.000Z",
+          session: "ses_m3_scope",
+          version: "1.0.0"
+        },
+        scope: "swarm"
+      }, { agent: "scribe", sessionID: "s" }));
+
+      expect(result.error).toBeUndefined();
+      expect(result.scope).toBe("swarm");
+    });
+
+    it("memory_write defaults to swarm when no scope provided", async () => {
+      const result = JSON.parse(await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-test.md",
+          tags: ["test", "default"],
+          topic: "Default scope",
+          insight: "Defaults to swarm",
+          type: "fact",
+          created: "2026-08-16T00:00:00.000Z",
+          session: "ses_m3_default",
+          version: "1.0.0"
+        }
+      }, { agent: "scribe", sessionID: "s" }));
+
+      expect(result.error).toBeUndefined();
+      expect(result.scope).toBe("swarm");
+    });
+
+    it("memory_update returns scope in the result", async () => {
+      // Write an entry first
+      const writeResult = JSON.parse(await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-test.md",
+          tags: ["test", "update"],
+          topic: "Update scope test",
+          insight: "Original",
+          type: "fact",
+          created: "2026-08-16T00:00:00.000Z",
+          session: "ses_m3_update",
+          version: "1.0.0"
+        },
+        scope: "swarm"
+      }, { agent: "scribe", sessionID: "s" }));
+
+      // Update without scope — should find it and return scope
+      const updateResult = JSON.parse(await hooks.tool.memory_update.execute({
+        id: writeResult.id,
+        entry: { insight: "Updated" }
+      }, { agent: "scribe", sessionID: "s" }));
+
+      expect(updateResult.error).toBeUndefined();
+      expect(updateResult.scope).toBeDefined();
+      expect(["project", "swarm"]).toContain(updateResult.scope);
+    });
+
+    it("memory_delete returns scope in the result", async () => {
+      const writeResult = JSON.parse(await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-test.md",
+          tags: ["test", "delete"],
+          topic: "Delete scope test",
+          insight: "To delete",
+          type: "fact",
+          created: "2026-08-16T00:00:00.000Z",
+          session: "ses_m3_delete",
+          version: "1.0.0"
+        },
+        scope: "swarm"
+      }, { agent: "scribe", sessionID: "s" }));
+
+      const deleteResult = JSON.parse(await hooks.tool.memory_delete.execute({
+        id: writeResult.id
+      }, { agent: "scribe", sessionID: "s" }));
+
+      expect(deleteResult.error).toBeUndefined();
+      expect(deleteResult.scope).toBeDefined();
+      expect(["project", "swarm"]).toContain(deleteResult.scope);
+    });
+
+    it("resolveMemoryScope returns explicit scope when provided", () => {
+      expect(hooks.resolveMemoryScope("project", null)).toBe("project");
+      expect(hooks.resolveMemoryScope("swarm", null)).toBe("swarm");
+    });
+
+    it("resolveMemoryScope defaults to swarm when no scope and no source_kd", () => {
+      expect(hooks.resolveMemoryScope(undefined, null)).toBe("swarm");
+      expect(hooks.resolveMemoryScope(undefined, undefined)).toBe("swarm");
+    });
+  });
+
+  describe("Per-store memory index (M3 — R006)", () => {
+    it("memory_search results carry store field", async () => {
+      // Write entries to both stores (under the seam, both go to the same dir)
+      await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-1.md",
+          tags: ["test", "storefield"],
+          topic: "Store field A",
+          insight: "Entry A",
+          type: "fact",
+          created: "2026-08-16T00:00:00.000Z",
+          session: "ses_m3_field",
+          version: "1.0.0"
+        },
+        scope: "swarm"
+      }, { agent: "scribe", sessionID: "s" });
+
+      await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-2.md",
+          tags: ["test", "storefield"],
+          topic: "Store field B",
+          insight: "Entry B",
+          type: "fact",
+          created: "2026-08-16T01:00:00.000Z",
+          session: "ses_m3_field",
+          version: "1.0.0"
+        },
+        scope: "project"
+      }, { agent: "scribe", sessionID: "s" });
+
+      const results = hooks.searchMemory({ tags: ["test", "storefield"], limit: 10 });
+      expect(results.length).toBeGreaterThanOrEqual(2);
+      for (const r of results) {
+        expect(r.store).toBeDefined();
+        expect(["project", "swarm"]).toContain(r.store);
+      }
+    });
+
+    it("memory_search store filter restricts to one store", async () => {
+      await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-1.md",
+          tags: ["test", "filter"],
+          topic: "Filter swarm",
+          insight: "Swarm only",
+          type: "fact",
+          created: "2026-08-16T00:00:00.000Z",
+          session: "ses_m3_filter",
+          version: "1.0.0"
+        },
+        scope: "swarm"
+      }, { agent: "scribe", sessionID: "s" });
+
+      await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-2.md",
+          tags: ["test", "filter"],
+          topic: "Filter project",
+          insight: "Project only",
+          type: "fact",
+          created: "2026-08-16T01:00:00.000Z",
+          session: "ses_m3_filter",
+          version: "1.0.0"
+        },
+        scope: "project"
+      }, { agent: "scribe", sessionID: "s" });
+
+      // Search only project store — dedup means we get the project-tagged entry
+      const projectResults = hooks.searchMemory({ tags: ["test", "filter"], limit: 10, store: "project" });
+      expect(projectResults.length).toBeGreaterThanOrEqual(1);
+      expect(projectResults.every(r => r.store === "project")).toBe(true);
+
+      // Search only swarm store
+      const swarmResults = hooks.searchMemory({ tags: ["test", "filter"], limit: 10, store: "swarm" });
+      expect(swarmResults.length).toBeGreaterThanOrEqual(1);
+      expect(swarmResults.every(r => r.store === "swarm")).toBe(true);
+    });
+
+    it("memory_search merges both stores by default with store field", async () => {
+      await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-1.md",
+          tags: ["test", "merge"],
+          topic: "Merge swarm entry",
+          insight: "Swarm merge",
+          type: "fact",
+          created: "2026-08-16T00:00:00.000Z",
+          session: "ses_m3_merge",
+          version: "1.0.0"
+        },
+        scope: "swarm"
+      }, { agent: "scribe", sessionID: "s" });
+
+      await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-2.md",
+          tags: ["test", "merge"],
+          topic: "Merge project entry",
+          insight: "Project merge",
+          type: "fact",
+          created: "2026-08-16T01:00:00.000Z",
+          session: "ses_m3_merge",
+          version: "1.0.0"
+        },
+        scope: "project"
+      }, { agent: "scribe", sessionID: "s" });
+
+      // Default search merges both stores
+      const results = hooks.searchMemory({ tags: ["test", "merge"], limit: 10 });
+      expect(results.length).toBeGreaterThanOrEqual(2);
+      // Every result has a store field
+      for (const r of results) {
+        expect(["project", "swarm"]).toContain(r.store);
+      }
+    });
+
+    it("per-store caches are isolated objects", () => {
+      const caches = hooks.perStoreCaches;
+      expect(caches).toBeDefined();
+      expect(caches.swarm).toBeDefined();
+      expect(caches.project).toBeDefined();
+      expect(caches.swarm).not.toBe(caches.project);
+    });
+
+    it("memoryDirForScope resolves to correct paths", () => {
+      const swarmDir = hooks.memoryDirForScope("swarm");
+      const projectDir = hooks.memoryDirForScope("project");
+      expect(swarmDir).toBeDefined();
+      expect(projectDir).toBeDefined();
+      // Under the seam, both resolve to the same dir
+      // (the seam overrides both stores)
+      expect(swarmDir).toBe(MEMORY_DIR);
+    });
+
+    it("memoryIndexPathForScope returns per-store index paths", () => {
+      const swarmIdx = hooks.memoryIndexPathForScope("swarm");
+      const projectIdx = hooks.memoryIndexPathForScope("project");
+      expect(swarmIdx).toContain("memory-search-index.jsonl");
+      expect(projectIdx).toContain("memory-search-index.jsonl");
+      // Under the seam, both resolve to the same path
+      expect(swarmIdx).toBe(projectIdx);
     });
   });
 });
