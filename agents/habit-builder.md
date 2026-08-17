@@ -29,6 +29,8 @@ permission:
   memory_note_read: allow
   memory_notes_list: allow
   memory_note_delete: allow
+  issue_write: allow
+  issue_update: allow
   bash:
     "*": deny
     "ls*": allow
