@@ -17,7 +17,6 @@ superseded_by: null
 <!-- Filename: knowledge/intent-{{name}}-{{session_id}}-gen{{generation}}.md -->
 <!-- GENERATION: {{generation}} is the lifecycle counter from protocol-gate state. Each lifecycle's KDs are scoped to its generation (`-genN-` after the session ID) so stale KDs from prior lifecycles are never matched. Use the generation value provided by the dispatcher. -->
 <!-- Template has no decision points — the Overseer writes Raw Request verbatim. -->
-<!-- Triage Notes are pre-filled; the Explorer fills them after dispatch. -->
 
 # INTENT: {{title}}
 
@@ -27,10 +26,10 @@ superseded_by: null
 
 ## Triage Notes
 
-- **Domain familiarity**: TBD — Explorer will assess after dispatch.
-- **Clarity**: TBD — Explorer will assess after dispatch.
-- **Estimated scope**: TBD — Explorer will assess after dispatch.
+- **Domain familiarity**: TBD — filled by Overseer at creation.
+- **Clarity**: TBD — filled by Overseer at creation.
+- **Estimated scope**: TBD — filled by Overseer at creation.
 
 ## Next Steps
 
-- [ ] Dispatch Explorer to verify and explore
+- [ ] Dispatch Spec Weaver to create SPEC KD
