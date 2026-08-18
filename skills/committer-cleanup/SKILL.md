@@ -46,17 +46,19 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
    - Imperative present tense
    - Subject line omits trailing period
    - Subject line ≤72 characters
-   - **Internal references**: Describe code changes exclusively; omit internal references.
+   - **Internal references**: Describe code changes exclusively. NEVER include: KD file paths (`knowledge/...`), session IDs (`ses_...`), milestone IDs (`MILESTONE-...`), generation numbers (`-genN`), lifecycle phase names (e.g., "SWARM", "VERIFY", "DECOMPOSE"), agent names (e.g., "Artisan", "Overseer"), or dispatch metadata (e.g., "DISPATCH TO:", "MODE:", "MILESTONE ID:").
 
 9. **Stage** — Select one coherent group, verify clean working tree, review the batch's full content with `git diff -- <files>` limited to the batch's files, then `git add <files>`.
 
-10. **Commit** — Check off TODO item, verify staged diff non-empty (`git diff --cached --stat`), write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled.
+10. **Pre-commit scan** — Scan `git diff --cached` for forbidden patterns: `knowledge/`, `ses_`, `MILESTONE-`, `-gen`, lifecycle phase names, agent names, dispatch metadata. If any pattern matches, `git reset HEAD` to unstage, report the violation, and skip commit.
 
-11. **Verify** — `git show --stat -1` to confirm.
+11. **Commit** — Check off TODO item, verify staged diff non-empty (`git diff --cached --stat`), write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled.
 
-12. **Repeat** — Return to step 6 for remaining groups.
+12. **Verify** — `git show --stat -1` to confirm.
 
-13. **Error handling** — On failure, `git reset --mixed` to recover.
+13. **Repeat** — Return to step 6 for remaining groups.
+
+14. **Error handling** — On failure, `git reset --mixed` to recover.
 
 ## Post-Commit Verification
 
