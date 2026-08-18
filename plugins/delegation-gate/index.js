@@ -138,7 +138,7 @@ function loadTemplates(config) {
   // disk shape (the older fallback was also missing GENERATION entirely).
   const fallbackHeader = (mode) => {
     const intentKdLine = mode === "cleanup" ? "" : "INTENT KD: {intent_kd}\n";
-    const branchLine = mode === "preflight" || mode === "cleanup" ? "BRANCH: {branch}\n" : "";
+    const branchLine = mode === "preflight" ? "BRANCH: {branch}\n" : "";
     return `DISPATCH TO: {agent}\nMODE: ${mode}\n${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\n${branchLine}SCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n`;
   };
 
@@ -543,11 +543,11 @@ export default {
       if (fields.mode?.toLowerCase() !== "checkpoint" && fields.mode?.toLowerCase() !== "cleanup") {
         requiredFields.push("intent_kd");
       }
-      // Committer-owned modes carry a branch field — the committer
-      // creates/verifies the dispatch BRANCH, so an absent branch is a hard
-      // rejection before template rendering (preflight + cleanup require
-      // branch; checkpoint and all other modes do not).
-      if (fields.mode?.toLowerCase() === "preflight" || fields.mode?.toLowerCase() === "cleanup") {
+      // Preflight carries a branch field — the committer creates/verifies
+      // the dispatch BRANCH, so an absent branch is a hard rejection before
+      // template rendering (checkpoint, cleanup, and all other modes do not
+      // require branch — cleanup auto-detects via git branch --show-current).
+      if (fields.mode?.toLowerCase() === "preflight") {
         requiredFields.push("branch");
       }
 
