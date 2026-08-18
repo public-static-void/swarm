@@ -43,7 +43,10 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
    - Imperative present tense
    - Subject line omits trailing period
    - Subject line ≤72 characters
-   - **Internal references**: Describe code changes exclusively.
+   - **Commit message format**: `<type>(<scope>): <description>`
+     - **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
+     - **scope**: the component or module affected
+     - **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning
 
 8. **Stage** — Select one coherent group, verify clean working tree, review the batch's full content with `git diff -- <files>` limited to the batch's files, then `git add <files>`.
 
@@ -68,7 +71,12 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 | chore    | Build/tooling          |
 | ci       | CI/CD                  |
 
-**Rules:** Scope required if ≥80% of representative commits use scope. Subject: imperative present tense, ≤72 chars, omits trailing period. Commit messages describe code changes exclusively.
+**Rules:** Scope required if ≥80% of representative commits use scope. Subject: imperative present tense, ≤72 chars, omits trailing period.
+
+**Commit message format:** `<type>(<scope>): <description>`
+- **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
+- **scope**: the component or module affected
+- **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning. The format defines the positive shape; internal tracking metadata is excluded because it is not part of the format.
 
 ## Exit
 

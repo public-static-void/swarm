@@ -46,7 +46,10 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
    - Imperative present tense
    - Subject line omits trailing period
    - Subject line ≤72 characters
-   - **Internal references**: Describe code changes exclusively; omit internal references.
+   - **Commit message format**: `<type>(<scope>): <description>`
+     - **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
+     - **scope**: the component or module affected
+     - **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning
 
 9. **Stage** — Select one coherent group, verify clean working tree, review the batch's full content with `git diff -- <files>` limited to the batch's files, then `git add <files>`.
 
@@ -63,8 +66,8 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
 After all commit batches are complete and before pushing:
 
 1. **Fetch remote refs** — Run `git fetch origin` to update all remote tracking refs
-2. **Check divergence** — Run `git rev-list --count origin/main..HEAD` to count local commits absent from `origin/main`
-3. **Warn if ahead** — If the count is greater than 0, log a warning that the local branch has commits not on `origin/main`. This may indicate push or PR merge is pending.
+2. **Check divergence** — Run `git rev-list --count origin/<branch>..HEAD` to count local commits absent from the remote tracking branch. If the remote branch does not exist yet (first push), skip this check.
+3. **Warn if ahead** — If the count is greater than 0, log a warning that the local branch has commits not on the remote. This may indicate push or PR merge is pending.
 
 ## Push Protocol
 
@@ -74,9 +77,7 @@ After verification passes:
 
 2. **Push** — Push committed changes to remote. When remote is absent or push fails, report the issue back to the dispatching agent.
 
-3. **Merge (optional)** — If merging is needed, `git merge*: ask` — request confirmation before merging.
-
-4. **Post-push alignment check** — After successful push, run `git fetch origin` and verify `origin/main` is reachable from the current branch's base. If divergence is detected, log a warning and report the gap to the dispatching agent.
+3. **Post-push alignment check** — After successful push, run `git fetch origin` and verify the remote branch is up to date by comparing `git rev-list --count HEAD..origin/<branch>`. If the count is greater than 0, log a warning that the remote branch is behind. If the remote branch does not exist yet (first push), skip the check. If fetch fails, report the issue back to the dispatching agent.
 
 ## Semantic Commit Convention
 
@@ -91,10 +92,15 @@ After verification passes:
 | chore    | Build/tooling          |
 | ci       | CI/CD                  |
 
-**Rules:** Scope required if ≥80% of representative commits use scope. Subject: imperative present tense, ≤72 chars, omits trailing period. Commit messages describe code changes exclusively.
+**Rules:** Scope required if ≥80% of representative commits use scope. Subject: imperative present tense, ≤72 chars, omits trailing period.
+
+**Commit message format:** `<type>(<scope>): <description>`
+- **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
+- **scope**: the component or module affected
+- **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning. The format defines the positive shape; internal tracking metadata is excluded because it is not part of the format.
 
 ## Exit
 
 1. **Verify-output reporting discipline (issue #53)** — Before writing the CLEANUP KD, ground-truth verify every commit hash or artifact it reports: `git log`/`git show` for hashes (extends the step-11 `git show --stat -1` self-verification), `read`/`glob` from disk for files. Never write an unverified hash; a commit that could not be created is reported as "UNCOMMITTED" with the working-tree state. This reporting discipline complements — it does not replace — the per-commit self-verification steps.
 2. **Write CLEANUP KD** — Write a CLEANUP KD at the `RESULT KD` path specified in the dispatch context using the `template-cleanup.md` template from the kd-system skill. The KD documents what was committed and pushed, and signals to the protocol-gate that the cleanup phase is complete.
-3. Report what was committed, merged, and pushed.
+3. Report what was committed and pushed.
