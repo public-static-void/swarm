@@ -280,7 +280,6 @@ RESULT KD: invalid-path.md`;
 MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
-BRANCH: chore/version-bump-2
 SCOPE: Implement feature X
 RESULT KD:`;
 
@@ -354,13 +353,6 @@ INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
 SCOPE: <optional context>
 RESULT KD: knowledge/impl-foo.md`,
-        `AGENT: committer
-MODE: preflight
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-08-08
-BRANCH: <branch>
-SCOPE: Implement feature X
-RESULT KD: knowledge/preflight-foo.md`,
         `AGENT: artisan
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
@@ -396,17 +388,16 @@ KD PATHS: knowledge/spec-foo.md, knowledge/plan-foo.md`;
       expect(output.args.prompt).toContain("ses_023f1f066ffecWQJC5SF8v1B8U");
       expect(output.args.prompt).toContain("GENERATION: 1");
 
-      // A branch value that starts alphanumeric passes the gate-fix contract
+      // A preflight dispatch without BRANCH is accepted (no BRANCH required)
       const preflight = `AGENT: committer
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
-BRANCH: gate-fix
-SCOPE: Preflight with a real branch
+SCOPE: Preflight with real values
 RESULT KD: knowledge/preflight-foo.md`;
       const out2 = { args: { prompt: preflight } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c2" }, out2);
-      expect(out2.args.prompt).toContain("BRANCH: gate-fix");
+      expect(out2.args.prompt).toContain("SCOPE: Preflight with real values");
     });
 
     it("rejects a verbatim RESULT KD template form via validateKDPath, not the placeholder check", async () => {
@@ -505,7 +496,6 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
-BRANCH: fix/swarm-gate
 RESULT KD: knowledge/preflight-foo.md`;
 
       const output = { args: { prompt } };
@@ -580,7 +570,6 @@ RESULT KD: knowledge/exploration-foo.md`,
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
-BRANCH: fix/swarm-gate
 SCOPE: Setup workspace
 RESULT KD: knowledge/preflight-foo.md`,
       ];
@@ -596,12 +585,12 @@ RESULT KD: knowledge/preflight-foo.md`,
     it("renders the correct committer template bodies", async () => {
       const cases = [
         // Preflight must not instruct reading the INTENT KD (no read:allow on committer)
-        { mode: "preflight", result: "knowledge/preflight-foo.md", branch: "fix/swarm-gate", expectMatch: /Load the kd-system skill and the committer-preflight skill/, expectNoMatch: /Read the INTENT KD at/ },
+        { mode: "preflight", result: "knowledge/preflight-foo.md", expectMatch: /Load the kd-system skill and the committer-preflight skill/, expectNoMatch: /Read the INTENT KD at/ },
         // Checkpoint reads KDs from KD PATHS only — kd_paths supplied so the
         // sentence renders (stripped when kd_paths is absent)
         { mode: "checkpoint", result: "knowledge/checkpoint-foo.md", kdPaths: "knowledge/intent-foo.md", expectMatch: /Read KDs from KD PATHS/, expectNoMatch: /Read the INTENT KD at/ },
         // Cleanup must not instruct reading the INTENT KD (no read:allow on committer)
-        { mode: "cleanup", result: "knowledge/cleanup-foo.md", branch: "chore/version-bump-2", expectMatch: /Load the kd-system skill. Load the committer-cleanup skill/, expectNoMatch: /Read the INTENT KD at/ },
+        { mode: "cleanup", result: "knowledge/cleanup-foo.md", expectMatch: /Load the kd-system skill. Load the committer-cleanup skill/, expectNoMatch: /Read the INTENT KD at/ },
         // Explore (read:allow) reads the INTENT KD
         { mode: "explore", result: "knowledge/exploration-foo.md", expectMatch: /Read the INTENT KD at/, expectNoMatch: null },
       ];
@@ -612,7 +601,7 @@ INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
 SCOPE: Test ${c.mode}
 RESULT KD: ${c.result}
-${c.branch ? `BRANCH: ${c.branch}\n` : ""}${c.kdPaths ? `KD PATHS: ${c.kdPaths}` : ""}`;
+${c.kdPaths ? `KD PATHS: ${c.kdPaths}` : ""}`;
 
         const output = { args: { prompt } };
         await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -656,7 +645,6 @@ RESULT KD: ${kd}`;
       const withoutIntent = `AGENT: committer
 MODE: cleanup
 SESSION DATE: 2026-07-21
-BRANCH: chore/version-bump-2
 SCOPE: Commit and push remaining changes
 RESULT KD: knowledge/cleanup-foo.md`;
 
@@ -671,7 +659,6 @@ RESULT KD: knowledge/cleanup-foo.md`;
 MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
-BRANCH: chore/version-bump-2
 SCOPE: Commit and push remaining changes
 RESULT KD: knowledge/cleanup-foo.md`;
 
@@ -730,18 +717,17 @@ RESULT KD: knowledge/process-foo.md`;
   describe("Conditional KD PATHS Rendering", () => {
     it("omits the KD PATHS header line and body sentence when kd_paths is absent", async () => {
       const cases = [
-        { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md", branch: "fix/swarm-gate" },
+        { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md" },
         { mode: "checkpoint", agent: "committer", result: "knowledge/checkpoint-foo.md" },
-        { mode: "cleanup", agent: "committer", result: "knowledge/cleanup-foo.md", branch: "chore/version-bump-2" },
+        { mode: "cleanup", agent: "committer", result: "knowledge/cleanup-foo.md" },
       ];
-      for (const { mode, agent, result, branch } of cases) {
+      for (const { mode, agent, result } of cases) {
         const prompt = `AGENT: ${agent}
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
 SCOPE: Test conditional KD PATHS
-RESULT KD: ${result}
-${branch ? `BRANCH: ${branch}` : ""}`;
+RESULT KD: ${result}`;
 
         const output = { args: { prompt } };
         await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -752,18 +738,18 @@ ${branch ? `BRANCH: ${branch}` : ""}`;
 
     it("renders the KD PATHS header line and body sentence when kd_paths is supplied", async () => {
       const cases = [
-        { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md", branch: "fix/swarm-gate" },
+        { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md" },
         { mode: "checkpoint", agent: "committer", result: "knowledge/checkpoint-foo.md" },
-        { mode: "cleanup", agent: "committer", result: "knowledge/cleanup-foo.md", branch: "chore/version-bump-2" },
+        { mode: "cleanup", agent: "committer", result: "knowledge/cleanup-foo.md" },
       ];
-      for (const { mode, agent, result, branch } of cases) {
+      for (const { mode, agent, result } of cases) {
         const prompt = `AGENT: ${agent}
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
 SCOPE: Test conditional KD PATHS
 RESULT KD: ${result}
-${branch ? `BRANCH: ${branch}\n` : ""}KD PATHS: knowledge/upstream-foo.md`;
+KD PATHS: knowledge/upstream-foo.md`;
 
         const output = { args: { prompt } };
         await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -846,8 +832,7 @@ MODE: ${c.mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Investigate the plugin system
-RESULT KD: knowledge/${c.mode === "investigate" ? "analysis" : "preflight"}-foo.md
-${c.mode === "preflight" ? "BRANCH: fix/swarm-gate" : ""}`;
+RESULT KD: knowledge/${c.mode === "investigate" ? "analysis" : "preflight"}-foo.md`;
 
         const output = { args: { prompt } };
         await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
@@ -856,7 +841,7 @@ ${c.mode === "preflight" ? "BRANCH: fix/swarm-gate" : ""}`;
         expect(output.args.description).toContain(`- ${c.mode}: ${c.result}`);
         for (const other of c.other) {
           // No other mode's KD path prefix may be injected — bare mode words
-          // like "cleanup" legitimately appear in the BRANCH qualifier text.
+          // like "cleanup" legitimately appear in the description text.
           expect(output.args.description).not.toContain(`knowledge/${other}-`);
         }
       }
@@ -1006,7 +991,7 @@ RESULT KD: knowledge/checkpoint-foo.md`;
     // angle-bracket placeholder — such a line, copied verbatim into a dispatch,
     // is exactly the leak source fixed. The RESULT KD example lines keep
     // <name>-<session_id> path components but are never whole-value <...>.
-    const wholeValueAngleLine = /^(?:#{1,6}\s*)?(?:\*\*)?(?:AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BRANCH[. _]NAME|BRANCH|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*<[^>]+>$/;
+    const wholeValueAngleLine = /^(?:#{1,6}\s*)?(?:\*\*)?(?:AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*<[^>]+>$/;
 
     it("emits no extractable whole-value angle-bracket line from dispatcherFormatHint", async () => {
       const output = { description: "Delegate work to another agent." };
@@ -1216,21 +1201,20 @@ SCOPE: Test partial match`;
         { mode: "decompose", agent: "pathfinder", scope: "Decompose the project into tasks" },
         { mode: "swarm", agent: "artisan", scope: "Execute implementation" },
         { mode: "checkpoint", agent: "committer", scope: "Create a checkpoint commit" },
-        { mode: "preflight", agent: "committer", scope: "Setup workspace", branch: "fix/swarm-gate" },
+        { mode: "preflight", agent: "committer", scope: "Setup workspace" },
         { mode: "align", agent: "spec-weaver", scope: "Align requirements" },
         { mode: "review", agent: "inspector", scope: "Review implementation" },
         { mode: "extract", agent: "scribe", scope: "Extract documentation" },
         { mode: "evolve", agent: "habit-builder", scope: "Evolve process" },
-        { mode: "cleanup", agent: "committer", scope: "Commit changes", branch: "chore/version-bump-2" }
+        { mode: "cleanup", agent: "committer", scope: "Commit changes" }
       ];
 
-      for (const { mode, agent, scope, branch } of cases) {
+      for (const { mode, agent, scope } of cases) {
         const prompt = `AGENT: ${agent}
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
-SCOPE: ${scope}
-${branch ? `BRANCH: ${branch}` : ""}`;
+SCOPE: ${scope}`;
 
         await expect(
           hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
@@ -1382,158 +1366,37 @@ RESULT KD: knowledge/checkpoint-foo.md`;
     });
   });
 
-  describe("BRANCH Contract", () => {
-    it("renders BRANCH between GENERATION and SCOPE for preflight and cleanup dispatches", async () => {
-      const cases = [
-        { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md", branch: "fix/swarm-gate", intent: "INTENT KD: knowledge/intent-foo.md\n" },
-        { mode: "cleanup", agent: "committer", result: "knowledge/cleanup-foo.md", branch: "chore/version-bump-2", intent: "" },
-      ];
-      for (const { mode, agent, result, branch, intent } of cases) {
-        const prompt = `AGENT: ${agent}
-MODE: ${mode}
-${intent}SESSION DATE: 2026-08-03
-SESSION ID: ses_branch
-GENERATION: 0
-BRANCH: ${branch}
-SCOPE: Test branch render
-RESULT KD: ${result}`;
+  // BRANCH Contract tests removed — BRANCH parameter eliminated from delegation system
 
-        const output = { args: { prompt } };
-        await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_branch", callID: "c1" }, output);
-        // The BRANCH header line sits between GENERATION and SCOPE
-        const generationIdx = output.args.prompt.indexOf("GENERATION: 0");
-        const branchIdx = output.args.prompt.indexOf(`BRANCH: ${branch}`);
-        const scopeIdx = output.args.prompt.indexOf("SCOPE: Test branch render");
-        expect(generationIdx).toBeGreaterThan(-1);
-        expect(branchIdx).toBeGreaterThan(generationIdx);
-        expect(scopeIdx).toBeGreaterThan(branchIdx);
-        expect(output.args.prompt).toContain(`BRANCH: ${branch}`);
-      }
-    });
-
-    it("extracts branch in BRANCH:/branch:/BRANCH_NAME: forms and requires it for preflight/cleanup", async () => {
-      // Both case forms and the BRANCH_NAME underscore variant normalize to `branch`
-      const forms = ["BRANCH: fix/swarm-gate", "branch: fix/swarm-gate", "BRANCH_NAME: fix/swarm-gate"];
-      for (const form of forms) {
-        const prompt = `AGENT: committer
+  describe("Backward Compatibility - BRANCH Removal", () => {
+    it("accepts a preflight dispatch without BRANCH field (AC011)", async () => {
+      const prompt = `AGENT: committer
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
-${form}
-SCOPE: Branch extraction
+SCOPE: Test preflight without BRANCH
 RESULT KD: knowledge/preflight-foo.md`;
 
-        const output = { args: { prompt } };
-        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-        expect(output.args.prompt).toContain("BRANCH: fix/swarm-gate");
-      }
-
-      // Preflight and cleanup without a branch are rejected before rendering
-      const missing = [
-        `AGENT: committer
-MODE: preflight
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-08-03
-SCOPE: Missing branch
-RESULT KD: knowledge/preflight-foo.md`,
-        `AGENT: committer
-MODE: cleanup
-SESSION DATE: 2026-08-03
-SCOPE: Missing branch
-RESULT KD: knowledge/cleanup-foo.md`,
-      ];
-      for (const prompt of missing) {
-        await expect(
-          hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-        ).rejects.toThrow("Missing required structured fields");
-      }
-
-      // Non-committer modes are unaffected — a swarm dispatch without BRANCH passes
-      const swarm = `AGENT: artisan
-MODE: swarm
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-08-03
-MILESTONE ID: M3
-SCOPE: Execute milestone M3
-RESULT KD: knowledge/impl-M3-foo.md`;
-      const swarmOut = { args: { prompt: swarm } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, swarmOut);
-      expect(swarmOut.args.prompt).toContain("MILESTONE ID: M3");
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("MODE: preflight");
     });
 
-    it("rejects unsafe branch values with the dedicated INVALID_BRANCH error and accepts git-ref-safe ones", async () => {
-      const invalid = ["a..b", "-fix/x", "fix/", "a b", "a;b"];
-      for (const branch of invalid) {
-        const prompt = `AGENT: committer
+    it("does not crash when BRANCH is present in prompt (backward compat, AC012)", async () => {
+      const prompt = `AGENT: committer
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
-BRANCH: ${branch}
-SCOPE: Branch validation
+BRANCH: fix/old-style
+SCOPE: Test backward compat
 RESULT KD: knowledge/preflight-foo.md`;
 
-        await expect(
-          hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
-        ).rejects.toThrow("Invalid branch name");
-      }
-
-      const valid = ["fix/swarm-gate", "chore/version-bump-2", "improve/x"];
-      for (const branch of valid) {
-        const prompt = `AGENT: committer
-MODE: cleanup
-SESSION DATE: 2026-08-03
-BRANCH: ${branch}
-SCOPE: Branch validation
-RESULT KD: knowledge/cleanup-foo.md`;
-
-        const output = { args: { prompt } };
-        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-        expect(output.args.prompt).toContain(`BRANCH: ${branch}`);
-      }
-    });
-
-    it("shows the BRANCH format hint only for preflight/cleanup modes", async () => {
-      // Mode-agnostic task-tool definition hint carries the qualifier
-      const output = { description: "Delegate work to another agent." };
-      await hooks["tool.definition"]({ toolID: "task" }, output);
-      expect(output.description).toContain("BRANCH: branch name (required for preflight/cleanup)");
-
-      // Per-mode injected hint: BRANCH line present for preflight/cleanup
-      const committerModes = [
-        { mode: "preflight", agent: "committer", result: "knowledge/preflight-foo.md", branch: "fix/swarm-gate" },
-        { mode: "cleanup", agent: "committer", result: "knowledge/cleanup-foo.md", branch: "chore/version-bump-2" },
-      ];
-      for (const { mode, agent, result, branch } of committerModes) {
-        const prompt = `AGENT: ${agent}
-MODE: ${mode}
-${mode === "cleanup" ? "" : "INTENT KD: knowledge/intent-foo.md\n"}SESSION DATE: 2026-08-03
-BRANCH: ${branch}
-SCOPE: Format hint test
-RESULT KD: ${result}`;
-
-        const out = { args: { prompt } };
-        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, out);
-        expect(out.args.description).toContain("BRANCH: (branch name, required for preflight/cleanup)");
-      }
-
-      // ...and absent for other modes
-      const otherModes = [
-        { mode: "checkpoint", agent: "committer", result: "knowledge/checkpoint-foo.md", extra: "" },
-        { mode: "explore", agent: "explorer", result: "knowledge/exploration-foo.md", extra: "" },
-        { mode: "swarm", agent: "artisan", result: "knowledge/impl-M3-foo.md", extra: "MILESTONE ID: M3\n" },
-      ];
-      for (const { mode, agent, result, extra } of otherModes) {
-        const prompt = `AGENT: ${agent}
-MODE: ${mode}
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-08-03
-${extra}SCOPE: Format hint test
-RESULT KD: ${result}`;
-
-        const out = { args: { prompt } };
-        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, out);
-        expect(out.args.description).not.toContain("BRANCH:");
-      }
+      const output = { args: { prompt } };
+      // Should not throw — BRANCH is harmlessly ignored
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("MODE: preflight");
+      // BRANCH line is stripped from rendered output since it's not a recognized field
+      expect(output.args.prompt).not.toContain("BRANCH: fix/old-style");
     });
   });
 
