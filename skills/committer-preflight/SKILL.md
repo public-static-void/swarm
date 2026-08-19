@@ -11,11 +11,11 @@ PREFLIGHT mode sets up a clean git workspace for feature development. It handles
 
 ## When to Load
 
-Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — git workspace setup). The dispatch context contains the working branch name in the `BRANCH` field.
+Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — git workspace setup).
 
 ## Protocol
 
-1. **Accept branch name (blocking)** — Read the `BRANCH` field from the dispatch. The branch name is required: a dispatch without `BRANCH` is a blocking error. If `BRANCH` is absent, load the escalation-protocol skill and escalate via ESCALATION format reporting the missing delegation field. Check `.git/` existence.
+1. **Prepare repository** — Check `.git/` existence.
    - **When `.git/` is absent**: `git init`, then proceed to step 4 to establish the working branch. Skip pull — remote is absent at this stage.
    - **Clean repo**: Run `git remote -v` to check remote configuration.
      - **When remote is absent**: Log a warning that no remote is available. Skip fetch and pull. Proceed to step 4 from current local state.
@@ -36,21 +36,15 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 
 3. **Ignore file management** — Check if `.ignore` exists. If not, create it. Add `!knowledge/` to `.ignore` so that OpenCode (and other editors) can still scan KDs despite them being gitignored. Preserve all existing entries.
 
-4. **Establish working branch** — Every task runs on its own branch named from the dispatch `BRANCH`; the shared integration branches `develop`, `main`, `master`, and `staging` are reserved for integration work. Branch establishment runs once per PREFLIGHT — CHECKPOINT and CLEANUP modes operate on the established branch.
-   1. **With dispatch `BRANCH`**:
-      - If the branch exists locally: `git checkout <branch>` (skip if already on it).
-      - If the branch exists remotely: track it — `git checkout -b <branch> --track origin/<branch>`.
-      - Otherwise: `git checkout -b <branch>` from the pulled default-branch state (step 1).
-   2. **Without dispatch `BRANCH` (legacy dispatch — should not occur after the delegation-gate requires it)**: run `git branch --show-current`:
-      - If the current branch is `develop`/`main`/`master`/`staging`: it is a shared integration branch — create a new branch per the Branch Naming Convention below, derived from the dispatch SCOPE.
-      - If the current branch is already a task branch matching the naming convention: use it.
-      - If the current branch is unclassifiable: load the escalation-protocol skill and escalate via ESCALATION format instead of reusing it.
-   3. **Verify final branch**: when dispatch `BRANCH` was provided, run `git branch --show-current` and confirm it equals the dispatch `BRANCH`. On mismatch, load the escalation-protocol skill and escalate.
+4. **Establish working branch** — Create a feature branch from the detected base branch. The Committer derives the feature branch name from the INTENT KD context using the Branch Naming Convention below. Branch establishment runs once per PREFLIGHT — CHECKPOINT and CLEANUP modes operate on the established branch.
+   1. **Derive feature branch name** — Read the INTENT KD context to derive a feature branch name using the Branch Naming Convention table (task type → branch prefix). If INTENT KD is not available or context is insufficient, use `improve/<timestamp>` as fallback.
+   2. **Detect base branch** — Run `git log --oneline -10` to find where the current HEAD branched off. The base branch is the branch point, not always `main`.
+   3. **Create feature branch** — Run `git checkout -b <feature-branch> <base>`.
    4. **Restore stashed changes** — If step 1 stashed pending changes (dirty repo), run `git stash pop` after the working branch is established. If pop fails, log a warning but continue.
 
 ## Branch Naming Convention
 
-Task-dependent branch prefix derived from the dispatch SCOPE (used when no `BRANCH` is provided):
+Task-dependent branch prefix derived from the INTENT KD context:
 
 | Task                | Branch prefix   |
 | ------------------- | --------------- |
@@ -62,6 +56,6 @@ Task-dependent branch prefix derived from the dispatch SCOPE (used when no `BRAN
 
 ## Exit
 
-1. **Verify-output reporting discipline (issue #53)** — Ground-truth verify the workspace-state claims the PREFLIGHT KD reports (branch, clean/dirty, stash): `git branch --show-current`/`git status` from the repo, `read`/`glob` from disk for files — never from memory. This reporting discipline complements the verification steps above.
+1. **Verify-output reporting discipline (issue #53)** — Ground-truth verify the workspace-state claims the PREFLIGHT KD reports (branch, clean/dirty, stash) using `git branch --show-current`/`git status` from the repo and `read`/`glob` from disk. This reporting discipline complements the verification steps above.
 2. **Write PREFLIGHT KD** — Write a PREFLIGHT KD at the `RESULT KD` path specified in the dispatch context using the `template-preflight.md` template from the kd-system skill. The KD documents workspace setup results (branch, gitignore, etc.) and signals to the protocol-gate that PREFLIGHT is complete and can advance to EXPLORE.
 3. Report branch name, clean/dirty state, and any stashed changes. Exit after workspace is ready.

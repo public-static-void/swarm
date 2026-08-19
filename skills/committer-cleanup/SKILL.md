@@ -11,15 +11,13 @@ CLEANUP mode commits any remaining changes and pushes to the remote. This mode h
 
 ## When to Load
 
-Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — commit and push). The dispatch context contains a summary of leftover work and the working branch in the `BRANCH` field.
+Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — commit and push).
 
 ## Commit Protocol
 
 1. **Create TODO checklist** — `todowrite` for each commit group. Prevents mixing unrelated changes.
 
-2. **Verify working branch** — Run `git branch --show-current`. Commit task branches; shared integration branches (`develop`/`main`/`master`/`staging`) route to the escalation-protocol skill via ESCALATION format.
-   - **Dispatch `BRANCH` provided**: the current branch MUST equal the dispatch `BRANCH`. On mismatch, load the escalation-protocol skill and escalate via ESCALATION format instead of committing.
-   - **Dispatch `BRANCH` absent (legacy dispatch)**: the current branch must be a classifiable task branch. If it is a shared integration branch or unclassifiable, load the escalation-protocol skill and escalate via ESCALATION format instead of committing.
+2. **Verify working branch** — Run `git branch --show-current`. If the branch is `develop`/`main`/`master`/`staging` (shared integration branch), load the escalation-protocol skill and escalate via ESCALATION format; otherwise proceed.
 
 3. **Survey repo** — `git log --oneline -30`. Filter out non-representative commits (merge commits, reverts, automated, initial commits). Analyze language, scope usage (`type(scope):` consistency), style (imperative present tense, capitalization, period). If fewer than 3 representative commits, fall back to: English, conventional commits with scope, imperative present tense. Subject line omits trailing period.
 
@@ -73,7 +71,7 @@ After all commit batches are complete and before pushing:
 
 After verification passes:
 
-1. **Re-verify working branch** — Run `git branch --show-current`. The current branch MUST still equal the dispatch `BRANCH` (or be a classifiable task branch for legacy dispatches) before pushing. Push task branches; a shared integration branch (`develop`/`main`/`master`/`staging`) routes to the escalation-protocol skill via ESCALATION format.
+1. **Re-verify working branch** — Run `git branch --show-current`. Verify the branch is a feature branch — a shared integration branch requires escalation: load the escalation-protocol skill and escalate via ESCALATION format.
 
 2. **Push** — Push committed changes to remote. When remote is absent or push fails, report the issue back to the dispatching agent.
 

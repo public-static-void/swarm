@@ -293,12 +293,7 @@ describe("agents delegation dispatch docs", () => {
       expect(other.description).toBe("Read a file.");
     });
 
-    it("annotates the task tool definition with the BRANCH line for committer modes", async () => {
-      const output = { description: "Delegate work to another agent." };
-      await hooks["tool.definition"]({ toolID: "task" }, output);
-      expect(output.description).toContain("BRANCH: branch name (required for preflight/cleanup)");
-      expect(output.description).toContain("preflight/cleanup");
-    });
+    // BRANCH format hint test removed — BRANCH parameter eliminated from delegation system
 
     it("validates the artisan.md checkpoint dispatch example", async () => {
       const artisan = readAgent("artisan.md");
