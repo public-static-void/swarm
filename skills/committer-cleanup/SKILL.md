@@ -71,7 +71,7 @@ After all commit batches are complete and before pushing:
 
 After verification passes:
 
-1. **Re-verify working branch** — Run `git branch --show-current`. The current branch must be a task branch (not `develop`/`main`/`master`/`staging`). If on a shared integration branch, load the escalation-protocol skill and escalate via ESCALATION format.
+1. **Re-verify working branch** — Run `git branch --show-current`. Verify the branch is a feature branch — a shared integration branch requires escalation: load the escalation-protocol skill and escalate via ESCALATION format.
 
 2. **Push** — Push committed changes to remote. When remote is absent or push fails, report the issue back to the dispatching agent.
 

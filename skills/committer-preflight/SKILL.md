@@ -56,6 +56,6 @@ Task-dependent branch prefix derived from the INTENT KD context:
 
 ## Exit
 
-1. **Verify-output reporting discipline (issue #53)** — Ground-truth verify the workspace-state claims the PREFLIGHT KD reports (branch, clean/dirty, stash): `git branch --show-current`/`git status` from the repo, `read`/`glob` from disk for files — never from memory. This reporting discipline complements the verification steps above.
+1. **Verify-output reporting discipline (issue #53)** — Ground-truth verify the workspace-state claims the PREFLIGHT KD reports (branch, clean/dirty, stash) using `git branch --show-current`/`git status` from the repo and `read`/`glob` from disk. This reporting discipline complements the verification steps above.
 2. **Write PREFLIGHT KD** — Write a PREFLIGHT KD at the `RESULT KD` path specified in the dispatch context using the `template-preflight.md` template from the kd-system skill. The KD documents workspace setup results (branch, gitignore, etc.) and signals to the protocol-gate that PREFLIGHT is complete and can advance to EXPLORE.
 3. Report branch name, clean/dirty state, and any stashed changes. Exit after workspace is ready.
