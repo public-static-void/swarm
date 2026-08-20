@@ -1920,29 +1920,33 @@ Body`;
       expect(parsed.scope).toBe("swarm");
     });
 
-    it("locates an issue across both stores by id when scope is omitted", async () => {
+    it("requires scope parameter — rejects when scope is omitted", async () => {
       await seedIssue(3);
       const result = await hooks.tool.issue_update.execute(
         { id: 3, changes: { resolution: "Cross-store close." } },
         { agent: "habit-builder", sessionID: "hb-session" }
       );
       const parsed = JSON.parse(result);
-      expect(parsed.message).toContain("updated");
-      expect(parsed.id).toBe(3);
-      const raw = readFileSync(join(ISSUES_DIR, "issue-3.md"), "utf8");
-      expect(raw).toMatch(/status: resolved/);
-      expect(raw).toContain("Cross-store close.");
+      expect(parsed.error).toContain("scope parameter is required");
     });
 
-    it("returns an error naming the stores searched for a missing id", async () => {
+    it("requires scope parameter — rejects when scope is omitted for missing id", async () => {
       const result = await hooks.tool.issue_update.execute(
         { id: 99, changes: { status: "resolved" } },
         { agent: "habit-builder", sessionID: "hb-session" }
       );
       const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("scope parameter is required");
+    });
+
+    it("returns an error naming the store for a missing id when scope is provided", async () => {
+      const result = await hooks.tool.issue_update.execute(
+        { id: 99, scope: "swarm", changes: { status: "resolved" } },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
       expect(parsed.error).toContain("not found");
       expect(parsed.error).toContain("swarm");
-      expect(parsed.error).toContain("project");
     });
 
     it("rejects invalid changes values with no file modified", async () => {
@@ -1982,6 +1986,88 @@ Body`;
       );
       const raw = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
       expect(raw).toContain("pathfinder");
+    });
+  });
+
+  describe("issue_move tool (registered execute)", () => {
+    async function seedIssue(id = 1, overrides = {}) {
+      await hooks.tool.issue_write.execute(
+        {
+          issue: {
+            id,
+            title: `Seed ${id}`,
+            severity: "medium",
+            created: "2026-08-16",
+            session: "ses_test",
+            assigned_to: "inspector",
+            tags: ["test", "mock"],
+            scope: "swarm",
+            ...overrides
+          }
+        },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+    }
+
+    it("exposes issue_move with description, args, and execute", () => {
+      expect(hooks.tool.issue_move).toBeTruthy();
+      expect(typeof hooks.tool.issue_move.description).toBe("string");
+      expect(hooks.tool.issue_move.args).toBeTruthy();
+      expect(typeof hooks.tool.issue_move.execute).toBe("function");
+    });
+
+    it("moves an issue from swarm to project store", async () => {
+      await seedIssue(1);
+      const result = await hooks.tool.issue_move.execute(
+        { id: 1, from_scope: "swarm", to_scope: "project" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("moved");
+      expect(parsed.from_scope).toBe("swarm");
+      expect(parsed.to_scope).toBe("project");
+      // Issue should no longer exist in swarm store
+      expect(existsSync(join(ISSUES_DIR, "issue-1.md"))).toBe(false);
+    });
+
+    it("rejects moves by non-authorized agents", async () => {
+      await seedIssue(1);
+      const result = await hooks.tool.issue_move.execute(
+        { id: 1, from_scope: "swarm", to_scope: "project" },
+        { agent: "artisan", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("permission");
+    });
+
+    it("allows Overseer to move issues", async () => {
+      await seedIssue(2);
+      const result = await hooks.tool.issue_move.execute(
+        { id: 2, from_scope: "swarm", to_scope: "generic" },
+        { agent: "overseer", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("moved");
+      expect(parsed.to_scope).toBe("generic");
+    });
+
+    it("rejects move to same scope", async () => {
+      await seedIssue(3);
+      const result = await hooks.tool.issue_move.execute(
+        { id: 3, from_scope: "swarm", to_scope: "swarm" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("same scope");
+    });
+
+    it("rejects move of non-existent issue", async () => {
+      const result = await hooks.tool.issue_move.execute(
+        { id: 999, from_scope: "swarm", to_scope: "project" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("not found");
     });
   });
 

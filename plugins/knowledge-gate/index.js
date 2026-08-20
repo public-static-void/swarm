@@ -1614,10 +1614,10 @@ export default {
         }
       }),
       issue_update: tool({
-        description: "Update an existing issue in the store named by scope, or search all stores by id when scope is omitted. Only Habit Builder may update. Args: id (number), scope (optional project|generic|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.",
+        description: "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.",
         args: {
           id: tool.schema.number().int().describe("Numeric issue ID to update"),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to search — omitted searches all stores by id"),
+          scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store to search — required"),
           changes: tool.schema.object({
             status: tool.schema.enum(["open", "resolved"]).optional().describe("New status (resolved closes the issue)"),
             resolution: tool.schema.string().optional().describe("Resolution text appended as a ## Resolution (YYYY-MM-DD) section"),
@@ -1639,8 +1639,9 @@ export default {
           if (!Number.isInteger(id) || id < 1) {
             return JSON.stringify({ error: `id must be a positive integer, got "${id}"` });
           }
-          if (scope !== undefined && scope !== "project" && scope !== "generic" && scope !== "swarm") {
-            return JSON.stringify({ error: `scope must be "project", "generic", or "swarm", got "${scope}"` });
+          // scope is required — ambiguous scope-omission removed (AC008)
+          if (!scope || (scope !== "project" && scope !== "generic" && scope !== "swarm")) {
+            return JSON.stringify({ error: "scope parameter is required for issue_update" });
           }
           if (!changes || typeof changes !== "object") {
             return JSON.stringify({ error: "changes must be an object" });
@@ -1658,22 +1659,13 @@ export default {
             return JSON.stringify({ error: "Nothing to update" });
           }
 
-          // Locate: the named store first, then all stores by id (a
-          // mirrored id targets the config-store copy unless scope is given,
-          // matching the memory_update cross-store contract).
-          const lookupScopes = scope !== undefined ? [scope] : ["swarm", "project", "generic"];
-          let found = null;
-          for (const s of lookupScopes) {
-            const candidate = join(issuesDirForScope(s), `issue-${id}.md`);
-            if (existsSync(candidate)) {
-              found = { scope: s, filePath: candidate };
-              break;
-            }
+          // Locate issue in the specified store (scope is required)
+          const issuesDir = issuesDirForScope(scope);
+          const filePath = join(issuesDir, `issue-${id}.md`);
+          if (!existsSync(filePath)) {
+            return JSON.stringify({ error: `Issue ${id} not found in store "${scope}"` });
           }
-          if (!found) {
-            const searched = scope !== undefined ? `store "${scope}"` : "any store (swarm, project, generic)";
-            return JSON.stringify({ error: `Issue ${id} not found in ${searched}` });
-          }
+          const found = { scope, filePath };
 
           let raw;
           try {
@@ -1726,6 +1718,107 @@ export default {
             debug(`issue_update: write failed — ${e.message}`);
             return JSON.stringify({ error: `Failed to update issue ${id}: ${e.message}` });
           }
+        }
+      }),
+      issue_move: tool({
+        description: "Move an issue between stores (project|generic|swarm). Only Habit Builder and Overseer agents may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.",
+        args: {
+          id: tool.schema.number().int().describe("Issue ID to move (numeric)"),
+          from_scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Source store scope"),
+          to_scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Target store scope"),
+          reason: tool.schema.string().optional().describe("Reason for the move (optional)")
+        },
+        async execute(args, context) {
+          const { id, from_scope, to_scope, reason } = args;
+          const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // Permission check: only Habit Builder and Overseer can move issues
+          if (agent !== "habit-builder" && agent !== "overseer") {
+            debug(`issue_move: rejected — called by non-authorized agent "${agent}"`);
+            return JSON.stringify({ error: "Only Habit Builder and Overseer agents have permission to move issues. Called by: " + (agent || "unknown") });
+          }
+
+          // Validate id
+          if (!Number.isInteger(id) || id < 1) {
+            return JSON.stringify({ error: `id must be a positive integer, got "${id}"` });
+          }
+
+          // Validate scopes
+          const validScopes = ["project", "generic", "swarm"];
+          if (!validScopes.includes(from_scope)) {
+            return JSON.stringify({ error: `from_scope must be one of: ${validScopes.join(", ")}, got "${from_scope}"` });
+          }
+          if (!validScopes.includes(to_scope)) {
+            return JSON.stringify({ error: `to_scope must be one of: ${validScopes.join(", ")}, got "${to_scope}"` });
+          }
+
+          // Cannot move to the same scope
+          if (from_scope === to_scope) {
+            return JSON.stringify({ error: `Cannot move issue ${id} from ${from_scope} to ${to_scope} — same scope` });
+          }
+
+          // Read issue from source store
+          const sourceDir = issuesDirForScope(from_scope);
+          const sourcePath = join(sourceDir, `issue-${id}.md`);
+          if (!existsSync(sourcePath)) {
+            return JSON.stringify({ error: `Issue ${id} not found in store "${from_scope}"` });
+          }
+
+          let raw;
+          try {
+            raw = readFileSync(sourcePath, "utf8");
+          } catch (e) {
+            return JSON.stringify({ error: `Failed to read issue ${id} from ${from_scope}: ${e.message}` });
+          }
+
+          // Parse frontmatter to extract issue data
+          const fmMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+          if (!fmMatch) {
+            return JSON.stringify({ error: `Issue ${id} has no valid frontmatter` });
+          }
+
+          // Parse the issue to get its data
+          const issue = parseIssueFile(raw, `issue-${id}.md`);
+          if (!issue) {
+            return JSON.stringify({ error: `Failed to parse issue ${id}` });
+          }
+
+          // Update scope in frontmatter
+          const newContent = raw.replace(
+            /^scope:\s*(project|generic|swarm)\s*$/m,
+            `scope: ${to_scope}`
+          );
+
+          // Write to target store
+          const targetDir = issuesDirForScope(to_scope);
+          const targetPath = join(targetDir, `issue-${id}.md`);
+
+          try {
+            // Ensure target directory exists
+            mkdirSync(targetDir, { recursive: true });
+            writeFileSync(targetPath, newContent, "utf8");
+            debug(`issue_move: copied ${sourcePath} to ${targetPath}`);
+          } catch (e) {
+            return JSON.stringify({ error: `Failed to write issue ${id} to ${to_scope}: ${e.message}` });
+          }
+
+          // Delete from source store
+          try {
+            unlinkSync(sourcePath);
+            debug(`issue_move: deleted source ${sourcePath}`);
+          } catch (e) {
+            // Target written but source not deleted — log warning but don't fail
+            debug(`issue_move: WARNING — failed to delete source ${sourcePath}: ${e.message}`);
+          }
+
+          return JSON.stringify({
+            message: `Issue ${id} moved from ${from_scope} to ${to_scope}`,
+            id,
+            path: targetPath,
+            from_scope,
+            to_scope,
+            reason: reason || null
+          });
         }
       }),
       memory_note: tool({
@@ -2135,8 +2228,13 @@ export default {
       }
 
       if (toolID === "issue_update") {
-        output.description = "Update an existing issue in the store named by scope, or search all stores by id when scope is omitted. Only Habit Builder may update. Args: id (number), scope (optional project|generic|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.";
+        output.description = "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.";
         debug(`toolDefinition: provided description for issue_update`);
+      }
+
+      if (toolID === "issue_move") {
+        output.description = "Move an issue between stores (project|generic|swarm). Only Habit Builder and Overseer agents may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.";
+        debug(`toolDefinition: provided description for issue_move`);
       }
     }
 
@@ -2301,7 +2399,9 @@ export default {
       perStoreCaches,
       getCacheForScope,
       memoryIndexPathForScope,
-      resolveMemoryScope
+      resolveMemoryScope,
+      // Issue move tool (P007): exposed for testing
+      issueMove: pluginTools.issue_move.execute
     };
   }
 };
