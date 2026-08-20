@@ -238,9 +238,11 @@ function getNextMemoryId() {
  *   id (MEM-\d{3}), source_kd (string), tags (array 2-8),
  *   topic (string ≤100), insight (string ≤500), type (enum),
  *   created (ISO 8601 with time), session (string), version ("1.0.0"),
+ *   scope ("project"|"generic"|"swarm", optional — injected at write time),
  *   superseded_by (string MEM-\d{3}, optional) — tombstone set via
  *   memory_update; superseded entries are excluded from search results
  */
+const VALID_SCOPES = ["project", "generic", "swarm"];
 function validateMemoryEntry(entry) {
   if (!entry || typeof entry !== "object") {
     return { valid: false, error: "Entry must be a non-null object" };
@@ -271,6 +273,10 @@ function validateMemoryEntry(entry) {
   }
   if (entry.version !== "1.0.0") {
     return { valid: false, error: 'version must be "1.0.0"' };
+  }
+  // Optional scope field (R005): injected at write time; validated when present.
+  if (entry.scope !== undefined && !VALID_SCOPES.includes(entry.scope)) {
+    return { valid: false, error: `scope must be one of: ${VALID_SCOPES.join(", ")}, got "${entry.scope}"` };
   }
   return { valid: true };
 }
@@ -647,6 +653,31 @@ function serializeIssueFile(doc, bodySections = []) {
 const NOTE_VERSION = "1.0.0";
 const NOTE_CAP = 100;
 
+// Per-store short-term dir resolution: maps scope to the correct store's
+// short-term directory. Same pattern as memoryDirForScope/issuesDirForScope
+// but at module scope so noteDirFor (also module-scope) can call it.
+function shortTermDirForScope(scope) {
+  if (scope === "generic") {
+    const seam = SEAM_DIR_OVERRIDES["short-term"];
+    if (seam) return seam;
+    return join(GENERIC_STORE_ROOT, "short-term");
+  }
+  if (scope === "project") {
+    // Project scope uses the project store's short-term dir. When the
+    // seam is set (tests), both scopes collapse to the same dir — by design.
+    const seam = SEAM_DIR_OVERRIDES["short-term"];
+    if (seam) return seam;
+    // PROJECT_STORE_ROOT is resolved at server init; for module-scope callers
+    // we fall back to process.cwd() (the opencode workspace root).
+    const projectRoot = process.env.KNOWLEDGE_GATE_PROJECT_ROOT
+      ? resolve(process.env.KNOWLEDGE_GATE_PROJECT_ROOT)
+      : process.cwd();
+    return storeDirFor("short-term", projectRoot);
+  }
+  // Default: swarm scope (the historical single-store default)
+  return SHORT_TERM_DIR;
+}
+
 // Rejects path traversal in session/agent tokens before they become directory
 // names under the short-term store (mirrors sanitizeSessionID in
 // protocol-gate — session IDs reach file paths and can be attacker-influenced).
@@ -659,17 +690,19 @@ function sanitizeToken(token) {
 
 // Resolves the agent namespace directory for a session+agent pair, or null
 // when either token fails sanitization (the traversal guard).
-function noteDirFor(session, agent) {
+// Scope-aware: routes to the correct store's short-term directory.
+function noteDirFor(session, agent, scope) {
   const safeSession = sanitizeToken(session);
   const safeAgent = sanitizeToken(agent);
   if (!safeSession || !safeAgent) return null;
-  return join(SHORT_TERM_DIR, safeSession, safeAgent);
+  const stDir = shortTermDirForScope(scope || "swarm");
+  return join(stDir, safeSession, safeAgent);
 }
 
 // Resolves the note file for a session+agent+sequence number, or null when
 // the tokens fail sanitization.
-function noteFilePath(session, agent, num) {
-  const dir = noteDirFor(session, agent);
+function noteFilePath(session, agent, num, scope) {
+  const dir = noteDirFor(session, agent, scope);
   if (!dir) return null;
   return join(dir, `note-${String(num).padStart(3, "0")}.json`);
 }
@@ -732,8 +765,8 @@ function validateNote(note) {
 // Lists the note sequence numbers in an agent namespace, ascending. The count
 // reflects physical note-*.json files (malformed content still occupies a
 // bounded slot); readers skip malformed files.
-function listNoteNumbers(session, agent) {
-  const dir = noteDirFor(session, agent);
+function listNoteNumbers(session, agent, scope) {
+  const dir = noteDirFor(session, agent, scope);
   if (!dir || !existsSync(dir)) return [];
   let files;
   try {
@@ -748,17 +781,17 @@ function listNoteNumbers(session, agent) {
 }
 
 // Next sequence number for an agent namespace: max on disk + 1 (starts at 1).
-function getNextNoteNumber(session, agent) {
-  const nums = listNoteNumbers(session, agent);
+function getNextNoteNumber(session, agent, scope) {
+  const nums = listNoteNumbers(session, agent, scope);
   return nums.reduce((m, n) => Math.max(m, n), 0) + 1;
 }
 
 // Reads every note in a namespace, ascending by sequence number. Malformed
 // note JSON is skipped with a debug log (mirrors loadEntriesFromDisk).
-function readNotesFromDisk(session, agent) {
+function readNotesFromDisk(session, agent, scope) {
   const notes = [];
-  for (const num of listNoteNumbers(session, agent)) {
-    const filePath = noteFilePath(session, agent, num);
+  for (const num of listNoteNumbers(session, agent, scope)) {
+    const filePath = noteFilePath(session, agent, num, scope);
     try {
       notes.push(JSON.parse(readFileSync(filePath, "utf8")));
     } catch (e) {
@@ -773,11 +806,11 @@ function readNotesFromDisk(session, agent) {
 // The scratch store stays bounded; eviction is logged. Race tolerance: two
 // same-agent writes in one tick can momentarily reach cap+1, and the next
 // write restores the steady state.
-function evictOldestIfAtCap(session, agent) {
-  const nums = listNoteNumbers(session, agent);
+function evictOldestIfAtCap(session, agent, scope) {
+  const nums = listNoteNumbers(session, agent, scope);
   if (nums.length < NOTE_CAP) return;
   const oldest = nums[0];
-  const filePath = noteFilePath(session, agent, oldest);
+  const filePath = noteFilePath(session, agent, oldest, scope);
   try {
     unlinkSync(filePath);
     debug(`evictOldestIfAtCap: evicted ${filePath} (cap ${NOTE_CAP})`);
@@ -1276,6 +1309,9 @@ export default {
 
           // Scope resolution (R005): explicit → source_kd frontmatter → "swarm"
           const scope = resolveMemoryScope(args.scope, entry.source_kd);
+          // Inject resolved scope into entry JSON before validation and
+          // serialization — every entry on disk carries its scope (R005).
+          entry.scope = scope;
           const targetDir = memoryDirForScope(scope);
 
           // Ensure memory directory exists
@@ -1693,16 +1729,20 @@ export default {
         }
       }),
       memory_note: tool({
-        description: "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings). Returns { message, id } or { error }.",
+        description: "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings), scope (optional project|generic|swarm). Returns { message, id } or { error }.",
         args: {
           topic: tool.schema.string().describe("Topic ≤100 chars"),
           content: tool.schema.string().describe("Content ≤2000 chars"),
-          tags: tool.schema.array(tool.schema.string()).optional().describe("Optional tags 0-5")
+          tags: tool.schema.array(tool.schema.string()).optional().describe("Optional tags 0-5"),
+          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to route the note to — defaults to caller context scope, then 'swarm'")
         },
         async execute(args, context) {
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
           const session = context.sessionID || "";
-          const { topic = "", content = "", tags } = args;
+          const { topic = "", content = "", tags, scope: explicitScope } = args;
+          // Scope resolution: explicit → "swarm" default
+          const scope = (explicitScope === "project" || explicitScope === "generic" || explicitScope === "swarm")
+            ? explicitScope : "swarm";
 
           if (!agent || !session) {
             return JSON.stringify({ error: "Unable to determine caller agent or session" });
@@ -1727,14 +1767,14 @@ export default {
           // no agent/session args, so a write can never target another agent's
           // namespace. Sanitization rejects traversal-shaped tokens before the
           // path join (the tool-level write boundary, mirroring memory_write).
-          const dir = noteDirFor(session, agent);
+          const dir = noteDirFor(session, agent, scope);
           if (!dir) {
             debug(`memory_note: rejected tokens session="${session}" agent="${agent}"`);
             return JSON.stringify({ error: "Invalid session or agent token" });
           }
 
-          evictOldestIfAtCap(session, agent);
-          const next = getNextNoteNumber(session, agent);
+          evictOldestIfAtCap(session, agent, scope);
+          const next = getNextNoteNumber(session, agent, scope);
           const note = {
             id: noteIdFor(session, agent, next),
             agent,
@@ -1748,9 +1788,9 @@ export default {
 
           try {
             mkdirSync(dir, { recursive: true });
-            writeFileSync(noteFilePath(session, agent, next), JSON.stringify(note, null, 2), "utf8");
-            debug(`memory_note: written ${noteFilePath(session, agent, next)}`);
-            return JSON.stringify({ message: "Short-term note written", id: note.id });
+            writeFileSync(noteFilePath(session, agent, next, scope), JSON.stringify(note, null, 2), "utf8");
+            debug(`memory_note: written ${noteFilePath(session, agent, next, scope)} (scope: ${scope})`);
+            return JSON.stringify({ message: "Short-term note written", id: note.id, scope });
           } catch (e) {
             debug(`memory_note: write failed — ${e.message}`);
             return JSON.stringify({ error: `Failed to write short-term note: ${e.message}` });
@@ -1762,12 +1802,15 @@ export default {
         args: {
           id: tool.schema.string().optional().describe("Note ID (ST-{session}-{agent}-{NNN})"),
           agent: tool.schema.string().optional().describe("Agent namespace to read (Scribe only)"),
-          session: tool.schema.string().optional().describe("Session for the namespace read, defaults to the current session (Scribe only)")
+          session: tool.schema.string().optional().describe("Session for the namespace read, defaults to the current session (Scribe only)"),
+          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to read from — defaults to 'swarm'")
         },
         async execute(args, context) {
           const caller = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
           const currentSession = context.sessionID || "";
-          const { id, agent, session } = args;
+          const { id, agent, session, scope: explicitScope } = args;
+          const scope = (explicitScope === "project" || explicitScope === "generic" || explicitScope === "swarm")
+            ? explicitScope : "swarm";
 
           if (id) {
             const parsed = parseNoteId(id);
@@ -1780,7 +1823,7 @@ export default {
               debug(`memory_note_read: rejected — ${caller} tried to read ${parsed.agent}'s note`);
               return JSON.stringify({ error: "Permission denied: agents may read only their own short-term notes. Called by: " + (caller || "unknown") });
             }
-            const filePath = noteFilePath(parsed.session, parsed.agent, Number(parsed.num));
+            const filePath = noteFilePath(parsed.session, parsed.agent, Number(parsed.num), scope);
             if (!filePath || !existsSync(filePath)) {
               return JSON.stringify({ error: "Short-term note not found: " + id });
             }
@@ -1801,7 +1844,7 @@ export default {
             if (agent === undefined) {
               return JSON.stringify({ error: "Namespace read requires an agent; list a whole session with memory_notes_list" });
             }
-            const notes = readNotesFromDisk(session || currentSession, agent);
+            const notes = readNotesFromDisk(session || currentSession, agent, scope);
             return JSON.stringify(notes, null, 2);
           }
 
@@ -1812,12 +1855,15 @@ export default {
         description: "List short-term memory notes in knowledge/short-term/. Returns a summary array [{ id, agent, created, topic }]. Non-Scribe agents see only their own notes in the current session; Scribe sees any agent's notes — or all agents' notes in a session when no agent is given.",
         args: {
           agent: tool.schema.string().optional().describe("Agent namespace to list (Scribe only)"),
-          session: tool.schema.string().optional().describe("Session to list, defaults to the current session (Scribe only)")
+          session: tool.schema.string().optional().describe("Session to list, defaults to the current session (Scribe only)"),
+          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to list from — defaults to 'swarm'")
         },
         async execute(args, context) {
           const caller = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
           const currentSession = context.sessionID || "";
-          const { agent, session } = args || {};
+          const { agent, session, scope: explicitScope } = args || {};
+          const scope = (explicitScope === "project" || explicitScope === "generic" || explicitScope === "swarm")
+            ? explicitScope : "swarm";
 
           const targetSession = session || currentSession;
           const targetAgent = agent || caller;
@@ -1835,7 +1881,8 @@ export default {
             // agent namespace under the session tree.
             const safeSession = sanitizeToken(targetSession);
             if (!safeSession) return JSON.stringify({ error: "Invalid session token" });
-            const sessionRoot = join(SHORT_TERM_DIR, safeSession);
+            const stDir = shortTermDirForScope(scope);
+            const sessionRoot = join(stDir, safeSession);
             let entries = [];
             try {
               entries = existsSync(sessionRoot) ? readdirSync(sessionRoot, { withFileTypes: true }) : [];
@@ -1848,22 +1895,25 @@ export default {
               if (!entry.isDirectory()) continue;
               const safeAgent = sanitizeToken(entry.name);
               if (!safeAgent) continue;
-              for (const note of readNotesFromDisk(safeSession, safeAgent)) summaries.push(toSummary(note));
+              for (const note of readNotesFromDisk(safeSession, safeAgent, scope)) summaries.push(toSummary(note));
             }
             return JSON.stringify(summaries, null, 2);
           }
 
-          const notes = readNotesFromDisk(targetSession, targetAgent);
+          const notes = readNotesFromDisk(targetSession, targetAgent, scope);
           return JSON.stringify(notes.map(toSummary), null, 2);
         }
       }),
       memory_note_delete: tool({
         description: "Delete a short-term memory note from knowledge/short-term/. Args: id (string ST-...). The owner may delete own notes; Scribe may delete any agent's notes. Removes note-{NNN}.json permanently — the short-term store is session-scoped scratch state.",
         args: {
-          id: tool.schema.string().describe("Note ID to delete (ST-{session}-{agent}-{NNN})")
+          id: tool.schema.string().describe("Note ID to delete (ST-{session}-{agent}-{NNN})"),
+          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to delete from — defaults to 'swarm'")
         },
         async execute(args, context) {
-          const { id } = args;
+          const { id, scope: explicitScope } = args;
+          const scope = (explicitScope === "project" || explicitScope === "generic" || explicitScope === "swarm")
+            ? explicitScope : "swarm";
           const caller = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
           const parsed = parseNoteId(id);
           if (!parsed) {
@@ -1875,7 +1925,7 @@ export default {
             debug(`memory_note_delete: rejected — ${caller} tried to delete ${parsed.agent}'s note`);
             return JSON.stringify({ error: "Permission denied: agents may delete only their own short-term notes. Called by: " + (caller || "unknown") });
           }
-          const filePath = noteFilePath(parsed.session, parsed.agent, Number(parsed.num));
+          const filePath = noteFilePath(parsed.session, parsed.agent, Number(parsed.num), scope);
           if (!filePath || !existsSync(filePath)) {
             return JSON.stringify({ error: "Short-term note not found: " + id });
           }
@@ -1908,8 +1958,10 @@ export default {
       const safeSession = sanitizeToken(sessionID);
       if (!safeSession) return { promoted, skipped, cleared: false, error: "Invalid session token" };
 
-      // read-all: every agent namespace under the session tree
-      const sessionRoot = join(SHORT_TERM_DIR, safeSession);
+      // read-all: every agent namespace under the session tree —
+      // scope-aware: reads from the correct store's short-term directory.
+      const stDir = shortTermDirForScope(scope);
+      const sessionRoot = join(stDir, safeSession);
       const notes = [];
       try {
         const entries = existsSync(sessionRoot) ? readdirSync(sessionRoot, { withFileTypes: true }) : [];
@@ -1917,7 +1969,7 @@ export default {
           if (!entry.isDirectory()) continue;
           const safeAgent = sanitizeToken(entry.name);
           if (!safeAgent) continue;
-          for (const note of readNotesFromDisk(safeSession, safeAgent)) notes.push(note);
+          for (const note of readNotesFromDisk(safeSession, safeAgent, scope)) notes.push(note);
         }
       } catch (e) {
         debug(`promoteShortTermNotes: failed to read ${sessionRoot}: ${e.message}`);
@@ -1946,7 +1998,8 @@ export default {
           insight: note.content.length > 500 ? `${note.content.slice(0, 497)}...` : note.content,
           created: note.created,
           session: safeSession,
-          version: "1.0.0"
+          version: "1.0.0",
+          scope
         };
         const validation = validateMemoryEntry(entry);
         if (!validation.valid) {
@@ -2057,7 +2110,7 @@ export default {
       }
 
       if (toolID === "memory_note") {
-        output.description = "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings). Returns { message, id } or { error }.";
+        output.description = "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings), scope (optional project|generic|swarm). Returns { message, id } or { error }.";
         debug(`toolDefinition: provided description for memory_note`);
       }
 
@@ -2244,6 +2297,7 @@ export default {
       // Per-store memory/issue internals (R005/R006): exposed for M3 tests
       memoryDirForScope,
       issuesDirForScope,
+      shortTermDirForScope,
       perStoreCaches,
       getCacheForScope,
       memoryIndexPathForScope,
