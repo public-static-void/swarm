@@ -606,7 +606,7 @@ Body`;
 
     describe("overseer INTENT issue injection", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from both stores detected"));
+        output.system.find(s => s.includes("Open issues from all stores detected"));
 
       it("injects open issues in the stable line format for the overseer", async () => {
         writeEntries(ISSUES_DIR, [
@@ -704,6 +704,8 @@ Body`;
       it("injects issues ordered by severity rank and ascending numeric id", async () => {
         // Severity is deliberately permuted against the numeric id order so a
         // filesystem-order (readdirSync) read cannot satisfy the expectation.
+        // Unbounded cap: 5 issues × 3 stores = 15, exceeds default cap 10.
+        process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "0";
         writeEntries(ISSUES_DIR, [
           addIssueFile(4, { severity: "high", title: "High B" }),
           addIssueFile(2, { severity: "high", title: "High A" }),
@@ -721,26 +723,31 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const issueLines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
-        // Dual-store seam: each issue appears with both [swarm] and [project] scope,
+        // Triple-store seam: each issue appears with [swarm], [project], and [generic] scope,
         // interleaved within each severity group.
         expect(issueLines).toEqual([
           "- [ISSUE-002] (high) [swarm] High A — assigned to habit-builder",
           "- [ISSUE-002] (high) [project] High A — assigned to habit-builder",
+          "- [ISSUE-002] (high) [generic] High A — assigned to habit-builder",
           "- [ISSUE-004] (high) [swarm] High B — assigned to habit-builder",
           "- [ISSUE-004] (high) [project] High B — assigned to habit-builder",
+          "- [ISSUE-004] (high) [generic] High B — assigned to habit-builder",
           "- [ISSUE-003] (medium) [swarm] Medium C — assigned to habit-builder",
           "- [ISSUE-003] (medium) [project] Medium C — assigned to habit-builder",
+          "- [ISSUE-003] (medium) [generic] Medium C — assigned to habit-builder",
           "- [ISSUE-001] (low) [swarm] Low D — assigned to habit-builder",
           "- [ISSUE-001] (low) [project] Low D — assigned to habit-builder",
+          "- [ISSUE-001] (low) [generic] Low D — assigned to habit-builder",
           "- [ISSUE-005] (low) [swarm] Low E — assigned to habit-builder",
-          "- [ISSUE-005] (low) [project] Low E — assigned to habit-builder"
+          "- [ISSUE-005] (low) [project] Low E — assigned to habit-builder",
+          "- [ISSUE-005] (low) [generic] Low E — assigned to habit-builder"
         ]);
       });
     });
 
     describe("overseer INTENT cap env", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from both stores detected"));
+        output.system.find(s => s.includes("Open issues from all stores detected"));
 
       function writeTwelveOpen() {
         writeEntries(ISSUES_DIR, [
@@ -774,16 +781,16 @@ Body`;
         expect(hint).toBeTruthy();
         const lines = issueLines(hint);
         expect(lines).toHaveLength(10);
-        // Dual-store seam: each issue appears with both [swarm] and [project] scope,
-        // so severity groups are interleaved (A-swarm, A-project, B-swarm, B-project…).
+        // Triple-store seam: each issue appears with [swarm], [project], and [generic] scope,
+        // so severity groups are interleaved (A-swarm, A-project, A-generic, B-swarm…).
         expect(lines[0]).toContain("High A");
         expect(lines[1]).toContain("High A");
-        expect(lines[2]).toContain("High B");
+        expect(lines[2]).toContain("High A");
         expect(lines[3]).toContain("High B");
-        expect(lines[4]).toContain("High C");
-        expect(lines[5]).toContain("High C");
-        expect(lines[6]).toContain("High D");
-        expect(lines[7]).toContain("High D");
+        expect(lines[4]).toContain("High B");
+        expect(lines[5]).toContain("High B");
+        expect(lines[6]).toContain("High C");
+        expect(lines[7]).toContain("High C");
       });
 
       it("treats KNOWLEDGE_GATE_MAX_OPEN_ISSUES=0 as unbounded", async () => {
@@ -796,8 +803,8 @@ Body`;
         );
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        // Dual-store seam: each issue file appears in both stores, so 12 unique issues × 2 = 24
-        expect(issueLines(hint)).toHaveLength(24);
+        // Triple-store seam: each issue file appears in all 3 stores, so 12 unique issues × 3 = 36
+        expect(issueLines(hint)).toHaveLength(36);
       });
 
       it("falls back to the default cap 10 for an invalid env value", async () => {
@@ -826,7 +833,7 @@ Body`;
 
     describe("overseer INTENT audience routing", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from both stores detected"));
+        output.system.find(s => s.includes("Open issues from all stores detected"));
 
       it("injects only audience-matched and unassigned issues", async () => {
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
@@ -846,8 +853,8 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const lines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
-        // Dual-store seam: each issue file appears in both stores, so 2 audience-matched × 2 = 4
-        expect(lines).toHaveLength(4);
+        // Triple-store seam: each issue file appears in all 3 stores, so 2 audience-matched × 3 = 6
+        expect(lines).toHaveLength(6);
         expect(hint).toContain("Inspector item");
         expect(hint).toContain("Ownerless item");
         expect(hint).toContain("— assigned to unassigned");
@@ -870,7 +877,7 @@ Body`;
         );
         let hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(6);
+        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(9);
 
         // empty string
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "";
@@ -881,7 +888,7 @@ Body`;
         );
         hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(6);
+        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(9);
       });
 
       it("matches the audience case-insensitively as a substring", async () => {
@@ -951,7 +958,7 @@ Body`;
 
     describe("overseer INTENT marker line", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from both stores detected"));
+        output.system.find(s => s.includes("Open issues from all stores detected"));
 
       function issueLines(hint) {
         return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
@@ -973,10 +980,10 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const lines = hint.split("\n");
-        expect(lines[0]).toBe("[Knowledge Gate] Open issues from both stores detected:");
-        expect(lines[1]).toBe("<!-- issues-snapshot v1: 6 open, stable order -->");
-        // Dual-store seam: each issue file appears in both stores, so 3 × 2 = 6
-        expect(issueLines(hint)).toHaveLength(6);
+        expect(lines[0]).toBe("[Knowledge Gate] Open issues from all stores detected:");
+        expect(lines[1]).toBe("<!-- issues-snapshot v1: 9 open, stable order -->");
+        // Triple-store seam: each issue file appears in all 3 stores, so 3 × 3 = 9
+        expect(issueLines(hint)).toHaveLength(9);
       });
 
       it("reports the post-cap count in the marker", async () => {
@@ -1025,9 +1032,9 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        // Dual-store seam: 2 audience-matched issues × 2 stores = 4
-        expect(hint).toContain("<!-- issues-snapshot v1: 4 open, stable order -->");
-        expect(issueLines(hint)).toHaveLength(4);
+        // Triple-store seam: 2 audience-matched issues × 3 stores = 6
+        expect(hint).toContain("<!-- issues-snapshot v1: 6 open, stable order -->");
+        expect(issueLines(hint)).toHaveLength(6);
         expect(hint).not.toContain("Permission item");
       });
 
@@ -2719,6 +2726,7 @@ Body`;
 
     it("resolveMemoryScope returns explicit scope when provided", () => {
       expect(hooks.resolveMemoryScope("project", null)).toBe("project");
+      expect(hooks.resolveMemoryScope("generic", null)).toBe("generic");
       expect(hooks.resolveMemoryScope("swarm", null)).toBe("swarm");
     });
 
@@ -2763,7 +2771,7 @@ Body`;
       expect(results.length).toBeGreaterThanOrEqual(2);
       for (const r of results) {
         expect(r.store).toBeDefined();
-        expect(["project", "swarm"]).toContain(r.store);
+        expect(["project", "generic", "swarm"]).toContain(r.store);
       }
     });
 
@@ -2807,7 +2815,7 @@ Body`;
       expect(swarmResults.every(r => r.store === "swarm")).toBe(true);
     });
 
-    it("memory_search merges both stores by default with store field", async () => {
+    it("memory_search merges all stores by default with store field", async () => {
       await hooks.tool.memory_write.execute({
         entry: {
           source_kd: "knowledge/composed-1.md",
@@ -2836,12 +2844,12 @@ Body`;
         scope: "project"
       }, { agent: "scribe", sessionID: "s" });
 
-      // Default search merges both stores
+      // Default search merges all stores
       const results = hooks.searchMemory({ tags: ["test", "merge"], limit: 10 });
       expect(results.length).toBeGreaterThanOrEqual(2);
       // Every result has a store field
       for (const r of results) {
-        expect(["project", "swarm"]).toContain(r.store);
+        expect(["project", "generic", "swarm"]).toContain(r.store);
       }
     });
 

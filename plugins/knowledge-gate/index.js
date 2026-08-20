@@ -36,6 +36,11 @@ const CONFIG_STORE_ROOT = process.env.KNOWLEDGE_GATE_CONFIG_ROOT
   ? resolve(process.env.KNOWLEDGE_GATE_CONFIG_ROOT)
   : join(PLUGIN_DIR, "..", "..");
 
+// Generic store root: cross-project learnings visible in all contexts.
+// Physically nested under CONFIG_STORE_ROOT to keep a single knowledge/
+// tree while maintaining logical separation from swarm-scoped data.
+const GENERIC_STORE_ROOT = join(CONFIG_STORE_ROOT, "knowledge", "generic");
+
 // Test seam: KNOWLEDGE_GATE_MEMORY_DIR / KNOWLEDGE_GATE_ISSUES_DIR /
 // KNOWLEDGE_GATE_SHORT_TERM_DIR override the corresponding dir in BOTH
 // stores so the test suite can point the plugin at isolated temp dirs
@@ -92,7 +97,7 @@ function readSourceKdScope(sourceKd) {
     const match = raw.match(/^---\n([\s\S]*?)\n---/);
     if (!match) return null;
     for (const line of match[1].split("\n")) {
-      const m = line.match(/^scope:\s*(project|swarm)\s*$/);
+      const m = line.match(/^scope:\s*(project|generic|swarm)\s*$/);
       if (m) return m[1];
     }
   } catch (_) {}
@@ -103,7 +108,7 @@ function readSourceKdScope(sourceKd) {
 // or the documented "swarm" default. The fallback chain is deterministic
 // (never a heuristic) — R002/NFR002.
 function resolveMemoryScope(explicitScope, sourceKd) {
-  if (explicitScope === "project" || explicitScope === "swarm") return explicitScope;
+  if (explicitScope === "project" || explicitScope === "generic" || explicitScope === "swarm") return explicitScope;
   const fromSource = readSourceKdScope(sourceKd);
   if (fromSource) return fromSource;
   return "swarm";
@@ -589,8 +594,8 @@ function validateIssue(issue) {
   if (issue.tags !== undefined && (!Array.isArray(issue.tags) || issue.tags.some(t => typeof t !== "string"))) {
     return { valid: false, error: "tags must be an array of strings" };
   }
-  if (issue.scope !== "project" && issue.scope !== "swarm") {
-    return { valid: false, error: `scope must be one of: project, swarm, got "${issue.scope}"` };
+  if (issue.scope !== "project" && issue.scope !== "generic" && issue.scope !== "swarm") {
+    return { valid: false, error: `scope must be one of: project, generic, swarm, got "${issue.scope}"` };
   }
   for (const field of ["description", "source_kd_reference", "recommended_fix", "acceptance_criteria"]) {
     if (issue[field] !== undefined && typeof issue[field] !== "string") {
@@ -803,13 +808,32 @@ export default {
     function storeRootForScope(scope) {
       if (scope === "project") return PROJECT_STORE_ROOT;
       if (scope === "swarm") return CONFIG_STORE_ROOT;
+      if (scope === "generic") return GENERIC_STORE_ROOT;
       return null;
     }
 
     // Per-store memory dir resolution (R005): resolves the memory directory
     // for a given store scope. The legacy seam overrides apply to both stores.
+    // Generic store nests under CONFIG_STORE_ROOT/knowledge/generic/ — bypass
+    // storeDirFor which would double the "knowledge" segment.
     function memoryDirForScope(scope) {
+      if (scope === "generic") {
+        const seam = SEAM_DIR_OVERRIDES["memory"];
+        if (seam) return seam;
+        return join(GENERIC_STORE_ROOT, "memory");
+      }
       return storeDirFor("memory", storeRootForScope(scope));
+    }
+
+    // Per-store issues dir resolution: same pattern as memoryDirForScope.
+    // Used by issue_write and issue_update to resolve the correct store dir.
+    function issuesDirForScope(scope) {
+      if (scope === "generic") {
+        const seam = SEAM_DIR_OVERRIDES["issues"];
+        if (seam) return seam;
+        return join(GENERIC_STORE_ROOT, "issues");
+      }
+      return storeDirFor("issues", storeRootForScope(scope));
     }
 
     // Per-store memory index path (R006): each store owns its own
@@ -1027,18 +1051,18 @@ export default {
      * Scans knowledge/memory/ for JSON entries matching query parameters.
      * Uses per-store in-memory cache with configurable TTL to reduce disk I/O.
      * Returns entries sorted by tag-match count (descending), then recency.
-     * When store is omitted, searches both stores and merges results; each
-     * result carries a `store: "project"|"swarm"` field (R006).
+     * When store is omitted, searches all stores and merges results; each
+     * result carries a `store: "project"|"generic"|"swarm"` field (R006).
      */
     function searchMemory(query) {
       const { tags = [], topic = "", limit = 5, store: storeFilter } = query;
 
       // Determine which stores to search
-      const scopes = storeFilter ? [storeFilter] : ["swarm", "project"];
+      const scopes = storeFilter ? [storeFilter] : ["swarm", "project", "generic"];
 
       // Collect entries from all target stores, each tagged with its scope.
-      // Deduplicate by ID when the same entry exists in both stores (can
-      // happen when both stores resolve to the same dir under the test seam);
+      // Deduplicate by ID when the same entry exists in multiple stores (can
+      // happen when stores resolve to the same dir under the test seam);
       // swarm takes precedence for backward compatibility.
       const seenIds = new Set();
       let allEntries = [];
@@ -1206,12 +1230,12 @@ export default {
     // context omits it.
     const pluginTools = {
       memory_search: tool({
-        description: "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5), store (optional project|swarm — restricts search to one store). Returns JSON array of matching entries, each carrying a store field.",
+        description: "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5), store (optional project|generic|swarm — restricts search to one store). Returns JSON array of matching entries, each carrying a store field.",
         args: {
           tags: tool.schema.array(tool.schema.string()).optional().describe("Tags to match against entry tags"),
           topic: tool.schema.string().optional().describe("Topic substring to match"),
           limit: tool.schema.number().int().optional().describe("Maximum number of results (default 5)"),
-          store: tool.schema.enum(["project", "swarm"]).optional().describe("Restrict search to one store — omitted searches both stores")
+          store: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Restrict search to one store — omitted searches all stores")
         },
         async execute(args) {
           const query = {
@@ -1225,7 +1249,7 @@ export default {
         }
       }),
       memory_write: tool({
-        description: "Write a validated memory entry to knowledge/memory/. Only Scribe may write. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version), scope (optional project|swarm). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk.",
+        description: "Write a validated memory entry to knowledge/memory/. Only Scribe may write. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version), scope (optional project|generic|swarm). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk.",
         args: {
           entry: tool.schema.object({
             id: tool.schema.string().optional().describe("Auto-assigned if omitted"),
@@ -1238,7 +1262,7 @@ export default {
             session: tool.schema.string().describe("Session ID"),
             version: tool.schema.string().describe("Schema version (1.0.0)")
           }),
-          scope: tool.schema.enum(["project", "swarm"]).optional().describe("Store classification — falls back to source_kd scope, then 'swarm' default")
+          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store classification — falls back to source_kd scope, then 'swarm' default")
         },
         async execute(args, context) {
           const entry = args.entry;
@@ -1318,7 +1342,7 @@ export default {
         }
       }),
       memory_update: tool({
-        description: "Update an existing memory entry in knowledge/memory/. Only Scribe may update. Args: id (string MEM-XXX), entry (object with any of: topic, insight, tags, source_kd, type, superseded_by), scope (optional project|swarm). Preserves id/created/session/version. Setting superseded_by to a MEM-XXX ID tombstones the entry: it is excluded from future memory_search results. Passing \"\" or null as superseded_by clears the tombstone and restores the entry to search visibility.",
+        description: "Update an existing memory entry in knowledge/memory/. Only Scribe may update. Args: id (string MEM-XXX), entry (object with any of: topic, insight, tags, source_kd, type, superseded_by), scope (optional project|generic|swarm). Preserves id/created/session/version. Setting superseded_by to a MEM-XXX ID tombstones the entry: it is excluded from future memory_search results. Passing \"\" or null as superseded_by clears the tombstone and restores the entry to search visibility.",
         args: {
           id: tool.schema.string().describe("Memory entry ID to update (MEM-XXX)"),
           entry: tool.schema.object({
@@ -1329,7 +1353,7 @@ export default {
             type: tool.schema.enum(["fact", "decision", "pattern", "warning", "context"]).optional().describe("Entry type"),
             superseded_by: tool.schema.string().optional().nullable().describe("Optional tombstone: MEM-XXX ID of the replacing entry; pass \"\" or null to clear")
           }),
-          scope: tool.schema.enum(["project", "swarm"]).optional().describe("Store to search — omitted searches both stores by id")
+          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to search — omitted searches all stores by id")
         },
         async execute(args, context) {
           const { id, entry, scope: explicitScope } = args;
@@ -1347,11 +1371,11 @@ export default {
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
 
-          // Locate: named store first, then both stores by id (R005 cross-store).
+          // Locate: named store first, then all stores by id (R005 cross-store).
           // When scope is given, search only that store; when omitted, search
-          // swarm first then project — an id found in both targets the config
-          // store copy (matching the legacy single-store default).
-          const lookupScopes = explicitScope ? [explicitScope] : ["swarm", "project"];
+          // swarm first then project then generic — an id found in multiple
+          // targets the first match (swarm takes priority for backward compat).
+          const lookupScopes = explicitScope ? [explicitScope] : ["swarm", "project", "generic"];
           let found = null;
           for (const s of lookupScopes) {
             const candidate = join(memoryDirForScope(s), `entry-${id.replace("MEM-", "")}.json`);
@@ -1361,7 +1385,7 @@ export default {
             }
           }
           if (!found) {
-            const searched = explicitScope ? `store "${explicitScope}"` : "either store (swarm, project)";
+            const searched = explicitScope ? `store "${explicitScope}"` : "any store (swarm, project, generic)";
             debug(`memory_update: entry not found — ${id} in ${searched}`);
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
@@ -1424,10 +1448,10 @@ export default {
         }
       }),
       memory_delete: tool({
-        description: "Delete a memory entry from knowledge/memory/. Only Scribe may delete. Args: id (string MEM-XXX), scope (optional project|swarm). Removes entry-{num}.json permanently — there is no VCS recovery (knowledge/ is gitignored). Prefer memory_update with superseded_by for supersession.",
+        description: "Delete a memory entry from knowledge/memory/. Only Scribe may delete. Args: id (string MEM-XXX), scope (optional project|generic|swarm). Removes entry-{num}.json permanently — there is no VCS recovery (knowledge/ is gitignored). Prefer memory_update with superseded_by for supersession.",
         args: {
           id: tool.schema.string().describe("Memory entry ID to delete (MEM-XXX)"),
-          scope: tool.schema.enum(["project", "swarm"]).optional().describe("Store to search — omitted searches both stores by id")
+          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to search — omitted searches all stores by id")
         },
         async execute(args, context) {
           const { id, scope: explicitScope } = args;
@@ -1445,8 +1469,8 @@ export default {
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
 
-          // Locate: named store first, then both stores by id (R005 cross-store).
-          const lookupScopes = explicitScope ? [explicitScope] : ["swarm", "project"];
+          // Locate: named store first, then all stores by id (R005 cross-store).
+          const lookupScopes = explicitScope ? [explicitScope] : ["swarm", "project", "generic"];
           let found = null;
           for (const s of lookupScopes) {
             const candidate = join(memoryDirForScope(s), `entry-${id.replace("MEM-", "")}.json`);
@@ -1456,7 +1480,7 @@ export default {
             }
           }
           if (!found) {
-            const searched = explicitScope ? `store "${explicitScope}"` : "either store (swarm, project)";
+            const searched = explicitScope ? `store "${explicitScope}"` : "any store (swarm, project, generic)";
             debug(`memory_delete: entry not found — ${id} in ${searched}`);
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
@@ -1478,7 +1502,7 @@ export default {
         }
       }),
       issue_write: tool({
-        description: "Write a validated issue to the store named by scope (project|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.",
+        description: "Write a validated issue to the store named by scope (project|generic|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.",
         args: {
           issue: tool.schema.object({
             id: tool.schema.number().int().optional().describe("Per-store numeric ID — auto-assigned if omitted"),
@@ -1489,7 +1513,7 @@ export default {
             session: tool.schema.string().describe("Session ID"),
             assigned_to: tool.schema.string().optional().nullable().describe("Assigned agent or role"),
             tags: tool.schema.array(tool.schema.string()).optional().describe("Tags"),
-            scope: tool.schema.enum(["project", "swarm"]).describe("Store classification — required"),
+            scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store classification — required"),
             description: tool.schema.string().optional().describe("Issue description"),
             source_kd_reference: tool.schema.string().optional().describe("Source KD reference"),
             recommended_fix: tool.schema.string().optional().describe("Recommended fix"),
@@ -1516,7 +1540,7 @@ export default {
             return JSON.stringify({ error: validation.error });
           }
 
-          const issuesDir = storeDirFor("issues", storeRootForScope(issue.scope));
+          const issuesDir = issuesDirForScope(issue.scope);
           // mkdir -p on write: the target store's issues dir may not exist yet
           try { mkdirSync(issuesDir, { recursive: true }); } catch (_) {}
 
@@ -1554,10 +1578,10 @@ export default {
         }
       }),
       issue_update: tool({
-        description: "Update an existing issue in the store named by scope, or search both stores by id when scope is omitted. Only Habit Builder may update. Args: id (number), scope (optional project|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.",
+        description: "Update an existing issue in the store named by scope, or search all stores by id when scope is omitted. Only Habit Builder may update. Args: id (number), scope (optional project|generic|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.",
         args: {
           id: tool.schema.number().int().describe("Numeric issue ID to update"),
-          scope: tool.schema.enum(["project", "swarm"]).optional().describe("Store to search — omitted searches both stores by id"),
+          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to search — omitted searches all stores by id"),
           changes: tool.schema.object({
             status: tool.schema.enum(["open", "resolved"]).optional().describe("New status (resolved closes the issue)"),
             resolution: tool.schema.string().optional().describe("Resolution text appended as a ## Resolution (YYYY-MM-DD) section"),
@@ -1579,8 +1603,8 @@ export default {
           if (!Number.isInteger(id) || id < 1) {
             return JSON.stringify({ error: `id must be a positive integer, got "${id}"` });
           }
-          if (scope !== undefined && scope !== "project" && scope !== "swarm") {
-            return JSON.stringify({ error: `scope must be "project" or "swarm", got "${scope}"` });
+          if (scope !== undefined && scope !== "project" && scope !== "generic" && scope !== "swarm") {
+            return JSON.stringify({ error: `scope must be "project", "generic", or "swarm", got "${scope}"` });
           }
           if (!changes || typeof changes !== "object") {
             return JSON.stringify({ error: "changes must be an object" });
@@ -1598,20 +1622,20 @@ export default {
             return JSON.stringify({ error: "Nothing to update" });
           }
 
-          // Locate: the named store first, then both stores by id (a
+          // Locate: the named store first, then all stores by id (a
           // mirrored id targets the config-store copy unless scope is given,
           // matching the memory_update cross-store contract).
-          const lookupScopes = scope !== undefined ? [scope] : ["swarm", "project"];
+          const lookupScopes = scope !== undefined ? [scope] : ["swarm", "project", "generic"];
           let found = null;
           for (const s of lookupScopes) {
-            const candidate = join(storeDirFor("issues", storeRootForScope(s)), `issue-${id}.md`);
+            const candidate = join(issuesDirForScope(s), `issue-${id}.md`);
             if (existsSync(candidate)) {
               found = { scope: s, filePath: candidate };
               break;
             }
           }
           if (!found) {
-            const searched = scope !== undefined ? `store "${scope}"` : "either store (swarm, project)";
+            const searched = scope !== undefined ? `store "${scope}"` : "any store (swarm, project, generic)";
             return JSON.stringify({ error: `Issue ${id} not found in ${searched}` });
           }
 
@@ -1968,15 +1992,15 @@ export default {
     }
 
     // --- Merged issue scan (R007) ---
-    // Scans open issues from both stores and tags each with its scope. Used by
+    // Scans open issues from all stores and tags each with its scope. Used by
     // the systemTransform EVOLVE (habit-builder) and INTENT (overseer) branches
     // so both agents see the full picture across stores. The cap and audience
     // filter are applied by the caller (overseer applies cap+filter; habit-builder
     // shows all).
     function scanOpenIssuesMerged() {
       const allIssues = [];
-      for (const [scope, storeRoot] of [["swarm", CONFIG_STORE_ROOT], ["project", PROJECT_STORE_ROOT]]) {
-        const issuesDir = storeDirFor("issues", storeRoot);
+      for (const scope of ["swarm", "project", "generic"]) {
+        const issuesDir = issuesDirForScope(scope);
         try {
           if (!existsSync(issuesDir)) continue;
           const files = readdirSync(issuesDir).filter(f => f.startsWith("issue-") && f.endsWith(".md"));
@@ -2023,7 +2047,7 @@ export default {
       const { toolID } = input;
 
       if (toolID === "memory_search") {
-        output.description = "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5), store (optional project|swarm — restricts search to one store). Returns JSON array of matching entries, each carrying a store field.";
+        output.description = "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5), store (optional project|generic|swarm — restricts search to one store). Returns JSON array of matching entries, each carrying a store field.";
         debug(`toolDefinition: provided description for memory_search`);
       }
 
@@ -2053,12 +2077,12 @@ export default {
       }
 
       if (toolID === "issue_write") {
-        output.description = "Write a validated issue to the store named by scope (project|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.";
+        output.description = "Write a validated issue to the store named by scope (project|generic|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.";
         debug(`toolDefinition: provided description for issue_write`);
       }
 
       if (toolID === "issue_update") {
-        output.description = "Update an existing issue in the store named by scope, or search both stores by id when scope is omitted. Only Habit Builder may update. Args: id (number), scope (optional project|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.";
+        output.description = "Update an existing issue in the store named by scope, or search all stores by id when scope is omitted. Only Habit Builder may update. Args: id (number), scope (optional project|generic|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.";
         debug(`toolDefinition: provided description for issue_update`);
       }
     }
@@ -2077,7 +2101,7 @@ export default {
         `[Knowledge Gate] You have access to the memory_search tool. ` +
         `Call it with tags (array), topic (string), or limit (integer) to query ` +
         `prior session insights from knowledge/memory/. Results are store-tagged ` +
-        `(store: project|swarm) and may come from either store.`
+        `(store: project|generic|swarm) and may come from any store.`
       );
 
       // Short-term resume hint — the mechanical compaction-amnesia mitigation
@@ -2107,7 +2131,7 @@ export default {
         output.system.push(
           `[Knowledge Gate] After composing a COMPOSED KD, write distilled insights ` +
           `via the memory_write tool. Copy the scope from the COMPOSED KD frontmatter ` +
-          `(scope: project|swarm) when writing — the tool routes to the correct store. ` +
+          `(scope: project|generic|swarm) when writing — the tool routes to the correct store. ` +
           `The tool validates schema, checks tags against ` +
           `controlled vocabulary, deduplicates, auto-assigns sequential ID, and writes to disk.`
         );
@@ -2134,7 +2158,7 @@ export default {
           `{store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.`
         );
 
-        // Surface open issues from both stores so the habit-builder can close
+        // Surface open issues from all stores so the habit-builder can close
         // ones whose fix is already demonstrated in lifecycle KDs. Each line
         // carries its scope so the close targets the correct store via
         // issue_update.
@@ -2156,7 +2180,7 @@ export default {
       }
 
       // On every Overseer systemTransform (not phase-gated), scan for open issues from
-      // both stores and surface them in Triage Notes. The guard is agent === "overseer"
+      // all stores and surface them in Triage Notes. The guard is agent === "overseer"
       // only — injection is intentionally NOT phase-gated, so issues stay visible across
       // the whole lifecycle. This closes the issue tracking feedback loop.
       // The injected set is bounded (KNOWLEDGE_GATE_MAX_OPEN_ISSUES cap,
@@ -2175,7 +2199,7 @@ export default {
           // audience-filter/cap) so an INTENT KD transcription can be verified
           // against the issue registry.
           output.system.push(
-            `[Knowledge Gate] Open issues from both stores detected:\n` +
+            `[Knowledge Gate] Open issues from all stores detected:\n` +
             `<!-- issues-snapshot v1: ${openIssues.length} open, stable order -->\n${issueSummary}\n` +
             `Include these in the Triage Notes section of your intent KD. ` +
             `Reference the issue IDs and recommend which ones to address in this session.`
@@ -2207,17 +2231,19 @@ export default {
       generateHintLines,
       checkDuplicateMemory,
       promoteShortTermNotes,
-      // Store resolution internals (R001): config-store dirs retained for
-      // backward compat; the two store roots + per-store helper exposed for
+      // Store resolution internals (R001): store roots retained for
+      // backward compat; the three store roots + per-store helpers exposed for
       // dual-store tests (M6).
       MEMORY_DIR,
       ISSUES_DIR,
       CONFIG_STORE_ROOT,
       PROJECT_STORE_ROOT,
+      GENERIC_STORE_ROOT,
       storeDirFor,
       storeRootForScope,
-      // Per-store memory internals (R005/R006): exposed for M3 tests
+      // Per-store memory/issue internals (R005/R006): exposed for M3 tests
       memoryDirForScope,
+      issuesDirForScope,
       perStoreCaches,
       getCacheForScope,
       memoryIndexPathForScope,
