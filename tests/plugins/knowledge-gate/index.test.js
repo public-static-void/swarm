@@ -1228,6 +1228,28 @@ Body`;
       expect(result.valid).toBe(false);
       expect(result.error).toContain("created");
     });
+
+    it("accepts every valid scope value and rejects an unknown one", () => {
+      const base = {
+        id: "MEM-001",
+        type: "fact",
+        source_kd: "knowledge/composed-test.md",
+        tags: ["test", "sample"],
+        topic: "Test topic",
+        insight: "Test insight.",
+        created: "2026-07-29T00:00:00.000Z",
+        session: "ses_test",
+        version: "1.0.0"
+      };
+      for (const scope of ["project", "generic", "swarm"]) {
+        expect(hooks.validateMemoryEntry({ ...base, scope })).toEqual({ valid: true });
+      }
+      // Absent scope stays legal — pre-isolation entries on disk lack the field
+      expect(hooks.validateMemoryEntry(base)).toEqual({ valid: true });
+      const bad = hooks.validateMemoryEntry({ ...base, scope: "everything" });
+      expect(bad.valid).toBe(false);
+      expect(bad.error).toContain("scope");
+    });
   });
 
   describe("formatMemoryEntry", () => {
@@ -2199,6 +2221,149 @@ Body`;
       expect(projectRaw).toContain("Closed from the config workspace.");
       const swarmRaw = readFileSync(join(configRoot, "knowledge", "issues", "issue-1.md"), "utf8");
       expect(swarmRaw).toMatch(/status: open/);
+    });
+  });
+
+  // Config-dir collision separation: when opencode runs from the config dir
+  // itself, PROJECT_STORE_ROOT === CONFIG_STORE_ROOT and project-scope writes
+  // must redirect into knowledge/projects/{name}/ so the three tiers stay
+  // physically distinct. Fresh module instance without seams (PF-001).
+  describe("store routing — config-dir collision redirects project scope (fresh module instance)", () => {
+    let collideHooks;
+    let collideFresh;
+    let tempRoot;
+    let configRoot;
+    let otherProject;
+
+    const memEntry = topic => ({
+      source_kd: "knowledge/composed-collide.md",
+      tags: ["testing", "scope"],
+      topic,
+      insight: "isolation probe entry",
+      type: "fact",
+      created: "2026-08-21T00:00:00.000Z",
+      session: "ses_collide",
+      version: "1.0.0"
+    });
+
+    beforeAll(async () => {
+      tempRoot = mkdtempSync(join(tmpdir(), "kg-collide-"));
+      configRoot = join(tempRoot, "config");
+      otherProject = join(tempRoot, "myapp");
+      mkdirSync(configRoot, { recursive: true });
+      mkdirSync(otherProject, { recursive: true });
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_NAME;
+      // Workspace == config root is simulated via the env seam: the
+      // module-scope short-term resolver falls back to process.cwd(), which
+      // under vitest is the real config dir, not this suite's temp root.
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      collideFresh = await import("../../../plugins/knowledge-gate/index.js?config-collision");
+      // Simulates opencode started from the config dir: workspace == config root
+      collideHooks = await collideFresh.default.server({ directory: configRoot }, {});
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_NAME;
+      rmSync(tempRoot, { recursive: true, force: true });
+    });
+
+    it("writes project-scoped memory under knowledge/projects/{name}/memory, apart from swarm and generic", async () => {
+      const r = JSON.parse(await collideHooks.tool.memory_write.execute(
+        { entry: memEntry("Project tier"), scope: "project" },
+        { agent: "scribe", sessionID: "s" }
+      ));
+      expect(r.error).toBeUndefined();
+      expect(r.scope).toBe("project");
+      expect(existsSync(join(configRoot, "knowledge", "projects", "config", "memory", "entry-001.json"))).toBe(true);
+      // Neither canonical store received the project write
+      expect(existsSync(join(configRoot, "knowledge", "memory"))).toBe(false);
+      expect(existsSync(join(configRoot, "knowledge", "generic"))).toBe(false);
+    });
+
+    it("keeps swarm and generic memory in their canonical dirs alongside the projects tree", async () => {
+      await collideHooks.tool.memory_write.execute(
+        { entry: memEntry("Swarm tier"), scope: "swarm" },
+        { agent: "scribe", sessionID: "s" }
+      );
+      await collideHooks.tool.memory_write.execute(
+        { entry: memEntry("Generic tier"), scope: "generic" },
+        { agent: "scribe", sessionID: "s" }
+      );
+      expect(existsSync(join(configRoot, "knowledge", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "generic", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "projects", "config", "memory", "entry-001.json"))).toBe(true);
+    });
+
+    it("routes issue writes to three distinct issues dirs with independent per-store IDs", async () => {
+      const base = { title: "Collide", severity: "high", created: "2026-08-21", session: "ses_collide" };
+      for (const scope of ["project", "swarm", "generic"]) {
+        const r = JSON.parse(await collideHooks.tool.issue_write.execute(
+          { issue: { ...base, scope } },
+          { agent: "habit-builder", sessionID: "hb" }
+        ));
+        expect(r.id).toBe(1);
+      }
+      const projRaw = readFileSync(join(configRoot, "knowledge", "projects", "config", "issues", "issue-1.md"), "utf8");
+      const swarmRaw = readFileSync(join(configRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+      const genericRaw = readFileSync(join(configRoot, "knowledge", "generic", "issues", "issue-1.md"), "utf8");
+      expect(projRaw).toContain("scope: project");
+      expect(swarmRaw).toContain("scope: swarm");
+      expect(genericRaw).toContain("scope: generic");
+    });
+
+    it("surfaces open issues from all three physical stores with scope tags", async () => {
+      const merged = collideHooks.scanOpenIssuesMerged();
+      const scopes = merged.map(i => i.scope).sort();
+      expect(scopes).toEqual(["generic", "project", "swarm"]);
+    });
+
+    it("routes short-term notes to per-store short-term directories", async () => {
+      const note = { topic: "Scratch", content: "collision probe note" };
+      for (const scope of ["project", "swarm", "generic"]) {
+        const r = JSON.parse(await collideHooks.tool.memory_note.execute(
+          { ...note, scope },
+          { agent: "artisan", sessionID: "ses_collide" }
+        ));
+        expect(r.error).toBeUndefined();
+      }
+      expect(existsSync(join(configRoot, "knowledge", "projects", "config", "short-term", "ses_collide", "artisan"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "short-term", "ses_collide", "artisan"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "generic", "short-term", "ses_collide", "artisan"))).toBe(true);
+    });
+
+    it("keeps project data in a non-config workspace when the directory differs from the config root", async () => {
+      // Env seam would override input.directory — remove it so this server
+      // resolves its workspace from the directory argument alone.
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      const otherHooks = await collideFresh.default.server({ directory: otherProject }, {});
+      const r = JSON.parse(await otherHooks.tool.memory_write.execute(
+        { entry: memEntry("Other project tier"), scope: "project" },
+        { agent: "scribe", sessionID: "s" }
+      ));
+      expect(r.error).toBeUndefined();
+      expect(existsSync(join(otherProject, "knowledge", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "projects", "myapp"))).toBe(false);
+    });
+
+    it("honors KNOWLEDGE_GATE_PROJECT_NAME for the collision namespace", async () => {
+      process.env.KNOWLEDGE_GATE_PROJECT_NAME = "swarm-workbench";
+      const namedHooks = await collideFresh.default.server({ directory: configRoot }, {});
+      const r = JSON.parse(await namedHooks.tool.memory_write.execute(
+        { entry: memEntry("Named project tier"), scope: "project" },
+        { agent: "scribe", sessionID: "s" }
+      ));
+      expect(r.error).toBeUndefined();
+      expect(existsSync(join(configRoot, "knowledge", "projects", "swarm-workbench", "memory"))).toBe(true);
+      delete process.env.KNOWLEDGE_GATE_PROJECT_NAME;
     });
   });
 
