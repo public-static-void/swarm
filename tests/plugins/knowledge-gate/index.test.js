@@ -207,7 +207,7 @@ describe("Knowledge-Gate Plugin", () => {
   });
 
   describe("scanHighSeverityIssues", () => {
-    it("filters correctly by severity and status", () => {
+    it("filters correctly by severity and status across all stores", () => {
       writeEntries(ISSUES_DIR, [
         addIssueFile(1, { severity: "high", status: "open" }),
         addIssueFile(2, { severity: "low", status: "open" }),
@@ -215,8 +215,11 @@ describe("Knowledge-Gate Plugin", () => {
       ]);
 
       const results = hooks.scanHighSeverityIssues();
-      expect(results).toHaveLength(1);
-      expect(results[0].id).toBe("ISSUE-001");
+      // Triple-store seam: the single high/open issue is surfaced once per
+      // store scope; low severity and closed status are excluded everywhere.
+      expect(results).toHaveLength(3);
+      expect(results.every(i => i.id === "ISSUE-001")).toBe(true);
+      expect(new Set(results.map(i => i.scope))).toEqual(new Set(["swarm", "project", "generic"]));
     });
 
     it("returns empty array when issues directory is missing", () => {
@@ -228,7 +231,8 @@ describe("Knowledge-Gate Plugin", () => {
     it("returns issues in stable severity/id order regardless of write order", () => {
       // Write order permuted against the ids so a filesystem-order read
       // cannot satisfy the expectation (scanHighSeverityIssues derives from
-      // the shared sorted scan, not from readdir order).
+      // the shared sorted scan, not from readdir order). Triple-store seam:
+      // each issue appears once per scope, interleaved within each id group.
       writeEntries(ISSUES_DIR, [
         addIssueFile(3, { severity: "high", title: "High C" }),
         addIssueFile(1, { severity: "high", title: "High A" }),
@@ -236,7 +240,11 @@ describe("Knowledge-Gate Plugin", () => {
       ]);
 
       const results = hooks.scanHighSeverityIssues();
-      expect(results.map(i => i.id)).toEqual(["ISSUE-001", "ISSUE-002", "ISSUE-003"]);
+      expect(results.map(i => `${i.id}:${i.scope}`)).toEqual([
+        "ISSUE-001:swarm", "ISSUE-001:project", "ISSUE-001:generic",
+        "ISSUE-002:swarm", "ISSUE-002:project", "ISSUE-002:generic",
+        "ISSUE-003:swarm", "ISSUE-003:project", "ISSUE-003:generic"
+      ]);
     });
 
     it("ignores non-issue files and subdirectories in the registry dir", () => {
@@ -251,8 +259,50 @@ describe("Knowledge-Gate Plugin", () => {
       mkdirSync(join(ISSUES_DIR, "search-index"), { recursive: true });
       writeFileSync(join(ISSUES_DIR, "search-index", "index.json"), "{}");
 
-      expect(hooks.scanHighSeverityIssues()).toHaveLength(1);
+      expect(hooks.scanHighSeverityIssues()).toHaveLength(3);
       expect(hooks.scanOpenIssues()).toHaveLength(2);
+    });
+
+    it("surfaces high-severity issues from every store so any store can trigger transitions", () => {
+      // A high-severity issue must reach the backward-transition trigger no
+      // matter which store holds it — the scan reads all three stores and
+      // tags each hit with its scope.
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(7, { severity: "high", title: "Blocking regression" })
+      ]);
+
+      const results = hooks.scanHighSeverityIssues();
+      const scopes = results.map(i => i.scope).sort();
+      expect(scopes).toEqual(["generic", "project", "swarm"]);
+      expect(results.every(i => i.severity === "high")).toBe(true);
+      expect(results.every(i => i.status === "open")).toBe(true);
+    });
+  });
+
+  describe("scanOpenIssuesMerged", () => {
+    it("includes open issues from all three stores with scope tags", () => {
+      // Triple-store seam: one file is visible to every store pass, so a
+      // single open issue yields one tagged result per store — proving the
+      // merged scan covers swarm, project, and generic.
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(4, { severity: "medium", title: "Cross-store issue" })
+      ]);
+
+      const results = hooks.scanOpenIssuesMerged();
+      expect(results).toHaveLength(3);
+      expect(new Set(results.map(i => i.scope))).toEqual(new Set(["swarm", "project", "generic"]));
+      expect(results.every(i => i.id === "ISSUE-004")).toBe(true);
+    });
+
+    it("excludes resolved issues from the merged scan", () => {
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(1, { status: "open", title: "Still open" }),
+        addIssueFile(2, { status: "resolved", title: "Done" })
+      ]);
+
+      const results = hooks.scanOpenIssuesMerged();
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.every(i => i.id === "ISSUE-001")).toBe(true);
     });
   });
 
@@ -270,8 +320,9 @@ describe("Knowledge-Gate Plugin", () => {
       ]);
 
       const results = hooks.scanHighSeverityIssues();
-      expect(results).toHaveLength(1);
-      expect(results[0].id).toBe("ISSUE-001");
+      // Triple-store seam: one high/open issue surfaced once per store scope
+      expect(results).toHaveLength(3);
+      expect(results.every(i => i.id === "ISSUE-001")).toBe(true);
     });
   });
 
@@ -2901,6 +2952,26 @@ Body`;
       expect(swarmResults.every(r => r.store === "swarm")).toBe(true);
     });
 
+    it("memory_search store filter accepts the generic store", async () => {
+      await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-generic.md",
+          tags: ["test", "genericfilter"],
+          topic: "Generic filter target",
+          insight: "Generic only",
+          type: "fact",
+          created: "2026-08-16T02:00:00.000Z",
+          session: "ses_m4_generic",
+          version: "1.0.0"
+        },
+        scope: "generic"
+      }, { agent: "scribe", sessionID: "s" });
+
+      const genericResults = hooks.searchMemory({ tags: ["test", "genericfilter"], limit: 10, store: "generic" });
+      expect(genericResults.length).toBeGreaterThanOrEqual(1);
+      expect(genericResults.every(r => r.store === "generic")).toBe(true);
+    });
+
     it("memory_search merges all stores by default with store field", async () => {
       await hooks.tool.memory_write.execute({
         entry: {
@@ -2945,6 +3016,15 @@ Body`;
       expect(caches.swarm).toBeDefined();
       expect(caches.project).toBeDefined();
       expect(caches.swarm).not.toBe(caches.project);
+    });
+
+    it("generic store has its own isolated cache", () => {
+      const caches = hooks.perStoreCaches;
+      // Without a dedicated generic cache, generic searches would share (and
+      // thrash) the swarm cache — the fallback in getCacheForScope.
+      expect(caches.generic).toBeDefined();
+      expect(caches.generic).not.toBe(caches.swarm);
+      expect(caches.generic).not.toBe(caches.project);
     });
 
     it("memoryDirForScope resolves to correct paths", () => {
