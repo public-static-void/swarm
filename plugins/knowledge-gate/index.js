@@ -334,14 +334,6 @@ function readAllIssueFiles() {
   return issues;
 }
 
-// Scans knowledge/issues/ for open, high-severity issues (exported hook).
-function scanHighSeverityIssues() {
-  // Derive from the shared open-issue scan: same read path and failure
-  // isolation, plus a deterministic severity/id order (the previous
-  // implementation iterated in filesystem-dependent readdir order).
-  return scanOpenIssues().filter(issue => issue.severity === "high");
-}
-
 /**
  * Parses an issue markdown file's YAML frontmatter.
  * Minimal parser — does not require a YAML library.
@@ -891,6 +883,7 @@ export default {
     }
     const perStoreCaches = {
       project: makeCache(),
+      generic: makeCache(),
       swarm: makeCache()
     };
 
@@ -2174,6 +2167,15 @@ export default {
         return issueNumericId(a) - issueNumericId(b);
       });
       return allIssues;
+    }
+
+    // High-severity view over ALL stores (R007): the backward-transition
+    // trigger must fire on high-severity open issues from the project and
+    // generic stores too, not just swarm. Derives from scanOpenIssuesMerged
+    // so read path, failure isolation, and severity/id ordering cannot
+    // diverge between the two scans.
+    function scanHighSeverityIssues() {
+      return scanOpenIssuesMerged().filter(issue => issue.severity === "high");
     }
 
     // --- Hook: chat.params ---
