@@ -210,11 +210,23 @@ const VALID_TYPES = ["fact", "decision", "pattern", "warning", "context"];
  * Mirrors getNextIssueId() pattern.
  */
 function getNextMemoryId() {
-  if (!existsSync(MEMORY_DIR)) return "MEM-001";
+  return getNextMemoryIdForStore(MEMORY_DIR);
+}
+
+/**
+ * Gets the next sequential memory ID within ONE store dir (NFR005 per-store
+ * assignment): `max(numeric entry id)+1`. Each store owns an independent ID
+ * sequence, so callers must scan the scope-resolved target dir — scanning
+ * the swarm MEMORY_DIR for a non-swarm write would hand out IDs that can
+ * collide with (and overwrite) existing target-store entries. Mirrors
+ * getNextIssueIdForStore().
+ */
+function getNextMemoryIdForStore(memoryDir) {
+  if (!existsSync(memoryDir)) return "MEM-001";
 
   let files;
   try {
-    files = readdirSync(MEMORY_DIR).filter(f => f.startsWith("entry-") && f.endsWith(".json"));
+    files = readdirSync(memoryDir).filter(f => f.startsWith("entry-") && f.endsWith(".json"));
   } catch (_) {
     return "MEM-001";
   }
@@ -1737,7 +1749,7 @@ export default {
         }
       }),
       issue_move: tool({
-        description: "Move an issue between stores (project|generic|swarm). Only Habit Builder and Overseer agents may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.",
+        description: "Move an issue between stores (project|generic|swarm). Only Habit Builder and Overseer agents may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. If the target store already holds an issue with the same ID, a fresh target-store ID is assigned and the original ID is preserved as moved_from in frontmatter. Returns { message, id, source_id, path } or { error }.",
         args: {
           id: tool.schema.number().int().describe("Issue ID to move (numeric)"),
           from_scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Source store scope"),
@@ -1800,7 +1812,7 @@ export default {
           }
 
           // Update scope in frontmatter
-          const newContent = raw.replace(
+          let newContent = raw.replace(
             /^scope:\s*(project|generic|swarm)\s*$/m,
             `scope: ${to_scope}`
           );
@@ -1809,11 +1821,30 @@ export default {
           const targetDir = issuesDirForScope(to_scope);
           const targetPath = join(targetDir, `issue-${id}.md`);
 
+          // Collision safety (NFR005): per-store ID spaces make same-ID
+          // collisions the expected case when bubbling low-numbered IDs
+          // across stores. Never overwrite an existing target file — reassign
+          // a fresh target-store ID and record the source ID as provenance.
+          // targetPath === sourcePath only under the legacy single-dir test
+          // seam, where the "existing" file is the issue being moved itself.
+          let movedId = id;
+          if (targetPath !== sourcePath && existsSync(targetPath)) {
+            movedId = getNextIssueIdForStore(targetDir);
+            newContent = newContent.replace(/^id:\s*\d+\s*$/m, `id: ${movedId}`);
+            newContent = newContent.replace(/^# Issue \d+:/m, `# Issue ${movedId}:`);
+            newContent = newContent.replace(
+              /^(scope:\s*(?:project|generic|swarm)\s*)$/m,
+              `$1\nmoved_from: ${from_scope}/issue-${id}`
+            );
+            debug(`issue_move: ID collision in ${to_scope} — reassigned issue ${id} to ${movedId}`);
+          }
+          const finalPath = movedId === id ? targetPath : join(targetDir, `issue-${movedId}.md`);
+
           try {
             // Ensure target directory exists
             mkdirSync(targetDir, { recursive: true });
-            writeFileSync(targetPath, newContent, "utf8");
-            debug(`issue_move: copied ${sourcePath} to ${targetPath}`);
+            writeFileSync(finalPath, newContent, "utf8");
+            debug(`issue_move: copied ${sourcePath} to ${finalPath}`);
           } catch (e) {
             return JSON.stringify({ error: `Failed to write issue ${id} to ${to_scope}: ${e.message}` });
           }
@@ -1828,9 +1859,12 @@ export default {
           }
 
           return JSON.stringify({
-            message: `Issue ${id} moved from ${from_scope} to ${to_scope}`,
-            id,
-            path: targetPath,
+            message: movedId === id
+              ? `Issue ${id} moved from ${from_scope} to ${to_scope}`
+              : `Issue ${id} moved from ${from_scope} to ${to_scope} — target store already had an issue ${id}, assigned fresh ID ${movedId}`,
+            id: movedId,
+            source_id: id,
+            path: finalPath,
             from_scope,
             to_scope,
             reason: reason || null
@@ -2090,6 +2124,10 @@ export default {
       // adapts: id is assigned up front (validation requires MEM-\d{3}),
       // tags are padded to the 2-tag minimum with controlled-vocabulary
       // defaults, and content is truncated to the 500-char insight bound.
+      // Ensure the target store's memory dir exists (mirrors memory_write) —
+      // a promotion into a store that has never received an entry would
+      // otherwise fail with ENOENT.
+      try { mkdirSync(targetDir, { recursive: true }); } catch (_) {}
       for (const note of notes) {
         if (!select(note)) {
           skipped.push({ id: note.id, reason: "not selected" });
@@ -2099,7 +2137,10 @@ export default {
           ? note.tags
           : [...(note.tags || []), "context", "lifecycle"];
         const entry = {
-          id: getNextMemoryId(),
+          // Per-store ID assignment (NFR005): scan the scope-resolved target
+          // dir, not the swarm store — the swarm sequence diverges from the
+          // target's and swarm-max+1 can overwrite an existing target entry.
+          id: getNextMemoryIdForStore(targetDir),
           type: "fact",
           source_kd: composedKdPath,
           tags,
@@ -2400,6 +2441,7 @@ export default {
       getNextIssueId,
       getNextIssueIdForStore,
       getNextMemoryId,
+      getNextMemoryIdForStore,
       validateMemoryEntry,
       validateIssue,
       formatMemoryEntry,

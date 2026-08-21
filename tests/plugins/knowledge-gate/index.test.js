@@ -2142,6 +2142,89 @@ Body`;
       const parsed = JSON.parse(result);
       expect(parsed.error).toContain("not found");
     });
+
+    // F-001 collision safety: per-store independent ID spaces make same-ID
+    // collisions the expected case when bubbling low-numbered project IDs up
+    // to the swarm store. A move must never overwrite an existing target file
+    // (NFR005) — it reassigns a fresh target-store ID and records provenance
+    // in frontmatter instead. Fresh module instance without seams so swarm
+    // and project stores are physically distinct dirs.
+    describe("issue_move collision safety (fresh module instance)", () => {
+      let moveHooks;
+      let configRoot;
+      let projectRoot;
+
+      beforeAll(async () => {
+        configRoot = mkdtempSync(join(tmpdir(), "kg-move-config-"));
+        projectRoot = mkdtempSync(join(tmpdir(), "kg-move-project-"));
+        delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+        process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+        process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+        const fresh = await import("../../../plugins/knowledge-gate/index.js?move-collision");
+        moveHooks = await fresh.default.server({}, {});
+      });
+
+      afterAll(() => {
+        process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+        delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+        delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+        rmSync(configRoot, { recursive: true, force: true });
+        rmSync(projectRoot, { recursive: true, force: true });
+      });
+
+      async function seedIssueIn(scope, title, id) {
+        const issue = { title, severity: "medium", created: "2026-08-21", session: "ses_move", scope };
+        if (id !== undefined) issue.id = id;
+        return JSON.parse(await moveHooks.tool.issue_write.execute(
+          { issue },
+          { agent: "habit-builder", sessionID: "hb" }
+        ));
+      }
+
+      it("reassigns a fresh target-store ID instead of overwriting an existing same-ID issue", async () => {
+        // Both stores legitimately hold their own issue-1 (per-store counters)
+        const swarmSeeded = await seedIssueIn("swarm", "Swarm bubble-up candidate");
+        const projectSeeded = await seedIssueIn("project", "Existing project issue one");
+        expect(swarmSeeded.id).toBe(1);
+        expect(projectSeeded.id).toBe(1);
+        const projectOneBefore = readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+
+        const result = JSON.parse(await moveHooks.tool.issue_move.execute(
+          { id: 1, from_scope: "swarm", to_scope: "project", reason: "swarm defect found while working in a project" },
+          { agent: "habit-builder", sessionID: "hb" }
+        ));
+
+        expect(result.error).toBeUndefined();
+        expect(result.id).toBe(2);
+        expect(result.source_id).toBe(1);
+        // Existing project issue-1 preserved byte-for-byte — no data loss (NFR005)
+        expect(readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8")).toBe(projectOneBefore);
+        // Moved issue landed under the fresh ID with updated frontmatter
+        const movedRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-2.md"), "utf8");
+        expect(movedRaw).toContain("Swarm bubble-up candidate");
+        expect(movedRaw).toMatch(/^id: 2$/m);
+        expect(movedRaw).toMatch(/^scope: project$/m);
+        expect(movedRaw).toMatch(/^moved_from: swarm\/issue-1$/m);
+        // Source removed from the swarm store
+        expect(existsSync(join(configRoot, "knowledge", "issues", "issue-1.md"))).toBe(false);
+      });
+
+      it("keeps the source ID and omits moved_from when the target store has no collision", async () => {
+        await seedIssueIn("swarm", "No collision candidate", 3);
+
+        const result = JSON.parse(await moveHooks.tool.issue_move.execute(
+          { id: 3, from_scope: "swarm", to_scope: "project" },
+          { agent: "habit-builder", sessionID: "hb" }
+        ));
+
+        expect(result.error).toBeUndefined();
+        expect(result.id).toBe(3);
+        const movedRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-3.md"), "utf8");
+        expect(movedRaw).toContain("No collision candidate");
+        expect(movedRaw).toMatch(/^scope: project$/m);
+        expect(movedRaw).not.toMatch(/^moved_from:/m);
+      });
+    });
   });
 
   // Per-store physical separation — the one deliberate exception to this
@@ -2908,6 +2991,124 @@ Body`;
       expect(promo).toContain("COMPOSED KD");
       expect(promo).toContain("memory_note_delete");
       expect(promo).toContain("After the copies land");
+    });
+  });
+
+  // F-002: promoted IDs must follow the TARGET store's sequence. The old
+  // code assigned via module-scope getNextMemoryId(), which scans only the
+  // swarm MEMORY_DIR — non-swarm promotions diverged from the target
+  // sequence and could silently overwrite an existing target entry when
+  // swarm-max+1 ≤ target-max (NFR005). Fresh module instance without seams
+  // for physically distinct per-store dirs.
+  describe("promotion ID assignment — per-store sequence (fresh module instance)", () => {
+    let promoHooks;
+    let tempRoot;
+    let configRoot;
+    let projectRoot;
+    let swarmMemoryDir;
+    let projectMemoryDir;
+
+    function seedEntry(dir, num, topic) {
+      writeFileSync(join(dir, `entry-${String(num).padStart(3, "0")}.json`), JSON.stringify({
+        id: `MEM-${String(num).padStart(3, "0")}`,
+        type: "fact",
+        source_kd: "knowledge/composed-seed.md",
+        tags: ["testing", "scope"],
+        topic,
+        insight: `Seed insight ${num}.`,
+        created: "2026-08-21T00:00:00.000Z",
+        session: "ses_seed",
+        version: "1.0.0",
+        scope: "project"
+      }), "utf8");
+    }
+
+    function maxEntryNum(dir) {
+      return readdirSync(dir)
+        .map(f => f.match(/^entry-(\d+)\.json$/))
+        .filter(Boolean)
+        .reduce((max, m) => Math.max(max, parseInt(m[1], 10)), 0);
+    }
+
+    beforeAll(async () => {
+      tempRoot = mkdtempSync(join(tmpdir(), "kg-promo-ids-"));
+      configRoot = join(tempRoot, "config");
+      projectRoot = join(tempRoot, "app");
+      mkdirSync(configRoot, { recursive: true });
+      mkdirSync(projectRoot, { recursive: true });
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+      const fresh = await import("../../../plugins/knowledge-gate/index.js?promo-ids");
+      promoHooks = await fresh.default.server({ directory: projectRoot }, {});
+      swarmMemoryDir = join(configRoot, "knowledge", "memory");
+      projectMemoryDir = join(projectRoot, "knowledge", "memory");
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      rmSync(tempRoot, { recursive: true, force: true });
+    });
+
+    it("assigns promoted IDs from the target store's sequence, not the swarm store's", async () => {
+      // Swarm store holds entries 1-5; project store is empty.
+      mkdirSync(swarmMemoryDir, { recursive: true });
+      for (let n = 1; n <= 5; n++) seedEntry(swarmMemoryDir, n, `Swarm seed ${n}`);
+      await promoHooks.tool.memory_note.execute(
+        { topic: "Project insight", content: "A project-specific insight worth keeping.", scope: "project" },
+        { agent: "artisan", sessionID: "promo-ids" }
+      );
+
+      const result = promoHooks.promoteShortTermNotes("promo-ids", "knowledge/composed-promo.md", { scope: "project" });
+
+      expect(result.promoted).toHaveLength(1);
+      // Buggy behavior assigned MEM-006 (swarm-max+1); correct is MEM-001
+      expect(result.promoted[0].entryId).toBe("MEM-001");
+      const entry = JSON.parse(readFileSync(join(projectMemoryDir, "entry-001.json"), "utf8"));
+      expect(entry.topic).toBe("Project insight");
+      expect(entry.scope).toBe("project");
+    });
+
+    it("never overwrites an existing target-store entry when sequences overlap", async () => {
+      // Project holds entries 1-3 while swarm holds only entry 1 — the buggy
+      // swarm-scan would assign MEM-002 and clobber project entry-002.
+      mkdirSync(swarmMemoryDir, { recursive: true });
+      mkdirSync(projectMemoryDir, { recursive: true });
+      seedEntry(swarmMemoryDir, 1, "Lone swarm seed");
+      seedEntry(projectMemoryDir, 1, "Project seed one");
+      seedEntry(projectMemoryDir, 2, "Project seed two");
+      seedEntry(projectMemoryDir, 3, "Project seed three");
+      const twoBefore = readFileSync(join(projectMemoryDir, "entry-002.json"), "utf8");
+      await promoHooks.tool.memory_note.execute(
+        { topic: "Overlapping insight", content: "Insight promoted into an overlapping store.", scope: "project" },
+        { agent: "artisan", sessionID: "promo-overlap" }
+      );
+
+      const result = promoHooks.promoteShortTermNotes("promo-overlap", "knowledge/composed-promo.md", { scope: "project" });
+
+      expect(result.promoted).toHaveLength(1);
+      expect(result.promoted[0].entryId).toBe("MEM-004");
+      expect(readFileSync(join(projectMemoryDir, "entry-002.json"), "utf8")).toBe(twoBefore);
+      expect(JSON.parse(readFileSync(join(projectMemoryDir, "entry-004.json"), "utf8")).topic).toBe("Overlapping insight");
+    });
+
+    it("assigns distinct sequential IDs when promoting multiple notes in one run", async () => {
+      mkdirSync(projectMemoryDir, { recursive: true });
+      const base = maxEntryNum(projectMemoryDir);
+      await promoHooks.tool.memory_note.execute({ topic: "First keep", content: "Keep one.", scope: "project" }, { agent: "artisan", sessionID: "promo-multi" });
+      await promoHooks.tool.memory_note.execute({ topic: "Second keep", content: "Keep two.", scope: "project" }, { agent: "scribe", sessionID: "promo-multi" });
+
+      const result = promoHooks.promoteShortTermNotes("promo-multi", "knowledge/composed-promo.md", { scope: "project" });
+
+      const pad = n => `MEM-${String(n).padStart(3, "0")}`;
+      expect(result.promoted.map(p => p.entryId)).toEqual([pad(base + 1), pad(base + 2)]);
+      expect(maxEntryNum(projectMemoryDir)).toBe(base + 2);
     });
   });
 
