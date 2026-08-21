@@ -14,7 +14,7 @@
 //
 // Debug logging: set KNOWLEDGE_GATE_DEBUG=1 in environment to enable.
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
-import { join, dirname, resolve } from "path";
+import { join, dirname, basename, resolve } from "path";
 import { fileURLToPath } from "url";
 // tool() registers custom tools with the runtime via the plugin `tool` hook
 // map — the documented mechanism (Hooks.tool) that puts memory_search and
@@ -645,6 +645,30 @@ function serializeIssueFile(doc, bodySections = []) {
 const NOTE_VERSION = "1.0.0";
 const NOTE_CAP = 100;
 
+// Namespace for project-scope data that must live inside the config store
+// (config-dir startup): KNOWLEDGE_GATE_PROJECT_NAME override, else the
+// workspace directory's basename. Sanitized — the name becomes a path segment.
+function projectNamespaceName(projectRoot) {
+  return sanitizeToken(process.env.KNOWLEDGE_GATE_PROJECT_NAME)
+    || sanitizeToken(basename(projectRoot))
+    || "project";
+}
+
+// Project-scope dir resolution (GAP-001): when opencode runs from the config
+// dir itself, the project store would coincide with the swarm store and all
+// three tiers would bleed into one directory. Redirect into
+// knowledge/projects/{name}/ under the config store so project, swarm, and
+// generic data stay physically distinct. The seam check comes first — the
+// test suite relies on the seam collapsing stores.
+function projectDataDirFor(kind, projectRoot) {
+  const seam = SEAM_DIR_OVERRIDES[kind];
+  if (seam) return seam;
+  if (projectRoot === CONFIG_STORE_ROOT) {
+    return join(CONFIG_STORE_ROOT, "knowledge", "projects", projectNamespaceName(projectRoot), kind);
+  }
+  return storeDirFor(kind, projectRoot);
+}
+
 // Per-store short-term dir resolution: maps scope to the correct store's
 // short-term directory. Same pattern as memoryDirForScope/issuesDirForScope
 // but at module scope so noteDirFor (also module-scope) can call it.
@@ -655,16 +679,12 @@ function shortTermDirForScope(scope) {
     return join(GENERIC_STORE_ROOT, "short-term");
   }
   if (scope === "project") {
-    // Project scope uses the project store's short-term dir. When the
-    // seam is set (tests), both scopes collapse to the same dir — by design.
-    const seam = SEAM_DIR_OVERRIDES["short-term"];
-    if (seam) return seam;
     // PROJECT_STORE_ROOT is resolved at server init; for module-scope callers
     // we fall back to process.cwd() (the opencode workspace root).
     const projectRoot = process.env.KNOWLEDGE_GATE_PROJECT_ROOT
       ? resolve(process.env.KNOWLEDGE_GATE_PROJECT_ROOT)
       : process.cwd();
-    return storeDirFor("short-term", projectRoot);
+    return projectDataDirFor("short-term", projectRoot);
   }
   // Default: swarm scope (the historical single-store default)
   return SHORT_TERM_DIR;
@@ -821,8 +841,9 @@ export default {
     // Project store root (R001): captured once per server instance at init.
     // Precedence: env KNOWLEDGE_GATE_PROJECT_ROOT ?? input.directory ??
     // process.cwd() — env first (test seam), then the opencode PluginInput
-    // workspace, then the cwd fallback (tests call server({}, {})). When
-    // cwd == config dir the two stores coincide (NFR001).
+    // workspace, then the cwd fallback (tests call server({}, {})). When the
+    // workspace IS the config dir, projectDataDirFor redirects project-scope
+    // paths into knowledge/projects/{name}/ so the stores stay distinct.
     const PROJECT_STORE_ROOT = process.env.KNOWLEDGE_GATE_PROJECT_ROOT
       ? resolve(process.env.KNOWLEDGE_GATE_PROJECT_ROOT)
       : (input && input.directory ? resolve(input.directory) : process.cwd());
@@ -847,6 +868,7 @@ export default {
         if (seam) return seam;
         return join(GENERIC_STORE_ROOT, "memory");
       }
+      if (scope === "project") return projectDataDirFor("memory", PROJECT_STORE_ROOT);
       return storeDirFor("memory", storeRootForScope(scope));
     }
 
@@ -858,6 +880,7 @@ export default {
         if (seam) return seam;
         return join(GENERIC_STORE_ROOT, "issues");
       }
+      if (scope === "project") return projectDataDirFor("issues", PROJECT_STORE_ROOT);
       return storeDirFor("issues", storeRootForScope(scope));
     }
 
