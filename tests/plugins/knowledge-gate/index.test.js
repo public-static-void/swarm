@@ -207,7 +207,7 @@ describe("Knowledge-Gate Plugin", () => {
   });
 
   describe("scanHighSeverityIssues", () => {
-    it("filters correctly by severity and status", () => {
+    it("filters correctly by severity and status across all stores", () => {
       writeEntries(ISSUES_DIR, [
         addIssueFile(1, { severity: "high", status: "open" }),
         addIssueFile(2, { severity: "low", status: "open" }),
@@ -215,8 +215,11 @@ describe("Knowledge-Gate Plugin", () => {
       ]);
 
       const results = hooks.scanHighSeverityIssues();
-      expect(results).toHaveLength(1);
-      expect(results[0].id).toBe("ISSUE-001");
+      // Triple-store seam: the single high/open issue is surfaced once per
+      // store scope; low severity and closed status are excluded everywhere.
+      expect(results).toHaveLength(3);
+      expect(results.every(i => i.id === "ISSUE-001")).toBe(true);
+      expect(new Set(results.map(i => i.scope))).toEqual(new Set(["swarm", "project", "generic"]));
     });
 
     it("returns empty array when issues directory is missing", () => {
@@ -228,7 +231,8 @@ describe("Knowledge-Gate Plugin", () => {
     it("returns issues in stable severity/id order regardless of write order", () => {
       // Write order permuted against the ids so a filesystem-order read
       // cannot satisfy the expectation (scanHighSeverityIssues derives from
-      // the shared sorted scan, not from readdir order).
+      // the shared sorted scan, not from readdir order). Triple-store seam:
+      // each issue appears once per scope, interleaved within each id group.
       writeEntries(ISSUES_DIR, [
         addIssueFile(3, { severity: "high", title: "High C" }),
         addIssueFile(1, { severity: "high", title: "High A" }),
@@ -236,7 +240,11 @@ describe("Knowledge-Gate Plugin", () => {
       ]);
 
       const results = hooks.scanHighSeverityIssues();
-      expect(results.map(i => i.id)).toEqual(["ISSUE-001", "ISSUE-002", "ISSUE-003"]);
+      expect(results.map(i => `${i.id}:${i.scope}`)).toEqual([
+        "ISSUE-001:swarm", "ISSUE-001:project", "ISSUE-001:generic",
+        "ISSUE-002:swarm", "ISSUE-002:project", "ISSUE-002:generic",
+        "ISSUE-003:swarm", "ISSUE-003:project", "ISSUE-003:generic"
+      ]);
     });
 
     it("ignores non-issue files and subdirectories in the registry dir", () => {
@@ -251,8 +259,50 @@ describe("Knowledge-Gate Plugin", () => {
       mkdirSync(join(ISSUES_DIR, "search-index"), { recursive: true });
       writeFileSync(join(ISSUES_DIR, "search-index", "index.json"), "{}");
 
-      expect(hooks.scanHighSeverityIssues()).toHaveLength(1);
+      expect(hooks.scanHighSeverityIssues()).toHaveLength(3);
       expect(hooks.scanOpenIssues()).toHaveLength(2);
+    });
+
+    it("surfaces high-severity issues from every store so any store can trigger transitions", () => {
+      // A high-severity issue must reach the backward-transition trigger no
+      // matter which store holds it — the scan reads all three stores and
+      // tags each hit with its scope.
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(7, { severity: "high", title: "Blocking regression" })
+      ]);
+
+      const results = hooks.scanHighSeverityIssues();
+      const scopes = results.map(i => i.scope).sort();
+      expect(scopes).toEqual(["generic", "project", "swarm"]);
+      expect(results.every(i => i.severity === "high")).toBe(true);
+      expect(results.every(i => i.status === "open")).toBe(true);
+    });
+  });
+
+  describe("scanOpenIssuesMerged", () => {
+    it("includes open issues from all three stores with scope tags", () => {
+      // Triple-store seam: one file is visible to every store pass, so a
+      // single open issue yields one tagged result per store — proving the
+      // merged scan covers swarm, project, and generic.
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(4, { severity: "medium", title: "Cross-store issue" })
+      ]);
+
+      const results = hooks.scanOpenIssuesMerged();
+      expect(results).toHaveLength(3);
+      expect(new Set(results.map(i => i.scope))).toEqual(new Set(["swarm", "project", "generic"]));
+      expect(results.every(i => i.id === "ISSUE-004")).toBe(true);
+    });
+
+    it("excludes resolved issues from the merged scan", () => {
+      writeEntries(ISSUES_DIR, [
+        addIssueFile(1, { status: "open", title: "Still open" }),
+        addIssueFile(2, { status: "resolved", title: "Done" })
+      ]);
+
+      const results = hooks.scanOpenIssuesMerged();
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.every(i => i.id === "ISSUE-001")).toBe(true);
     });
   });
 
@@ -270,8 +320,9 @@ describe("Knowledge-Gate Plugin", () => {
       ]);
 
       const results = hooks.scanHighSeverityIssues();
-      expect(results).toHaveLength(1);
-      expect(results[0].id).toBe("ISSUE-001");
+      // Triple-store seam: one high/open issue surfaced once per store scope
+      expect(results).toHaveLength(3);
+      expect(results.every(i => i.id === "ISSUE-001")).toBe(true);
     });
   });
 
@@ -606,7 +657,7 @@ Body`;
 
     describe("overseer INTENT issue injection", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from both stores detected"));
+        output.system.find(s => s.includes("Open issues from all stores detected"));
 
       it("injects open issues in the stable line format for the overseer", async () => {
         writeEntries(ISSUES_DIR, [
@@ -704,6 +755,8 @@ Body`;
       it("injects issues ordered by severity rank and ascending numeric id", async () => {
         // Severity is deliberately permuted against the numeric id order so a
         // filesystem-order (readdirSync) read cannot satisfy the expectation.
+        // Unbounded cap: 5 issues × 3 stores = 15, exceeds default cap 10.
+        process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "0";
         writeEntries(ISSUES_DIR, [
           addIssueFile(4, { severity: "high", title: "High B" }),
           addIssueFile(2, { severity: "high", title: "High A" }),
@@ -721,26 +774,31 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const issueLines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
-        // Dual-store seam: each issue appears with both [swarm] and [project] scope,
+        // Triple-store seam: each issue appears with [swarm], [project], and [generic] scope,
         // interleaved within each severity group.
         expect(issueLines).toEqual([
           "- [ISSUE-002] (high) [swarm] High A — assigned to habit-builder",
           "- [ISSUE-002] (high) [project] High A — assigned to habit-builder",
+          "- [ISSUE-002] (high) [generic] High A — assigned to habit-builder",
           "- [ISSUE-004] (high) [swarm] High B — assigned to habit-builder",
           "- [ISSUE-004] (high) [project] High B — assigned to habit-builder",
+          "- [ISSUE-004] (high) [generic] High B — assigned to habit-builder",
           "- [ISSUE-003] (medium) [swarm] Medium C — assigned to habit-builder",
           "- [ISSUE-003] (medium) [project] Medium C — assigned to habit-builder",
+          "- [ISSUE-003] (medium) [generic] Medium C — assigned to habit-builder",
           "- [ISSUE-001] (low) [swarm] Low D — assigned to habit-builder",
           "- [ISSUE-001] (low) [project] Low D — assigned to habit-builder",
+          "- [ISSUE-001] (low) [generic] Low D — assigned to habit-builder",
           "- [ISSUE-005] (low) [swarm] Low E — assigned to habit-builder",
-          "- [ISSUE-005] (low) [project] Low E — assigned to habit-builder"
+          "- [ISSUE-005] (low) [project] Low E — assigned to habit-builder",
+          "- [ISSUE-005] (low) [generic] Low E — assigned to habit-builder"
         ]);
       });
     });
 
     describe("overseer INTENT cap env", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from both stores detected"));
+        output.system.find(s => s.includes("Open issues from all stores detected"));
 
       function writeTwelveOpen() {
         writeEntries(ISSUES_DIR, [
@@ -774,16 +832,16 @@ Body`;
         expect(hint).toBeTruthy();
         const lines = issueLines(hint);
         expect(lines).toHaveLength(10);
-        // Dual-store seam: each issue appears with both [swarm] and [project] scope,
-        // so severity groups are interleaved (A-swarm, A-project, B-swarm, B-project…).
+        // Triple-store seam: each issue appears with [swarm], [project], and [generic] scope,
+        // so severity groups are interleaved (A-swarm, A-project, A-generic, B-swarm…).
         expect(lines[0]).toContain("High A");
         expect(lines[1]).toContain("High A");
-        expect(lines[2]).toContain("High B");
+        expect(lines[2]).toContain("High A");
         expect(lines[3]).toContain("High B");
-        expect(lines[4]).toContain("High C");
-        expect(lines[5]).toContain("High C");
-        expect(lines[6]).toContain("High D");
-        expect(lines[7]).toContain("High D");
+        expect(lines[4]).toContain("High B");
+        expect(lines[5]).toContain("High B");
+        expect(lines[6]).toContain("High C");
+        expect(lines[7]).toContain("High C");
       });
 
       it("treats KNOWLEDGE_GATE_MAX_OPEN_ISSUES=0 as unbounded", async () => {
@@ -796,8 +854,8 @@ Body`;
         );
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        // Dual-store seam: each issue file appears in both stores, so 12 unique issues × 2 = 24
-        expect(issueLines(hint)).toHaveLength(24);
+        // Triple-store seam: each issue file appears in all 3 stores, so 12 unique issues × 3 = 36
+        expect(issueLines(hint)).toHaveLength(36);
       });
 
       it("falls back to the default cap 10 for an invalid env value", async () => {
@@ -826,7 +884,7 @@ Body`;
 
     describe("overseer INTENT audience routing", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from both stores detected"));
+        output.system.find(s => s.includes("Open issues from all stores detected"));
 
       it("injects only audience-matched and unassigned issues", async () => {
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
@@ -846,8 +904,8 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const lines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
-        // Dual-store seam: each issue file appears in both stores, so 2 audience-matched × 2 = 4
-        expect(lines).toHaveLength(4);
+        // Triple-store seam: each issue file appears in all 3 stores, so 2 audience-matched × 3 = 6
+        expect(lines).toHaveLength(6);
         expect(hint).toContain("Inspector item");
         expect(hint).toContain("Ownerless item");
         expect(hint).toContain("— assigned to unassigned");
@@ -870,7 +928,7 @@ Body`;
         );
         let hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(6);
+        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(9);
 
         // empty string
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "";
@@ -881,7 +939,7 @@ Body`;
         );
         hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(6);
+        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(9);
       });
 
       it("matches the audience case-insensitively as a substring", async () => {
@@ -951,7 +1009,7 @@ Body`;
 
     describe("overseer INTENT marker line", () => {
       const intentHint = output =>
-        output.system.find(s => s.includes("Open issues from both stores detected"));
+        output.system.find(s => s.includes("Open issues from all stores detected"));
 
       function issueLines(hint) {
         return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
@@ -973,10 +1031,10 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const lines = hint.split("\n");
-        expect(lines[0]).toBe("[Knowledge Gate] Open issues from both stores detected:");
-        expect(lines[1]).toBe("<!-- issues-snapshot v1: 6 open, stable order -->");
-        // Dual-store seam: each issue file appears in both stores, so 3 × 2 = 6
-        expect(issueLines(hint)).toHaveLength(6);
+        expect(lines[0]).toBe("[Knowledge Gate] Open issues from all stores detected:");
+        expect(lines[1]).toBe("<!-- issues-snapshot v1: 9 open, stable order -->");
+        // Triple-store seam: each issue file appears in all 3 stores, so 3 × 3 = 9
+        expect(issueLines(hint)).toHaveLength(9);
       });
 
       it("reports the post-cap count in the marker", async () => {
@@ -1025,9 +1083,9 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        // Dual-store seam: 2 audience-matched issues × 2 stores = 4
-        expect(hint).toContain("<!-- issues-snapshot v1: 4 open, stable order -->");
-        expect(issueLines(hint)).toHaveLength(4);
+        // Triple-store seam: 2 audience-matched issues × 3 stores = 6
+        expect(hint).toContain("<!-- issues-snapshot v1: 6 open, stable order -->");
+        expect(issueLines(hint)).toHaveLength(6);
         expect(hint).not.toContain("Permission item");
       });
 
@@ -1169,6 +1227,28 @@ Body`;
       const result = hooks.validateMemoryEntry(invalid);
       expect(result.valid).toBe(false);
       expect(result.error).toContain("created");
+    });
+
+    it("accepts every valid scope value and rejects an unknown one", () => {
+      const base = {
+        id: "MEM-001",
+        type: "fact",
+        source_kd: "knowledge/composed-test.md",
+        tags: ["test", "sample"],
+        topic: "Test topic",
+        insight: "Test insight.",
+        created: "2026-07-29T00:00:00.000Z",
+        session: "ses_test",
+        version: "1.0.0"
+      };
+      for (const scope of ["project", "generic", "swarm"]) {
+        expect(hooks.validateMemoryEntry({ ...base, scope })).toEqual({ valid: true });
+      }
+      // Absent scope stays legal — pre-isolation entries on disk lack the field
+      expect(hooks.validateMemoryEntry(base)).toEqual({ valid: true });
+      const bad = hooks.validateMemoryEntry({ ...base, scope: "everything" });
+      expect(bad.valid).toBe(false);
+      expect(bad.error).toContain("scope");
     });
   });
 
@@ -1913,29 +1993,33 @@ Body`;
       expect(parsed.scope).toBe("swarm");
     });
 
-    it("locates an issue across both stores by id when scope is omitted", async () => {
+    it("requires scope parameter — rejects when scope is omitted", async () => {
       await seedIssue(3);
       const result = await hooks.tool.issue_update.execute(
         { id: 3, changes: { resolution: "Cross-store close." } },
         { agent: "habit-builder", sessionID: "hb-session" }
       );
       const parsed = JSON.parse(result);
-      expect(parsed.message).toContain("updated");
-      expect(parsed.id).toBe(3);
-      const raw = readFileSync(join(ISSUES_DIR, "issue-3.md"), "utf8");
-      expect(raw).toMatch(/status: resolved/);
-      expect(raw).toContain("Cross-store close.");
+      expect(parsed.error).toContain("scope parameter is required");
     });
 
-    it("returns an error naming the stores searched for a missing id", async () => {
+    it("requires scope parameter — rejects when scope is omitted for missing id", async () => {
       const result = await hooks.tool.issue_update.execute(
         { id: 99, changes: { status: "resolved" } },
         { agent: "habit-builder", sessionID: "hb-session" }
       );
       const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("scope parameter is required");
+    });
+
+    it("returns an error naming the store for a missing id when scope is provided", async () => {
+      const result = await hooks.tool.issue_update.execute(
+        { id: 99, scope: "swarm", changes: { status: "resolved" } },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
       expect(parsed.error).toContain("not found");
       expect(parsed.error).toContain("swarm");
-      expect(parsed.error).toContain("project");
     });
 
     it("rejects invalid changes values with no file modified", async () => {
@@ -1975,6 +2059,171 @@ Body`;
       );
       const raw = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
       expect(raw).toContain("pathfinder");
+    });
+  });
+
+  describe("issue_move tool (registered execute)", () => {
+    async function seedIssue(id = 1, overrides = {}) {
+      await hooks.tool.issue_write.execute(
+        {
+          issue: {
+            id,
+            title: `Seed ${id}`,
+            severity: "medium",
+            created: "2026-08-16",
+            session: "ses_test",
+            assigned_to: "inspector",
+            tags: ["test", "mock"],
+            scope: "swarm",
+            ...overrides
+          }
+        },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+    }
+
+    it("exposes issue_move with description, args, and execute", () => {
+      expect(hooks.tool.issue_move).toBeTruthy();
+      expect(typeof hooks.tool.issue_move.description).toBe("string");
+      expect(hooks.tool.issue_move.args).toBeTruthy();
+      expect(typeof hooks.tool.issue_move.execute).toBe("function");
+    });
+
+    it("moves an issue from swarm to project store", async () => {
+      await seedIssue(1);
+      const result = await hooks.tool.issue_move.execute(
+        { id: 1, from_scope: "swarm", to_scope: "project" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("moved");
+      expect(parsed.from_scope).toBe("swarm");
+      expect(parsed.to_scope).toBe("project");
+      // Issue should no longer exist in swarm store
+      expect(existsSync(join(ISSUES_DIR, "issue-1.md"))).toBe(false);
+    });
+
+    it("rejects moves by non-authorized agents", async () => {
+      await seedIssue(1);
+      const result = await hooks.tool.issue_move.execute(
+        { id: 1, from_scope: "swarm", to_scope: "project" },
+        { agent: "artisan", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("permission");
+    });
+
+    it("allows Overseer to move issues", async () => {
+      await seedIssue(2);
+      const result = await hooks.tool.issue_move.execute(
+        { id: 2, from_scope: "swarm", to_scope: "generic" },
+        { agent: "overseer", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.message).toContain("moved");
+      expect(parsed.to_scope).toBe("generic");
+    });
+
+    it("rejects move to same scope", async () => {
+      await seedIssue(3);
+      const result = await hooks.tool.issue_move.execute(
+        { id: 3, from_scope: "swarm", to_scope: "swarm" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("same scope");
+    });
+
+    it("rejects move of non-existent issue", async () => {
+      const result = await hooks.tool.issue_move.execute(
+        { id: 999, from_scope: "swarm", to_scope: "project" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("not found");
+    });
+
+    // F-001 collision safety: per-store independent ID spaces make same-ID
+    // collisions the expected case when bubbling low-numbered project IDs up
+    // to the swarm store. A move must never overwrite an existing target file
+    // (NFR005) — it reassigns a fresh target-store ID and records provenance
+    // in frontmatter instead. Fresh module instance without seams so swarm
+    // and project stores are physically distinct dirs.
+    describe("issue_move collision safety (fresh module instance)", () => {
+      let moveHooks;
+      let configRoot;
+      let projectRoot;
+
+      beforeAll(async () => {
+        configRoot = mkdtempSync(join(tmpdir(), "kg-move-config-"));
+        projectRoot = mkdtempSync(join(tmpdir(), "kg-move-project-"));
+        delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+        process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+        process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+        const fresh = await import("../../../plugins/knowledge-gate/index.js?move-collision");
+        moveHooks = await fresh.default.server({}, {});
+      });
+
+      afterAll(() => {
+        process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+        delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+        delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+        rmSync(configRoot, { recursive: true, force: true });
+        rmSync(projectRoot, { recursive: true, force: true });
+      });
+
+      async function seedIssueIn(scope, title, id) {
+        const issue = { title, severity: "medium", created: "2026-08-21", session: "ses_move", scope };
+        if (id !== undefined) issue.id = id;
+        return JSON.parse(await moveHooks.tool.issue_write.execute(
+          { issue },
+          { agent: "habit-builder", sessionID: "hb" }
+        ));
+      }
+
+      it("reassigns a fresh target-store ID instead of overwriting an existing same-ID issue", async () => {
+        // Both stores legitimately hold their own issue-1 (per-store counters)
+        const swarmSeeded = await seedIssueIn("swarm", "Swarm bubble-up candidate");
+        const projectSeeded = await seedIssueIn("project", "Existing project issue one");
+        expect(swarmSeeded.id).toBe(1);
+        expect(projectSeeded.id).toBe(1);
+        const projectOneBefore = readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+
+        const result = JSON.parse(await moveHooks.tool.issue_move.execute(
+          { id: 1, from_scope: "swarm", to_scope: "project", reason: "swarm defect found while working in a project" },
+          { agent: "habit-builder", sessionID: "hb" }
+        ));
+
+        expect(result.error).toBeUndefined();
+        expect(result.id).toBe(2);
+        expect(result.source_id).toBe(1);
+        // Existing project issue-1 preserved byte-for-byte — no data loss (NFR005)
+        expect(readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8")).toBe(projectOneBefore);
+        // Moved issue landed under the fresh ID with updated frontmatter
+        const movedRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-2.md"), "utf8");
+        expect(movedRaw).toContain("Swarm bubble-up candidate");
+        expect(movedRaw).toMatch(/^id: 2$/m);
+        expect(movedRaw).toMatch(/^scope: project$/m);
+        expect(movedRaw).toMatch(/^moved_from: swarm\/issue-1$/m);
+        // Source removed from the swarm store
+        expect(existsSync(join(configRoot, "knowledge", "issues", "issue-1.md"))).toBe(false);
+      });
+
+      it("keeps the source ID and omits moved_from when the target store has no collision", async () => {
+        await seedIssueIn("swarm", "No collision candidate", 3);
+
+        const result = JSON.parse(await moveHooks.tool.issue_move.execute(
+          { id: 3, from_scope: "swarm", to_scope: "project" },
+          { agent: "habit-builder", sessionID: "hb" }
+        ));
+
+        expect(result.error).toBeUndefined();
+        expect(result.id).toBe(3);
+        const movedRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-3.md"), "utf8");
+        expect(movedRaw).toContain("No collision candidate");
+        expect(movedRaw).toMatch(/^scope: project$/m);
+        expect(movedRaw).not.toMatch(/^moved_from:/m);
+      });
     });
   });
 
@@ -2055,6 +2304,149 @@ Body`;
       expect(projectRaw).toContain("Closed from the config workspace.");
       const swarmRaw = readFileSync(join(configRoot, "knowledge", "issues", "issue-1.md"), "utf8");
       expect(swarmRaw).toMatch(/status: open/);
+    });
+  });
+
+  // Config-dir collision separation: when opencode runs from the config dir
+  // itself, PROJECT_STORE_ROOT === CONFIG_STORE_ROOT and project-scope writes
+  // must redirect into knowledge/projects/{name}/ so the three tiers stay
+  // physically distinct. Fresh module instance without seams (PF-001).
+  describe("store routing — config-dir collision redirects project scope (fresh module instance)", () => {
+    let collideHooks;
+    let collideFresh;
+    let tempRoot;
+    let configRoot;
+    let otherProject;
+
+    const memEntry = topic => ({
+      source_kd: "knowledge/composed-collide.md",
+      tags: ["testing", "scope"],
+      topic,
+      insight: "isolation probe entry",
+      type: "fact",
+      created: "2026-08-21T00:00:00.000Z",
+      session: "ses_collide",
+      version: "1.0.0"
+    });
+
+    beforeAll(async () => {
+      tempRoot = mkdtempSync(join(tmpdir(), "kg-collide-"));
+      configRoot = join(tempRoot, "config");
+      otherProject = join(tempRoot, "myapp");
+      mkdirSync(configRoot, { recursive: true });
+      mkdirSync(otherProject, { recursive: true });
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_NAME;
+      // Workspace == config root is simulated via the env seam: the
+      // module-scope short-term resolver falls back to process.cwd(), which
+      // under vitest is the real config dir, not this suite's temp root.
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      collideFresh = await import("../../../plugins/knowledge-gate/index.js?config-collision");
+      // Simulates opencode started from the config dir: workspace == config root
+      collideHooks = await collideFresh.default.server({ directory: configRoot }, {});
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_NAME;
+      rmSync(tempRoot, { recursive: true, force: true });
+    });
+
+    it("writes project-scoped memory under knowledge/projects/{name}/memory, apart from swarm and generic", async () => {
+      const r = JSON.parse(await collideHooks.tool.memory_write.execute(
+        { entry: memEntry("Project tier"), scope: "project" },
+        { agent: "scribe", sessionID: "s" }
+      ));
+      expect(r.error).toBeUndefined();
+      expect(r.scope).toBe("project");
+      expect(existsSync(join(configRoot, "knowledge", "projects", "config", "memory", "entry-001.json"))).toBe(true);
+      // Neither canonical store received the project write
+      expect(existsSync(join(configRoot, "knowledge", "memory"))).toBe(false);
+      expect(existsSync(join(configRoot, "knowledge", "generic"))).toBe(false);
+    });
+
+    it("keeps swarm and generic memory in their canonical dirs alongside the projects tree", async () => {
+      await collideHooks.tool.memory_write.execute(
+        { entry: memEntry("Swarm tier"), scope: "swarm" },
+        { agent: "scribe", sessionID: "s" }
+      );
+      await collideHooks.tool.memory_write.execute(
+        { entry: memEntry("Generic tier"), scope: "generic" },
+        { agent: "scribe", sessionID: "s" }
+      );
+      expect(existsSync(join(configRoot, "knowledge", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "generic", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "projects", "config", "memory", "entry-001.json"))).toBe(true);
+    });
+
+    it("routes issue writes to three distinct issues dirs with independent per-store IDs", async () => {
+      const base = { title: "Collide", severity: "high", created: "2026-08-21", session: "ses_collide" };
+      for (const scope of ["project", "swarm", "generic"]) {
+        const r = JSON.parse(await collideHooks.tool.issue_write.execute(
+          { issue: { ...base, scope } },
+          { agent: "habit-builder", sessionID: "hb" }
+        ));
+        expect(r.id).toBe(1);
+      }
+      const projRaw = readFileSync(join(configRoot, "knowledge", "projects", "config", "issues", "issue-1.md"), "utf8");
+      const swarmRaw = readFileSync(join(configRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+      const genericRaw = readFileSync(join(configRoot, "knowledge", "generic", "issues", "issue-1.md"), "utf8");
+      expect(projRaw).toContain("scope: project");
+      expect(swarmRaw).toContain("scope: swarm");
+      expect(genericRaw).toContain("scope: generic");
+    });
+
+    it("surfaces open issues from all three physical stores with scope tags", async () => {
+      const merged = collideHooks.scanOpenIssuesMerged();
+      const scopes = merged.map(i => i.scope).sort();
+      expect(scopes).toEqual(["generic", "project", "swarm"]);
+    });
+
+    it("routes short-term notes to per-store short-term directories", async () => {
+      const note = { topic: "Scratch", content: "collision probe note" };
+      for (const scope of ["project", "swarm", "generic"]) {
+        const r = JSON.parse(await collideHooks.tool.memory_note.execute(
+          { ...note, scope },
+          { agent: "artisan", sessionID: "ses_collide" }
+        ));
+        expect(r.error).toBeUndefined();
+      }
+      expect(existsSync(join(configRoot, "knowledge", "projects", "config", "short-term", "ses_collide", "artisan"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "short-term", "ses_collide", "artisan"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "generic", "short-term", "ses_collide", "artisan"))).toBe(true);
+    });
+
+    it("keeps project data in a non-config workspace when the directory differs from the config root", async () => {
+      // Env seam would override input.directory — remove it so this server
+      // resolves its workspace from the directory argument alone.
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      const otherHooks = await collideFresh.default.server({ directory: otherProject }, {});
+      const r = JSON.parse(await otherHooks.tool.memory_write.execute(
+        { entry: memEntry("Other project tier"), scope: "project" },
+        { agent: "scribe", sessionID: "s" }
+      ));
+      expect(r.error).toBeUndefined();
+      expect(existsSync(join(otherProject, "knowledge", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "projects", "myapp"))).toBe(false);
+    });
+
+    it("honors KNOWLEDGE_GATE_PROJECT_NAME for the collision namespace", async () => {
+      process.env.KNOWLEDGE_GATE_PROJECT_NAME = "swarm-workbench";
+      const namedHooks = await collideFresh.default.server({ directory: configRoot }, {});
+      const r = JSON.parse(await namedHooks.tool.memory_write.execute(
+        { entry: memEntry("Named project tier"), scope: "project" },
+        { agent: "scribe", sessionID: "s" }
+      ));
+      expect(r.error).toBeUndefined();
+      expect(existsSync(join(configRoot, "knowledge", "projects", "swarm-workbench", "memory"))).toBe(true);
+      delete process.env.KNOWLEDGE_GATE_PROJECT_NAME;
     });
   });
 
@@ -2602,6 +2994,124 @@ Body`;
     });
   });
 
+  // F-002: promoted IDs must follow the TARGET store's sequence. The old
+  // code assigned via module-scope getNextMemoryId(), which scans only the
+  // swarm MEMORY_DIR — non-swarm promotions diverged from the target
+  // sequence and could silently overwrite an existing target entry when
+  // swarm-max+1 ≤ target-max (NFR005). Fresh module instance without seams
+  // for physically distinct per-store dirs.
+  describe("promotion ID assignment — per-store sequence (fresh module instance)", () => {
+    let promoHooks;
+    let tempRoot;
+    let configRoot;
+    let projectRoot;
+    let swarmMemoryDir;
+    let projectMemoryDir;
+
+    function seedEntry(dir, num, topic) {
+      writeFileSync(join(dir, `entry-${String(num).padStart(3, "0")}.json`), JSON.stringify({
+        id: `MEM-${String(num).padStart(3, "0")}`,
+        type: "fact",
+        source_kd: "knowledge/composed-seed.md",
+        tags: ["testing", "scope"],
+        topic,
+        insight: `Seed insight ${num}.`,
+        created: "2026-08-21T00:00:00.000Z",
+        session: "ses_seed",
+        version: "1.0.0",
+        scope: "project"
+      }), "utf8");
+    }
+
+    function maxEntryNum(dir) {
+      return readdirSync(dir)
+        .map(f => f.match(/^entry-(\d+)\.json$/))
+        .filter(Boolean)
+        .reduce((max, m) => Math.max(max, parseInt(m[1], 10)), 0);
+    }
+
+    beforeAll(async () => {
+      tempRoot = mkdtempSync(join(tmpdir(), "kg-promo-ids-"));
+      configRoot = join(tempRoot, "config");
+      projectRoot = join(tempRoot, "app");
+      mkdirSync(configRoot, { recursive: true });
+      mkdirSync(projectRoot, { recursive: true });
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+      const fresh = await import("../../../plugins/knowledge-gate/index.js?promo-ids");
+      promoHooks = await fresh.default.server({ directory: projectRoot }, {});
+      swarmMemoryDir = join(configRoot, "knowledge", "memory");
+      projectMemoryDir = join(projectRoot, "knowledge", "memory");
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      rmSync(tempRoot, { recursive: true, force: true });
+    });
+
+    it("assigns promoted IDs from the target store's sequence, not the swarm store's", async () => {
+      // Swarm store holds entries 1-5; project store is empty.
+      mkdirSync(swarmMemoryDir, { recursive: true });
+      for (let n = 1; n <= 5; n++) seedEntry(swarmMemoryDir, n, `Swarm seed ${n}`);
+      await promoHooks.tool.memory_note.execute(
+        { topic: "Project insight", content: "A project-specific insight worth keeping.", scope: "project" },
+        { agent: "artisan", sessionID: "promo-ids" }
+      );
+
+      const result = promoHooks.promoteShortTermNotes("promo-ids", "knowledge/composed-promo.md", { scope: "project" });
+
+      expect(result.promoted).toHaveLength(1);
+      // Buggy behavior assigned MEM-006 (swarm-max+1); correct is MEM-001
+      expect(result.promoted[0].entryId).toBe("MEM-001");
+      const entry = JSON.parse(readFileSync(join(projectMemoryDir, "entry-001.json"), "utf8"));
+      expect(entry.topic).toBe("Project insight");
+      expect(entry.scope).toBe("project");
+    });
+
+    it("never overwrites an existing target-store entry when sequences overlap", async () => {
+      // Project holds entries 1-3 while swarm holds only entry 1 — the buggy
+      // swarm-scan would assign MEM-002 and clobber project entry-002.
+      mkdirSync(swarmMemoryDir, { recursive: true });
+      mkdirSync(projectMemoryDir, { recursive: true });
+      seedEntry(swarmMemoryDir, 1, "Lone swarm seed");
+      seedEntry(projectMemoryDir, 1, "Project seed one");
+      seedEntry(projectMemoryDir, 2, "Project seed two");
+      seedEntry(projectMemoryDir, 3, "Project seed three");
+      const twoBefore = readFileSync(join(projectMemoryDir, "entry-002.json"), "utf8");
+      await promoHooks.tool.memory_note.execute(
+        { topic: "Overlapping insight", content: "Insight promoted into an overlapping store.", scope: "project" },
+        { agent: "artisan", sessionID: "promo-overlap" }
+      );
+
+      const result = promoHooks.promoteShortTermNotes("promo-overlap", "knowledge/composed-promo.md", { scope: "project" });
+
+      expect(result.promoted).toHaveLength(1);
+      expect(result.promoted[0].entryId).toBe("MEM-004");
+      expect(readFileSync(join(projectMemoryDir, "entry-002.json"), "utf8")).toBe(twoBefore);
+      expect(JSON.parse(readFileSync(join(projectMemoryDir, "entry-004.json"), "utf8")).topic).toBe("Overlapping insight");
+    });
+
+    it("assigns distinct sequential IDs when promoting multiple notes in one run", async () => {
+      mkdirSync(projectMemoryDir, { recursive: true });
+      const base = maxEntryNum(projectMemoryDir);
+      await promoHooks.tool.memory_note.execute({ topic: "First keep", content: "Keep one.", scope: "project" }, { agent: "artisan", sessionID: "promo-multi" });
+      await promoHooks.tool.memory_note.execute({ topic: "Second keep", content: "Keep two.", scope: "project" }, { agent: "scribe", sessionID: "promo-multi" });
+
+      const result = promoHooks.promoteShortTermNotes("promo-multi", "knowledge/composed-promo.md", { scope: "project" });
+
+      const pad = n => `MEM-${String(n).padStart(3, "0")}`;
+      expect(result.promoted.map(p => p.entryId)).toEqual([pad(base + 1), pad(base + 2)]);
+      expect(maxEntryNum(projectMemoryDir)).toBe(base + 2);
+    });
+  });
+
   // --- M3: Memory scope support + per-store index (R005/R006) ---
   describe("Memory scope support (M3 — R005)", () => {
     // M3 tests use the existing seam setup. The legacy memory seam overrides
@@ -2719,6 +3229,7 @@ Body`;
 
     it("resolveMemoryScope returns explicit scope when provided", () => {
       expect(hooks.resolveMemoryScope("project", null)).toBe("project");
+      expect(hooks.resolveMemoryScope("generic", null)).toBe("generic");
       expect(hooks.resolveMemoryScope("swarm", null)).toBe("swarm");
     });
 
@@ -2763,7 +3274,7 @@ Body`;
       expect(results.length).toBeGreaterThanOrEqual(2);
       for (const r of results) {
         expect(r.store).toBeDefined();
-        expect(["project", "swarm"]).toContain(r.store);
+        expect(["project", "generic", "swarm"]).toContain(r.store);
       }
     });
 
@@ -2807,7 +3318,27 @@ Body`;
       expect(swarmResults.every(r => r.store === "swarm")).toBe(true);
     });
 
-    it("memory_search merges both stores by default with store field", async () => {
+    it("memory_search store filter accepts the generic store", async () => {
+      await hooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-generic.md",
+          tags: ["test", "genericfilter"],
+          topic: "Generic filter target",
+          insight: "Generic only",
+          type: "fact",
+          created: "2026-08-16T02:00:00.000Z",
+          session: "ses_m4_generic",
+          version: "1.0.0"
+        },
+        scope: "generic"
+      }, { agent: "scribe", sessionID: "s" });
+
+      const genericResults = hooks.searchMemory({ tags: ["test", "genericfilter"], limit: 10, store: "generic" });
+      expect(genericResults.length).toBeGreaterThanOrEqual(1);
+      expect(genericResults.every(r => r.store === "generic")).toBe(true);
+    });
+
+    it("memory_search merges all stores by default with store field", async () => {
       await hooks.tool.memory_write.execute({
         entry: {
           source_kd: "knowledge/composed-1.md",
@@ -2836,12 +3367,12 @@ Body`;
         scope: "project"
       }, { agent: "scribe", sessionID: "s" });
 
-      // Default search merges both stores
+      // Default search merges all stores
       const results = hooks.searchMemory({ tags: ["test", "merge"], limit: 10 });
       expect(results.length).toBeGreaterThanOrEqual(2);
       // Every result has a store field
       for (const r of results) {
-        expect(["project", "swarm"]).toContain(r.store);
+        expect(["project", "generic", "swarm"]).toContain(r.store);
       }
     });
 
@@ -2851,6 +3382,15 @@ Body`;
       expect(caches.swarm).toBeDefined();
       expect(caches.project).toBeDefined();
       expect(caches.swarm).not.toBe(caches.project);
+    });
+
+    it("generic store has its own isolated cache", () => {
+      const caches = hooks.perStoreCaches;
+      // Without a dedicated generic cache, generic searches would share (and
+      // thrash) the swarm cache — the fallback in getCacheForScope.
+      expect(caches.generic).toBeDefined();
+      expect(caches.generic).not.toBe(caches.swarm);
+      expect(caches.generic).not.toBe(caches.project);
     });
 
     it("memoryDirForScope resolves to correct paths", () => {

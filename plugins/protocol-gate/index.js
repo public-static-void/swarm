@@ -268,6 +268,33 @@ function cleanupLifecycleKDs(sessionID, generation = 0) {
   } catch (e) {
     debug(`cleanupLifecycleKDs: failed to remove short-term store for ${sessionID}: ${e.message}`);
   }
+  // Store-aware scratch cleanup (R005): generic and project-scoped notes live
+  // outside the legacy short-term dir. Only in-config-store locations are
+  // reachable here — project workspaces outside the config root own their
+  // scratch dirs and are out of reach by design.
+  const genericShortTermDir = join(knowledgeDir, "generic", "short-term", sessionID);
+  try {
+    if (existsSync(genericShortTermDir)) {
+      rmSync(genericShortTermDir, { recursive: true, force: true });
+      debug(`Cleanup of generic short-term store for session ${sessionID} (generation ${gen})`);
+    }
+  } catch (e) {
+    debug(`cleanupLifecycleKDs: failed to remove generic short-term store for ${sessionID}: ${e.message}`);
+  }
+  const projectsRoot = join(knowledgeDir, "projects");
+  try {
+    if (existsSync(projectsRoot)) {
+      for (const project of readdirSync(projectsRoot)) {
+        const projShortTermDir = join(projectsRoot, project, "short-term", sessionID);
+        if (existsSync(projShortTermDir)) {
+          rmSync(projShortTermDir, { recursive: true, force: true });
+          debug(`Cleanup of project (${project}) short-term store for session ${sessionID} (generation ${gen})`);
+        }
+      }
+    }
+  } catch (e) {
+    debug(`cleanupLifecycleKDs: failed to remove project short-term stores for ${sessionID}: ${e.message}`);
+  }
   return stale.length;
 }
 

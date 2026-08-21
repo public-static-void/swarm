@@ -792,6 +792,26 @@ ${findings}
     expect(existsSync(join(knowledgeDir, "memory"))).toBe(false);
   });
 
+  it("cleanupLifecycleKDs clears the session's generic and project-scoped scratch stores too", () => {
+    const s = sid("cleanup-multi-store-short-term");
+    const genericDir = join(knowledgeDir, "generic", "short-term", s, "scribe");
+    const projectDir = join(knowledgeDir, "projects", "myapp", "short-term", s, "artisan");
+    mkdirSync(genericDir, { recursive: true });
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(join(genericDir, "note-001.json"), "{}");
+    writeFileSync(join(projectDir, "note-001.json"), "{}");
+    // A different project's session namespace must survive
+    const otherProjectDir = join(knowledgeDir, "projects", "myapp", "short-term", "ses-other", "artisan");
+    mkdirSync(otherProjectDir, { recursive: true });
+    writeFileSync(join(otherProjectDir, "note-001.json"), "{}");
+
+    hooks.cleanupLifecycleKDs(s, 0);
+
+    expect(existsSync(join(knowledgeDir, "generic", "short-term", s))).toBe(false);
+    expect(existsSync(join(knowledgeDir, "projects", "myapp", "short-term", s))).toBe(false);
+    expect(existsSync(otherProjectDir)).toBe(true);
+  });
+
   it("a stray REPORT write or edit with ending generation 1 deletes only gen1 KDs — gen2 KDs survive byte-identical", async () => {
     for (const tool of ["write", "edit"]) {
       const s = sid(`ac103-${tool}`);
