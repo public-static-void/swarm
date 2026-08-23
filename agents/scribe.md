@@ -42,6 +42,10 @@ permission:
   bash:
     "*": deny
     "ls*": allow
+    "cat*": allow
+    "head*": allow
+    "tail*": allow
+    "wc*": allow
     "mkdir*": allow
     "git status*": allow
 ---

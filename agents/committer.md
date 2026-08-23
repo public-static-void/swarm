@@ -43,6 +43,7 @@ permission:
   memory_note_delete: allow
   bash:
     "*": deny
+    "ls*": allow
     "git status*": allow
     "git log*": allow
     "git diff*": allow
