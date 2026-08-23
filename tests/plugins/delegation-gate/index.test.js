@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
-import { readFileSync, mkdtempSync, rmSync, existsSync, statSync } from "node:fs";
+import { describe, it, expect, beforeEach, beforeAll, afterAll, afterEach } from "vitest";
+import { readFileSync, mkdtempSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -772,6 +772,194 @@ KD PATHS: knowledge/plan-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("KD PATHS: knowledge/plan-foo.md");
       expect(output.args.prompt).toContain("Read SPEC KDs and PLAN KDs from KD PATHS.");
+    });
+  });
+
+  describe("SESSION_KDS Expansion and KD PATHS Advisory", () => {
+    const SID = "ses_kdstest";
+    let knowledgeDir;
+    let stateDir;
+    let priorKnowledgeDir;
+    let priorStateDir;
+    let stderrChunks;
+    let origStderrWrite;
+
+    beforeAll(() => {
+      priorKnowledgeDir = process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+      priorStateDir = process.env.PROTOCOL_GATE_STATE_DIR;
+      stateDir = mkdtempSync(join(tmpdir(), "delegation-gate-state-"));
+      process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+    });
+
+    afterAll(() => {
+      if (priorKnowledgeDir === undefined) delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+      else process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = priorKnowledgeDir;
+      if (priorStateDir === undefined) delete process.env.PROTOCOL_GATE_STATE_DIR;
+      else process.env.PROTOCOL_GATE_STATE_DIR = priorStateDir;
+      rmSync(stateDir, { recursive: true, force: true });
+    });
+
+    beforeEach(() => {
+      knowledgeDir = mkdtempSync(join(tmpdir(), "delegation-gate-knowledge-"));
+      process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = knowledgeDir;
+      stderrChunks = [];
+      origStderrWrite = process.stderr.write;
+      process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+    });
+
+    afterEach(() => {
+      process.stderr.write = origStderrWrite;
+      rmSync(knowledgeDir, { recursive: true, force: true });
+    });
+
+    const writeKd = (name) => writeFileSync(join(knowledgeDir, name), "---\ntitle: t\n---\nbody\n");
+    const writeState = (generation) =>
+      writeFileSync(join(stateDir, `.protocol-state-${SID}.json`), JSON.stringify({ generation }));
+
+    // Dispatch helper — one structured prompt per mode with optional
+    // GENERATION (omitted entirely when undefined so state-file fallback and
+    // legacy-form paths stay exercisable).
+    const dispatch = async (mode, kdPaths, overrides = {}) => {
+      const agents = { swarm: "artisan", evolve: "habit-builder", extract: "scribe", checkpoint: "committer", explore: "explorer" };
+      const results = { swarm: "knowledge/impl-M1-foo.md", evolve: "knowledge/process-foo.md", extract: "knowledge/composed-foo.md", checkpoint: "knowledge/checkpoint-foo.md", explore: "knowledge/exploration-foo.md" };
+      const lines = [
+        `AGENT: ${agents[mode]}`,
+        `MODE: ${mode}`,
+        "INTENT KD: knowledge/intent-foo.md",
+        "SESSION DATE: 2026-08-21",
+      ];
+      if (overrides.milestone) lines.push(`MILESTONE ID: ${overrides.milestone}`);
+      lines.push(`SESSION ID: ${SID}`);
+      if (overrides.generation !== undefined) lines.push(`GENERATION: ${overrides.generation}`);
+      lines.push("SCOPE: Test SESSION_KDS expansion");
+      lines.push(`RESULT KD: ${results[mode]}`);
+      if (kdPaths) lines.push(`KD PATHS: ${kdPaths}`);
+      const output = { args: { prompt: lines.join("\n") } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: SID, callID: "c1" }, output);
+      return output;
+    };
+
+    // Expansion assertions target the checkpoint template — it renders the
+    // `KD PATHS: {kd_paths}` header line (the explore template carries none).
+    it("expands SESSION_KDS to every on-disk KD of the current lifecycle generation", async () => {
+      writeKd(`intent-foo-${SID}-gen1.md`);
+      writeKd(`spec-foo-${SID}-gen1.md`);
+      writeKd(`plan-foo-${SID}-gen1.md`);
+      const output = await dispatch("checkpoint", "SESSION_KDS", { generation: 1 });
+      expect(output.args.prompt).toMatch(new RegExp(`^KD PATHS: .+intent-foo-${SID}-gen1\\.md`, "m"));
+      expect(output.args.prompt).toContain(`knowledge/spec-foo-${SID}-gen1.md`);
+      expect(output.args.prompt).toContain(`knowledge/plan-foo-${SID}-gen1.md`);
+    });
+
+    it("expands only the current generation — prior-generation KDs are never listed", async () => {
+      writeKd(`intent-foo-${SID}-gen1.md`);
+      writeKd(`intent-old-${SID}-gen0.md`);
+      writeKd(`plan-future-${SID}-gen2.md`);
+      const output = await dispatch("checkpoint", "SESSION_KDS", { generation: 1 });
+      expect(output.args.prompt).toContain(`knowledge/intent-foo-${SID}-gen1.md`);
+      expect(output.args.prompt).not.toContain(`intent-old-${SID}-gen0.md`);
+      expect(output.args.prompt).not.toContain(`plan-future-${SID}-gen2.md`);
+    });
+
+    it("dedupes a mixed SESSION_KDS and literal path list", async () => {
+      writeKd(`intent-foo-${SID}-gen1.md`);
+      writeKd(`spec-foo-${SID}-gen1.md`);
+      const output = await dispatch("checkpoint", `SESSION_KDS, knowledge/spec-foo-${SID}-gen1.md`, { generation: 1 });
+      const header = output.args.prompt.match(/^KD PATHS: (.*)$/m)[1];
+      expect(header).toContain(`knowledge/intent-foo-${SID}-gen1.md`);
+      expect(header.split(`knowledge/spec-foo-${SID}-gen1.md`)).toHaveLength(2);
+    });
+
+    it("keeps literal-path validation strict alongside the token", async () => {
+      for (const bad of ["knowledge/*.md", "/abs/path.md", "knowledge/nested/foo.md"]) {
+        await expect(dispatch("explore", `SESSION_KDS, ${bad}`, { generation: 1 })).rejects.toThrow("Foreign paths detected");
+      }
+    });
+
+    it("accepts only the exact uppercase token", async () => {
+      await expect(dispatch("explore", "session_kds", { generation: 1 })).rejects.toThrow("Foreign paths detected");
+    });
+
+    it("renders no KD PATHS header when SESSION_KDS expands to nothing", async () => {
+      const output = await dispatch("checkpoint", "SESSION_KDS", { generation: 1 });
+      expect(output.args.prompt).not.toMatch(/^KD PATHS:/m);
+      expect(output.args.prompt).not.toContain("Read KDs from KD PATHS");
+    });
+
+    it("includes the legacy bare filename form at generation 0", async () => {
+      writeKd(`intent-foo-${SID}.md`);
+      writeKd(`plan-foo-${SID}-gen0.md`);
+      const output = await dispatch("checkpoint", "SESSION_KDS", { generation: 0 });
+      expect(output.args.prompt).toContain(`knowledge/intent-foo-${SID}.md`);
+      expect(output.args.prompt).toContain(`knowledge/plan-foo-${SID}-gen0.md`);
+    });
+
+    it("falls back to the legacy bare form when no generation is resolvable", async () => {
+      writeKd(`intent-foo-${SID}.md`);
+      writeKd(`plan-foo-${SID}-gen1.md`);
+      const output = await dispatch("checkpoint", "SESSION_KDS");
+      expect(output.args.prompt).toContain(`knowledge/intent-foo-${SID}.md`);
+      expect(output.args.prompt).not.toContain(`plan-foo-${SID}-gen1.md`);
+    });
+
+    it("resolves the expansion generation from protocol-gate state", async () => {
+      writeKd(`intent-foo-${SID}-gen3.md`);
+      writeKd(`intent-old-${SID}-gen2.md`);
+      writeState(3);
+      const output = await dispatch("checkpoint", "SESSION_KDS");
+      expect(output.args.prompt).toContain(`knowledge/intent-foo-${SID}-gen3.md`);
+      expect(output.args.prompt).not.toContain(`intent-old-${SID}-gen2.md`);
+    });
+
+    it("warns without blocking when an all-upstream dispatch under-enumerates", async () => {
+      writeKd(`exploration-a-${SID}-gen1.md`);
+      writeKd(`analysis-b-${SID}-gen1.md`);
+      writeKd(`impl-M1-c-${SID}-gen1.md`);
+      const output = await dispatch("evolve", `knowledge/exploration-a-${SID}-gen1.md`, { generation: 1 });
+      const warning = stderrChunks.find(c => c.includes("under-enumeration"));
+      expect(warning).toBeTruthy();
+      expect(warning).toContain("1 listed");
+      expect(warning).toContain("3 on-disk");
+      expect(warning).toContain("SESSION_KDS");
+      expect(output.args.prompt).toContain("Produce a PROCESS KD");
+    });
+
+    it("stays silent when the enumeration is complete", async () => {
+      writeKd(`exploration-a-${SID}-gen1.md`);
+      writeKd(`analysis-b-${SID}-gen1.md`);
+      writeKd(`impl-M1-c-${SID}-gen1.md`);
+      await dispatch("evolve", `knowledge/exploration-a-${SID}-gen1.md, knowledge/analysis-b-${SID}-gen1.md, knowledge/impl-M1-c-${SID}-gen1.md`, { generation: 1 });
+      expect(stderrChunks.find(c => c.includes("under-enumeration"))).toBeUndefined();
+    });
+
+    it("stays silent for SESSION_KDS dispatches — complete by construction", async () => {
+      writeKd(`exploration-a-${SID}-gen1.md`);
+      writeKd(`analysis-b-${SID}-gen1.md`);
+      writeKd(`impl-M1-c-${SID}-gen1.md`);
+      await dispatch("evolve", "SESSION_KDS", { generation: 1 });
+      expect(stderrChunks.find(c => c.includes("under-enumeration"))).toBeUndefined();
+    });
+
+    it("stays silent for templates without the all-upstream sentence", async () => {
+      writeKd(`spec-a-${SID}-gen1.md`);
+      writeKd(`plan-b-${SID}-gen1.md`);
+      writeKd(`impl-M1-c-${SID}-gen1.md`);
+      const output = await dispatch("swarm", `knowledge/spec-a-${SID}-gen1.md`, { milestone: "M1", generation: 1 });
+      expect(stderrChunks.find(c => c.includes("under-enumeration"))).toBeUndefined();
+      expect(output.args.prompt).toContain("Read SPEC KDs and PLAN KDs from KD PATHS.");
+    });
+
+    it("emits the advisory without DELEGATION_GATE_DEBUG set", async () => {
+      delete process.env.DELEGATION_GATE_DEBUG;
+      try {
+        writeKd(`exploration-a-${SID}-gen1.md`);
+        writeKd(`analysis-b-${SID}-gen1.md`);
+        const output = await dispatch("extract", `knowledge/exploration-a-${SID}-gen1.md`, { generation: 1 });
+        expect(stderrChunks.find(c => c.includes("under-enumeration"))).toBeTruthy();
+        expect(output.args.prompt).toContain("Produce a COMPOSED KD");
+      } finally {
+        process.env.DELEGATION_GATE_DEBUG = "1";
+      }
     });
   });
 
