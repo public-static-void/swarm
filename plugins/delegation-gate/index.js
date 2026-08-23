@@ -16,8 +16,8 @@
 // Debug logging: set DELEGATION_GATE_DEBUG=1 in environment to enable.
 // Log directory: set DELEGATION_GATE_LOG_DIR to override plugins/logs — the
 // seam the test suite uses to isolate debug writes from the real log.
-import { appendFileSync, mkdirSync, readFileSync } from "fs";
-import { join, dirname } from "path";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "fs";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -100,6 +100,15 @@ function debug(msg) {
       process.stderr.write(`[delegation-gate] ${msg}\n`);
     }
   }
+}
+
+// Loud advisory channel — visible WITHOUT DELEGATION_GATE_DEBUG (Issue 67 /
+// NFR001), mirroring protocol-gate's loud(). Emissions are per-event and rare
+// by nature; the write is best-effort and never blocks tool execution.
+function warn(msg) {
+  try {
+    process.stderr.write(`[delegation-gate] WARNING: ${msg}\n`);
+  } catch (_) {}
 }
 
 function loadConfig() {
@@ -262,6 +271,84 @@ function validateScope(scope) {
     return false;
   }
   return true;
+}
+
+// Reserved KD PATHS token (Issue 67): expands at render time to every on-disk
+// KD of the dispatching session's CURRENT lifecycle generation, so all-upstream
+// dispatches are complete by construction instead of hand-enumerated (11–17 of
+// 22 lifecycle KDs were routinely omitted). Exact uppercase match only.
+const SESSION_KDS_TOKEN = "SESSION_KDS";
+
+// Template sentence marking an all-upstream dispatch — only templates carrying
+// it get the under-enumeration advisory. Subset templates (swarm's SPEC+PLAN,
+// review's SPEC+PLAN+IMPL) are legitimate partial lists and stay silent.
+const ALL_UPSTREAM_KD_SENTENCE = "Read all upstream KDs";
+
+function getKnowledgeDir() {
+  // Same project-root seam precedence as protocol-gate/knowledge-gate so every
+  // plugin resolves one lifecycle's KDs to the same directory.
+  if (process.env.PROTOCOL_GATE_KNOWLEDGE_DIR) {
+    return resolve(process.env.PROTOCOL_GATE_KNOWLEDGE_DIR);
+  }
+  if (process.env.KNOWLEDGE_GATE_PROJECT_ROOT) {
+    return join(resolve(process.env.KNOWLEDGE_GATE_PROJECT_ROOT), "knowledge");
+  }
+  return join(process.cwd(), "knowledge");
+}
+
+// Current lifecycle generation for a session — direct read of protocol-gate
+// state (same file and seam the GENERATION fallback uses). Returns null when
+// unresolvable; callers then match the legacy bare filename form only.
+function resolveLifecycleGeneration(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const stateDir = process.env.PROTOCOL_GATE_STATE_DIR || join(PLUGIN_DIR, "..", "protocol-gate", ".state");
+    const stateData = JSON.parse(readFileSync(join(stateDir, `.protocol-state-${sessionId}.json`), "utf8"));
+    if (stateData.generation !== undefined) return String(stateData.generation);
+  } catch (_) {}
+  return null;
+}
+
+// All on-disk KDs of a session's lifecycle at the given generation — single
+// top-level readdir, no recursive walk. Generation is taken from each FILENAME;
+// generation 0 (and unresolvable generation) additionally matches the legacy
+// bare form without a -gen suffix, mirroring injectToolDocs' precedent.
+function listSessionKdPaths(sessionId, generation) {
+  let files;
+  try { files = readdirSync(getKnowledgeDir()); } catch (_) { return []; }
+  const gen = generation === null || generation === undefined || generation === "" ? "0" : String(generation);
+  const escaped = sessionId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const genForm = new RegExp(`^(?:.+)-${escaped}-gen(\\d+)\\.md$`);
+  const legacyForm = new RegExp(`^(?:.+)-${escaped}\\.md$`);
+  return files
+    .filter(f => {
+      const m = f.match(genForm);
+      if (m) return m[1] === gen;
+      return gen === "0" && legacyForm.test(f);
+    })
+    .sort()
+    .map(f => `knowledge/${f}`);
+}
+
+// Expands SESSION_KDS within a KD PATHS value. Literal paths keep their listed
+// order; expanded entries append in sorted order; duplicates collapse. An empty
+// result renders as today's absent-field behavior (renderTemplate drops the
+// header line and read sentence when kd_paths is falsy).
+function expandKdPaths(kdPathsValue, sessionId, generation) {
+  const literals = [];
+  let hasToken = false;
+  for (const raw of kdPathsValue.split(",")) {
+    const p = raw.trim();
+    if (!p) continue;
+    if (p === SESSION_KDS_TOKEN) { hasToken = true; continue; }
+    if (!literals.includes(p)) literals.push(p);
+  }
+  if (!hasToken) return { value: literals.join(", "), hasToken, listedCount: literals.length };
+  const merged = [...literals];
+  for (const p of listSessionKdPaths(sessionId, generation)) {
+    if (!merged.includes(p)) merged.push(p);
+  }
+  return { value: merged.join(", "), hasToken, listedCount: merged.length };
 }
 
 function validateKDPath(path) {
@@ -562,8 +649,11 @@ export default {
       }
 
       if (fields.kd_paths) {
-        const paths = fields.kd_paths.split(",").map(p => p.trim());
+        const paths = fields.kd_paths.split(",").map(p => p.trim()).filter(Boolean);
         for (const path of paths) {
+          // Reserved expansion token — exact-match validated here, expanded
+          // after template lookup; literal entries stay strictly validated.
+          if (path === SESSION_KDS_TOKEN) continue;
           if (!validateKDPath(path)) {
             debug(`VALIDATION FAILED: invalid KD path '${path}'`);
             throw new DelegationGateError(ERRORS.FOREIGN_PATH.code, ERRORS.FOREIGN_PATH.message, ERRORS.FOREIGN_PATH.guidance);
@@ -627,6 +717,27 @@ export default {
       }
 
       debug(`Rendering template for mode='${fields.mode}', agent='${fields.agent}'`);
+
+      // Issue 67: expand the reserved SESSION_KDS token at render time and
+      // advise on under-enumerated all-upstream dispatches. Runs after
+      // validation so literal-path strictness is unchanged; the advisory is
+      // non-blocking (NFR001). SESSION_KDS lists are exempt from the advisory —
+      // they enumerate every current-generation KD, so a shortfall is
+      // impossible by construction.
+      if (fields.kd_paths) {
+        const generation = fields.generation !== undefined && fields.generation !== ""
+          ? fields.generation
+          : resolveLifecycleGeneration(fields.session_id);
+        const expanded = expandKdPaths(fields.kd_paths, fields.session_id, generation);
+        fields.kd_paths = expanded.value;
+        if (!expanded.hasToken && fields.session_id && template.includes(ALL_UPSTREAM_KD_SENTENCE)) {
+          const onDiskCount = listSessionKdPaths(fields.session_id, generation).length;
+          if (expanded.listedCount < onDiskCount) {
+            warn(`KD PATHS under-enumeration: ${expanded.listedCount} listed vs ${onDiskCount} on-disk lifecycle KDs for ${fields.session_id} — pass SESSION_KDS to enumerate every current-generation KD`);
+          }
+        }
+      }
+
       const rendered = renderTemplate(template, fields);
       output.args.prompt = rendered;
       debug(`Prompt rendered successfully (${rendered.length} chars)`);
