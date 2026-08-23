@@ -55,6 +55,13 @@ const GIT_AGENTS = ["inspector.md", "explorer.md", "analyzer.md"];
 const GIT_COMMANDS = ["git branch*", "git merge-base*", "git check-ignore*", "git log --oneline*"];
 const READONLY_BASELINE_AGENTS = ["explorer.md", "inspector.md", "pathfinder.md", "artisan.md"];
 const READONLY_BASELINE_COMMANDS = ["cat*", "head*", "tail*", "wc*", "git show*", "git status -sb*"];
+const TEXT_INSPECTION_AGENTS = ["scribe.md", "habit-builder.md", "spec-weaver.md"];
+const TEXT_INSPECTION_COMMANDS = ["cat*", "head*", "tail*", "wc*"];
+const ANALYZER_READ_BASELINE_COMMANDS = [
+  "ls*", "find*", "cat*", "head*", "tail*", "wc*", "sort*", "uniq*",
+  "diff*", "tree*", "which*", "type*", "stat*", "du*", "df*",
+];
+const COMMITTER_LIST_COMMANDS = ["ls*"];
 const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
 const SCAN_COMMANDS = ["npm audit*", "npm run audit*"];
 const INSTALL_AGENTS = ["artisan.md"];
@@ -129,6 +136,31 @@ describe("agent permission allowlists", () => {
         }
       }
     }
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the text-inspection baseline for the doc-processing roles", () => {
+    const missing = [];
+    for (const f of TEXT_INSPECTION_AGENTS) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of TEXT_INSPECTION_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the read-only inspection baseline for the analyzer role", () => {
+    const patterns = entriesByFile.get("analyzer.md").map((e) => e.pattern);
+    const missing = ANALYZER_READ_BASELINE_COMMANDS.filter((cmd) => !patterns.includes(cmd));
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps directory listing for the committer", () => {
+    const patterns = entriesByFile.get("committer.md").map((e) => e.pattern);
+    const missing = COMMITTER_LIST_COMMANDS.filter((cmd) => !patterns.includes(cmd));
     expect(missing).toEqual([]);
   });
 
