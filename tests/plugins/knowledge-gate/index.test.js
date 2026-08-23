@@ -655,6 +655,22 @@ Body`;
       expect(closeHint).toContain("evidence");
     });
 
+    it("enumerates the three scopes in the habit-builder issue-creation hint", async () => {
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"](
+        { sessionID: "test-session", agent: "habit-builder" },
+        output
+      );
+
+      const createHint = output.system.find(s => s.includes("create issue files via"));
+      expect(createHint).toBeTruthy();
+      // The scope enum must be spelled out to match validateIssue — an
+      // unenumerated "copied from frontmatter" phrasing is how the doc/gate
+      // drift class crept in (Issue 66).
+      expect(createHint).toContain("project|generic|swarm");
+      expect(createHint).not.toContain("scope copied from");
+    });
+
     describe("overseer INTENT issue injection", () => {
       const intentHint = output =>
         output.system.find(s => s.includes("Open issues from all stores detected"));
