@@ -383,9 +383,9 @@ function debug(msg) {
 }
 
 // Loud channel — diagnostics that must be visible WITHOUT PROTOCOL_GATE_DEBUG
-// (Issue 64 / NFR001): silent auto-checkoff failures left registries stuck in
-// SWARM and forced manual repair. Emissions are per-event and rare by nature;
-// the write is best-effort and never blocks tool execution.
+// (Issue 64): silent auto-checkoff failures left registries stuck in SWARM and
+// forced manual repair. Emissions are per-event and rare by nature; the write
+// is best-effort and never blocks tool execution.
 function loud(msg) {
   try {
     process.stderr.write(`[protocol-gate] ${msg}\n`);
@@ -729,7 +729,7 @@ function readMilestoneRegistry(sessionID, sessionPhaseMap) {
   return { rows, ...located };
 }
 
-// Disk-evidence reconciliation (Issue 64 / R001): before the all-checked-off
+// Disk-evidence reconciliation (Issue 64): before the all-checked-off
 // verdict is computed, every non-checked-off row (`in-progress`, `assigned`,
 // `pending`, `failed`) whose milestone-scoped impl KD exists on disk under the
 // SAME session id is promoted to checked-off. Evidence matching takes the
@@ -744,9 +744,9 @@ function readMilestoneRegistry(sessionID, sessionPhaseMap) {
 // Promotion goes through the existing strict registry writer as two audited
 // steps (<stuck> → in-progress → checked-off): updateMilestoneRegistry's
 // transition rules stay untouched (SPEC A1 — the reconcile path is separate).
-// Single top-level readdir shared across rows (NFR004); idempotent — once all
+// Single top-level readdir shared across rows; idempotent — once all
 // rows are checked-off there are no stuck rows and the scan is skipped
-// entirely (NFR003). A missing/unparsable registry never reaches here (the
+// entirely. A missing/unparsable registry never reaches here (the
 // caller fails closed first); reconciliation never fabricates rows.
 function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry) {
   const stuck = registry.rows.filter(r => r.state !== "checked-off");
@@ -792,7 +792,7 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
     debug(`REGISTRY_EMPTY: milestone registry has no rows for session ${sessionID} — SWARM cannot advance`);
     return { ok: false, total: 0, checkedOff: 0, rows: [] };
   }
-  // Reconcile evidence-backed stuck rows BEFORE computing ok (R001) — the
+  // Reconcile evidence-backed stuck rows BEFORE computing ok — the
   // promotion writes land in the registry, so re-read it when rows changed.
   if (reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry) > 0) {
     registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
@@ -1925,8 +1925,8 @@ export default {
             phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, milestoneId));
             debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${milestoneId} (session ${candidate})`);
           } else {
-            // Loud, non-blocking diagnostic (R002/NFR001): silent failures
-            // here left registries stuck in SWARM (Issue 64). Visible without
+            // Loud, non-blocking diagnostic: silent failures here left
+            // registries stuck in SWARM (Issue 64). Visible without
             // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
             // (no-registry / milestone-not-found / invalid-transition / write-failed).
             loud(`AUTO_CHECKOFF_FAILED: milestone ${milestoneId} (parent ${candidate}) — ${result.reason}`);
@@ -1935,7 +1935,7 @@ export default {
         }
       }
       // No parent-session/generation candidate matched the impl KD filename —
-      // nothing was checked off. Loud no-op diagnostic (R002b) so the miss is
+      // nothing was checked off. Loud no-op diagnostic so the miss is
       // observable instead of silent.
       loud(`AUTO_CHECKOFF_UNMATCHED: ${relPath}`);
     }
