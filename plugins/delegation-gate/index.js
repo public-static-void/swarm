@@ -102,8 +102,8 @@ function debug(msg) {
   }
 }
 
-// Loud advisory channel — visible WITHOUT DELEGATION_GATE_DEBUG (Issue 67 /
-// NFR001), mirroring protocol-gate's loud(). Emissions are per-event and rare
+// Loud advisory channel — visible WITHOUT DELEGATION_GATE_DEBUG (Issue 67),
+// mirroring protocol-gate's loud(). Emissions are per-event and rare
 // by nature; the write is best-effort and never blocks tool execution.
 function warn(msg) {
   try {
@@ -721,7 +721,7 @@ export default {
       // Issue 67: expand the reserved SESSION_KDS token at render time and
       // advise on under-enumerated all-upstream dispatches. Runs after
       // validation so literal-path strictness is unchanged; the advisory is
-      // non-blocking (NFR001). SESSION_KDS lists are exempt from the advisory —
+      // non-blocking. SESSION_KDS lists are exempt from the advisory —
       // they enumerate every current-generation KD, so a shortfall is
       // impossible by construction.
       if (fields.kd_paths) {
