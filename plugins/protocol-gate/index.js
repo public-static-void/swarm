@@ -221,6 +221,22 @@ function matchesSessionKDForSession(filename, sessionPhaseMap, sessionID, genera
   return getKDLookupSIDs(sessionPhaseMap, sessionID).some(sid => matchesSessionKD(filename, sid, generation));
 }
 
+// Session match independent of the persisted lifecycle generation — used by
+// disk-evidence reconciliation, where the FILENAME's own embedded `-gen{N}`
+// (any N, including one that differs from the persisted generation — the
+// observed gen0/gen1 divergence behind Issue 64) or the legacy
+// `-{sessionID}.md` suffix is the evidence. The session-id match remains
+// mandatory: a foreign lifecycle's impl KD never promotes a row.
+function matchesSessionKDAnyGeneration(filename, sessionID) {
+  if (typeof filename !== "string" || !sessionID) return false;
+  const genMarker = `-${sessionID}-gen`;
+  const genIdx = filename.lastIndexOf(genMarker);
+  if (genIdx !== -1 && /^(\d+)\.md$/.test(filename.slice(genIdx + genMarker.length))) {
+    return true;
+  }
+  return filename.endsWith(`-${sessionID}.md`);
+}
+
 // Deletes ONLY the knowledge KDs of a session's ENDING lifecycle generation:
 // for generation 0 the legacy `-${sessionID}.md` variant plus the `-gen0.md`
 // suffix; for generation N only the `-gen${N}.md` variant. Files of any other
@@ -364,6 +380,16 @@ function debug(msg) {
       process.stderr.write(`[protocol-gate] ${msg}\n`);
     }
   }
+}
+
+// Loud channel — diagnostics that must be visible WITHOUT PROTOCOL_GATE_DEBUG
+// (Issue 64): silent auto-checkoff failures left registries stuck in SWARM and
+// forced manual repair. Emissions are per-event and rare by nature; the write
+// is best-effort and never blocks tool execution.
+function loud(msg) {
+  try {
+    process.stderr.write(`[protocol-gate] ${msg}\n`);
+  } catch (_) {}
 }
 
 function loadConfig() {
@@ -536,6 +562,13 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
   try {
     // Atomic durable registry write — no torn YAML after a crash.
     atomicWriteFileSync(located.path, newContent);
+    // A successful re-open invalidates the milestone's prior completion
+    // evidence (supersedeMilestoneImplKDs) — otherwise the next SWARM→VERIFY
+    // evaluation would instantly re-check-off the row from the stale impl KD
+    // the Inspector just found deficient.
+    if (opts.reopen && current === "checked-off") {
+      supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId);
+    }
     debug(`Registry ${located.path}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
     return { ok: true, path: located.path, changed: true };
   } catch (e) {
@@ -614,13 +647,19 @@ function readMilestoneState(sessionID, sessionPhaseMap, milestoneId) {
   return rowMatch ? rowMatch[1] : null;
 }
 
-// Finds the milestone-scoped impl KD on disk for a milestone. Mirrors
-// matchesSessionKD generation scoping: gen 0 matches the legacy `-<session>.md`
-// suffix; gen N matches only `-<session>-genN.md`. The milestone prefix match
-// is case-insensitive. Returns the filename or null.
+// Finds the milestone-scoped impl KD on disk for a milestone. Evidence
+// predicate (Issue 64): the FILENAME's own embedded `-gen{N}` (any N,
+// including one that differs from the persisted lifecycle generation — the
+// observed gen0/gen1 divergence) or the legacy `-<session>.md` suffix counts;
+// the session-id match stays mandatory, so a foreign session's impl KD is
+// never evidence. Staleness within the session is handled by
+// supersedeMilestoneImplKDs (re-open) and cleanupLifecycleKDs (REPORT), not by
+// generation-scoping here — a strict persisted-generation match would reconcile
+// the registry yet still block the gate on exactly the divergence Issue 64
+// must recover from. The milestone prefix match is case-insensitive. Returns
+// the filename or null.
 function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   if (!milestoneId) return null;
-  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
   const knowledgeDir = getKnowledgeDir();
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
@@ -628,8 +667,35 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   // Impl-KD evidence is scoped to the current session only — a prior
   // lifecycle's impl KDs (under another session id) never check off a fresh
   // session's milestone rows.
-  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
+  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID));
   return found || null;
+}
+
+// Re-opening a checked-off milestone invalidates its prior completion
+// evidence: the Inspector's findings mean the delivered work no longer
+// passes, so the old impl KD must not re-check-off the row at the next gate
+// evaluation. Filenames are the evidence SSOT, so staleness is recorded ON
+// DISK by renaming the milestone's same-session impl KDs (any embedded
+// generation — reconciliation accepts any N, so staleness must cover any N)
+// to `*.superseded.md`, a suffix that no longer matches the session-KD
+// evidence predicate. Renames survive restarts — plugins load once per
+// process (MEM-059), so no in-memory epoch marker would. Best-effort: a
+// failed rename leaves the file in place and is logged.
+function supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId) {
+  const knowledgeDir = getKnowledgeDir();
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return; }
+  const prefix = `impl-${milestoneId}-`;
+  for (const f of files) {
+    if (!f.toLowerCase().startsWith(prefix.toLowerCase())) continue;
+    if (!matchesSessionKDAnyGeneration(f, sessionID)) continue;
+    try {
+      renameSync(join(knowledgeDir, f), join(knowledgeDir, `${f}.superseded.md`));
+      debug(`supersede: stale impl KD ${f} → ${f}.superseded.md (milestone ${milestoneId} re-opened)`);
+    } catch (e) {
+      debug(`supersede: rename failed for ${f}: ${e.message}`);
+    }
+  }
 }
 
 // Cross-checks a milestone's registry state against its impl KD on disk — the
@@ -663,13 +729,61 @@ function readMilestoneRegistry(sessionID, sessionPhaseMap) {
   return { rows, ...located };
 }
 
+// Disk-evidence reconciliation (Issue 64): before the all-checked-off
+// verdict is computed, every non-checked-off row (`in-progress`, `assigned`,
+// `pending`, `failed`) whose milestone-scoped impl KD exists on disk under the
+// SAME session id is promoted to checked-off. Evidence matching takes the
+// generation from the FILENAME (any N, including ≠ persisted generation);
+// rows without evidence are never promoted and keep blocking the gate.
+//
+// RESTART REQUIRED (MEM-059): plugins load once per opencode process, so this
+// gate-logic change — reconciliation and the loud auto-checkoff diagnostics —
+// takes effect only after opencode restarts. Live behavior lags disk until
+// then; operators should restart after pulling gate-logic fixes.
+//
+// Promotion goes through the existing strict registry writer as two audited
+// steps (<stuck> → in-progress → checked-off): updateMilestoneRegistry's
+// transition rules stay untouched (SPEC A1 — the reconcile path is separate).
+// Single top-level readdir shared across rows; idempotent — once all
+// rows are checked-off there are no stuck rows and the scan is skipped
+// entirely. A missing/unparsable registry never reaches here (the
+// caller fails closed first); reconciliation never fabricates rows.
+function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry) {
+  const stuck = registry.rows.filter(r => r.state !== "checked-off");
+  if (stuck.length === 0) return 0;
+  const knowledgeDir = getKnowledgeDir();
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return 0; }
+  let promoted = 0;
+  for (const row of stuck) {
+    const prefix = `impl-${row.id}-`;
+    const evidence = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID));
+    if (!evidence) continue;
+    const opened = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"]);
+    if (!opened.ok) {
+      loud(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile ${row.state} → in-progress) — ${opened.reason}`);
+      continue;
+    }
+    const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["checked-off"]);
+    if (!result.ok) {
+      loud(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile in-progress → checked-off) — ${result.reason}`);
+      continue;
+    }
+    loud(`RECONCILE_CHECKOFF: milestone ${row.id} promoted ${row.state} → checked-off (impl KD ${evidence})`);
+    promoted++;
+  }
+  return promoted;
+}
+
 // The all-checked-off gate — SWARM→VERIFY advances ONLY when every registry
 // row is checked-off AND its milestone-scoped impl KD is on disk
 // (checkMilestoneCheckedOff semantics: registry state + disk evidence).
 // Fails closed on missing (REGISTRY_MISSING) and empty (REGISTRY_EMPTY)
-// registries. Returns { ok, total, checkedOff, rows }.
+// registries. Before the verdict is computed, evidence-backed stuck rows are
+// reconciled to checked-off (reconcileStuckRowsFromDiskEvidence) and the
+// registry is re-read after any promotion. Returns { ok, total, checkedOff, rows }.
 function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
-  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+  let registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
     debug(`REGISTRY_MISSING: no milestone registry for session ${sessionID} — SWARM cannot advance`);
     return { ok: false, total: 0, checkedOff: 0, rows: [] };
@@ -677,6 +791,15 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   if (registry.rows.length === 0) {
     debug(`REGISTRY_EMPTY: milestone registry has no rows for session ${sessionID} — SWARM cannot advance`);
     return { ok: false, total: 0, checkedOff: 0, rows: [] };
+  }
+  // Reconcile evidence-backed stuck rows BEFORE computing ok — the
+  // promotion writes land in the registry, so re-read it when rows changed.
+  if (reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry) > 0) {
+    registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+    if (!registry) {
+      debug(`REGISTRY_MISSING: milestone registry lost after reconciliation for session ${sessionID} — SWARM cannot advance`);
+      return { ok: false, total: 0, checkedOff: 0, rows: [] };
+    }
   }
   const rows = registry.rows.map(r => ({
     id: r.id,
@@ -1775,6 +1898,9 @@ export default {
     // in-progress in the registry can complete; the parent session and
     // generation come from the filename + on-disk state, never from in-memory
     // session state alone.
+    // RESTART REQUIRED (MEM-059): plugins load once per opencode process —
+    // changes to this check-off path and its loud diagnostics take effect
+    // only after opencode restarts.
     function autoCheckOffMilestone(relPath) {
       const milestoneId = extractMilestoneIdFromImplKD(relPath);
       if (!milestoneId) return;
@@ -1798,10 +1924,20 @@ export default {
           if (result.ok) {
             phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, milestoneId));
             debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${milestoneId} (session ${candidate})`);
+          } else {
+            // Loud, non-blocking diagnostic: silent failures here left
+            // registries stuck in SWARM (Issue 64). Visible without
+            // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
+            // (no-registry / milestone-not-found / invalid-transition / write-failed).
+            loud(`AUTO_CHECKOFF_FAILED: milestone ${milestoneId} (parent ${candidate}) — ${result.reason}`);
           }
-          break;
+          return;
         }
       }
+      // No parent-session/generation candidate matched the impl KD filename —
+      // nothing was checked off. Loud no-op diagnostic so the miss is
+      // observable instead of silent.
+      loud(`AUTO_CHECKOFF_UNMATCHED: ${relPath}`);
     }
 
     // --- Hook: chat.params ---
@@ -2936,6 +3072,9 @@ export default {
       checkMilestoneCheckedOff,
       readMilestoneRegistry,
       checkAllMilestonesCheckedOff,
+      reconcileStuckRowsFromDiskEvidence,
+      supersedeMilestoneImplKDs,
+      matchesSessionKDAnyGeneration,
       markStuckMilestonesFailed,
       readVerdictFrontmatter,
       findNewestVerdictKD,

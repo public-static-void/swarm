@@ -2370,8 +2370,8 @@ export default {
       if (agent === "habit-builder") {
         output.system.push(
           `[Knowledge Gate] When process friction requires tracking, create issue files via ` +
-          `the issue_write tool with scope copied from the source KD frontmatter. ` +
-          `The tool validates schema, auto-assigns per-store numeric IDs, and writes ` +
+          `the issue_write tool with scope: project|generic|swarm — pick the store matching ` +
+          `the source KD frontmatter. The tool validates schema, auto-assigns per-store numeric IDs, and writes ` +
           `{store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.`
         );
 

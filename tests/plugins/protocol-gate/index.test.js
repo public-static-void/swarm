@@ -1638,7 +1638,7 @@ ${findings}
       expect(hooks.extractMilestoneIdFromPrompt(null)).toBeNull();
     });
 
-    it("findMilestoneImplKD locates the milestone-scoped impl KD on disk (generation-scoped)", async () => {
+    it("findMilestoneImplKD locates the milestone-scoped impl KD on disk (filename-generation evidence, session match mandatory)", async () => {
       const s = sid("m4-find-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -1647,12 +1647,26 @@ ${findings}
       expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-feature-${s}.md`);
       expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M5")).toBeNull();
 
-      // generation scoping: stale prior-generation impl KD does not count
+      // Deliberate contract update (Issue 64): the FILENAME's embedded
+      // generation is the evidence, so the legacy suffix keeps counting under
+      // a later persisted generation. Staleness within the session is handled
+      // by supersede-on-reopen and REPORT cleanup, not by generation-scoping
+      // here.
       hooks.sessionPhaseMap.set(`${s}:gen`, 2);
-      createKD(`impl-M4-stale-${s}-gen1.md`);
-      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBeNull();
-      createKD(`impl-M4-fresh-${s}-gen2.md`);
-      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-fresh-${s}-gen2.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-feature-${s}.md`);
+
+      // The session-id match stays mandatory: another session's impl KD for
+      // the same milestone id is never evidence.
+      const other = sid("m4-find-other");
+      createKD(`impl-M4-cross-${other}-gen2.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-feature-${s}.md`);
+
+      // A filename whose embedded generation differs from the persisted one
+      // satisfies the lookup on its own — the observed gen0/gen1 divergence
+      // must not block the gate after reconciliation.
+      removeKD(`impl-M4-feature-${s}.md`);
+      createKD(`impl-M4-next-${s}-gen1.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-next-${s}-gen1.md`);
     });
 
     it("checkMilestoneCheckedOff cross-checks the registry row against its impl KD on disk", async () => {
@@ -1831,8 +1845,9 @@ ${findings}
 
     it("reconstructs every row state from disk after restart — no in-memory data required", async () => {
       const s = sid("m3-recon-1");
-      // m1 in-progress, m2 checked-off with its impl KD on disk (the exact
-      // crash/restart fixture). The in-memory map is EMPTY.
+      // m1 in-progress WITHOUT its impl KD, m2 checked-off with its impl KD on
+      // disk. The in-memory map is EMPTY. A stuck row without evidence is
+      // never promoted — the gate stays blocked on M1 alone.
       createRegistry(s, [["M1", "in-progress"], ["M2", "checked-off"]]);
       createKD(`impl-M2-recon-${s}.md`);
 
@@ -1845,14 +1860,15 @@ ${findings}
         { id: "M2", state: "checked-off", checkedOff: true }
       ]);
 
-      // Once M1's impl KD lands AND the check-off transition is recorded
-      // (the KD alone never implies completion), the gate reconstructs
-      // all-checked-off from disk alone.
+      // Once M1's impl KD lands, reconciliation promotes the row from disk
+      // evidence alone — no manual registry write, no in-memory data. The
+      // gate reconstructs all-checked-off from disk (reconcile-or-fail-loud,
+      // Issue 64: the old contract required a manual check-off call here).
       createKD(`impl-M1-recon-${s}.md`);
-      hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["checked-off"]);
       const gate2 = hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
       expect(gate2.ok).toBe(true);
       expect(gate2.checkedOff).toBe(2);
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
     });
 
     it("atomic registry write leaves no tmp residue and the YAML stays valid", async () => {
@@ -1903,12 +1919,15 @@ ${findings}
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
 
       // Fix delivered → auto check-off re-advances the row → gate opens again.
+      // The before-hook fires the check-off; the write tool itself lands the
+      // impl KD right after — both halves of the write operation.
       const artisan = sid("m3-reopen-art");
       await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
       await hooks["tool.execute.before"](
         { tool: "write", sessionID: artisan, callID: "c1" },
         { args: { filePath: `knowledge/impl-M1-fix-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY (fix)" } }
       );
+      createKD(`impl-M1-fix-${s}-gen0.md`);
       content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: checked-off");
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
@@ -2042,22 +2061,31 @@ ${findings}
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
     });
 
-    it("does not advance while any registry milestone is not checked-off, even with N impl KDs on disk", async () => {
+    it("blocks rows without impl-KD evidence; evidence-backed stuck rows reconcile at gate evaluation (Issue 64)", async () => {
       const s = sid("m5-pending");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
       createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
 
-      // M2's impl KD exists but its registry row is still in-progress → blocked
+      // M2 is stuck in-progress WITHOUT its impl KD → no evidence, no
+      // promotion — the gate stays blocked.
       createKD(`impl-M1-feature-${s}.md`);
-      createKD(`impl-M2-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M2: in-progress");
+
+      // M3 pending without evidence → still blocked.
+      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"], ["M3", "pending"]]);
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
 
-      // M3 pending with impl KD on disk → still blocked
-      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "pending"]]);
+      // Evidence lands for both stuck rows → reconciliation promotes them at
+      // the next evaluation and the gate opens without manual repair.
+      createKD(`impl-M2-feature-${s}.md`);
       createKD(`impl-M3-feature-${s}.md`);
-      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M2: checked-off");
+      expect(content).toContain("  M3: checked-off");
     });
 
     it("missing, empty, and unparsable registries fail closed with a log, never advance", async () => {
@@ -2436,14 +2464,232 @@ ${findings}
       expect(hooks.sessionPhaseMap.get(`${s}:milestones`)).toBeUndefined();
       expect(hooks.swarmDispatchCount.get(s)).toBe(1);
 
-      // Even with dispatchCount 1 and an impl KD on disk, the pending row blocks
-      createKD(`impl-M1-feature-${s}.md`);
+      // Even with dispatchCount 1, a pending row without its impl KD blocks —
+      // count signals have no gating effect either way.
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+      // Evidence lands — reconciliation promotes the pending row and the gate
+      // opens on disk truth alone; dispatchCount 1 has no gating effect.
+      createKD(`impl-M1-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
 
       // Registry fully checked-off advances regardless of count signals
       createRegistry(s, [["M1", "checked-off"]]);
       hooks.swarmDispatchCount.set(s, 5);
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+    });
+  });
+
+  describe("SWARM→VERIFY reconciliation + loud auto-checkoff diagnostics (Issue 64)", () => {
+    // Captures the loud channel (stderr) — the NFR001 surface under test is
+    // visibility WITHOUT PROTOCOL_GATE_DEBUG, so the flag must stay unset
+    // while captured. Always restore in finally.
+    function captureStderr() {
+      let stderr = "";
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
+      return {
+        text: () => stderr,
+        restore: () => { process.stderr.write = origWrite; }
+      };
+    }
+
+    it("promotes an evidence-backed stuck row at gate evaluation and advances — including a filename generation that differs from the persisted generation", async () => {
+      const s = sid("m1-rec-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      hooks.sessionPhaseMap.set(`${s}:gen`, 1);
+      // Registry + M2 evidence carry the persisted generation suffix.
+      createKD(`milestones-feature-${s}-gen1.md`, registryContent([["M1", "in-progress"], ["M2", "checked-off"]]));
+      createKD(`impl-M2-feat-${s}-gen1.md`);
+      // M1's impl KD embeds gen 0 while the lifecycle persists generation 1 —
+      // the observed gen0/gen1 divergence must still count as evidence.
+      createKD(`impl-M1-feat-${s}-gen0.md`);
+
+      const cap = captureStderr();
+      try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+      } finally {
+        cap.restore();
+      }
+      expect(cap.text()).toContain(`RECONCILE_CHECKOFF: milestone M1 promoted in-progress → checked-off (impl KD impl-M1-feat-${s}-gen0.md)`);
+      // The promotion is persisted — the registry row itself now reads checked-off.
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8");
+      expect(content).toContain("  M1: checked-off");
+    });
+
+    it("reconciliation is idempotent — re-evaluation with all rows checked-off emits nothing further and leaves the registry stable", async () => {
+      const s = sid("m1-rec-2");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "pending"], ["M2", "checked-off"]]);
+      createKD(`impl-M1-idem-${s}.md`);
+      createKD(`impl-M2-idem-${s}.md`);
+
+      const cap1 = captureStderr();
+      try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+      } finally {
+        cap1.restore();
+      }
+      expect(cap1.text()).toContain("RECONCILE_CHECKOFF: milestone M1 promoted pending → checked-off");
+
+      const before = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      const cap2 = captureStderr();
+      try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+      } finally {
+        cap2.restore();
+      }
+      expect(cap2.text()).not.toContain("RECONCILE_CHECKOFF");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toBe(before);
+    });
+
+    it("never promotes a stuck row without disk evidence — the gate stays blocked and the blocked-row diagnostic still names it", async () => {
+      const s = sid("m1-rec-3");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"], ["M2", "checked-off"]]);
+      createKD(`impl-M2-feat-${s}.md`);
+
+      const cap = captureStderr();
+      try {
+        const gate = hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
+        expect(gate.ok).toBe(false);
+        expect(gate.checkedOff).toBe(1);
+      } finally {
+        cap.restore();
+      }
+      expect(cap.text()).not.toContain("RECONCILE_CHECKOFF");
+      // The registry row was never promoted.
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: in-progress");
+
+      // The blocked-row diagnostic still names the stuck row (debug channel).
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
+        expect(readFileSync(logPath, "utf8")).toContain("blocked by: M1=in-progress");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("never promotes across session ids — another session's impl KD is not evidence for this lifecycle's stuck row", async () => {
+      const s = sid("m1-rec-4");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "failed"]]);
+
+      const other = sid("m1-rec-other");
+      createKD(`impl-M1-cross-${other}.md`);
+
+      const cap = captureStderr();
+      try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+      } finally {
+        cap.restore();
+      }
+      expect(cap.text()).not.toContain("RECONCILE_CHECKOFF");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: failed");
+    });
+
+    it("AUTO_CHECKOFF_FAILED fires on the loud channel with PROTOCOL_GATE_DEBUG unset (invalid-transition fixture)", async () => {
+      const s = sid("m1-diag-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // A pending row cannot complete directly — the check-off transition from
+      // pending is invalid, which is exactly the silent-failure shape Issue 64
+      // buried (Defect A window: impl KD written before the dispatch flip).
+      createRegistry(s, [["M1", "pending"]]);
+
+      const artisan = sid("m1-diag-1-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      const cap = captureStderr();
+      try {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        await hooks["tool.execute.before"](
+          { tool: "write", sessionID: artisan, callID: "c1" },
+          { args: { filePath: `knowledge/impl-M1-early-${s}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+        );
+      } finally {
+        cap.restore();
+      }
+      expect(cap.text()).toContain("AUTO_CHECKOFF_FAILED");
+      expect(cap.text()).toContain("invalid-transition");
+      // The registry row is untouched by the failed attempt.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: pending");
+    });
+
+    it("AUTO_CHECKOFF_UNMATCHED fires on the loud channel when no parent candidate matches the filename", async () => {
+      const s = sid("m1-diag-2");
+      await initOverseer(s);
+
+      const artisan = sid("m1-diag-2-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      const orphan = `knowledge/impl-M9-orphan-ses_foreign0000000000-gen7.md`;
+      const cap = captureStderr();
+      try {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        await hooks["tool.execute.before"](
+          { tool: "write", sessionID: artisan, callID: "c1" },
+          { args: { filePath: orphan, content: "# IMPLEMENTATION SUMMARY" } }
+        );
+      } finally {
+        cap.restore();
+      }
+      expect(cap.text()).toContain(`AUTO_CHECKOFF_UNMATCHED: ${orphan}`);
+    });
+
+    it("a re-opened milestone's stale impl KDs are superseded — the reopened row is not instantly re-checked-off, and fresh evidence re-completes it", async () => {
+      const s = sid("m1-supersede-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-first-${s}.md`);
+      expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+
+      // Inspector findings → Overseer re-dispatches M1 → the row re-opens and
+      // its prior completion evidence is superseded ON DISK.
+      await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "c1" },
+        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+      );
+      let content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: in-progress");
+      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md`))).toBe(false);
+      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md.superseded.md`))).toBe(true);
+
+      // The stale evidence no longer re-checks-off the row — the gate stays closed.
+      const cap = captureStderr();
+      try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+      } finally {
+        cap.restore();
+      }
+      expect(cap.text()).not.toContain("RECONCILE_CHECKOFF");
+
+      // Fresh fix evidence → auto check-off completes the row → gate opens.
+      // The before-hook fires the check-off; the write tool itself lands the
+      // impl KD right after — both halves of the write operation.
+      const artisan = sid("m1-supersede-1-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c2" },
+        { args: { filePath: `knowledge/impl-M1-fix-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY (fix)" } }
+      );
+      createKD(`impl-M1-fix-${s}-gen0.md`);
+      content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: checked-off");
+      expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
     });
   });
 

@@ -28,4 +28,5 @@ Agents accept WHAT-level dispatches — each dispatch describes the artifact to 
 - ⚠ Honest Prompts — Frame prompts to allow honest, accurate answers
 - ⚠ Revert and Retry — Know when to revert and retry
 - ⚠ Verify Output — Verify all output before accepting
+- ⚠ Compound Commands — A compound/piped bash command is denied as a unit when any segment is not allowlisted; split it into separate allowlisted calls or route through the dedicated Read/Grep/Glob tools instead of rerouting around permissions
 - ⚠ Fewer Rules — More rules degrade compliance. Use focused agents and refinement loops.
