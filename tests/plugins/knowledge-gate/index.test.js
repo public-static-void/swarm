@@ -3555,4 +3555,198 @@ Body`;
       expect(second[0].topic).toBe("Served from index");
     });
   });
+
+  // Dual-instance physical isolation (#68): earlier isolation evidence in
+  // this file rested on single instances — either the seam collapse (all
+  // stores on one dir) or one instance with disjoint roots. This harness
+  // grounds the strongest claim, zero cross-instance visibility, by keeping
+  // two fresh module instances alive in one process, each bound to its own
+  // config/project root pair. A write in one instance stays invisible to the
+  // other across memory search, open-issue scans, and short-term reads, in
+  // both directions. Project-scope short-term writes stay out of scope here:
+  // that path reads KNOWLEDGE_GATE_PROJECT_ROOT at call time and would fall
+  // back to process.cwd() once the env roots are cleared below.
+  describe("dual-instance physical isolation (two fresh module instances)", () => {
+    let instanceA;
+    let instanceB;
+    let hooksA;
+    let hooksB;
+    let configRootA;
+    let projectRootA;
+    let configRootB;
+    let projectRootB;
+
+    const scribe = { agent: "scribe", sessionID: "ses_iso" };
+    const builder = { agent: "habit-builder", sessionID: "ses_iso" };
+
+    function memEntry(topic, tags) {
+      return {
+        source_kd: "knowledge/composed-iso.md",
+        tags: [...tags, "isolation"],
+        topic,
+        insight: `${topic} isolation probe`,
+        type: "fact",
+        created: "2026-08-23T00:00:00.000Z",
+        session: "ses_iso",
+        version: "1.0.0"
+      };
+    }
+
+    function issue(title) {
+      return { title, severity: "high", created: "2026-08-23", session: "ses_iso", scope: "swarm" };
+    }
+
+    beforeAll(async () => {
+      configRootA = mkdtempSync(join(tmpdir(), "kg-iso-config-a-"));
+      projectRootA = mkdtempSync(join(tmpdir(), "kg-iso-project-a-"));
+      configRootB = mkdtempSync(join(tmpdir(), "kg-iso-config-b-"));
+      projectRootB = mkdtempSync(join(tmpdir(), "kg-iso-project-b-"));
+      // Disjoint roots need seam-free modules: the overrides would collapse
+      // all stores onto one dir and make cross-instance leakage unobservable.
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRootA;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRootA;
+      instanceA = await import("../../../plugins/knowledge-gate/index.js?iso-a");
+      hooksA = await instanceA.default.server({ directory: projectRootA }, {});
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRootB;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRootB;
+      instanceB = await import("../../../plugins/knowledge-gate/index.js?iso-b");
+      hooksB = await instanceB.default.server({ directory: projectRootB }, {});
+      // Roots are baked into each instance's module constants and server
+      // closures by now; clearing the env keeps call-time readers away from
+      // either instance's tree for the rest of the suite.
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      for (const dir of [configRootA, projectRootA, configRootB, projectRootB]) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("hides memory writes from the sibling instance's merged search in both directions", async () => {
+      const alpha = JSON.parse(await hooksA.tool.memory_write.execute(
+        { entry: memEntry("Alpha-only insight", ["iso-probe"]), scope: "swarm" },
+        scribe
+      ));
+      const beta = JSON.parse(await hooksB.tool.memory_write.execute(
+        { entry: memEntry("Beta-only insight", ["iso-probe"]), scope: "swarm" },
+        scribe
+      ));
+      expect(alpha.error).toBeUndefined();
+      expect(beta.error).toBeUndefined();
+
+      const seenFromA = hooksA.searchMemory({ tags: ["iso-probe"], topic: "", limit: 10 });
+      expect(seenFromA.map(r => r.topic)).toEqual(["Alpha-only insight"]);
+      const seenFromB = hooksB.searchMemory({ tags: ["iso-probe"], topic: "", limit: 10 });
+      expect(seenFromB.map(r => r.topic)).toEqual(["Beta-only insight"]);
+
+      // Both instances start from empty stores, so the shared per-store ID
+      // sequence hands out the same ID while the entries land as physically
+      // distinct files under disjoint roots.
+      expect(alpha.id).toBe(beta.id);
+      expect(existsSync(join(configRootA, "knowledge", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(configRootB, "knowledge", "memory", "entry-001.json"))).toBe(true);
+    });
+
+    it("hides issue writes from the sibling instance's merged open-issue scan in both directions", async () => {
+      await hooksA.tool.issue_write.execute({ issue: issue("Alpha open debt") }, builder);
+      await hooksB.tool.issue_write.execute({ issue: issue("Beta open debt") }, builder);
+
+      expect(hooksA.scanOpenIssuesMerged().map(i => i.title)).toEqual(["Alpha open debt"]);
+      expect(hooksB.scanOpenIssuesMerged().map(i => i.title)).toEqual(["Beta open debt"]);
+
+      // Each config root holds its own issue-1.md — independent per-store
+      // counters over physically separate dirs.
+      expect(existsSync(join(configRootA, "knowledge", "issues", "issue-1.md"))).toBe(true);
+      expect(existsSync(join(configRootB, "knowledge", "issues", "issue-1.md"))).toBe(true);
+    });
+
+    it("keeps short-term notes unreadable through the sibling instance", async () => {
+      const noteA = JSON.parse(await hooksA.tool.memory_note.execute(
+        { topic: "Alpha scratch", content: "instance A scratch note" },
+        { agent: "artisan", sessionID: "ses_iso_a" }
+      ));
+      const noteB = JSON.parse(await hooksB.tool.memory_note.execute(
+        { topic: "Beta scratch", content: "instance B scratch note" },
+        { agent: "artisan", sessionID: "ses_iso_b" }
+      ));
+      expect(noteA.error).toBeUndefined();
+      expect(noteB.error).toBeUndefined();
+
+      // Distinct session tokens keep note IDs distinct, so reading the
+      // sibling's ID resolves inside the reader's own store and misses.
+      const readAinB = JSON.parse(await hooksB.tool.memory_note_read.execute(
+        { id: noteA.id },
+        { agent: "artisan", sessionID: "ses_iso_b" }
+      ));
+      expect(readAinB.error).toContain("not found");
+      const readBinA = JSON.parse(await hooksA.tool.memory_note_read.execute(
+        { id: noteB.id },
+        { agent: "artisan", sessionID: "ses_iso_a" }
+      ));
+      expect(readBinA.error).toContain("not found");
+
+      // Each instance still reads its own note by ID.
+      const ownA = JSON.parse(await hooksA.tool.memory_note_read.execute(
+        { id: noteA.id },
+        { agent: "artisan", sessionID: "ses_iso_a" }
+      ));
+      expect(ownA.topic).toBe("Alpha scratch");
+      const ownB = JSON.parse(await hooksB.tool.memory_note_read.execute(
+        { id: noteB.id },
+        { agent: "artisan", sessionID: "ses_iso_b" }
+      ));
+      expect(ownB.topic).toBe("Beta scratch");
+
+      // Namespace listing (Scribe view) surfaces only local notes.
+      const listA = JSON.parse(await hooksA.tool.memory_notes_list.execute(
+        { session: "ses_iso_a", agent: "artisan" },
+        scribe
+      ));
+      expect(listA.map(n => n.topic)).toEqual(["Alpha scratch"]);
+      const listB = JSON.parse(await hooksB.tool.memory_notes_list.execute(
+        { session: "ses_iso_b", agent: "artisan" },
+        scribe
+      ));
+      expect(listB.map(n => n.topic)).toEqual(["Beta scratch"]);
+    });
+
+    it("routes project-scope writes into each instance's own project root with zero cross-visibility", async () => {
+      await hooksA.tool.memory_write.execute(
+        { entry: memEntry("Alpha project insight", ["iso-project"]), scope: "project" },
+        scribe
+      );
+      await hooksB.tool.issue_write.execute(
+        { issue: { ...issue("Beta project debt"), scope: "project" } },
+        builder
+      );
+
+      expect(existsSync(join(projectRootA, "knowledge", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(projectRootB, "knowledge", "issues", "issue-1.md"))).toBe(true);
+      // Nothing bled into the sibling's project tree
+      expect(existsSync(join(projectRootB, "knowledge", "memory"))).toBe(false);
+      expect(existsSync(join(projectRootA, "knowledge", "issues"))).toBe(false);
+
+      // Positive control goes through the store-filtered surface: A's
+      // project entry shares the ID MEM-001 with A's earlier swarm entry
+      // (per-store ID sequences), and the merged path dedupes same-ID
+      // entries with swarm precedence — the filtered read proves the
+      // project store itself holds and serves the entry.
+      const seenFromA = hooksA.searchMemory({ tags: ["iso-project"], topic: "", limit: 10, store: "project" });
+      expect(seenFromA.map(r => [r.topic, r.store])).toEqual([["Alpha project insight", "project"]]);
+      expect(hooksB.searchMemory({ tags: ["iso-project"], topic: "", limit: 10 })).toEqual([]);
+      expect(hooksA.scanOpenIssuesMerged().filter(i => i.scope === "project")).toEqual([]);
+      expect(hooksB.scanOpenIssuesMerged().filter(i => i.scope === "project").map(i => i.title))
+        .toEqual(["Beta project debt"]);
+    });
+  });
 });
