@@ -3137,8 +3137,9 @@ Body`;
   describe("Memory scope support (M3 — R005)", () => {
     // M3 tests use the existing seam setup. The legacy memory seam overrides
     // both stores to the same dir, so we test scope routing via return values
-    // and the store field on search results — the full dual-store routing
-    // tests live in M6 (P011).
+    // and the store field on search results — the physical dual-store
+    // routing evidence lives in the disjoint-root suites below
+    // ("dual-instance physical isolation", "store dir resolution").
 
     it("memory_write returns scope in the result", async () => {
       const result = JSON.parse(await hooks.tool.memory_write.execute({
@@ -3747,6 +3748,76 @@ Body`;
       expect(hooksA.scanOpenIssuesMerged().filter(i => i.scope === "project")).toEqual([]);
       expect(hooksB.scanOpenIssuesMerged().filter(i => i.scope === "project").map(i => i.title))
         .toEqual(["Beta project debt"]);
+    });
+  });
+
+  // Seam-free dir resolution: the seam pins earlier in this file document
+  // the hermetic-redirection contract (all stores on one dir under the
+  // overrides). Isolation evidence must rest on disjoint roots instead of
+  // that collapse, so these tests prove the production resolution — each
+  // store's memory dir and derived index land under their own root — with
+  // a fresh seam-free instance.
+  describe("store dir resolution — disjoint-root instance", () => {
+    let resolveHooks;
+    let configRoot;
+    let projectRoot;
+
+    beforeAll(async () => {
+      configRoot = mkdtempSync(join(tmpdir(), "kg-resolve-config-"));
+      projectRoot = mkdtempSync(join(tmpdir(), "kg-resolve-project-"));
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+      const fresh = await import("../../../plugins/knowledge-gate/index.js?dir-resolve");
+      resolveHooks = await fresh.default.server({}, {});
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      rmSync(configRoot, { recursive: true, force: true });
+      rmSync(projectRoot, { recursive: true, force: true });
+    });
+
+    it("resolves swarm and project memory dirs to distinct paths under their own roots", () => {
+      const swarmDir = resolveHooks.memoryDirForScope("swarm");
+      const projectDir = resolveHooks.memoryDirForScope("project");
+      expect(swarmDir).toBe(join(configRoot, "knowledge", "memory"));
+      expect(projectDir).toBe(join(projectRoot, "knowledge", "memory"));
+      expect(swarmDir).not.toBe(projectDir);
+    });
+
+    it("resolves per-store index paths to distinct files under their own roots", () => {
+      const swarmIdx = resolveHooks.memoryIndexPathForScope("swarm");
+      const projectIdx = resolveHooks.memoryIndexPathForScope("project");
+      expect(swarmIdx).toBe(join(configRoot, "knowledge", "memory", "memory-search-index.jsonl"));
+      expect(projectIdx).toBe(join(projectRoot, "knowledge", "memory", "memory-search-index.jsonl"));
+      expect(swarmIdx).not.toBe(projectIdx);
+    });
+
+    it("serves store-filtered searches from physically separate store dirs", () => {
+      const swarmDir = join(configRoot, "knowledge", "memory");
+      const projectDir = join(projectRoot, "knowledge", "memory");
+      mkdirSync(swarmDir, { recursive: true });
+      mkdirSync(projectDir, { recursive: true });
+      // Distinct IDs per store: the merged path dedupes same-ID entries
+      // across stores (swarm precedence), which would mask one copy.
+      const swarmEntry = addMemoryEntry(1, { tags: ["resolve-probe"], topic: "Swarm-side entry" });
+      const projectEntry = addMemoryEntry(2, { tags: ["resolve-probe"], topic: "Project-side entry" });
+      writeFileSync(join(swarmDir, swarmEntry.fileName), swarmEntry.content);
+      writeFileSync(join(projectDir, projectEntry.fileName), projectEntry.content);
+
+      const swarmHits = resolveHooks.searchMemory({ tags: ["resolve-probe"], topic: "", limit: 10, store: "swarm" });
+      expect(swarmHits.map(r => r.topic)).toEqual(["Swarm-side entry"]);
+      const projectHits = resolveHooks.searchMemory({ tags: ["resolve-probe"], topic: "", limit: 10, store: "project" });
+      expect(projectHits.map(r => r.topic)).toEqual(["Project-side entry"]);
+      const merged = resolveHooks.searchMemory({ tags: ["resolve-probe"], topic: "", limit: 10 });
+      expect(merged.map(r => r.topic).sort()).toEqual(["Project-side entry", "Swarm-side entry"]);
     });
   });
 });
