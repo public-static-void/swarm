@@ -67,6 +67,10 @@ The configuration is organized in layers, each with one job:
 
 Ground rules live in `AGENTS.md`; agent-specific knowledge lives in the agent files; domain knowledge lives in skills; enforcement lives in plugins. Each layer stays in its place, so rules are easy to find and hard to contradict.
 
+## Running the Tests
+
+The suite runs via `npx vitest run` from the repository root — the canonical invocation. package.json ships with an `audit` script only; the vitest config pins collection to `tests/**` and excludes the vendored `references/` tree, so a root-level run collects exactly the swarm suite and reports its true signal.
+
 ## The Git Contract
 
 git tracks swarm config: `AGENTS.md`, `agents/`, `skills/`, `plugins/`, `tests/`, `commands/`, `opencode.json`. `knowledge/` is workflow meta and stays gitignored. Verification is tree-level — working tree and tracked diffs — using the standard git workflow with hooks enabled.

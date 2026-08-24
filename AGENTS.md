@@ -30,3 +30,7 @@ Agents accept WHAT-level dispatches — each dispatch describes the artifact to 
 - ⚠ Verify Output — Verify all output before accepting
 - ⚠ Compound Commands — A compound/piped bash command is denied as a unit when any segment is not allowlisted; split it into separate allowlisted calls or route through the dedicated Read/Grep/Glob tools instead of rerouting around permissions
 - ⚠ Fewer Rules — More rules degrade compliance. Use focused agents and refinement loops.
+
+## Test Invocation
+
+Run the suite with `npx vitest run` from the repository root — the canonical invocation. The vitest config pins collection to `tests/**` and excludes the vendored `references/` tree, so a root-level run collects exactly the swarm suite and reports its true signal.
