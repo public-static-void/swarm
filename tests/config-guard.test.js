@@ -228,6 +228,16 @@ describe("committer plan/spec read contract", () => {
     const granted = editPatterns.filter((p) => /^knowledge\/(plan|spec)-/.test(p));
     expect(granted).toEqual([]);
   });
+
+  it("grants committer read access to composed, process, and report KD types", () => {
+    const readPatterns = permissionEntries(readAgent("committer.md"), "read").map((e) => e.pattern);
+    const editPatterns = permissionEntries(readAgent("committer.md"), "edit").map((e) => e.pattern);
+    const closureTypes = ["composed", "process", "report"];
+    const missing = closureTypes.map((t) => `knowledge/${t}-*.md`).filter((p) => !readPatterns.includes(p));
+    expect(missing).toEqual([]);
+    const grantedEdits = editPatterns.filter((p) => /^knowledge\/(composed|process|report)-/.test(p));
+    expect(grantedEdits).toEqual([]);
+  });
 });
 
 describe("memory tool ownership", () => {
