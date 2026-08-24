@@ -1940,6 +1940,31 @@ ${findings}
       content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: checked-off");
     });
+
+    it("a SWARM re-dispatch of a checked-off milestone names the re-dispatch trigger in a loud diagnostic", async () => {
+      const s = sid("m3-reopen-diag");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-reopen-${s}.md`);
+
+      let stderr = "";
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID: "c1" },
+          { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+        );
+      } finally {
+        process.stderr.write = origWrite;
+      }
+      expect(stderr).toContain("REOPEN:");
+      expect(stderr).toContain("M1");
+      expect(stderr).toContain("re-dispatch");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
+    });
   });
 
   it("tool.definition respects the phase allowlist — read restricted during SWARM, non-allowlisted tools blocked elsewhere, task always passes", async () => {
@@ -2690,6 +2715,62 @@ ${findings}
       content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: checked-off");
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+    });
+
+    it("a stuck row whose only same-session impl evidence is superseded file(s) emits SUPERSEDED_EVIDENCE and stays unpromoted", async () => {
+      const s = sid("m1-superseded-ev");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // M1 is genuinely done; M2 is stuck and its stale completion evidence was
+      // renamed by supersede-on-reopen — the only impl-M2-* files on disk carry
+      // the .superseded.md suffix (generation-scoped and legacy variants).
+      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+      createKD(`impl-M2-old-${s}-gen1.md.superseded.md`);
+      createKD(`impl-M2-legacy-${s}.md.superseded.md`);
+
+      const cap = captureStderr();
+      try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+      } finally {
+        cap.restore();
+      }
+      expect(cap.text()).toContain("SUPERSEDED_EVIDENCE");
+      expect(cap.text()).toContain(`impl-M2-old-${s}-gen1.md.superseded.md`);
+      expect(cap.text()).toContain(`impl-M2-legacy-${s}.md.superseded.md`);
+      // The row stays unpromoted — superseded evidence is provenance, proof of completion.
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M2: in-progress");
+    });
+
+    it("live impl evidence alongside superseded files promotes the row via the live file with zero SUPERSEDED_EVIDENCE", async () => {
+      const s = sid("m1-live-plus-superseded");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      createKD(`impl-M1-old-${s}.md.superseded.md`);
+      createKD(`impl-M1-fix-${s}.md`);
+
+      const cap = captureStderr();
+      try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+      } finally {
+        cap.restore();
+      }
+      expect(cap.text()).toContain("RECONCILE_CHECKOFF");
+      expect(cap.text()).not.toContain("SUPERSEDED_EVIDENCE");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
+    });
+
+    it("the session-KD predicate keeps rejecting .superseded.md filenames across both naming eras", () => {
+      const s = sid("m1-pred-pin");
+      expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}-gen1.md.superseded.md`, s)).toBe(false);
+      expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}.md.superseded.md`, s)).toBe(false);
+      // Control: the un-superseded forms still match.
+      expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}-gen1.md`, s)).toBe(true);
+      expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}.md`, s)).toBe(true);
     });
   });
 
@@ -3472,6 +3553,31 @@ milestones:
       }
     });
 
+    it("a citation-driven reopen names the citing review KD in a loud diagnostic", async () => {
+      const s = sid("i49-reopen-diag");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1-short-term-store has a defect"));
+
+      let stderr = "";
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+      } finally {
+        process.stderr.write = origWrite;
+      }
+      expect(stderr).toContain("REOPEN:");
+      expect(stderr).toContain("M1");
+      expect(stderr).toContain(`review-fail-${s}.md`);
+      expect(regressedRegistryRows(s).M1).toBe("in-progress");
+    });
+
     it("d: unrelated checked-off rows stay checked-off across repeated FAIL evaluations", async () => {
       const s = sid("i49d");
       await initOverseer(s);
@@ -3742,6 +3848,189 @@ audited
         expect(rows.M1).toBe("checked-off");
         expect(rows.M3).toBe("checked-off");
       });
+    });
+
+    it("the citation scan covers the whole review KD — a Verdict-only citation yields the token, matrix tokens stay excluded", () => {
+      const s = sid("f001-scan-whole-kd");
+      const content = `---
+title: "REVIEW: test"
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL — milestone M2 regressed after the fix cycle
+
+## Review Findings
+
+### F001: defect
+
+The deficient milestone is named in the Verdict section above.
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact          | Test/Check | Status |
+| ------ | --------- | ----------------- | ---------- | ------ |
+| R001   | P001      | impl-M9-unrelated | test       | PASS   |
+
+## Audit
+
+### Scope
+
+the audit re-run flagged milestone M2
+`;
+      const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+      expect(citations).toEqual(["M2"]);
+    });
+
+    it("a FAIL review citing M2 only in its Verdict section reopens M2", async () => {
+      const s = sid("f001-verdict-cite");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+      createKD(
+        `review-fail-${s}.md`,
+        `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL — milestone M2 shipped with a defect
+
+## Review Findings
+
+### F001: defect
+
+The deficient milestone is named in the Verdict section above.
+`
+      );
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const rows = regressedRegistryRows(s);
+      expect(rows.M2).toBe("in-progress");
+      expect(rows.M1).toBe("checked-off");
+    });
+
+    it("a FAIL review citing M2 only in its Audit section reopens M2", async () => {
+      const s = sid("f001-audit-cite");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+      createKD(
+        `review-fail-${s}.md`,
+        `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+The defect details live in the Audit section below.
+
+## Audit
+
+### Scope
+
+impl-M2-resume-hint regressed during the audit re-run
+`
+      );
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const rows = regressedRegistryRows(s);
+      expect(rows.M2).toBe("in-progress");
+      expect(rows.M1).toBe("checked-off");
+    });
+
+    it("a FAIL review whose only milestone tokens sit inside the Traceability Matrix fails closed as MALFORMED_FAIL", async () => {
+      const s = sid("f001-matrix-only-malformed");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+      createKD(
+        `review-fail-${s}.md`,
+        `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+The failing surface is described without milestone tokens.
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact                 | Test/Check | Status |
+| ------ | --------- | ------------------------ | ---------- | ------ |
+| R001   | P001      | impl-M2-resume-hint      | test       | PASS   |
+`
+      );
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Fail closed: blocked in VERIFY, zero regression, zero reopen.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
+        const rows = regressedRegistryRows(s);
+        expect(rows.M1).toBe("checked-off");
+        expect(rows.M2).toBe("checked-off");
+        expect(readFileSync(logPath, "utf8")).toContain("MALFORMED_FAIL");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
     });
   });
 
