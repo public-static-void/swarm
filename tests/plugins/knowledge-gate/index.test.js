@@ -2,6 +2,11 @@ import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { join } from "path";
 import { tmpdir } from "os";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { fileURLToPath } from "url";
+
+// Plugin debug channel destination (KNOWLEDGE_GATE_DEBUG=1 appends here).
+// Used by the memory-index hygiene tests to assert on emitted diagnostics.
+const KG_LOG_FILE = fileURLToPath(new URL("../../../plugins/logs/knowledge-gate.log", import.meta.url));
 
 // The plugin reads its data dirs from KNOWLEDGE_GATE_MEMORY_DIR /
 // KNOWLEDGE_GATE_ISSUES_DIR / KNOWLEDGE_GATE_SHORT_TERM_DIR env overrides
@@ -3132,8 +3137,9 @@ Body`;
   describe("Memory scope support (M3 — R005)", () => {
     // M3 tests use the existing seam setup. The legacy memory seam overrides
     // both stores to the same dir, so we test scope routing via return values
-    // and the store field on search results — the full dual-store routing
-    // tests live in M6 (P011).
+    // and the store field on search results — the physical dual-store
+    // routing evidence lives in the disjoint-root suites below
+    // ("dual-instance physical isolation", "store dir resolution").
 
     it("memory_write returns scope in the result", async () => {
       const result = JSON.parse(await hooks.tool.memory_write.execute({
@@ -3426,6 +3432,392 @@ Body`;
       expect(projectIdx).toContain("memory-search-index.jsonl");
       // Under the seam, both resolve to the same path
       expect(swarmIdx).toBe(projectIdx);
+    });
+  });
+
+  // Memory-index absent-store hygiene (M1 — R001/R002): a merged search
+  // touches every store, so never-written project/generic stores used to
+  // hit an ENOENT on the index write and log "memory index: write failed"
+  // per search. The fix skips the write for absent store dirs; these tests
+  // pin the diagnostic silence plus the stronger hygiene invariant that
+  // merged searches create zero directories under absent store roots.
+  describe("memory index — absent-store hygiene (fresh module instance)", () => {
+    let hygieneModule;
+    let hygieneHooks;
+    let configRoot;
+    let projectRoot;
+
+    // Runs fn with the plugin's debug channel enabled and returns the log
+    // text appended during the call — the only diagnostics surface the
+    // plugin has, so "zero error-level output" is asserted against it.
+    function captureDebugLog(fn) {
+      process.env.KNOWLEDGE_GATE_DEBUG = "1";
+      const before = existsSync(KG_LOG_FILE) ? readFileSync(KG_LOG_FILE, "utf8") : "";
+      let result, appended;
+      try {
+        result = fn();
+        const after = existsSync(KG_LOG_FILE) ? readFileSync(KG_LOG_FILE, "utf8") : "";
+        appended = after.slice(before.length);
+      } finally {
+        delete process.env.KNOWLEDGE_GATE_DEBUG;
+      }
+      return { result, appended };
+    }
+
+    beforeAll(async () => {
+      configRoot = mkdtempSync(join(tmpdir(), "kg-hygiene-config-"));
+      projectRoot = mkdtempSync(join(tmpdir(), "kg-hygiene-project-"));
+      // Disjoint roots without seams: the seam overrides collapse all three
+      // stores onto one dir, which makes an "absent store" unconstructible.
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+      hygieneModule = await import("../../../plugins/knowledge-gate/index.js?index-hygiene");
+      hygieneHooks = await hygieneModule.default.server({}, {});
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      rmSync(configRoot, { recursive: true, force: true });
+      rmSync(projectRoot, { recursive: true, force: true });
+    });
+
+    it("merged search over absent stores completes, serves swarm results, and leaves both roots untouched", () => {
+      const swarmDir = join(configRoot, "knowledge", "memory");
+      mkdirSync(swarmDir, { recursive: true });
+      const entry = addMemoryEntry(1, { tags: ["hygiene-probe"], topic: "Absent-store probe" });
+      writeFileSync(join(swarmDir, entry.fileName), entry.content);
+
+      const { result: results, appended } = captureDebugLog(() =>
+        hygieneHooks.searchMemory({ tags: [], topic: "", limit: 5 })
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].store).toBe("swarm");
+      expect(results[0].topic).toBe("Absent-store probe");
+
+      // R001: zero error-level index diagnostics for never-written stores
+      expect(appended).not.toContain("memory index: write failed");
+      expect(appended).not.toContain("memory index: rebuild write failed");
+
+      // R002: merged searches create no directories under absent roots
+      expect(existsSync(join(projectRoot, "knowledge"))).toBe(false);
+      expect(existsSync(join(configRoot, "knowledge", "generic"))).toBe(false);
+
+      // Failure isolation (NFR004) leaves zero tmp residue behind
+      const residue = readdirSync(swarmDir).filter(f => f.endsWith(".tmp"));
+      expect(residue).toEqual([]);
+    });
+
+    it("store-filtered search on an absent store returns empty and emits zero failure diagnostics", () => {
+      const { result: results, appended } = captureDebugLog(() =>
+        hygieneHooks.searchMemory({ tags: [], topic: "", limit: 5, store: "generic" })
+      );
+
+      expect(results).toEqual([]);
+      expect(appended).not.toContain("memory index: write failed");
+      expect(existsSync(join(configRoot, "knowledge", "generic"))).toBe(false);
+    });
+
+    it("present store materializes the index post-search and serves subsequent searches from it", async () => {
+      const swarmDir = join(configRoot, "knowledge", "memory");
+      mkdirSync(swarmDir, { recursive: true });
+      const entry = addMemoryEntry(2, { tags: ["regression-probe"], topic: "Index regression probe" });
+      writeFileSync(join(swarmDir, entry.fileName), entry.content);
+
+      const first = hygieneHooks.searchMemory({ tags: ["regression-probe"], topic: "", limit: 5 });
+      expect(first).toHaveLength(1);
+
+      const indexPath = join(swarmDir, "memory-search-index.jsonl");
+      expect(existsSync(indexPath)).toBe(true);
+      const doc = JSON.parse(readFileSync(indexPath, "utf8"));
+      expect(doc.version).toBe(1);
+      // entryCount mirrors the on-disk entry-file count — the same invariant
+      // isMemoryIndexValid enforces before serving from the index.
+      const fileCount = readdirSync(swarmDir).filter(f => f.endsWith(".json")).length;
+      expect(doc.entryCount).toBe(fileCount);
+
+      // Prove the serve-from-index path: a fresh server instance (empty
+      // caches) reads a tweaked index — the unchanged entryCount keeps it
+      // valid, so the altered topic flows through to results.
+      const tweaked = JSON.parse(readFileSync(indexPath, "utf8"));
+      const target = tweaked.entries.find(e => e.id === JSON.parse(entry.content).id);
+      target.topic = "Served from index";
+      writeFileSync(indexPath, JSON.stringify(tweaked));
+      const freshHooks = await hygieneModule.default.server({}, {});
+      const second = freshHooks.searchMemory({ tags: ["regression-probe"], topic: "", limit: 5 });
+      expect(second).toHaveLength(1);
+      expect(second[0].topic).toBe("Served from index");
+    });
+  });
+
+  // Dual-instance physical isolation (#68): earlier isolation evidence in
+  // this file rested on single instances — either the seam collapse (all
+  // stores on one dir) or one instance with disjoint roots. This harness
+  // grounds the strongest claim, zero cross-instance visibility, by keeping
+  // two fresh module instances alive in one process, each bound to its own
+  // config/project root pair. A write in one instance stays invisible to the
+  // other across memory search, open-issue scans, and short-term reads, in
+  // both directions. Project-scope short-term writes stay out of scope here:
+  // that path reads KNOWLEDGE_GATE_PROJECT_ROOT at call time and would fall
+  // back to process.cwd() once the env roots are cleared below.
+  describe("dual-instance physical isolation (two fresh module instances)", () => {
+    let instanceA;
+    let instanceB;
+    let hooksA;
+    let hooksB;
+    let configRootA;
+    let projectRootA;
+    let configRootB;
+    let projectRootB;
+
+    const scribe = { agent: "scribe", sessionID: "ses_iso" };
+    const builder = { agent: "habit-builder", sessionID: "ses_iso" };
+
+    function memEntry(topic, tags) {
+      return {
+        source_kd: "knowledge/composed-iso.md",
+        tags: [...tags, "isolation"],
+        topic,
+        insight: `${topic} isolation probe`,
+        type: "fact",
+        created: "2026-08-23T00:00:00.000Z",
+        session: "ses_iso",
+        version: "1.0.0"
+      };
+    }
+
+    function issue(title) {
+      return { title, severity: "high", created: "2026-08-23", session: "ses_iso", scope: "swarm" };
+    }
+
+    beforeAll(async () => {
+      configRootA = mkdtempSync(join(tmpdir(), "kg-iso-config-a-"));
+      projectRootA = mkdtempSync(join(tmpdir(), "kg-iso-project-a-"));
+      configRootB = mkdtempSync(join(tmpdir(), "kg-iso-config-b-"));
+      projectRootB = mkdtempSync(join(tmpdir(), "kg-iso-project-b-"));
+      // Disjoint roots need seam-free modules: the overrides would collapse
+      // all stores onto one dir and make cross-instance leakage unobservable.
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRootA;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRootA;
+      instanceA = await import("../../../plugins/knowledge-gate/index.js?iso-a");
+      hooksA = await instanceA.default.server({ directory: projectRootA }, {});
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRootB;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRootB;
+      instanceB = await import("../../../plugins/knowledge-gate/index.js?iso-b");
+      hooksB = await instanceB.default.server({ directory: projectRootB }, {});
+      // Roots are baked into each instance's module constants and server
+      // closures by now; clearing the env keeps call-time readers away from
+      // either instance's tree for the rest of the suite.
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      for (const dir of [configRootA, projectRootA, configRootB, projectRootB]) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("hides memory writes from the sibling instance's merged search in both directions", async () => {
+      const alpha = JSON.parse(await hooksA.tool.memory_write.execute(
+        { entry: memEntry("Alpha-only insight", ["iso-probe"]), scope: "swarm" },
+        scribe
+      ));
+      const beta = JSON.parse(await hooksB.tool.memory_write.execute(
+        { entry: memEntry("Beta-only insight", ["iso-probe"]), scope: "swarm" },
+        scribe
+      ));
+      expect(alpha.error).toBeUndefined();
+      expect(beta.error).toBeUndefined();
+
+      const seenFromA = hooksA.searchMemory({ tags: ["iso-probe"], topic: "", limit: 10 });
+      expect(seenFromA.map(r => r.topic)).toEqual(["Alpha-only insight"]);
+      const seenFromB = hooksB.searchMemory({ tags: ["iso-probe"], topic: "", limit: 10 });
+      expect(seenFromB.map(r => r.topic)).toEqual(["Beta-only insight"]);
+
+      // Both instances start from empty stores, so the shared per-store ID
+      // sequence hands out the same ID while the entries land as physically
+      // distinct files under disjoint roots.
+      expect(alpha.id).toBe(beta.id);
+      expect(existsSync(join(configRootA, "knowledge", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(configRootB, "knowledge", "memory", "entry-001.json"))).toBe(true);
+    });
+
+    it("hides issue writes from the sibling instance's merged open-issue scan in both directions", async () => {
+      await hooksA.tool.issue_write.execute({ issue: issue("Alpha open debt") }, builder);
+      await hooksB.tool.issue_write.execute({ issue: issue("Beta open debt") }, builder);
+
+      expect(hooksA.scanOpenIssuesMerged().map(i => i.title)).toEqual(["Alpha open debt"]);
+      expect(hooksB.scanOpenIssuesMerged().map(i => i.title)).toEqual(["Beta open debt"]);
+
+      // Each config root holds its own issue-1.md — independent per-store
+      // counters over physically separate dirs.
+      expect(existsSync(join(configRootA, "knowledge", "issues", "issue-1.md"))).toBe(true);
+      expect(existsSync(join(configRootB, "knowledge", "issues", "issue-1.md"))).toBe(true);
+    });
+
+    it("keeps short-term notes unreadable through the sibling instance", async () => {
+      const noteA = JSON.parse(await hooksA.tool.memory_note.execute(
+        { topic: "Alpha scratch", content: "instance A scratch note" },
+        { agent: "artisan", sessionID: "ses_iso_a" }
+      ));
+      const noteB = JSON.parse(await hooksB.tool.memory_note.execute(
+        { topic: "Beta scratch", content: "instance B scratch note" },
+        { agent: "artisan", sessionID: "ses_iso_b" }
+      ));
+      expect(noteA.error).toBeUndefined();
+      expect(noteB.error).toBeUndefined();
+
+      // Distinct session tokens keep note IDs distinct, so reading the
+      // sibling's ID resolves inside the reader's own store and misses.
+      const readAinB = JSON.parse(await hooksB.tool.memory_note_read.execute(
+        { id: noteA.id },
+        { agent: "artisan", sessionID: "ses_iso_b" }
+      ));
+      expect(readAinB.error).toContain("not found");
+      const readBinA = JSON.parse(await hooksA.tool.memory_note_read.execute(
+        { id: noteB.id },
+        { agent: "artisan", sessionID: "ses_iso_a" }
+      ));
+      expect(readBinA.error).toContain("not found");
+
+      // Each instance still reads its own note by ID.
+      const ownA = JSON.parse(await hooksA.tool.memory_note_read.execute(
+        { id: noteA.id },
+        { agent: "artisan", sessionID: "ses_iso_a" }
+      ));
+      expect(ownA.topic).toBe("Alpha scratch");
+      const ownB = JSON.parse(await hooksB.tool.memory_note_read.execute(
+        { id: noteB.id },
+        { agent: "artisan", sessionID: "ses_iso_b" }
+      ));
+      expect(ownB.topic).toBe("Beta scratch");
+
+      // Namespace listing (Scribe view) surfaces only local notes.
+      const listA = JSON.parse(await hooksA.tool.memory_notes_list.execute(
+        { session: "ses_iso_a", agent: "artisan" },
+        scribe
+      ));
+      expect(listA.map(n => n.topic)).toEqual(["Alpha scratch"]);
+      const listB = JSON.parse(await hooksB.tool.memory_notes_list.execute(
+        { session: "ses_iso_b", agent: "artisan" },
+        scribe
+      ));
+      expect(listB.map(n => n.topic)).toEqual(["Beta scratch"]);
+    });
+
+    it("routes project-scope writes into each instance's own project root with zero cross-visibility", async () => {
+      await hooksA.tool.memory_write.execute(
+        { entry: memEntry("Alpha project insight", ["iso-project"]), scope: "project" },
+        scribe
+      );
+      await hooksB.tool.issue_write.execute(
+        { issue: { ...issue("Beta project debt"), scope: "project" } },
+        builder
+      );
+
+      expect(existsSync(join(projectRootA, "knowledge", "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(projectRootB, "knowledge", "issues", "issue-1.md"))).toBe(true);
+      // Nothing bled into the sibling's project tree
+      expect(existsSync(join(projectRootB, "knowledge", "memory"))).toBe(false);
+      expect(existsSync(join(projectRootA, "knowledge", "issues"))).toBe(false);
+
+      // Positive control goes through the store-filtered surface: A's
+      // project entry shares the ID MEM-001 with A's earlier swarm entry
+      // (per-store ID sequences), and the merged path dedupes same-ID
+      // entries with swarm precedence — the filtered read proves the
+      // project store itself holds and serves the entry.
+      const seenFromA = hooksA.searchMemory({ tags: ["iso-project"], topic: "", limit: 10, store: "project" });
+      expect(seenFromA.map(r => [r.topic, r.store])).toEqual([["Alpha project insight", "project"]]);
+      expect(hooksB.searchMemory({ tags: ["iso-project"], topic: "", limit: 10 })).toEqual([]);
+      expect(hooksA.scanOpenIssuesMerged().filter(i => i.scope === "project")).toEqual([]);
+      expect(hooksB.scanOpenIssuesMerged().filter(i => i.scope === "project").map(i => i.title))
+        .toEqual(["Beta project debt"]);
+    });
+  });
+
+  // Seam-free dir resolution: the seam pins earlier in this file document
+  // the hermetic-redirection contract (all stores on one dir under the
+  // overrides). Isolation evidence must rest on disjoint roots instead of
+  // that collapse, so these tests prove the production resolution — each
+  // store's memory dir and derived index land under their own root — with
+  // a fresh seam-free instance.
+  describe("store dir resolution — disjoint-root instance", () => {
+    let resolveHooks;
+    let configRoot;
+    let projectRoot;
+
+    beforeAll(async () => {
+      configRoot = mkdtempSync(join(tmpdir(), "kg-resolve-config-"));
+      projectRoot = mkdtempSync(join(tmpdir(), "kg-resolve-project-"));
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+      const fresh = await import("../../../plugins/knowledge-gate/index.js?dir-resolve");
+      resolveHooks = await fresh.default.server({}, {});
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      rmSync(configRoot, { recursive: true, force: true });
+      rmSync(projectRoot, { recursive: true, force: true });
+    });
+
+    it("resolves swarm and project memory dirs to distinct paths under their own roots", () => {
+      const swarmDir = resolveHooks.memoryDirForScope("swarm");
+      const projectDir = resolveHooks.memoryDirForScope("project");
+      expect(swarmDir).toBe(join(configRoot, "knowledge", "memory"));
+      expect(projectDir).toBe(join(projectRoot, "knowledge", "memory"));
+      expect(swarmDir).not.toBe(projectDir);
+    });
+
+    it("resolves per-store index paths to distinct files under their own roots", () => {
+      const swarmIdx = resolveHooks.memoryIndexPathForScope("swarm");
+      const projectIdx = resolveHooks.memoryIndexPathForScope("project");
+      expect(swarmIdx).toBe(join(configRoot, "knowledge", "memory", "memory-search-index.jsonl"));
+      expect(projectIdx).toBe(join(projectRoot, "knowledge", "memory", "memory-search-index.jsonl"));
+      expect(swarmIdx).not.toBe(projectIdx);
+    });
+
+    it("serves store-filtered searches from physically separate store dirs", () => {
+      const swarmDir = join(configRoot, "knowledge", "memory");
+      const projectDir = join(projectRoot, "knowledge", "memory");
+      mkdirSync(swarmDir, { recursive: true });
+      mkdirSync(projectDir, { recursive: true });
+      // Distinct IDs per store: the merged path dedupes same-ID entries
+      // across stores (swarm precedence), which would mask one copy.
+      const swarmEntry = addMemoryEntry(1, { tags: ["resolve-probe"], topic: "Swarm-side entry" });
+      const projectEntry = addMemoryEntry(2, { tags: ["resolve-probe"], topic: "Project-side entry" });
+      writeFileSync(join(swarmDir, swarmEntry.fileName), swarmEntry.content);
+      writeFileSync(join(projectDir, projectEntry.fileName), projectEntry.content);
+
+      const swarmHits = resolveHooks.searchMemory({ tags: ["resolve-probe"], topic: "", limit: 10, store: "swarm" });
+      expect(swarmHits.map(r => r.topic)).toEqual(["Swarm-side entry"]);
+      const projectHits = resolveHooks.searchMemory({ tags: ["resolve-probe"], topic: "", limit: 10, store: "project" });
+      expect(projectHits.map(r => r.topic)).toEqual(["Project-side entry"]);
+      const merged = resolveHooks.searchMemory({ tags: ["resolve-probe"], topic: "", limit: 10 });
+      expect(merged.map(r => r.topic).sort()).toEqual(["Project-side entry", "Swarm-side entry"]);
     });
   });
 });

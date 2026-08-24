@@ -41,6 +41,8 @@ superseded_by: null
 - {{Key finding 1}}
 - {{Key finding 2}}
 
+Completeness gate: every INTENT issue has at least one finding entry in the exploration inventory — re-explore until coverage holds.
+
 ## Map / Structure
 
 {{Dependency graph, data flow, module relationships, or directory tree}}

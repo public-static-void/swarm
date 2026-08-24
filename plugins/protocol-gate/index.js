@@ -568,6 +568,11 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
     // the Inspector just found deficient.
     if (opts.reopen && current === "checked-off") {
       supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId);
+      // Attributable reopen (Issue 69): every genuine checked-off → in-progress
+      // reopen is announced loudly with its trigger — the citing review KD for
+      // citation-driven reopens, the dispatch event for SWARM re-dispatches —
+      // so mid-cycle registry changes are explainable in the transcript.
+      loud(`REOPEN: milestone ${milestoneId} checked-off → in-progress — trigger: ${opts.trigger || "unattributed"}`);
     }
     debug(`Registry ${located.path}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
     return { ok: true, path: located.path, changed: true };
@@ -758,7 +763,23 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   for (const row of stuck) {
     const prefix = `impl-${row.id}-`;
     const evidence = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID));
-    if (!evidence) continue;
+    if (!evidence) {
+      // Superseded-only evidence probe (Issue 69): a reopened row's stale impl
+      // KDs survive on disk as `*.superseded.md` — invisible to the predicate
+      // above by design, since widening it would double-suffix the files on
+      // every subsequent reopen. When those renamed files are the row's ONLY
+      // same-session impl evidence, say so loudly instead of leaving the
+      // unpromoted row unexplained; the row keeps blocking the gate.
+      const superseded = files.filter(f => {
+        if (!f.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+        if (!f.toLowerCase().endsWith(".superseded.md")) return false;
+        return matchesSessionKDAnyGeneration(f.slice(0, -".superseded.md".length), sessionID);
+      });
+      if (superseded.length > 0) {
+        loud(`SUPERSEDED_EVIDENCE: milestone ${row.id} stays ${row.state} — same-session impl evidence exists solely as superseded file(s): ${superseded.join(", ")}`);
+      }
+      continue;
+    }
     const opened = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"]);
     if (!opened.ok) {
       loud(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile ${row.state} → in-progress) — ${opened.reason}`);
@@ -964,7 +985,7 @@ function findNewestEvidenceKD(sessionPhaseMap, sessionID, phase) {
 // missing/empty registry is a no-op and the SWARM gate fails closed on
 // REGISTRY_EMPTY/MISSING. updateMilestoneRegistry's reopen semantics preserve
 // the registry row's own casing.
-function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds) {
+function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds, trigger) {
   const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
     debug(`reopen: no milestone registry for session ${sessionID} — nothing to reopen`);
@@ -973,39 +994,29 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
   const cited = new Set((citedMilestoneIds || []).map(id => String(id).toUpperCase()));
   for (const row of registry.rows) {
     if (row.state === "checked-off" && cited.has(String(row.id).toUpperCase())) {
-      const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"], { reopen: true });
+      const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"], { reopen: true, trigger });
       debug(`reopen: milestone ${row.id} checked-off → in-progress (${JSON.stringify(result)})`);
     }
   }
 }
 
-// Parses milestone tokens from a review KD's Findings section — the provenance
-// for scoped reopen (R012): `impl-<milestone-id>-` path tokens and bare
-// `M\d+` milestone ids. Tokens are deduplicated and case-preserved; a KD with
-// no Findings section yields zero citations (fail-closed for the malformed-FAIL
-// rule). The heading regex accepts both the template-conformant
-// `## Review Findings` header (skills/template-review/SKILL.md, inspector.md)
-// and the legacy `## Findings` header — a template-conformant FAIL review KD
-// must parse or the OQ-4 FAIL contract is machine-inert (regression guard).
+// Parses milestone tokens from a review KD — the provenance for scoped reopen
+// (R012): `impl-<milestone-id>-` path tokens and bare `M\d+` milestone ids.
+// Tokens are deduplicated and case-preserved. The scan covers the WHOLE review
+// KD (Issue 69): FAIL citations live wherever the Inspector writes them —
+// Findings, Verdict commentary, Audit — so anchoring on the Findings section
+// alone left Verdict/Audit-cited rows unreopened mid-cycle. `### Traceability
+// Matrix` subsections stay excluded everywhere: a bare milestone token in a
+// PASS-row matrix cell is provenance, not a FAIL citation, and scanning it
+// would reopen that row on a FAIL verdict. Splitting on `### ` keeps the
+// exclusion local to matrix subsections; real FAIL findings (`### F\d+`
+// subsections or raw body text) are unaffected, and a KD with zero tokens
+// anywhere still yields zero citations (fail-closed for the malformed-FAIL
+// rule).
 function extractMilestoneCitationsFromReviewKD(content) {
   if (typeof content !== "string") return [];
-  const headingMatch = content.match(/^## (?:Review )?Findings[^\n]*\n?/m);
-  if (!headingMatch) return [];
-  // Search the next `## ` heading AFTER the Findings heading itself — starting
-  // from the heading line would match the heading at index 0 and yield an
-  // empty section.
-  const rest = content.slice(headingMatch.index + headingMatch[0].length);
-  const nextHeading = rest.search(/^## /m);
-  const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);
   const tokens = new Set();
-  // Split the Findings section into `### ` subsections so the Traceability
-  // Matrix can be excluded: the merged template places the matrix inside the
-  // Review Findings section, and a bare milestone token in a PASS-row matrix
-  // cell is provenance, not a FAIL citation — scanning it would reopen that
-  // row on a FAIL verdict. The matrix block is identified by its own header,
-  // so excluding it never drops tokens from real FAIL findings (which live in
-  // `### F\d+` subsections or raw body text).
-  for (const sub of section.split(/^### /m)) {
+  for (const sub of content.split(/^### /m)) {
     if (/^Traceability Matrix/i.test(sub)) continue;
     let m;
     const implPattern = /impl-([A-Za-z0-9_-]+)-/gi;
@@ -1075,7 +1086,7 @@ function regressVerifyOnFail(sessionID, kdFilename, sessionFiles, sessionPhaseMa
   verdictRegressedKDs.set(sessionID, { kdFilename, regressedAt: now });
   debug(`VERDICT_FAIL: KD ${kdFilename} verdict=FAIL — auto-regressing VERIFY→SWARM (no BACKWARD flag)`);
   backwardTransition(sessionID, STATES.VERIFY, STATES.SWARM);
-  reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds);
+  reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds, `FAIL citations in review KD ${kdFilename}`);
   return true;
 }
 
@@ -2465,7 +2476,7 @@ export default {
             throw new ProtocolGateError(ERROR_TEMPLATES.MULTI_MILESTONE.code, ERROR_TEMPLATES.MULTI_MILESTONE.message, ERROR_TEMPLATES.MULTI_MILESTONE.guidance);
           }
           if (milestoneIds.length === 1) {
-            const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneIds[0], ["assigned", "in-progress"], { reopen: true });
+            const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneIds[0], ["assigned", "in-progress"], { reopen: true, trigger: "SWARM re-dispatch {reopen:true}" });
             debug(`SWARM registry update (pre-gate) for ${milestoneIds[0]}: ${JSON.stringify(regResult)}`);
           }
         }

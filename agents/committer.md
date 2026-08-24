@@ -14,6 +14,9 @@ permission:
     "knowledge/impl-*.md": allow
     "knowledge/plan-*.md": allow
     "knowledge/spec-*.md": allow
+    "knowledge/composed-*.md": allow
+    "knowledge/process-*.md": allow
+    "knowledge/report-*.md": allow
     ".ignore": allow
     ".gitignore": allow
     ".gitkeep": allow

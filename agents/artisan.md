@@ -110,7 +110,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 2. Scan project for existing conventions — detect tech stack, file structure, coding patterns
 3. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
 4. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
-5. **Verify-Output Rule (mandatory)** — Verify before writing. Any commit hash, artifact existence, test result, or file-state claim reported in a KD must be ground-truth verified before it is written: `git log`/`git show` for commits, `read`/`glob` from disk for files, an actual run for test suites. Never write an unverified hash; a blocked commit is reported as "UNCOMMITTED" with the working-tree state. Canonical one-liner: verify critical edits with `git diff`.
+5. **Verify-Output Rule (mandatory)** — Verify before writing. Any commit hash, artifact existence, test result, or file-state claim reported in a KD must be ground-truth verified before it is written: `git log`/`git show` for commits, `read`/`glob` from disk for files, an actual run for test suites. Write every reported hash from verified `git log`/`git show` output; report a blocked commit as "UNCOMMITTED" with the working-tree state. Canonical one-liner: verify critical edits with `git diff`.
 6. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD, named milestone-scoped per the naming contract: `knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the dispatched milestone ID is the first token after `impl-` (e.g. `knowledge/impl-M4-checkoff-ses_abc-gen0.md`). Writing that impl KD checks the milestone off in the registry (protocol-gate auto-advances it to checked-off — the KD on disk is the verifiable evidence of completion). The all-checked-off gate reads those impl KDs back: the SWARM→VERIFY transition fires when every registry milestone row is checked-off AND its impl KD is on disk, so each impl KD you write is also the gate input that eventually releases the lifecycle to VERIFY. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with the delegation fields as `KEY: value` lines inside the `prompt` parameter (see Dispatching Committer). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification).
 
    ### Dispatching Committer
@@ -166,6 +166,7 @@ Proposed resolution: Review Committer logs, fix workspace state, or adjust permi
   - ✅ `// Uses BigNumber to keep floating-point arithmetic exact` (comment WHY)
   - ✅ No comment explaining `function calculateTotal()` (self-documenting code)
   - ✅ Comments match the project's predominant language
+- **Framing self-check**: Skill/config edits state instructions positively — before submission, scan each edited skills/*.md and agents/*.md file with the prohibition-lexicon lint (`npx eslint -c eslint.security.config.mjs`) and rewrite every hit to describe the desired behavior
 
 ## Principles
 

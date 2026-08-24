@@ -55,6 +55,12 @@ Covers systematic code review processes including review criteria evaluation, V-
 - [ ] Non-trivial logic has inline comments explaining the rationale (why); the code itself documents the mechanics (what)
 - [ ] Breaking changes include migration guide or deprecation notice
 
+### Instruction Framing
+
+- [ ] Skill and agent instruction files (skills/*.md, agents/*.md) pass the prohibition-lexicon scan (`npx eslint -c eslint.security.config.mjs`) with zero errors
+- [ ] Every behavioral instruction states the expected action directly — LLM-amplified negations stay out of executable docs
+- [ ] Grep each edited instruction file for the limiter lexicon defined in eslint.security.config.mjs and rewrite every hit to describe the desired behavior
+
 ### Security and Performance
 
 - [ ] No hardcoded secrets, credentials, or API keys
