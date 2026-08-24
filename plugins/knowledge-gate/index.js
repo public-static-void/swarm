@@ -1046,9 +1046,21 @@ export default {
     // on the next miss. Non-throwing: a failed index write is logged and the
     // scan-backed cache remains the fallback (failure isolation).
     function writeMemoryIndex(doc, scope) {
+      const dir = memoryDirForScope(scope);
+      // R001 — an absent store memory dir means a never-written store: an
+      // empty store has nothing to index, so skip the write instead of
+      // failing ENOENT on the tmp file. The scan-backed cache serves the
+      // empty result set (NFR004 failure isolation).
+      if (!existsSync(dir)) {
+        debug(`memory index: store dir absent for scope ${scope} — skipping index write`);
+        return false;
+      }
       const indexPath = memoryIndexPathForScope(scope);
       const tmpPath = `${indexPath}.tmp`;
       try {
+        // Same ensure-parent pattern as memory_write/issue_write — the
+        // tmp+rename sequence assumes a writable target directory.
+        try { mkdirSync(dirname(indexPath), { recursive: true }); } catch (_) {}
         writeFileSync(tmpPath, JSON.stringify(doc), "utf8");
         renameSync(tmpPath, indexPath);
         return true;
@@ -1069,6 +1081,13 @@ export default {
       if (cache.isLoading) return cache.entries || [];
       cache.isLoading = true;
       try {
+        // R001 — short-circuit never-written stores before the write path:
+        // a merged search over absent stores stays diagnostic-silent and
+        // creates zero directories (R002); the scan serves the empty set.
+        if (!existsSync(memoryDirForScope(scope))) {
+          debug(`memory index: store dir absent for scope ${scope} — scan served, index write skipped`);
+          return loadEntriesFromDisk(scope);
+        }
         const doc = buildMemoryIndexDoc(scope);
         if (writeMemoryIndex(doc, scope)) {
           debug(`memory index: rebuilt ${doc.entryCount} entries for scope ${scope}`);

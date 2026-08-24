@@ -2,6 +2,11 @@ import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { join } from "path";
 import { tmpdir } from "os";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { fileURLToPath } from "url";
+
+// Plugin debug channel destination (KNOWLEDGE_GATE_DEBUG=1 appends here).
+// Used by the memory-index hygiene tests to assert on emitted diagnostics.
+const KG_LOG_FILE = fileURLToPath(new URL("../../../plugins/logs/knowledge-gate.log", import.meta.url));
 
 // The plugin reads its data dirs from KNOWLEDGE_GATE_MEMORY_DIR /
 // KNOWLEDGE_GATE_ISSUES_DIR / KNOWLEDGE_GATE_SHORT_TERM_DIR env overrides
@@ -3426,6 +3431,128 @@ Body`;
       expect(projectIdx).toContain("memory-search-index.jsonl");
       // Under the seam, both resolve to the same path
       expect(swarmIdx).toBe(projectIdx);
+    });
+  });
+
+  // Memory-index absent-store hygiene (M1 — R001/R002): a merged search
+  // touches every store, so never-written project/generic stores used to
+  // hit an ENOENT on the index write and log "memory index: write failed"
+  // per search. The fix skips the write for absent store dirs; these tests
+  // pin the diagnostic silence plus the stronger hygiene invariant that
+  // merged searches create zero directories under absent store roots.
+  describe("memory index — absent-store hygiene (fresh module instance)", () => {
+    let hygieneModule;
+    let hygieneHooks;
+    let configRoot;
+    let projectRoot;
+
+    // Runs fn with the plugin's debug channel enabled and returns the log
+    // text appended during the call — the only diagnostics surface the
+    // plugin has, so "zero error-level output" is asserted against it.
+    function captureDebugLog(fn) {
+      process.env.KNOWLEDGE_GATE_DEBUG = "1";
+      const before = existsSync(KG_LOG_FILE) ? readFileSync(KG_LOG_FILE, "utf8") : "";
+      let result, appended;
+      try {
+        result = fn();
+        const after = existsSync(KG_LOG_FILE) ? readFileSync(KG_LOG_FILE, "utf8") : "";
+        appended = after.slice(before.length);
+      } finally {
+        delete process.env.KNOWLEDGE_GATE_DEBUG;
+      }
+      return { result, appended };
+    }
+
+    beforeAll(async () => {
+      configRoot = mkdtempSync(join(tmpdir(), "kg-hygiene-config-"));
+      projectRoot = mkdtempSync(join(tmpdir(), "kg-hygiene-project-"));
+      // Disjoint roots without seams: the seam overrides collapse all three
+      // stores onto one dir, which makes an "absent store" unconstructible.
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+      hygieneModule = await import("../../../plugins/knowledge-gate/index.js?index-hygiene");
+      hygieneHooks = await hygieneModule.default.server({}, {});
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      rmSync(configRoot, { recursive: true, force: true });
+      rmSync(projectRoot, { recursive: true, force: true });
+    });
+
+    it("merged search over absent stores completes, serves swarm results, and leaves both roots untouched", () => {
+      const swarmDir = join(configRoot, "knowledge", "memory");
+      mkdirSync(swarmDir, { recursive: true });
+      const entry = addMemoryEntry(1, { tags: ["hygiene-probe"], topic: "Absent-store probe" });
+      writeFileSync(join(swarmDir, entry.fileName), entry.content);
+
+      const { result: results, appended } = captureDebugLog(() =>
+        hygieneHooks.searchMemory({ tags: [], topic: "", limit: 5 })
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].store).toBe("swarm");
+      expect(results[0].topic).toBe("Absent-store probe");
+
+      // R001: zero error-level index diagnostics for never-written stores
+      expect(appended).not.toContain("memory index: write failed");
+      expect(appended).not.toContain("memory index: rebuild write failed");
+
+      // R002: merged searches create no directories under absent roots
+      expect(existsSync(join(projectRoot, "knowledge"))).toBe(false);
+      expect(existsSync(join(configRoot, "knowledge", "generic"))).toBe(false);
+
+      // Failure isolation (NFR004) leaves zero tmp residue behind
+      const residue = readdirSync(swarmDir).filter(f => f.endsWith(".tmp"));
+      expect(residue).toEqual([]);
+    });
+
+    it("store-filtered search on an absent store returns empty and emits zero failure diagnostics", () => {
+      const { result: results, appended } = captureDebugLog(() =>
+        hygieneHooks.searchMemory({ tags: [], topic: "", limit: 5, store: "generic" })
+      );
+
+      expect(results).toEqual([]);
+      expect(appended).not.toContain("memory index: write failed");
+      expect(existsSync(join(configRoot, "knowledge", "generic"))).toBe(false);
+    });
+
+    it("present store materializes the index post-search and serves subsequent searches from it", async () => {
+      const swarmDir = join(configRoot, "knowledge", "memory");
+      mkdirSync(swarmDir, { recursive: true });
+      const entry = addMemoryEntry(2, { tags: ["regression-probe"], topic: "Index regression probe" });
+      writeFileSync(join(swarmDir, entry.fileName), entry.content);
+
+      const first = hygieneHooks.searchMemory({ tags: ["regression-probe"], topic: "", limit: 5 });
+      expect(first).toHaveLength(1);
+
+      const indexPath = join(swarmDir, "memory-search-index.jsonl");
+      expect(existsSync(indexPath)).toBe(true);
+      const doc = JSON.parse(readFileSync(indexPath, "utf8"));
+      expect(doc.version).toBe(1);
+      // entryCount mirrors the on-disk entry-file count — the same invariant
+      // isMemoryIndexValid enforces before serving from the index.
+      const fileCount = readdirSync(swarmDir).filter(f => f.endsWith(".json")).length;
+      expect(doc.entryCount).toBe(fileCount);
+
+      // Prove the serve-from-index path: a fresh server instance (empty
+      // caches) reads a tweaked index — the unchanged entryCount keeps it
+      // valid, so the altered topic flows through to results.
+      const tweaked = JSON.parse(readFileSync(indexPath, "utf8"));
+      const target = tweaked.entries.find(e => e.id === JSON.parse(entry.content).id);
+      target.topic = "Served from index";
+      writeFileSync(indexPath, JSON.stringify(tweaked));
+      const freshHooks = await hygieneModule.default.server({}, {});
+      const second = freshHooks.searchMemory({ tags: ["regression-probe"], topic: "", limit: 5 });
+      expect(second).toHaveLength(1);
+      expect(second[0].topic).toBe("Served from index");
     });
   });
 });
