@@ -34,3 +34,7 @@ Agents accept WHAT-level dispatches — each dispatch describes the artifact to 
 ## Test Invocation
 
 Run the suite with `npx vitest run` from the repository root — the canonical invocation. The vitest config pins collection to `tests/**` and excludes the vendored `references/` tree, so a root-level run collects exactly the swarm suite and reports its true signal.
+
+## Searching Gitignored Trees
+
+The dedicated Grep tool searches every tree on disk — gitignored directories (`knowledge/`, `references/`, `node_modules/`) included. Log files (`*.log`, e.g. under `plugins/logs/`) fall outside its default file-type set: pass an explicit `include` glob such as `"*.log"`, or investigate them via the Read tool and bash allowlisted commands (`cat*`, `head*`, `tail*`).
