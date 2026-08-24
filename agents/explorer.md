@@ -65,7 +65,8 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 3. Detect tech stack from file extensions and config files
 4. Locate entry points, DB schemas, test directories, config files
 5. Scan for TODO/FIXME comments
-6. Generate exploration KD with project map report
+6. Verify INTENT coverage — cross-check every issue listed in the INTENT KD against the findings inventory; re-explore until each issue has at least one corresponding finding
+7. Generate exploration KD with project map report
 
 ## Principles
 
