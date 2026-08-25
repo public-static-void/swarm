@@ -119,18 +119,18 @@ const PHASE_INSTRUCTIONS = {
 
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "edit", "read", "skill", "bash"],
-  PREFLIGHT: ["task", "todowrite", "glob", "bash"],
-  EXPLORE: ["task", "todowrite", "glob"],
-  INVESTIGATE: ["task", "todowrite", "glob"],
-  ALIGN: ["task", "todowrite", "glob"],
-  DECOMPOSE: ["task", "todowrite", "glob"],
-  SWARM: ["task", "todowrite", "glob", "read"],
-  VERIFY: ["task", "todowrite", "glob"],
-  EXTRACT: ["task", "todowrite", "glob"],
-  EVOLVE: ["task", "todowrite", "glob"],
-  CLEANUP: ["task", "todowrite", "glob", "bash"],
-  REPORT: ["todowrite", "edit", "read", "write", "skill"]
+  INTENT: ["todowrite", "write", "edit", "read", "skill", "bash", "memory_search"],
+  PREFLIGHT: ["task", "todowrite", "glob", "bash", "memory_search"],
+  EXPLORE: ["task", "todowrite", "glob", "memory_search"],
+  INVESTIGATE: ["task", "todowrite", "glob", "memory_search"],
+  ALIGN: ["task", "todowrite", "glob", "memory_search"],
+  DECOMPOSE: ["task", "todowrite", "glob", "memory_search"],
+  SWARM: ["task", "todowrite", "glob", "read", "memory_search"],
+  VERIFY: ["task", "todowrite", "glob", "memory_search"],
+  EXTRACT: ["task", "todowrite", "glob", "memory_search"],
+  EVOLVE: ["task", "todowrite", "glob", "memory_search"],
+  CLEANUP: ["task", "todowrite", "glob", "bash", "memory_search"],
+  REPORT: ["todowrite", "edit", "read", "write", "skill", "memory_search"]
 };
 
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
@@ -391,6 +391,18 @@ function loud(msg) {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
     } catch (_) {}
   }
+}
+
+// Warn channel — user-visible diagnostics for gate-blocking failures.
+// Unlike loud(), writes to the log file unconditionally (not gated behind
+// PROTOCOL_GATE_DEBUG) AND emits to stderr so the user sees the diagnostic
+// when the gate is stuck. Only called for failures that actually block
+// gate progression (AUTO_CHECKOFF_FAILED, AUTO_CHECKOFF_UNMATCHED).
+function warn(msg) {
+  try {
+    appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] WARN: ${msg}\n`);
+  } catch (_) {}
+  process.stderr.write(`[protocol-gate] ${msg}\n`);
 }
 
 function loadConfig() {
@@ -784,12 +796,12 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
     }
     const opened = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"]);
     if (!opened.ok) {
-      loud(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile ${row.state} → in-progress) — ${opened.reason}`);
+      warn(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile ${row.state} → in-progress) — ${opened.reason}`);
       continue;
     }
     const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["checked-off"]);
     if (!result.ok) {
-      loud(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile in-progress → checked-off) — ${result.reason}`);
+      warn(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile in-progress → checked-off) — ${result.reason}`);
       continue;
     }
     loud(`RECONCILE_CHECKOFF: milestone ${row.id} promoted ${row.state} → checked-off (impl KD ${evidence})`);
@@ -1938,7 +1950,7 @@ export default {
             // registries stuck in SWARM (Issue 64). Visible without
             // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
             // (no-registry / milestone-not-found / invalid-transition / write-failed).
-            loud(`AUTO_CHECKOFF_FAILED: milestone ${milestoneId} (parent ${candidate}) — ${result.reason}`);
+            warn(`AUTO_CHECKOFF_FAILED: milestone ${milestoneId} (parent ${candidate}) — ${result.reason}`);
           }
           return;
         }
@@ -1946,7 +1958,7 @@ export default {
       // No parent-session/generation candidate matched the impl KD filename —
       // nothing was checked off. Loud no-op diagnostic so the miss is
       // observable instead of silent.
-      loud(`AUTO_CHECKOFF_UNMATCHED: ${relPath}`);
+      warn(`AUTO_CHECKOFF_UNMATCHED: ${relPath}`);
     }
 
     // --- Hook: chat.params ---
@@ -2529,6 +2541,15 @@ export default {
               advancementGateEvidence = `all milestones checked-off: ${gateEvidence.checkedOff}/${gateEvidence.total}`;
             }
             debug(`Disk advancement: ${currentPhaseName} → ${getPhaseName(newPhase)}${advancementGateEvidence ? ` (${advancementGateEvidence})` : ""}`);
+            // RESTART_CATCH_UP: This is EXPECTED behavior. After a session restart,
+            // each tool call checks if the current phase's KD exists on disk. When
+            // KDs from the current lifecycle generation already exist (e.g. from a
+            // prior abort or rapid multi-phase progression), the gate advances
+            // through multiple phases in succession. This catch-up is intentional
+            // and does not indicate a bug. The generation scoping (matchesSessionKD)
+            // ensures only KDs matching the current session and generation trigger
+            // advancement.
+            //
             // Post-restart disk-evidence catch-up diagnostic — log-only.
             // After a restart the gate may advance one phase per tool call across
             // phases whose KDs already exist on disk; that is disk-evidence
