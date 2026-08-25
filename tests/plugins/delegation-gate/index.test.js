@@ -870,9 +870,14 @@ KD PATHS: knowledge/plan-foo.md`;
     });
 
     it("keeps literal-path validation strict alongside the token", async () => {
-      for (const bad of ["knowledge/*.md", "/abs/path.md", "knowledge/nested/foo.md"]) {
+      for (const bad of ["knowledge/*.md", "/abs/path.md"]) {
         await expect(dispatch("explore", `SESSION_KDS, ${bad}`, { generation: 1 })).rejects.toThrow("Foreign paths detected");
       }
+      // knowledge/nested/foo.md is now accepted per R001 (subdirectory paths allowed)
+      // The explore template doesn't render KD PATHS, so the path won't appear in the prompt.
+      // The key assertion is that the dispatch succeeds (no FOREIGN_PATH error).
+      const output = await dispatch("explore", `SESSION_KDS, knowledge/nested/foo.md`, { generation: 1 });
+      expect(output.args.prompt).toContain("MODE: explore");
     });
 
     it("accepts only the exact uppercase token", async () => {

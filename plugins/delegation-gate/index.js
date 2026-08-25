@@ -355,10 +355,11 @@ function expandKdPaths(kdPathsValue, sessionId, generation) {
 
 function validateKDPath(path) {
   // Accept knowledge/<name>.md where name may contain letters, digits, hyphens,
-  // underscores, and dots. Reject globs (*), absolute paths, and nested dirs.
+  // underscores, dots, and slashes (subdirectory paths). Reject globs (*),
+  // absolute paths, and traversal paths (../).
   // Normalize backslashes to forward slashes for cross-platform compatibility.
   const normalized = path.replace(/\\/g, "/");
-  return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/.test(normalized);
+  return /^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_./+-]*\.md$/.test(normalized);
 }
 
 function detectCodeBlocks(prompt) {
@@ -374,9 +375,12 @@ function detectForeignPaths(prompt) {
     if (/^\//.test(trimmed)) return true;
     if (/^[A-Z]:\\/.test(trimmed)) return true;
     if (/\.\.[\/\\]/.test(trimmed)) return true;
-    // Allow lines containing knowledge/*.md paths (positive whitelist)
-    // This handles KD paths embedded in body text from template rendering or agent text
-    if (/knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md/i.test(trimmed)) continue;
+    // Reject glob patterns (NFR003)
+    if (/\*/.test(trimmed)) return true;
+    // Allow lines containing knowledge/ paths (positive whitelist)
+    // This handles KD paths embedded in body text from template rendering or agent text,
+    // including subdirectory paths like knowledge/issues/issue-1.md
+    if (/^knowledge\//i.test(trimmed)) continue;
   }
   return false;
 }
