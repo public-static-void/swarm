@@ -119,18 +119,18 @@ const PHASE_INSTRUCTIONS = {
 
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
-  INTENT: ["todowrite", "write", "edit", "read", "skill", "bash"],
-  PREFLIGHT: ["task", "todowrite", "glob", "bash"],
-  EXPLORE: ["task", "todowrite", "glob"],
-  INVESTIGATE: ["task", "todowrite", "glob"],
-  ALIGN: ["task", "todowrite", "glob"],
-  DECOMPOSE: ["task", "todowrite", "glob"],
-  SWARM: ["task", "todowrite", "glob", "read"],
-  VERIFY: ["task", "todowrite", "glob"],
-  EXTRACT: ["task", "todowrite", "glob"],
-  EVOLVE: ["task", "todowrite", "glob"],
-  CLEANUP: ["task", "todowrite", "glob", "bash"],
-  REPORT: ["todowrite", "edit", "read", "write", "skill"]
+  INTENT: ["todowrite", "write", "edit", "read", "skill", "bash", "memory_search"],
+  PREFLIGHT: ["task", "todowrite", "glob", "bash", "memory_search"],
+  EXPLORE: ["task", "todowrite", "glob", "memory_search"],
+  INVESTIGATE: ["task", "todowrite", "glob", "memory_search"],
+  ALIGN: ["task", "todowrite", "glob", "memory_search"],
+  DECOMPOSE: ["task", "todowrite", "glob", "memory_search"],
+  SWARM: ["task", "todowrite", "glob", "read", "memory_search"],
+  VERIFY: ["task", "todowrite", "glob", "memory_search"],
+  EXTRACT: ["task", "todowrite", "glob", "memory_search"],
+  EVOLVE: ["task", "todowrite", "glob", "memory_search"],
+  CLEANUP: ["task", "todowrite", "glob", "bash", "memory_search"],
+  REPORT: ["todowrite", "edit", "read", "write", "skill", "memory_search"]
 };
 
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
