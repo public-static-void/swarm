@@ -403,6 +403,7 @@ function loadConfig() {
       phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"],
       agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", CLEANUP: "committer" },
       backwardTransitions: { VERIFY: ["SWARM"] },
+      maxRetriesPerPhase: 5,
       maxCyclesPerTransition: 3
     };
   }
@@ -2652,7 +2653,7 @@ export default {
                   }
                 }
                 const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
-                if (redispatches >= 5 && tool === "task") {
+                if (redispatches >= (config.maxRetriesPerPhase || 5) && tool === "task") {
                   if (currentPhase === STATES.SWARM) {
                     // The redispatch cap during
                     // SWARM blocks the dispatch, marks the stuck milestone
