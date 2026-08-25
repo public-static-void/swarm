@@ -384,7 +384,7 @@ function debug(msg) {
 
 // Loud channel — file-only logging gated behind PROTOCOL_GATE_DEBUG.
 // Previously wrote to stderr which bled into user prompts; moved to file
-// logging per NFR001. Emissions are per-event and rare by nature.
+// logging. Emissions are per-event and rare by nature.
 function loud(msg) {
   if (process.env.PROTOCOL_GATE_DEBUG) {
     try {
