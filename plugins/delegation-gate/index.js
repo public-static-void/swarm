@@ -102,9 +102,9 @@ function debug(msg) {
   }
 }
 
-// Loud advisory channel — file-only logging gated behind DELEGATION_GATE_DEBUG.
-// Previously wrote to stderr which bled into user prompts; moved to file
-// logging per NFR001. Emissions are per-event and rare by nature.
+// File-only logging gated behind DELEGATION_GATE_DEBUG.
+// Previously wrote to stderr which bled into user prompts; moved to file.
+// Emissions are per-event and rare by nature.
 function warn(msg) {
   if (process.env.DELEGATION_GATE_DEBUG) {
     try {
