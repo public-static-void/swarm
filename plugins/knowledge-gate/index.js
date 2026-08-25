@@ -1317,14 +1317,17 @@ export default {
           limit: tool.schema.number().int().optional().describe("Maximum number of results (default 5)"),
           store: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Restrict search to one store — omitted searches all stores")
         },
-        async execute(args) {
+        async execute(args, context) {
+          const agent = (context?.agent || sessionAgentMap.get(context?.sessionID) || "unknown").toLowerCase();
           const query = {
             tags: args.tags || [],
             topic: args.topic || "",
             limit: args.limit || 5,
             store: args.store
           };
+          debug(`memory_search: called by agent="${agent}" session="${context?.sessionID || "unknown"}" tags=${JSON.stringify(query.tags)} topic="${query.topic}" limit=${query.limit} store=${query.store || "all"}`);
           const results = searchMemory(query);
+          debug(`memory_search: ${results.length} result(s) returned for agent="${agent}"`);
           return JSON.stringify(results, null, 2);
         }
       }),
@@ -2339,6 +2342,7 @@ export default {
         `prior session insights from knowledge/memory/. Results are store-tagged ` +
         `(store: project|generic|swarm) and may come from any store.`
       );
+      debug(`systemTransform: memory_search tool hint injected for session="${sessionID}" agent="${agent || "unknown"}"`);
 
       // Short-term resume hint — the mechanical compaction-amnesia mitigation
       // (R005). Regenerated on every LLM call, so a post-compaction model can
