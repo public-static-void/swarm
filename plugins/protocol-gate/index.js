@@ -377,19 +377,20 @@ function debug(msg) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
     } catch (_) {
-      process.stderr.write(`[protocol-gate] ${msg}\n`);
+      // File write failed — silently drop rather than bleed to stderr
     }
   }
 }
 
-// Loud channel — diagnostics that must be visible WITHOUT PROTOCOL_GATE_DEBUG
-// (Issue 64): silent auto-checkoff failures left registries stuck in SWARM and
-// forced manual repair. Emissions are per-event and rare by nature; the write
-// is best-effort and never blocks tool execution.
+// Loud channel — file-only logging gated behind PROTOCOL_GATE_DEBUG.
+// Previously wrote to stderr which bled into user prompts; moved to file
+// logging. Emissions are per-event and rare by nature.
 function loud(msg) {
-  try {
-    process.stderr.write(`[protocol-gate] ${msg}\n`);
-  } catch (_) {}
+  if (process.env.PROTOCOL_GATE_DEBUG) {
+    try {
+      appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
+    } catch (_) {}
+  }
 }
 
 function loadConfig() {
@@ -402,6 +403,7 @@ function loadConfig() {
       phases: ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"],
       agents: { PREFLIGHT: "committer", EXPLORE: "explorer", INVESTIGATE: "analyzer", ALIGN: "spec-weaver", DECOMPOSE: "pathfinder", SWARM: "artisan", VERIFY: "inspector", EXTRACT: "scribe", EVOLVE: "habit-builder", CLEANUP: "committer" },
       backwardTransitions: { VERIFY: ["SWARM"] },
+      maxRetriesPerPhase: 5,
       maxCyclesPerTransition: 3
     };
   }
@@ -1118,7 +1120,6 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
   if (verdictInfo && verdictInfo.verdict === "FUNDAMENTAL") {
     const escalation = `FUNDAMENTAL_ESCALATION: review KD ${verdictInfo.filename} carries verdict FUNDAMENTAL — VERIFY advancement blocked; escalate to user (Happy to Delete) or override with /phase`;
     debug(escalation);
-    process.stderr.write(`[protocol-gate] ${escalation}\n`);
     debug(`Disk check VERIFY: blocked by FUNDAMENTAL verdict on ${verdictInfo.filename}`);
     return false;
   }
@@ -1568,7 +1569,6 @@ export default {
       const statePath = getStatePath(sessionID);
       if (!statePath) {
         debug(`saveState: unsafe session ID rejected: ${JSON.stringify(sessionID)}`);
-        process.stderr.write(`[protocol-gate] saveState: unsafe session ID rejected\n`);
         return false;
       }
       // The phase entry is deleted at lifecycle end (REPORT reset).
@@ -1616,7 +1616,6 @@ export default {
         return true;
       } catch (e) {
         debug(`saveState error: ${e.message}`);
-        process.stderr.write(`[protocol-gate] saveState error for session ${sessionID}: ${e.message}\n`);
         return false;
       }
     }
@@ -1636,7 +1635,6 @@ export default {
           const backupPath = join(getStateDir(), `.protocol-state-${sanitizeSessionID(sessionID)}.corrupt-${Date.now()}.json`);
           renameSync(statePath, backupPath);
           debug(`loadState: corrupt state file backed up to ${backupPath} (${e.message})`);
-          process.stderr.write(`[protocol-gate] Corrupt state file for session ${sessionID} — backed up to ${basename(backupPath)}; initializing PROTOCOL_NOT_LOADED\n`);
         } catch (be) {
           debug(`loadState: failed to back up corrupt state file for ${sessionID}: ${be.message}`);
         }
@@ -2655,7 +2653,7 @@ export default {
                   }
                 }
                 const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
-                if (redispatches >= 5 && tool === "task") {
+                if (redispatches >= (config.maxRetriesPerPhase || 5) && tool === "task") {
                   if (currentPhase === STATES.SWARM) {
                     // The redispatch cap during
                     // SWARM blocks the dispatch, marks the stuck milestone

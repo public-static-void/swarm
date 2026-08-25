@@ -781,8 +781,9 @@ KD PATHS: knowledge/plan-foo.md`;
     let stateDir;
     let priorKnowledgeDir;
     let priorStateDir;
-    let stderrChunks;
-    let origStderrWrite;
+    const readLog = () => {
+      try { return readFileSync(join(logDir, "delegation-gate.log"), "utf8"); } catch (_) { return ""; }
+    };
 
     beforeAll(() => {
       priorKnowledgeDir = process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
@@ -802,13 +803,11 @@ KD PATHS: knowledge/plan-foo.md`;
     beforeEach(() => {
       knowledgeDir = mkdtempSync(join(tmpdir(), "delegation-gate-knowledge-"));
       process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = knowledgeDir;
-      stderrChunks = [];
-      origStderrWrite = process.stderr.write;
-      process.stderr.write = (chunk) => { stderrChunks.push(String(chunk)); return true; };
+      // Clean the log file between tests to prevent stale output leaking across assertions.
+      try { rmSync(join(logDir, "delegation-gate.log")); } catch (_) {}
     });
 
     afterEach(() => {
-      process.stderr.write = origStderrWrite;
       rmSync(knowledgeDir, { recursive: true, force: true });
     });
 
@@ -916,11 +915,11 @@ KD PATHS: knowledge/plan-foo.md`;
       writeKd(`analysis-b-${SID}-gen1.md`);
       writeKd(`impl-M1-c-${SID}-gen1.md`);
       const output = await dispatch("evolve", `knowledge/exploration-a-${SID}-gen1.md`, { generation: 1 });
-      const warning = stderrChunks.find(c => c.includes("under-enumeration"));
-      expect(warning).toBeTruthy();
-      expect(warning).toContain("1 listed");
-      expect(warning).toContain("3 on-disk");
-      expect(warning).toContain("SESSION_KDS");
+      const log = readLog();
+      expect(log).toContain("under-enumeration");
+      expect(log).toContain("1 listed");
+      expect(log).toContain("3 on-disk");
+      expect(log).toContain("SESSION_KDS");
       expect(output.args.prompt).toContain("Produce a PROCESS KD");
     });
 
@@ -929,7 +928,7 @@ KD PATHS: knowledge/plan-foo.md`;
       writeKd(`analysis-b-${SID}-gen1.md`);
       writeKd(`impl-M1-c-${SID}-gen1.md`);
       await dispatch("evolve", `knowledge/exploration-a-${SID}-gen1.md, knowledge/analysis-b-${SID}-gen1.md, knowledge/impl-M1-c-${SID}-gen1.md`, { generation: 1 });
-      expect(stderrChunks.find(c => c.includes("under-enumeration"))).toBeUndefined();
+      expect(readLog()).not.toContain("under-enumeration");
     });
 
     it("stays silent for SESSION_KDS dispatches — complete by construction", async () => {
@@ -937,7 +936,7 @@ KD PATHS: knowledge/plan-foo.md`;
       writeKd(`analysis-b-${SID}-gen1.md`);
       writeKd(`impl-M1-c-${SID}-gen1.md`);
       await dispatch("evolve", "SESSION_KDS", { generation: 1 });
-      expect(stderrChunks.find(c => c.includes("under-enumeration"))).toBeUndefined();
+      expect(readLog()).not.toContain("under-enumeration");
     });
 
     it("stays silent for templates without the all-upstream sentence", async () => {
@@ -945,20 +944,20 @@ KD PATHS: knowledge/plan-foo.md`;
       writeKd(`plan-b-${SID}-gen1.md`);
       writeKd(`impl-M1-c-${SID}-gen1.md`);
       const output = await dispatch("swarm", `knowledge/spec-a-${SID}-gen1.md`, { milestone: "M1", generation: 1 });
-      expect(stderrChunks.find(c => c.includes("under-enumeration"))).toBeUndefined();
+      expect(readLog()).not.toContain("under-enumeration");
       expect(output.args.prompt).toContain("Read SPEC KDs and PLAN KDs from KD PATHS.");
     });
 
-    it("emits the advisory without DELEGATION_GATE_DEBUG set", async () => {
-      delete process.env.DELEGATION_GATE_DEBUG;
+    it("emits the advisory to the log file when DELEGATION_GATE_DEBUG is set", async () => {
+      process.env.DELEGATION_GATE_DEBUG = "1";
       try {
         writeKd(`exploration-a-${SID}-gen1.md`);
         writeKd(`analysis-b-${SID}-gen1.md`);
         const output = await dispatch("extract", `knowledge/exploration-a-${SID}-gen1.md`, { generation: 1 });
-        expect(stderrChunks.find(c => c.includes("under-enumeration"))).toBeTruthy();
+        expect(readLog()).toContain("under-enumeration");
         expect(output.args.prompt).toContain("Produce a COMPOSED KD");
       } finally {
-        process.env.DELEGATION_GATE_DEBUG = "1";
+        delete process.env.DELEGATION_GATE_DEBUG;
       }
     });
   });

@@ -1231,7 +1231,7 @@ ${findings}
       expect(hooks.readMilestoneRegistry(b, hooks.sessionPhaseMap).path).toBe(join(knowledgeDir, `milestones-feature-${b}.md`));
     });
 
-    it("forced write failure — saveState returns false and logs to stderr; no silent divergence", async () => {
+    it("forced write failure — saveState returns false and logs to log file; no silent divergence", async () => {
       const s = sid("ac005");
       await initOverseer(s);
       // Preserve the last good file content, then make the target path unwritable
@@ -1242,14 +1242,14 @@ ${findings}
       rmSync(statePath(s));
       mkdirSync(statePath(s));
 
-      let stderr = "";
-      const origWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         expect(hooks.saveState(s)).toBe(false);
-        expect(stderr).toContain("saveState error");
+        expect(readFileSync(logPath, "utf8")).toContain("saveState error");
       } finally {
-        process.stderr.write = origWrite;
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
         // Restore the original file so cleanup and subsequent tests see a file.
         rmSync(statePath(s), { recursive: true, force: true });
         writeFileSync(statePath(s), original);
@@ -1295,14 +1295,14 @@ ${findings}
       // saveState fails visibly for an unsafe ID and never writes outside .state.
       const outside = join(stateDir, "..", ".protocol-state-evil.json");
       expect(existsSync(outside)).toBe(false);
-      let stderr = "";
-      const origWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         expect(hooks.saveState("../evil")).toBe(false);
-        expect(stderr).toContain("unsafe session ID");
+        expect(readFileSync(logPath, "utf8")).toContain("unsafe session ID");
       } finally {
-        process.stderr.write = origWrite;
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
       expect(existsSync(outside)).toBe(false);
     });
@@ -1949,20 +1949,21 @@ ${findings}
       createRegistry(s, [["M1", "checked-off"]]);
       createKD(`impl-M1-reopen-${s}.md`);
 
-      let stderr = "";
-      const origWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         await hooks["tool.execute.before"](
           { tool: "task", sessionID: s, callID: "c1" },
           { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
         );
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("REOPEN:");
+        expect(log).toContain("M1");
+        expect(log).toContain("re-dispatch");
       } finally {
-        process.stderr.write = origWrite;
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
-      expect(stderr).toContain("REOPEN:");
-      expect(stderr).toContain("M1");
-      expect(stderr).toContain("re-dispatch");
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
     });
   });
@@ -2506,17 +2507,10 @@ ${findings}
   });
 
   describe("SWARM→VERIFY reconciliation + loud auto-checkoff diagnostics (Issue 64)", () => {
-    // Captures the loud channel (stderr) — the NFR001 surface under test is
-    // visibility WITHOUT PROTOCOL_GATE_DEBUG, so the flag must stay unset
-    // while captured. Always restore in finally.
-    function captureStderr() {
-      let stderr = "";
-      const origWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
-      return {
-        text: () => stderr,
-        restore: () => { process.stderr.write = origWrite; }
-      };
+    // Captures the loud channel (now file-based) — reads from the log file gated
+    // behind PROTOCOL_GATE_DEBUG. Always clean up in finally.
+    function readLoudLog() {
+      try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
     }
 
     it("promotes an evidence-backed stuck row at gate evaluation and advances — including a filename generation that differs from the persisted generation", async () => {
@@ -2532,13 +2526,15 @@ ${findings}
       // the observed gen0/gen1 divergence must still count as evidence.
       createKD(`impl-M1-feat-${s}-gen0.md`);
 
-      const cap = captureStderr();
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+        expect(readLoudLog()).toContain(`RECONCILE_CHECKOFF: milestone M1 promoted in-progress → checked-off (impl KD impl-M1-feat-${s}-gen0.md)`);
       } finally {
-        cap.restore();
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
-      expect(cap.text()).toContain(`RECONCILE_CHECKOFF: milestone M1 promoted in-progress → checked-off (impl KD impl-M1-feat-${s}-gen0.md)`);
       // The promotion is persisted — the registry row itself now reads checked-off.
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8");
       expect(content).toContain("  M1: checked-off");
@@ -2553,22 +2549,27 @@ ${findings}
       createKD(`impl-M1-idem-${s}.md`);
       createKD(`impl-M2-idem-${s}.md`);
 
-      const cap1 = captureStderr();
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+        expect(readLoudLog()).toContain("RECONCILE_CHECKOFF: milestone M1 promoted pending → checked-off");
       } finally {
-        cap1.restore();
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
-      expect(cap1.text()).toContain("RECONCILE_CHECKOFF: milestone M1 promoted pending → checked-off");
 
       const before = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      const cap2 = captureStderr();
+      // Second call — should not emit further RECONCILE_CHECKOFF.
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+        expect(readLoudLog()).not.toContain("RECONCILE_CHECKOFF");
       } finally {
-        cap2.restore();
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
-      expect(cap2.text()).not.toContain("RECONCILE_CHECKOFF");
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toBe(before);
     });
 
@@ -2580,15 +2581,9 @@ ${findings}
       createRegistry(s, [["M1", "in-progress"], ["M2", "checked-off"]]);
       createKD(`impl-M2-feat-${s}.md`);
 
-      const cap = captureStderr();
-      try {
-        const gate = hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
-        expect(gate.ok).toBe(false);
-        expect(gate.checkedOff).toBe(1);
-      } finally {
-        cap.restore();
-      }
-      expect(cap.text()).not.toContain("RECONCILE_CHECKOFF");
+      const gate = hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
+      expect(gate.ok).toBe(false);
+      expect(gate.checkedOff).toBe(1);
       // The registry row was never promoted.
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: in-progress");
@@ -2615,17 +2610,11 @@ ${findings}
       const other = sid("m1-rec-other");
       createKD(`impl-M1-cross-${other}.md`);
 
-      const cap = captureStderr();
-      try {
-        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
-      } finally {
-        cap.restore();
-      }
-      expect(cap.text()).not.toContain("RECONCILE_CHECKOFF");
+      expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: failed");
     });
 
-    it("AUTO_CHECKOFF_FAILED fires on the loud channel with PROTOCOL_GATE_DEBUG unset (invalid-transition fixture)", async () => {
+    it("AUTO_CHECKOFF_FAILED fires on the loud channel (invalid-transition fixture)", async () => {
       const s = sid("m1-diag-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -2637,18 +2626,20 @@ ${findings}
 
       const artisan = sid("m1-diag-1-art");
       await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
-      const cap = captureStderr();
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
-        delete process.env.PROTOCOL_GATE_DEBUG;
         await hooks["tool.execute.before"](
           { tool: "write", sessionID: artisan, callID: "c1" },
           { args: { filePath: `knowledge/impl-M1-early-${s}.md`, content: "# IMPLEMENTATION SUMMARY" } }
         );
+        const log = readLoudLog();
+        expect(log).toContain("AUTO_CHECKOFF_FAILED");
+        expect(log).toContain("invalid-transition");
       } finally {
-        cap.restore();
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
-      expect(cap.text()).toContain("AUTO_CHECKOFF_FAILED");
-      expect(cap.text()).toContain("invalid-transition");
       // The registry row is untouched by the failed attempt.
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: pending");
     });
@@ -2660,17 +2651,18 @@ ${findings}
       const artisan = sid("m1-diag-2-art");
       await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
       const orphan = `knowledge/impl-M9-orphan-ses_foreign0000000000-gen7.md`;
-      const cap = captureStderr();
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
-        delete process.env.PROTOCOL_GATE_DEBUG;
         await hooks["tool.execute.before"](
           { tool: "write", sessionID: artisan, callID: "c1" },
           { args: { filePath: orphan, content: "# IMPLEMENTATION SUMMARY" } }
         );
+        expect(readLoudLog()).toContain(`AUTO_CHECKOFF_UNMATCHED: ${orphan}`);
       } finally {
-        cap.restore();
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
-      expect(cap.text()).toContain(`AUTO_CHECKOFF_UNMATCHED: ${orphan}`);
     });
 
     it("a re-opened milestone's stale impl KDs are superseded — the reopened row is not instantly re-checked-off, and fresh evidence re-completes it", async () => {
@@ -2694,13 +2686,7 @@ ${findings}
       expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md.superseded.md`))).toBe(true);
 
       // The stale evidence no longer re-checks-off the row — the gate stays closed.
-      const cap = captureStderr();
-      try {
-        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
-      } finally {
-        cap.restore();
-      }
-      expect(cap.text()).not.toContain("RECONCILE_CHECKOFF");
+      expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
 
       // Fresh fix evidence → auto check-off completes the row → gate opens.
       // The before-hook fires the check-off; the write tool itself lands the
@@ -2730,15 +2716,18 @@ ${findings}
       createKD(`impl-M2-old-${s}-gen1.md.superseded.md`);
       createKD(`impl-M2-legacy-${s}.md.superseded.md`);
 
-      const cap = captureStderr();
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+        const log = readLoudLog();
+        expect(log).toContain("SUPERSEDED_EVIDENCE");
+        expect(log).toContain(`impl-M2-old-${s}-gen1.md.superseded.md`);
+        expect(log).toContain(`impl-M2-legacy-${s}.md.superseded.md`);
       } finally {
-        cap.restore();
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
-      expect(cap.text()).toContain("SUPERSEDED_EVIDENCE");
-      expect(cap.text()).toContain(`impl-M2-old-${s}-gen1.md.superseded.md`);
-      expect(cap.text()).toContain(`impl-M2-legacy-${s}.md.superseded.md`);
       // The row stays unpromoted — superseded evidence is provenance, proof of completion.
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M2: in-progress");
@@ -2753,14 +2742,17 @@ ${findings}
       createKD(`impl-M1-old-${s}.md.superseded.md`);
       createKD(`impl-M1-fix-${s}.md`);
 
-      const cap = captureStderr();
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+        const log = readLoudLog();
+        expect(log).toContain("RECONCILE_CHECKOFF");
+        expect(log).not.toContain("SUPERSEDED_EVIDENCE");
       } finally {
-        cap.restore();
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
-      expect(cap.text()).toContain("RECONCILE_CHECKOFF");
-      expect(cap.text()).not.toContain("SUPERSEDED_EVIDENCE");
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
     });
 
@@ -3561,20 +3553,21 @@ milestones:
       createRegistry(s, [["M1", "checked-off"]]);
       createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1-short-term-store has a defect"));
 
-      let stderr = "";
-      const origWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = (chunk, ...rest) => { stderr += chunk; return true; };
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         await hooks["tool.execute.before"](
           { tool: "glob", sessionID: s, callID: "c1" },
           { args: { pattern: "knowledge/*.md" } }
         );
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("REOPEN:");
+        expect(log).toContain("M1");
+        expect(log).toContain(`review-fail-${s}.md`);
       } finally {
-        process.stderr.write = origWrite;
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
       }
-      expect(stderr).toContain("REOPEN:");
-      expect(stderr).toContain("M1");
-      expect(stderr).toContain(`review-fail-${s}.md`);
       expect(regressedRegistryRows(s).M1).toBe("in-progress");
     });
 

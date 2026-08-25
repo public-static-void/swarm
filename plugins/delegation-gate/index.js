@@ -97,18 +97,20 @@ function debug(msg) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [delegation-gate] ${msg}\n`);
     } catch (_) {
-      process.stderr.write(`[delegation-gate] ${msg}\n`);
+      // File write failed — silently drop rather than bleed to stderr
     }
   }
 }
 
-// Loud advisory channel — visible WITHOUT DELEGATION_GATE_DEBUG (Issue 67),
-// mirroring protocol-gate's loud(). Emissions are per-event and rare
-// by nature; the write is best-effort and never blocks tool execution.
+// File-only logging gated behind DELEGATION_GATE_DEBUG.
+// Previously wrote to stderr which bled into user prompts; moved to file.
+// Emissions are per-event and rare by nature.
 function warn(msg) {
-  try {
-    process.stderr.write(`[delegation-gate] WARNING: ${msg}\n`);
-  } catch (_) {}
+  if (process.env.DELEGATION_GATE_DEBUG) {
+    try {
+      appendFileSync(getLogFile(), `[${new Date().toISOString()}] [delegation-gate] WARNING: ${msg}\n`);
+    } catch (_) {}
+  }
 }
 
 function loadConfig() {
