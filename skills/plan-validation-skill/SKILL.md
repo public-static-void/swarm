@@ -34,6 +34,7 @@ This skill provides a systematic methodology for validating implementation plans
 - [ ] **Risk — External Dependencies**: Catalog all external dependencies (third-party services, vendor deliverables, regulatory approvals, infrastructure provisioning). Verify each has a named owner, expected delivery date, and escalation path if delayed. Flag external dependencies lacking confirmed commitment as high-risk.
 - [ ] **Risk — Unknown Unknowns**: Identify areas where the plan assumes knowledge requiring validation (e.g., "API will support feature X," "database can handle Y throughput"). Recommend discovery tasks (spikes, proof-of-concepts, load tests) to convert unknowns into known risks before committing to timelines.
 - [ ] **Cross-Cutting Concerns**: Verify the plan includes tasks for logging, monitoring, error handling, documentation, and deployment configuration. Flag plans that treat cross-cutting concerns as afterthoughts or assume they are "handled elsewhere" without evidence.
+- [ ] **Agent Assignment — SWARM Milestones**: Verify every SWARM milestone assigns only the phase agent (artisan) as owner. Non-artisan agent assignments in SWARM milestones are errors — flag them immediately. The Dispatch Unit field for each SWARM milestone must read: "one Artisan dispatch completes this milestone independently." Any deviation indicates a permission deadlock risk.
 
 ## PATTERNS
 

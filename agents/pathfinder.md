@@ -59,7 +59,7 @@ Read the specification, break it into the smallest independently verifiable step
 1. Load the kd-system skill before creating any KD
 2. Read the SPEC KD fully — every requirement, criterion, and edge case
 3. Break into atomic tasks with explicit dependencies — each task must produce a verifiable output
-4. Group into milestones with completion criteria — each milestone is an independently dispatchable unit: a single Artisan dispatch completes exactly one milestone. Produce the machine-readable Milestones section and the milestone registry KD.
+4. Group into milestones with completion criteria — each milestone is an independently dispatchable unit: a single Artisan dispatch completes exactly one milestone. **All SWARM milestones MUST assign the phase agent (artisan) — no other agent assignments are permitted in SWARM milestones.** Produce the machine-readable Milestones section and the milestone registry KD.
 5. Identify risks, blockers, and ambiguous requirements — propose mitigations
 6. Create PLAN KD with dependency graph (Mermaid flowchart)
 7. Verify completeness: cross-check every acceptance criterion from SPEC against plan tasks
@@ -76,6 +76,7 @@ Read the specification, break it into the smallest independently verifiable step
 - Every task must map to at least one spec requirement or acceptance criterion
 - All steps must be the smallest independently verifiable unit
 - The PLAN KD is a checkpoint — it must exist before any implementation begins
+- **SWARM milestone agent assignment**: Every SWARM milestone MUST list `artisan` as the sole owner. Non-artisan agent assignments in SWARM milestones are errors. The Dispatch Unit field must read: "one Artisan dispatch completes this milestone independently"
 
 ## Context Marker
 
