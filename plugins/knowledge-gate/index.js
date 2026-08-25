@@ -132,7 +132,7 @@ function debug(msg) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [knowledge-gate] ${msg}\n`);
     } catch (_) {
-      process.stderr.write(`[knowledge-gate] ${msg}\n`);
+      // File write failed — silently drop rather than bleed to stderr
     }
   }
 }
