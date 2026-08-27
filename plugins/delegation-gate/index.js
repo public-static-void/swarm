@@ -389,10 +389,10 @@ function detectForeignPaths(prompt) {
     // C:/Windows), so match the normalized form.
     if (/^[A-Z]:\//.test(trimmed)) return true;
     if (/\.\.[\/\\]/.test(trimmed)) return true;
-    // Reject glob patterns only on path-bearing lines (NFR003). A `*` in
-    // arbitrary prose (e.g. "update the agents/*.md files") is a mention, not
-    // a foreign path — only a line that is itself a path (starts with a path
-    // prefix) is a genuine glob path (e.g. knowledge/*.md) and is rejected.
+    // Reject glob patterns only on path-bearing lines. A `*` in arbitrary
+    // prose (e.g. "update the agents/*.md files") is a mention, not a foreign
+    // path — only a line that is itself a path (starts with a path prefix) is
+    // a genuine glob path (e.g. knowledge/*.md) and is rejected.
     if (/\*/.test(trimmed) && /^(knowledge\/|\/|[A-Z]:\/)|\.\.[\/\\]/.test(trimmed)) return true;
     // Allow lines containing knowledge/ paths (positive whitelist)
     // This handles KD paths embedded in body text from template rendering or agent text,
