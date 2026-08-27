@@ -3324,6 +3324,10 @@ milestones:
         // Drive the phase back to VERIFY for the next fix cycle.
         hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       }
+      // AC005: the manual phase set back to VERIFY is NOT a forward advance,
+      // so the per-target-phase cycle counter is never reset — it sits at the
+      // cap before the 4th regression fires the hard stop.
+      expect(hooks.cycleMap.get(s)[hooks.STATES.SWARM]).toBe(3);
 
       // The 4th distinct FAIL KD exceeds the 3-cycle cap.
       createKD(`review-cycle4-${s}.md`, verdictKD("FAIL", "impl-M1 defect"));
@@ -3367,6 +3371,139 @@ milestones:
     it("the REVIEW template carries the verdict frontmatter field", async () => {
       const tpl = readFileSync(join(process.cwd(), "skills/template-review/SKILL.md"), "utf8");
       expect(tpl).toMatch(/^verdict\s*:\s*\{\{PASS \| FAIL \| FUNDAMENTAL\}\}\s*$/m);
+    });
+  });
+
+  describe("M2 protocol-gate fixes (R004 cycle reset / R005 superseded evidence / R006 SWARM watchdog)", () => {
+    // Captures the loud channel (file-based, gated behind PROTOCOL_GATE_DEBUG).
+    function readLoudLog() {
+      try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
+    }
+
+    it("AC004: the per-target-phase cycle counter resets on a successful forward advance — a 4th regression after the advance does not throw CYCLE_LIMIT_EXCEEDED", async () => {
+      const s = sid("r004-reset");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+
+      // Three FAIL regressions to SWARM — the cap is not yet exceeded.
+      for (let i = 1; i <= 3; i++) {
+        createKD(`review-cycle${i}-${s}.md`, reviewKD("FAIL", "impl-M1 defect"));
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: `c${i}` },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        // Drive the phase back to VERIFY for the next fix cycle.
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      }
+      expect(hooks.cycleMap.get(s)[hooks.STATES.SWARM]).toBe(3);
+
+      // A genuine SWARM→VERIFY forward advance (all milestones checked-off
+      // with impl KDs on disk) resets the SWARM cycle counter.
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-fix-${s}.md`);
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "adv" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      expect(hooks.cycleMap.get(s)[hooks.STATES.SWARM]).toBeUndefined();
+
+      // A 4th regression after the successful advance does not throw — the
+      // counter restarted at 1.
+      createKD(`review-cycle4-${s}.md`, reviewKD("FAIL", "impl-M1 defect"));
+      const err = await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c4" },
+        { args: { pattern: "knowledge/*.md" } }
+      ).then(() => null, e => e);
+      expect(err).toBeNull();
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.cycleMap.get(s)[hooks.STATES.SWARM]).toBe(1);
+    });
+
+    it("AC006: a SWARM phase whose only impl evidence is superseded files does not regress to DECOMPOSE", async () => {
+      const s = sid("r005-superseded");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // Earlier-phase evidence (plan KD) so a regression WOULD fire without
+      // the fix — a missing SWARM KD would walk back to DECOMPOSE.
+      createKD(`plan-evidence-${s}.md`);
+      // The only impl evidence for the current session is superseded files
+      // (generation-scoped and legacy variants).
+      createKD(`impl-M1-old-${s}.md.superseded.md`);
+      createKD(`impl-M2-old-${s}-gen1.md.superseded.md`);
+
+      const regressed = hooks.checkPhaseStateConsistency(
+        s, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        hooks.saveState, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.freshAdvancement
+      );
+      expect(regressed).toBe(false);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+
+      // Control: without the superseded evidence the same scan regresses to
+      // DECOMPOSE — proving the superseded probe is what prevents regression.
+      const s2 = sid("r005-control");
+      await initOverseer(s2);
+      hooks.sessionPhaseMap.set(s2, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s2}:sid`, s2);
+      createKD(`plan-evidence-${s2}.md`);
+      const regressedControl = hooks.checkPhaseStateConsistency(
+        s2, hooks.STATES.SWARM, hooks.sessionPhaseMap,
+        hooks.saveState, hooks.diskCheckFailures, hooks.phaseRedispatchCount, hooks.swarmDispatchCount,
+        hooks.inFlightDispatches, hooks.freshAdvancement
+      );
+      expect(regressedControl).toBe(true);
+      expect(hooks.sessionPhaseMap.get(s2)).toBe(hooks.STATES.DECOMPOSE);
+    });
+
+    it("AC007: the shared .superseded.md evidence predicates stay unchanged (MEM-212)", () => {
+      const s = sid("r005-pred");
+      // matchesSessionKD (generation-scoped) rejects superseded filenames.
+      expect(hooks.matchesSessionKD(`impl-M2-x-${s}-gen1.md.superseded.md`, s, 1)).toBe(false);
+      expect(hooks.matchesSessionKD(`impl-M2-x-${s}.md.superseded.md`, s, 0)).toBe(false);
+      // matchesSessionKDAnyGeneration rejects superseded filenames.
+      expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}-gen1.md.superseded.md`, s)).toBe(false);
+      expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}.md.superseded.md`, s)).toBe(false);
+      // Control: the un-superseded forms still match.
+      expect(hooks.matchesSessionKD(`impl-M2-x-${s}-gen1.md`, s, 1)).toBe(true);
+      expect(hooks.matchesSessionKD(`impl-M2-x-${s}.md`, s, 0)).toBe(true);
+      expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}-gen1.md`, s)).toBe(true);
+      expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}.md`, s)).toBe(true);
+    });
+
+    it("AC008: a blocked SWARM dispatch is recoverable via the watchdog without a manual /phase override", async () => {
+      const s = sid("r006-watchdog");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        // Three blocked dispatches (wrong agent) — each throws WRONG_AGENT.
+        for (let i = 1; i <= 3; i++) {
+          const err = await hooks["tool.execute.before"](
+            { tool: "task", sessionID: s, callID: `b${i}` },
+            { args: { subagent_type: "inspector", prompt: "DISPATCH TO: inspector\nMODE: verify" } }
+          ).then(() => null, e => e);
+          expect(err).toBeInstanceOf(Error);
+          expect(err.code).toBe("WRONG_AGENT");
+        }
+        // The watchdog fired at the threshold — loud diagnostic + counter reset.
+        const log = readLoudLog();
+        expect(log).toContain("SAFETY_STUCK");
+        expect(log).toContain("blocked SWARM dispatches");
+        expect(hooks.blockedDispatchCount.get(s)).toBeUndefined();
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
     });
   });
 
