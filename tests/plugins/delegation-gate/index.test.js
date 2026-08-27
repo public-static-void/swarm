@@ -154,9 +154,9 @@ RESULT KD: knowledge/wrong.md`
     });
 
     it("does not capture the injected delegation format hint as bogus field values", async () => {
-      // F2 regression (AC001): the Delegation Prompt Format: hint injected into
-      // the description is instructional — its KEY: value lines must never be
-      // re-extracted as kd_paths/result_kd/scope field values on a later dispatch.
+      // The Delegation Prompt Format: hint injected into the description is
+      // instructional — its KEY: value lines must never be re-extracted as
+      // kd_paths/result_kd/scope field values on a later dispatch.
       const description = `MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-27
@@ -265,8 +265,8 @@ ${body}`;
     });
 
     it("allows glob patterns mentioned in prose (non-path context)", async () => {
-      // F1 regression (AC002): a `*` in arbitrary prose is a mention, not a
-      // foreign path — the glob check must be scoped to path-bearing lines.
+      // A `*` in arbitrary prose is a mention, not a foreign path — the glob
+      // check must be scoped to path-bearing lines.
       const prompt = `AGENT: artisan
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
@@ -280,8 +280,8 @@ Update the agents/*.md and knowledge/issues/*.md files per the plan.`;
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
     });
 
-    it("still rejects genuine foreign paths — absolute, drive-letter, and traversal (NFR003)", async () => {
-      // AC003/NFR003: the glob-scoping fix must not weaken foreign-path protection.
+    it("still rejects genuine foreign paths — absolute, drive-letter, and traversal", async () => {
+      // The glob-scoping fix must not weaken foreign-path protection.
       for (const body of ["/etc/passwd", "C:\\Windows\\System32", "../secret"]) {
         const prompt = `AGENT: artisan
 MODE: explore
