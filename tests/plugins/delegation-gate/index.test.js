@@ -153,6 +153,36 @@ RESULT KD: knowledge/wrong.md`
       expect(both.args.prompt).toContain("knowledge/exploration-foo.md");
     });
 
+    it("does not capture the injected delegation format hint as bogus field values", async () => {
+      // F2 regression (AC001): the Delegation Prompt Format: hint injected into
+      // the description is instructional — its KEY: value lines must never be
+      // re-extracted as kd_paths/result_kd/scope field values on a later dispatch.
+      const description = `MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-27
+SCOPE: Implement feature X
+RESULT KD: knowledge/exploration-foo.md
+Delegation Prompt Format:
+DISPATCH TO: explorer
+MODE: explore
+INTENT KD: knowledge/intent-(name).md
+SESSION DATE: today's date (e.g. 2026-08-08)
+SESSION ID: (your session id)
+GENERATION: (the lifecycle generation number)
+SCOPE: (optional context)
+RESULT KD: knowledge/exploration-<name>-<session_id>.md (when subagent produces a KD)
+KD PATHS: upstream KD paths, comma-separated (optional)`;
+      const output = { args: { prompt: "", description, subagent_type: "explorer" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      // The hint's instructional lines must not leak into the rendered prompt.
+      expect(output.args.prompt).not.toContain("upstream KD paths");
+      expect(output.args.prompt).not.toContain("(optional context)");
+      expect(output.args.prompt).not.toContain("(when subagent produces a KD)");
+      // The legitimate description fields are still extracted.
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+      expect(output.args.prompt).toContain("2026-08-27");
+    });
+
     it("extracts intent_kd from prose fallback patterns and lets structured fields win", async () => {
       // Prose: "Read the INTENT KD at <path>" — no structured INTENT KD line
       const prose = {
@@ -227,6 +257,38 @@ INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md
+${body}`;
+        await expect(
+          hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+        ).rejects.toThrow("Foreign paths detected");
+      }
+    });
+
+    it("allows glob patterns mentioned in prose (non-path context)", async () => {
+      // F1 regression (AC002): a `*` in arbitrary prose is a mention, not a
+      // foreign path — the glob check must be scoped to path-bearing lines.
+      const prompt = `AGENT: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-27
+SCOPE: Implement feature X
+RESULT KD: knowledge/exploration-foo.md
+
+Update the agents/*.md and knowledge/issues/*.md files per the plan.`;
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/intent-foo.md");
+    });
+
+    it("still rejects genuine foreign paths — absolute, drive-letter, and traversal (NFR003)", async () => {
+      // AC003/NFR003: the glob-scoping fix must not weaken foreign-path protection.
+      for (const body of ["/etc/passwd", "C:\\Windows\\System32", "../secret"]) {
+        const prompt = `AGENT: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-27
+SCOPE: Implement feature X
+RESULT KD: knowledge/exploration-foo.md
 ${body}`;
         await expect(
           hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
