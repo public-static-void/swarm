@@ -237,7 +237,7 @@ function matchesSessionKDAnyGeneration(filename, sessionID) {
   return filename.endsWith(`-${sessionID}.md`);
 }
 
-// Superseded-impl evidence probe for the consistency check (R005): a
+// Superseded-impl evidence probe for the consistency check: a
 // `*.superseded.md` impl file for the current session counts as evidence
 // that SWARM is not missing its KD — after a reopen the only impl evidence
 // may be superseded files, and falsely regressing SWARM→DECOMPOSE would
@@ -1435,7 +1435,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     if (hasReview) return false; // current phase is fine
   } else {
     if (sessionFiles.some(f => currentPattern.test(f))) return false; // current phase is fine
-    // R005: SWARM whose only impl evidence is superseded files is not
+    // SWARM whose only impl evidence is superseded files is not
     // missing its KD — do not falsely regress to DECOMPOSE.
     if (currentPhase === STATES.SWARM && hasSupersededImplEvidence(files, sessionID)) return false;
   }
@@ -1467,7 +1467,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
         break;
       }
     } else {
-      // R005: a superseded-only SWARM anchors the backward walk the same
+      // A superseded-only SWARM anchors the backward walk the same
       // way a live impl KD does — the phase is not missing its evidence.
       if (phase === STATES.SWARM && hasSupersededImplEvidence(files, sessionID)) {
         regressedPhase = phase;
@@ -1532,7 +1532,7 @@ export default {
     const diskCheckFailures = new Map();
     // Tracks re-dispatch attempts per session-phase pair to cap retries at 5.
     const phaseRedispatchCount = new Map();
-    // Per-session blocked-dispatch watchdog counter (R006): a SWARM dispatch
+    // Per-session blocked-dispatch watchdog counter: a SWARM dispatch
     // blocked as WRONG_AGENT increments this counter; at the threshold
     // (config.maxBlockedDispatches || 3) the gate logs a loud file-only
     // SAFETY_STUCK-style diagnostic and resets the counter so the Overseer
@@ -1912,7 +1912,7 @@ export default {
       return true;
     }
 
-    // R006 watchdog: observes a blocked SWARM dispatch. The per-session
+    // Watchdog: observes a blocked SWARM dispatch. The per-session
     // blocked-dispatch counter increments on each WRONG_AGENT block; at the
     // threshold (config.maxBlockedDispatches || 3) the gate logs a loud
     // file-only SAFETY_STUCK-style diagnostic and resets the counter so the
@@ -2576,7 +2576,7 @@ export default {
             // Reset re-dispatch counter for the phase we just advanced from
             phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
             // Reset the per-target-phase cycle counter on a successful forward
-            // advance out of the phase (R004): a genuine fix cycle completed,
+            // advance out of the phase: a genuine fix cycle completed,
             // so the next regression to this phase starts fresh instead of
             // exhausting the maxCyclesPerTransition cap for the rest of the
             // lifecycle. The CYCLE_LIMIT_EXCEEDED hard stop is preserved —
