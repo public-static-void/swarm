@@ -3324,7 +3324,7 @@ milestones:
         // Drive the phase back to VERIFY for the next fix cycle.
         hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       }
-      // AC005: the manual phase set back to VERIFY is NOT a forward advance,
+      // The manual phase set back to VERIFY is NOT a forward advance,
       // so the per-target-phase cycle counter is never reset — it sits at the
       // cap before the 4th regression fires the hard stop.
       expect(hooks.cycleMap.get(s)[hooks.STATES.SWARM]).toBe(3);
@@ -3374,13 +3374,13 @@ milestones:
     });
   });
 
-  describe("M2 protocol-gate fixes (R004 cycle reset / R005 superseded evidence / R006 SWARM watchdog)", () => {
+  describe("M2 protocol-gate fixes (cycle reset / superseded evidence / SWARM watchdog)", () => {
     // Captures the loud channel (file-based, gated behind PROTOCOL_GATE_DEBUG).
     function readLoudLog() {
       try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
     }
 
-    it("AC004: the per-target-phase cycle counter resets on a successful forward advance — a 4th regression after the advance does not throw CYCLE_LIMIT_EXCEEDED", async () => {
+    it("the per-target-phase cycle counter resets on a successful forward advance — a 4th regression after the advance does not throw CYCLE_LIMIT_EXCEEDED", async () => {
       const s = sid("r004-reset");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -3424,7 +3424,7 @@ milestones:
       expect(hooks.cycleMap.get(s)[hooks.STATES.SWARM]).toBe(1);
     });
 
-    it("AC006: a SWARM phase whose only impl evidence is superseded files does not regress to DECOMPOSE", async () => {
+    it("a SWARM phase whose only impl evidence is superseded files does not regress to DECOMPOSE", async () => {
       const s = sid("r005-superseded");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3461,7 +3461,7 @@ milestones:
       expect(hooks.sessionPhaseMap.get(s2)).toBe(hooks.STATES.DECOMPOSE);
     });
 
-    it("AC007: the shared .superseded.md evidence predicates stay unchanged (MEM-212)", () => {
+    it("the shared .superseded.md evidence predicates stay unchanged (MEM-212)", () => {
       const s = sid("r005-pred");
       // matchesSessionKD (generation-scoped) rejects superseded filenames.
       expect(hooks.matchesSessionKD(`impl-M2-x-${s}-gen1.md.superseded.md`, s, 1)).toBe(false);
@@ -3476,7 +3476,7 @@ milestones:
       expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}.md`, s)).toBe(true);
     });
 
-    it("AC008: a blocked SWARM dispatch is recoverable via the watchdog without a manual /phase override", async () => {
+    it("a blocked SWARM dispatch is recoverable via the watchdog without a manual /phase override", async () => {
       const s = sid("r006-watchdog");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
