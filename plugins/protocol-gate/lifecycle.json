@@ -37,5 +37,6 @@
     "CLEANUP": ["PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE"]
   },
   "maxRetriesPerPhase": 5,
-  "maxCyclesPerTransition": 3
+  "maxCyclesPerTransition": 3,
+  "maxBlockedDispatches": 3
 }

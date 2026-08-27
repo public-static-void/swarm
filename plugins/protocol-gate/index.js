@@ -237,6 +237,22 @@ function matchesSessionKDAnyGeneration(filename, sessionID) {
   return filename.endsWith(`-${sessionID}.md`);
 }
 
+// Superseded-impl evidence probe for the consistency check (R005): a
+// `*.superseded.md` impl file for the current session counts as evidence
+// that SWARM is not missing its KD — after a reopen the only impl evidence
+// may be superseded files, and falsely regressing SWARM→DECOMPOSE would
+// jump the phase machine backward. The shared predicate
+// matchesSessionKD/matchesSessionKDAnyGeneration is UNCHANGED (MEM-212) —
+// this probe is scoped to the consistency check only, never to the shared
+// evidence predicate.
+function hasSupersededImplEvidence(files, sessionID) {
+  return files.some(f => {
+    if (!/^impl-/i.test(f)) return false;
+    if (!f.toLowerCase().endsWith(".superseded.md")) return false;
+    return matchesSessionKDAnyGeneration(f.slice(0, -".superseded.md".length), sessionID);
+  });
+}
+
 // Deletes ONLY the knowledge KDs of a session's ENDING lifecycle generation:
 // for generation 0 the legacy `-${sessionID}.md` variant plus the `-gen0.md`
 // suffix; for generation N only the `-gen${N}.md` variant. Files of any other
@@ -1419,6 +1435,9 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
     if (hasReview) return false; // current phase is fine
   } else {
     if (sessionFiles.some(f => currentPattern.test(f))) return false; // current phase is fine
+    // R005: SWARM whose only impl evidence is superseded files is not
+    // missing its KD — do not falsely regress to DECOMPOSE.
+    if (currentPhase === STATES.SWARM && hasSupersededImplEvidence(files, sessionID)) return false;
   }
 
   // Current phase's KD is missing — walk backward to find highest surviving phase
@@ -1448,6 +1467,13 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
         break;
       }
     } else {
+      // R005: a superseded-only SWARM anchors the backward walk the same
+      // way a live impl KD does — the phase is not missing its evidence.
+      if (phase === STATES.SWARM && hasSupersededImplEvidence(files, sessionID)) {
+        regressedPhase = phase;
+        foundEarlierKD = true;
+        break;
+      }
       if (sessionFiles.some(f => pattern.test(f))) {
         regressedPhase = phase;
         foundEarlierKD = true;
@@ -1506,6 +1532,13 @@ export default {
     const diskCheckFailures = new Map();
     // Tracks re-dispatch attempts per session-phase pair to cap retries at 5.
     const phaseRedispatchCount = new Map();
+    // Per-session blocked-dispatch watchdog counter (R006): a SWARM dispatch
+    // blocked as WRONG_AGENT increments this counter; at the threshold
+    // (config.maxBlockedDispatches || 3) the gate logs a loud file-only
+    // SAFETY_STUCK-style diagnostic and resets the counter so the Overseer
+    // can retry the dispatch without a manual /phase override. The individual
+    // WRONG_AGENT hard error on each blocked dispatch is preserved.
+    const blockedDispatchCount = new Map();
     // Per-session record of the LAST charged dispatch, set at
     // the :2475 increment site so the tool.execute.after hook can restore the
     // redispatch budget when a dispatch produces no expected RESULT KD
@@ -1877,6 +1910,23 @@ export default {
       clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       debug(`COUNTER_RESET: phaseRedispatchCount deleted for ${getPhaseName(targetPhase)} (session ${sessionID})`);
       return true;
+    }
+
+    // R006 watchdog: observes a blocked SWARM dispatch. The per-session
+    // blocked-dispatch counter increments on each WRONG_AGENT block; at the
+    // threshold (config.maxBlockedDispatches || 3) the gate logs a loud
+    // file-only SAFETY_STUCK-style diagnostic and resets the counter so the
+    // Overseer can retry the dispatch without a manual /phase override. The
+    // individual WRONG_AGENT hard error is preserved — this only observes.
+    function watchBlockedSwarmDispatch(sessionID, phase) {
+      if (phase !== STATES.SWARM) return;
+      const threshold = config.maxBlockedDispatches || 3;
+      const count = (blockedDispatchCount.get(sessionID) || 0) + 1;
+      blockedDispatchCount.set(sessionID, count);
+      if (count >= threshold) {
+        loud(`SAFETY_STUCK: ${count} blocked SWARM dispatches (threshold ${threshold}) for session ${sessionID} — blocked-dispatch counter reset; retry the dispatch with the correct agent`);
+        blockedDispatchCount.delete(sessionID);
+      }
     }
 
     // Restart-proof check-off — the impl KD filename is the ONLY
@@ -2525,6 +2575,17 @@ export default {
             debug(`pendingVerification: CLEARED (disk advancement) for session ${sessionID}`);
             // Reset re-dispatch counter for the phase we just advanced from
             phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+            // Reset the per-target-phase cycle counter on a successful forward
+            // advance out of the phase (R004): a genuine fix cycle completed,
+            // so the next regression to this phase starts fresh instead of
+            // exhausting the maxCyclesPerTransition cap for the rest of the
+            // lifecycle. The CYCLE_LIMIT_EXCEEDED hard stop is preserved —
+            // consecutive regressions without an advance still throw.
+            const cycles = cycleMap.get(sessionID);
+            if (cycles && cycles[currentPhase] !== undefined) {
+              delete cycles[currentPhase];
+              debug(`COUNTER_RESET: cycle counter reset for ${currentPhaseName} (forward advance to ${getPhaseName(currentPhase + 1)})`);
+            }
             const newPhase = currentPhase + 1;
             // Record fresh advancement to prevent false regression.
             // checkPhaseStateConsistency uses this to grant a grace period before
@@ -2881,6 +2942,7 @@ export default {
                 // Treat as wrong agent — prevents accidental phase regression.
                 const expectedAgent = currentPhaseAgent || phaseName;
                 debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent}) — BACKWARD: true required for backward transition`);
+                watchBlockedSwarmDispatch(sessionID, phase);
                 throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
               }
             } else {
@@ -2893,6 +2955,7 @@ export default {
               // the artisan's responsibility, not the overseer's.
               const expectedAgent = currentPhaseAgent || phaseName;
               debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
+              watchBlockedSwarmDispatch(sessionID, phase);
               throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
             }
           }
@@ -3078,6 +3141,7 @@ export default {
       cycleMap,
       swarmDispatchCount,
       phaseRedispatchCount,
+      blockedDispatchCount,
       lastTaskDispatch,
       diskCheckFailures,
       inFlightDispatches,
@@ -3105,6 +3169,7 @@ export default {
       reconcileStuckRowsFromDiskEvidence,
       supersedeMilestoneImplKDs,
       matchesSessionKDAnyGeneration,
+      matchesSessionKD,
       markStuckMilestonesFailed,
       readVerdictFrontmatter,
       findNewestVerdictKD,
