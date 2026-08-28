@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -3506,7 +3506,7 @@ milestones:
       }
     });
 
-    it("emits user-visible warn() when a SWARM dispatch stalls (AC2)", async () => {
+    it("logs stalled SWARM dispatches to the log file without emitting to stderr", async () => {
       const s = sid("ac2-warn");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3514,34 +3514,42 @@ milestones:
       createRegistry(s, [["M1", "in-progress"]]);
 
       try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try {
+        // Path C: 10 tool calls without the expected KD → warn() "SWARM stalled".
+        hooks.pendingVerification.set(s, { expectedPrefixes: ["impl"], toolType: "task", timestamp: Date.now(), toolCalls: 0 });
+        hooks.pendingVerificationToolCount.set(s, 9);
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c10" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        let log = readLoudLog();
+        expect(log).toContain("SWARM stalled");
+        expect(log).toContain("10 tool calls");
+        expect(log).toContain("impl");
 
-      // Path C: 10 tool calls without the expected KD → warn() "SWARM stalled".
-      hooks.pendingVerification.set(s, { expectedPrefixes: ["impl"], toolType: "task", timestamp: Date.now(), toolCalls: 0 });
-      hooks.pendingVerificationToolCount.set(s, 9);
-      await hooks["tool.execute.before"](
-        { tool: "glob", sessionID: s, callID: "c10" },
-        { args: { pattern: "knowledge/*.md" } }
-      );
-      let log = readLoudLog();
-      expect(log).toContain("SWARM stalled");
-      expect(log).toContain("10 tool calls");
-      expect(log).toContain("impl");
+        // Path A: 15 tool calls → pendingVerification force-advance marks the
+        // stuck milestone failed and warn() "SWARM_STALLED" lists it.
+        hooks.pendingVerification.set(s, { expectedPrefixes: ["impl"], toolType: "task", timestamp: Date.now(), toolCalls: 0 });
+        hooks.pendingVerificationToolCount.set(s, 14);
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c15" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        log = readLoudLog();
+        expect(log).toContain("SWARM_STALLED");
+        expect(log).toContain("M1");
+        expect(log).toContain("15 tool calls");
+        expect(log).toContain("gate stays in SWARM");
 
-      // Path A: 15 tool calls → pendingVerification force-advance marks the
-      // stuck milestone failed and warn() "SWARM_STALLED" lists it.
-      hooks.pendingVerification.set(s, { expectedPrefixes: ["impl"], toolType: "task", timestamp: Date.now(), toolCalls: 0 });
-      hooks.pendingVerificationToolCount.set(s, 14);
-      await hooks["tool.execute.before"](
-        { tool: "glob", sessionID: s, callID: "c15" },
-        { args: { pattern: "knowledge/*.md" } }
-      );
-      log = readLoudLog();
-      expect(log).toContain("SWARM_STALLED");
-      expect(log).toContain("M1");
-      expect(log).toContain("15 tool calls");
-      expect(log).toContain("gate stays in SWARM");
-
-      try { rmSync(logPath); } catch (_) {}
+        // Diagnostics are file-only — no stderr emission bleeds into the prompt.
+        expect(stderrSpy).not.toHaveBeenCalled();
+      } finally {
+        stderrSpy.mockRestore();
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
     });
   });
 
