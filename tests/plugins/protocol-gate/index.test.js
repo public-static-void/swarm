@@ -2851,6 +2851,101 @@ ${findings}
     });
   });
 
+  describe("gate disk-check tool-set widening — read/bash trigger reconciliation (Issue 71, R003)", () => {
+    function readLoudLog() {
+      try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
+    }
+
+    it("an Overseer read call in SWARM triggers reconciliation and promotes a stuck row (AC003-read)", async () => {
+      const s = sid("m2-read-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+
+      // The read tool-hook path: the Overseer reads the milestone registry KD
+      // in SWARM (permitted by the SWARM read restriction) — the disk check now
+      // runs on read calls (widened DISK_CHECK_TOOLS).
+      await hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c1" },
+        { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
+      );
+
+      // Reconciliation promoted the stuck row.
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+      expect(content).toContain("  M1: checked-off");
+      // All milestones checked-off → the gate advanced SWARM → VERIFY.
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+    });
+
+    it("DISK_CHECK_TOOLS includes bash and the gate promotes a stuck row at unit level (AC003-bash, BR-3)", async () => {
+      // Static assertion — the widened tool set is exported for tests.
+      expect(hooks.DISK_CHECK_TOOLS).toContain("bash");
+      expect(hooks.DISK_CHECK_TOOLS).toContain("read");
+
+      // Behavioral: the exact function the disk check invokes promotes the
+      // stuck row. The full tool-hook bash path is unreachable in SWARM — the
+      // SWARM allowlist excludes bash and the allowlist check runs before the
+      // disk check (BR-3; widening the allowlist is out of scope).
+      const s = sid("m2-bash-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
+    });
+
+    it("a read call with no impl-KD evidence does not advance the phase (AC004)", async () => {
+      const s = sid("m2-nospur-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+
+      // No impl KD on disk — the all-checked-off verdict is not met, so the
+      // widened read path must not advance the phase.
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+      await hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c1" },
+        { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
+    });
+
+    it("a live non-superseded same-session impl KD auto-advances on the next gate evaluation without a re-affirm dispatch (AC005)", async () => {
+      const s = sid("m2-live-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      // The expected-path impl KD: impl-<milestone_id>-<name>-<session_id>[-gen{N}].md
+      createKD(`impl-M1-feature-${s}.md`);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        // Next gate evaluation — an Overseer read tool-hook call (widened tool set).
+        await hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "c1" },
+          { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
+        );
+        const log = readLoudLog();
+        expect(log).toContain("RECONCILE_CHECKOFF");
+        expect(log).not.toContain("SUPERSEDED_EVIDENCE");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+      // The registry YAML block reads checked-off — no re-affirm dispatch needed.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
+    });
+  });
+
   describe("empty-result redispatch reconciliation", () => {
     // The before-hook charges the redispatch budget at the increment site and
     // records the dispatch in lastTaskDispatch; the tool.execute.after hook
