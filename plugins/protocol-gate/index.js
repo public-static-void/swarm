@@ -861,7 +861,7 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   const ok = checkedOff === rows.length;
   if (!ok) {
     const stuck = rows.filter(r => !r.checkedOff);
-    debug(`SWARM gate: ${checkedOff}/${rows.length} milestones checked-off — blocked by: ${stuck.map(r => `${r.id}=${r.state}`).join(", ")}`);
+    warn(`SWARM gate: ${checkedOff}/${rows.length} milestones checked-off — blocked by: ${stuck.map(r => r.id).join(", ")}`);
   }
   return { ok, total: rows.length, checkedOff, rows };
 }
@@ -877,7 +877,7 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
 // "genuinely attempted ≥5 times" guard; FORCE ADVANCE is the lifecycle-level
 // deadlock escape. Row matching is case-insensitive to mirror registry
 // semantics.
-function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger, milestoneId) {
+function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger, milestoneId, toolCalls) {
   const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
     debug(`SAFETY_STUCK: ${trigger} for session ${sessionID} — no registry to mark`);
@@ -886,13 +886,18 @@ function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger, mileston
   const rows = milestoneId
     ? registry.rows.filter(r => r.id.toUpperCase() === String(milestoneId).toUpperCase())
     : registry.rows;
+  const failedIds = [];
   for (const row of rows) {
     if (row.state !== "checked-off" && row.state !== "failed") {
       const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["failed"]);
+      failedIds.push(row.id);
       debug(`SAFETY_STUCK: marked ${row.id} failed (${trigger}) — ${JSON.stringify(result)}`);
     }
   }
   debug(`SAFETY_STUCK: ${trigger} for session ${sessionID} — staying in SWARM (no auto-advance)`);
+  if (failedIds.length > 0) {
+    warn(`SWARM_STALLED: milestones ${failedIds.join(", ")} lack impl KD evidence — force-marked failed after ${toolCalls} tool calls, gate stays in SWARM`);
+  }
 }
 
 // Extracts the milestone ID from an impl KD filename per the milestone-scoped
@@ -2696,7 +2701,7 @@ export default {
                   // A stuck SWARM never
                   // auto-advances to VERIFY. Mark stuck milestones failed,
                   // reset counters, stay in SWARM. User /phase is the escape.
-                  markStuckMilestonesFailed(sessionID, sessionPhaseMap, `FORCE ADVANCE at ${currentFailures} failures`);
+                  markStuckMilestonesFailed(sessionID, sessionPhaseMap, `FORCE ADVANCE at ${currentFailures} failures`, undefined, currentFailures);
                   diskCheckFailures.set(sessionID, 0);
                   phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
                   // SWARM FORCE ADVANCE clears every per-milestone
@@ -2742,9 +2747,9 @@ export default {
                     // failed, and throws SAFETY_STUCK (no auto-advance).
                     // Only the offending milestone's row fails.
                     if (capMilestoneId) {
-                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`, capMilestoneId);
+                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`, capMilestoneId, redispatches);
                     } else {
-                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`);
+                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `REDISPATCH CAP at ${redispatches} re-dispatches`, undefined, redispatches);
                     }
                     diskCheckFailures.set(sessionID, 0);
                     phaseRedispatchCount.delete(redispatchKey);
@@ -2784,7 +2789,7 @@ export default {
                       // A stuck SWARM never
                       // auto-advances to VERIFY. Mark stuck milestones failed,
                       // clear pendingVerification, stay in SWARM.
-                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `pendingVerification force-advance after ${toolCalls} tool calls`);
+                      markStuckMilestonesFailed(sessionID, sessionPhaseMap, `pendingVerification force-advance after ${toolCalls} tool calls`, undefined, toolCalls);
                       pendingVerification.delete(sessionID);
                       pendingVerificationToolCount.delete(sessionID);
                       diskCheckFailures.set(sessionID, 0);
@@ -2801,6 +2806,7 @@ export default {
                     }
                   } else if (toolCalls >= 10) {
                     debug(`pendingVerification WARNING: ${toolCalls} tool calls without expected KD — clearing pendingVerification (expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
+                    warn(`SWARM stalled: ${toolCalls} tool calls without expected KD (prefixes=${pvState.expectedPrefixes?.join(", ")}) — clearing pendingVerification`);
                     pendingVerification.delete(sessionID);
                     pendingVerificationToolCount.delete(sessionID);
                   } else {
