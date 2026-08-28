@@ -2228,12 +2228,23 @@ export default {
               }
             }
           }
-          // The artisan's milestone-scoped impl KD write is the
-          // check-off signal — advance that milestone in the parent SWARM
-          // lifecycle's registry. Only the artisan (the intended writer of impl
-          // KDs) triggers it; other agents' writes never touch milestone state.
+          // The impl KD write is the check-off signal — advance that milestone
+          // in the parent SWARM lifecycle's registry. The registry state
+          // machine (updateMilestoneRegistry) is the authoritative guard: only
+          // an in-progress row can check off, so firing for ANY non-overseer
+          // writer cannot cause a wrong-advance. The writing agent is recorded
+          // only when chat.params carried the agent field, so a session whose
+          // agent is unknown must still trigger the check-off (the observed
+          // silent-skip root cause, issue 71).
           const isImplKD = /^knowledge\/impl-/i.test(relPath) || /\/knowledge\/impl-/i.test(relPath);
-          if (isImplKD && (sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown") === "artisan") {
+          if (isImplKD) {
+            const writingAgent = sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown";
+            if (writingAgent !== "artisan") {
+              // File-only observability for a non-artisan/unknown impl-KD
+              // writer — the check-off still proceeds; this just records who
+              // wrote it so a future silent-skip class is visible.
+              warn(`AUTO_CHECKOFF_NON_ARTISAN: agent=${writingAgent} path=${relPath}`);
+            }
             autoCheckOffMilestone(relPath);
           }
         }
