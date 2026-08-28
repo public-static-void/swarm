@@ -133,6 +133,13 @@ const TOOL_ALLOWLIST = {
   REPORT: ["todowrite", "edit", "read", "write", "skill", "memory_search"]
 };
 
+// Tools whose calls trigger the disk-evidence advancement check
+// (checkDiskAdvancement). read/bash widen the gate's disk-check surface so the
+// reconciliation backstop (reconcileStuckRowsFromDiskEvidence) runs on the
+// Overseer's verification reads — the F5 gap that let a stuck row go unhealed.
+// The gate still advances ONLY on the all-checked-off verdict.
+const DISK_CHECK_TOOLS = ["write", "glob", "todowrite", "task", "read", "bash"];
+
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
 // tool.definition appends these to the description so the LLM sees the restriction
 // instead of treating the tool as fully available.
@@ -2228,12 +2235,23 @@ export default {
               }
             }
           }
-          // The artisan's milestone-scoped impl KD write is the
-          // check-off signal — advance that milestone in the parent SWARM
-          // lifecycle's registry. Only the artisan (the intended writer of impl
-          // KDs) triggers it; other agents' writes never touch milestone state.
+          // The impl KD write is the check-off signal — advance that milestone
+          // in the parent SWARM lifecycle's registry. The registry state
+          // machine (updateMilestoneRegistry) is the authoritative guard: only
+          // an in-progress row can check off, so firing for ANY non-overseer
+          // writer cannot cause a wrong-advance. The writing agent is recorded
+          // only when chat.params carried the agent field, so a session whose
+          // agent is unknown must still trigger the check-off (the observed
+          // silent-skip root cause, issue 71).
           const isImplKD = /^knowledge\/impl-/i.test(relPath) || /\/knowledge\/impl-/i.test(relPath);
-          if (isImplKD && (sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown") === "artisan") {
+          if (isImplKD) {
+            const writingAgent = sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown";
+            if (writingAgent !== "artisan") {
+              // File-only observability for a non-artisan/unknown impl-KD
+              // writer — the check-off still proceeds; this just records who
+              // wrote it so a future silent-skip class is visible.
+              warn(`AUTO_CHECKOFF_NON_ARTISAN: agent=${writingAgent} path=${relPath}`);
+            }
             autoCheckOffMilestone(relPath);
           }
         }
@@ -2554,7 +2572,6 @@ export default {
       // Runs BEFORE the task handler so the phase is current when agent routing
       // validates the dispatched agent. Without this, task calls in PREFLIGHT
       // check against the stale pre-advancement phase and throw WRONG_AGENT.
-      const DISK_CHECK_TOOLS = ["write", "glob", "todowrite", "task"];
       if (DISK_CHECK_TOOLS.includes(tool)) {
         // Skip disk check when todowrite just advanced the phase in this call.
         // Without this guard, todowrite advances to INTENT, then the disk check
@@ -3144,6 +3161,7 @@ export default {
       "experimental.chat.system.transform": systemTransform,
       // Test-access properties
       STATES,
+      DISK_CHECK_TOOLS,
       sessionPhaseMap,
       overseerSessions,
       isOverseerSession,
