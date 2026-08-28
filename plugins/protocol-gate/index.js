@@ -133,6 +133,13 @@ const TOOL_ALLOWLIST = {
   REPORT: ["todowrite", "edit", "read", "write", "skill", "memory_search"]
 };
 
+// Tools whose calls trigger the disk-evidence advancement check
+// (checkDiskAdvancement). read/bash widen the gate's disk-check surface so the
+// reconciliation backstop (reconcileStuckRowsFromDiskEvidence) runs on the
+// Overseer's verification reads — the F5 gap that let a stuck row go unhealed.
+// The gate still advances ONLY on the all-checked-off verdict.
+const DISK_CHECK_TOOLS = ["write", "glob", "todowrite", "task", "read", "bash"];
+
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
 // tool.definition appends these to the description so the LLM sees the restriction
 // instead of treating the tool as fully available.
@@ -2565,7 +2572,6 @@ export default {
       // Runs BEFORE the task handler so the phase is current when agent routing
       // validates the dispatched agent. Without this, task calls in PREFLIGHT
       // check against the stale pre-advancement phase and throw WRONG_AGENT.
-      const DISK_CHECK_TOOLS = ["write", "glob", "todowrite", "task"];
       if (DISK_CHECK_TOOLS.includes(tool)) {
         // Skip disk check when todowrite just advanced the phase in this call.
         // Without this guard, todowrite advances to INTENT, then the disk check
@@ -3155,6 +3161,7 @@ export default {
       "experimental.chat.system.transform": systemTransform,
       // Test-access properties
       STATES,
+      DISK_CHECK_TOOLS,
       sessionPhaseMap,
       overseerSessions,
       isOverseerSession,
