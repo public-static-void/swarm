@@ -2764,6 +2764,91 @@ ${findings}
       expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}-gen1.md`, s)).toBe(true);
       expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}.md`, s)).toBe(true);
     });
+
+    it("checks off a milestone when the writing session's agent is not recorded (unknown-agent silent skip)", async () => {
+      // The writing session never calls chat.params with an agent, so it is
+      // absent from sessionAgentMap — the write-path trigger must still fire
+      // the check-off (the registry state machine is the guard, not the agent).
+      const overseer = sid("m1-unknown-1");
+      await initOverseer(overseer);
+      hooks.sessionPhaseMap.set(overseer, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${overseer}:sid`, overseer);
+      createRegistry(overseer, [["M1", "in-progress"]]);
+
+      const writer = sid("m1-unknown-1-w");
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: writer, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M1-feature-${overseer}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
+      expect(content).toContain("  M1: checked-off");
+    });
+
+    it("emits a file-only AUTO_CHECKOFF_NON_ARTISAN diagnostic for an unknown writer and never writes to stderr", async () => {
+      const overseer = sid("m1-nonart-1");
+      await initOverseer(overseer);
+      hooks.sessionPhaseMap.set(overseer, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${overseer}:sid`, overseer);
+      createRegistry(overseer, [["M1", "in-progress"]]);
+
+      const writer = sid("m1-nonart-1-w");
+      const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "write", sessionID: writer, callID: "c1" },
+          { args: { filePath: `knowledge/impl-M1-feature-${overseer}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+        );
+        const log = readLoudLog();
+        expect(log).toContain(`AUTO_CHECKOFF_NON_ARTISAN: agent=unknown path=knowledge/impl-M1-feature-${overseer}.md`);
+        expect(stderrSpy).not.toHaveBeenCalled();
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+        stderrSpy.mockRestore();
+      }
+      // The diagnostic is emit-always — the check-off still proceeds.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8")).toContain("  M1: checked-off");
+    });
+
+    it("emits AUTO_CHECKOFF_UNMATCHED on a generation-mismatched write yet the gate still promotes the row", async () => {
+      // The lifecycle persists generation 1; the impl KD filename embeds gen 0.
+      // The write-path trigger's strict-generation match fails (AUTO_CHECKOFF_UNMATCHED),
+      // but the gate's any-generation reconciliation still promotes the row.
+      const s = sid("m1-genmis-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      hooks.sessionPhaseMap.set(`${s}:gen`, 1);
+      // Persist generation 1 on disk (the state file is the SSOT the write-path
+      // trigger reads) so the gen0 impl KD filename is a genuine mismatch.
+      writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.SWARM, generation: 1, sid: s, timestamp: Date.now() }));
+      createKD(`milestones-feature-${s}-gen1.md`, registryContent([["M1", "in-progress"]]));
+
+      const writer = sid("m1-genmis-1-w");
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "write", sessionID: writer, callID: "c1" },
+          { args: { filePath: `knowledge/impl-M1-feat-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY" } }
+        );
+        expect(readLoudLog()).toContain(`AUTO_CHECKOFF_UNMATCHED: knowledge/impl-M1-feat-${s}-gen0.md`);
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+      // The registry row is untouched by the write-path miss (strict gen).
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: in-progress");
+      // The write tool lands the impl KD on disk after the before-hook.
+      createKD(`impl-M1-feat-${s}-gen0.md`);
+
+      // The gate's any-generation reconciliation still promotes the row.
+      expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
+    });
   });
 
   describe("empty-result redispatch reconciliation", () => {
