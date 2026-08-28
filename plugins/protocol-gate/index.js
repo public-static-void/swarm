@@ -409,16 +409,19 @@ function loud(msg) {
   }
 }
 
-// Warn channel — user-visible diagnostics for gate-blocking failures.
-// Unlike loud(), writes to the log file unconditionally (not gated behind
-// PROTOCOL_GATE_DEBUG) AND emits to stderr so the user sees the diagnostic
-// when the gate is stuck. Only called for failures that actually block
-// gate progression (AUTO_CHECKOFF_FAILED, AUTO_CHECKOFF_UNMATCHED).
+// Warn channel — file-only diagnostics for gate-blocking failures.
+// opencode surfaces ALL process.stderr.write() output into the user prompt,
+// so stderr is a prompt-corruption vector (MEM-213). The only safe diagnostic
+// channel is fs.appendFileSync() to plugins/logs/protocol-gate.log, gated
+// behind PROTOCOL_GATE_DEBUG like loud(). Called for failures that block gate
+// progression (AUTO_CHECKOFF_FAILED, AUTO_CHECKOFF_UNMATCHED) and stalled
+// SWARM dispatches.
 function warn(msg) {
-  try {
-    appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] WARN: ${msg}\n`);
-  } catch (_) {}
-  process.stderr.write(`[protocol-gate] ${msg}\n`);
+  if (process.env.PROTOCOL_GATE_DEBUG) {
+    try {
+      appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] WARN: ${msg}\n`);
+    } catch (_) {}
+  }
 }
 
 function loadConfig() {
