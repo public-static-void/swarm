@@ -2851,12 +2851,12 @@ ${findings}
     });
   });
 
-  describe("gate disk-check tool-set widening — read/bash trigger reconciliation (Issue 71, R003)", () => {
+  describe("gate disk-check tool-set widening — read/bash trigger reconciliation", () => {
     function readLoudLog() {
       try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
     }
 
-    it("an Overseer read call in SWARM triggers reconciliation and promotes a stuck row (AC003-read)", async () => {
+    it("an Overseer read call in SWARM triggers reconciliation and promotes a stuck row", async () => {
       const s = sid("m2-read-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -2879,7 +2879,7 @@ ${findings}
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
     });
 
-    it("DISK_CHECK_TOOLS includes bash and the gate promotes a stuck row at unit level (AC003-bash, BR-3)", async () => {
+    it("DISK_CHECK_TOOLS includes bash and the gate promotes a stuck row at unit level", async () => {
       // Static assertion — the widened tool set is exported for tests.
       expect(hooks.DISK_CHECK_TOOLS).toContain("bash");
       expect(hooks.DISK_CHECK_TOOLS).toContain("read");
@@ -2899,7 +2899,7 @@ ${findings}
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
     });
 
-    it("a read call with no impl-KD evidence does not advance the phase (AC004)", async () => {
+    it("a read call with no impl-KD evidence does not advance the phase", async () => {
       const s = sid("m2-nospur-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -2917,7 +2917,7 @@ ${findings}
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
     });
 
-    it("a live non-superseded same-session impl KD auto-advances on the next gate evaluation without a re-affirm dispatch (AC005)", async () => {
+    it("a live non-superseded same-session impl KD auto-advances on the next gate evaluation without a re-affirm dispatch", async () => {
       const s = sid("m2-live-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
