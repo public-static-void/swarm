@@ -693,7 +693,7 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint).toContain("- [ISSUE-002] (medium) [swarm] Format check issue — assigned to inspector");
+        expect(hint).toContain("- [swarm/ISSUE-002] (medium) Format check issue — assigned to inspector");
         expect(hint).toContain("Triage Notes");
       });
 
@@ -794,25 +794,25 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        const issueLines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        const issueLines = hint.split("\n").filter(l => l.startsWith("- ["));
         // Triple-store seam: each issue appears with [swarm], [project], and [generic] scope,
         // interleaved within each severity group.
         expect(issueLines).toEqual([
-          "- [ISSUE-002] (high) [swarm] High A — assigned to habit-builder",
-          "- [ISSUE-002] (high) [project] High A — assigned to habit-builder",
-          "- [ISSUE-002] (high) [generic] High A — assigned to habit-builder",
-          "- [ISSUE-004] (high) [swarm] High B — assigned to habit-builder",
-          "- [ISSUE-004] (high) [project] High B — assigned to habit-builder",
-          "- [ISSUE-004] (high) [generic] High B — assigned to habit-builder",
-          "- [ISSUE-003] (medium) [swarm] Medium C — assigned to habit-builder",
-          "- [ISSUE-003] (medium) [project] Medium C — assigned to habit-builder",
-          "- [ISSUE-003] (medium) [generic] Medium C — assigned to habit-builder",
-          "- [ISSUE-001] (low) [swarm] Low D — assigned to habit-builder",
-          "- [ISSUE-001] (low) [project] Low D — assigned to habit-builder",
-          "- [ISSUE-001] (low) [generic] Low D — assigned to habit-builder",
-          "- [ISSUE-005] (low) [swarm] Low E — assigned to habit-builder",
-          "- [ISSUE-005] (low) [project] Low E — assigned to habit-builder",
-          "- [ISSUE-005] (low) [generic] Low E — assigned to habit-builder"
+          "- [swarm/ISSUE-002] (high) High A — assigned to habit-builder",
+          "- [project/ISSUE-002] (high) High A — assigned to habit-builder",
+          "- [generic/ISSUE-002] (high) High A — assigned to habit-builder",
+          "- [swarm/ISSUE-004] (high) High B — assigned to habit-builder",
+          "- [project/ISSUE-004] (high) High B — assigned to habit-builder",
+          "- [generic/ISSUE-004] (high) High B — assigned to habit-builder",
+          "- [swarm/ISSUE-003] (medium) Medium C — assigned to habit-builder",
+          "- [project/ISSUE-003] (medium) Medium C — assigned to habit-builder",
+          "- [generic/ISSUE-003] (medium) Medium C — assigned to habit-builder",
+          "- [swarm/ISSUE-001] (low) Low D — assigned to habit-builder",
+          "- [project/ISSUE-001] (low) Low D — assigned to habit-builder",
+          "- [generic/ISSUE-001] (low) Low D — assigned to habit-builder",
+          "- [swarm/ISSUE-005] (low) Low E — assigned to habit-builder",
+          "- [project/ISSUE-005] (low) Low E — assigned to habit-builder",
+          "- [generic/ISSUE-005] (low) Low E — assigned to habit-builder"
         ]);
       });
     });
@@ -839,7 +839,7 @@ Body`;
       }
 
       function issueLines(hint) {
-        return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        return hint.split("\n").filter(l => l.startsWith("- ["));
       }
 
       it("injects exactly 10 issue lines under the default cap, high severity first", async () => {
@@ -924,7 +924,7 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        const lines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        const lines = hint.split("\n").filter(l => l.startsWith("- ["));
         // Triple-store seam: each issue file appears in all 3 stores, so 2 audience-matched × 3 = 6
         expect(lines).toHaveLength(6);
         expect(hint).toContain("Inspector item");
@@ -949,7 +949,7 @@ Body`;
         );
         let hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(9);
+        expect(hint.split("\n").filter(l => l.startsWith("- ["))).toHaveLength(9);
 
         // empty string
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "";
@@ -960,7 +960,7 @@ Body`;
         );
         hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(9);
+        expect(hint.split("\n").filter(l => l.startsWith("- ["))).toHaveLength(9);
       });
 
       it("matches the audience case-insensitively as a substring", async () => {
@@ -999,7 +999,7 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        const lines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        const lines = hint.split("\n").filter(l => l.startsWith("- ["));
         // Filter yields 2 inspector issues; cap 1 → 1 line, and it must be an
         // inspector issue (a cap-then-filter order could never produce this).
         expect(lines).toHaveLength(1);
@@ -1033,7 +1033,7 @@ Body`;
         output.system.find(s => s.includes("Open issues from all stores detected"));
 
       function issueLines(hint) {
-        return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        return hint.split("\n").filter(l => l.startsWith("- ["));
       }
 
       it("starts the injected block with the marker line, count = injected lines", async () => {
@@ -1124,8 +1124,8 @@ Body`;
 
         const closeHint = output.system.find(s => s.includes("Open issues detected"));
         expect(closeHint).toBeTruthy();
-        // Unchanged line format, Close Issues step intact, resolved excluded
-        expect(closeHint).toContain("- [ISSUE-001] (medium) [swarm] Open issue A — assigned to habit-builder");
+        // [scope/id] line format, Close Issues step intact, resolved excluded
+        expect(closeHint).toContain("- [swarm/ISSUE-001] (medium) Open issue A — assigned to habit-builder");
         expect(closeHint).toContain("Close Issues");
         expect(closeHint).not.toContain("Closed issue B");
         // The marker line is overseer-only — never in the EVOLVE block
