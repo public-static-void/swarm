@@ -2405,7 +2405,7 @@ export default {
         const mergedIssues = scanOpenIssuesMerged();
         if (mergedIssues.length > 0) {
           const issueSummary = mergedIssues.map(i =>
-            `- [${i.id}] (${i.severity}) [${i.scope}] ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
+            `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
           ).join("\n");
           output.system.push(
             `[Knowledge Gate] Open issues detected:\n${issueSummary}\n` +
@@ -2432,7 +2432,7 @@ export default {
         openIssues = applyCap(openIssues, envOpenIssueCap());
         if (openIssues.length > 0) {
           const issueSummary = openIssues.map(i =>
-            `- [${i.id}] (${i.severity}) [${i.scope}] ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
+            `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
           ).join("\n");
           // The machine-checkable marker line starts the injected block.
           // {count} equals the number of lines actually injected (post
