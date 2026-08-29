@@ -99,6 +99,6 @@ After verification passes:
 
 ## Exit
 
-1. **Verify-output reporting discipline (issue #53)** — Before writing the CLEANUP KD, ground-truth verify every commit hash or artifact it reports: `git log`/`git show` for hashes (extends the step-11 `git show --stat -1` self-verification), `read`/`glob` from disk for files. Never write an unverified hash; a commit that could not be created is reported as "UNCOMMITTED" with the working-tree state. This reporting discipline complements — it does not replace — the per-commit self-verification steps.
+1. **Verify-output reporting discipline (issue #53)** — Before writing the CLEANUP KD, ground-truth verify every commit hash or artifact it reports: `git log`/`git show` for hashes (extends the step-11 `git show --stat -1` self-verification), `read`/`glob` from disk for files. Write verified hashes; a commit that could not be created is reported as "UNCOMMITTED" with the working-tree state. This reporting discipline complements — it does not replace — the per-commit self-verification steps.
 2. **Write CLEANUP KD** — Write a CLEANUP KD at the `RESULT KD` path specified in the dispatch context using the `template-cleanup.md` template from the kd-system skill. The KD documents what was committed and pushed, and signals to the protocol-gate that the cleanup phase is complete.
 3. Report what was committed and pushed.
