@@ -73,7 +73,7 @@ After verification passes:
 
 1. **Re-verify working branch** — Run `git branch --show-current`. Verify the branch is a feature branch — a shared integration branch requires escalation: load the escalation-protocol skill and escalate via ESCALATION format.
 
-2. **Push** — Push committed changes to remote. When remote is absent or push fails, report the issue back to the dispatching agent.
+2. **Push** — Push committed changes to the remote when (a) committed changes exist at lifecycle end, (b) a remote is configured, and (c) the current branch is a feature/fix/chore-style branch (not main/master). For the first push (no upstream tracking yet), run `git push -u origin <branch>`; for subsequent pushes, run `git push`. When the remote is absent or the push fails, report the issue back to the dispatching agent.
 
 3. **Post-push alignment check** — After successful push, run `git fetch origin` and verify the remote branch is up to date by comparing `git rev-list --count HEAD..origin/<branch>`. If the count is greater than 0, log a warning that the remote branch is behind. If the remote branch does not exist yet (first push), skip the check. If fetch fails, report the issue back to the dispatching agent.
 
