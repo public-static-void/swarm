@@ -24,7 +24,7 @@ import { tool } from "@opencode-ai/plugin";
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
 
-// --- Two-store scheme (R001) ---
+// --- Two-store scheme ---
 // CONFIG_STORE_ROOT owns swarm-config issues/memories — the historical
 // default store (all existing issues belong here and stay put). It resolves
 // from the plugin location, which is known at module load.
@@ -53,7 +53,7 @@ const SEAM_DIR_OVERRIDES = {
   "short-term": process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR ? resolve(process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR) : null
 };
 
-// Per-store dir resolution (R001): maps {storeRoot}/knowledge/{issues|memory|short-term}
+// Per-store dir resolution: maps {storeRoot}/knowledge/{issues|memory|short-term}
 // for either store root (config or project). The legacy seam overrides the
 // corresponding dir in BOTH stores when set, so the single-store test setup
 // stays hermetic. `storeRoot` for the project store is captured at server
@@ -72,16 +72,16 @@ const ISSUES_DIR = storeDirFor("issues", CONFIG_STORE_ROOT);
 // long-term memory store and are excluded from memory_search by structure.
 const SHORT_TERM_DIR = storeDirFor("short-term", CONFIG_STORE_ROOT);
 
-// Derived memory search index (R001). The .jsonl filename is the R001.2
-// naming constraint in action: it must NOT match f.endsWith(".json") and
-// must NOT start with "entry-", so every existing .json/entry- filter in
-// the plugin (isCacheValid, loadEntriesFromDisk, getNextMemoryId) and the
-// test suite stays intact. The index is a rebuildable projection — the
-// entry files remain the single source of truth (R001.1).
+// Derived memory search index. The .jsonl filename is a naming constraint
+// in action: it must NOT match f.endsWith(".json") and must NOT start with
+// "entry-", so every existing .json/entry- filter in the plugin
+// (isCacheValid, loadEntriesFromDisk, getNextMemoryId) and the test suite
+// stays intact. The index is a rebuildable projection — the entry files
+// remain the single source of truth.
 const MEMORY_INDEX_FILE = "memory-search-index.jsonl";
 const MEMORY_INDEX_PATH = join(MEMORY_DIR, MEMORY_INDEX_FILE);
 
-// --- Scope resolution helpers (R005) ---
+// --- Scope resolution helpers ---
 // Reads the `scope` field from a KD file's YAML frontmatter. Returns
 // "project"|"swarm" or null when the file is missing, unreadable, or
 // has no scope field. Used by the memory-write fallback chain: the writer
@@ -106,7 +106,7 @@ function readSourceKdScope(sourceKd) {
 
 // Resolves the target store from an explicit scope, source-KD frontmatter,
 // or the documented "swarm" default. The fallback chain is deterministic
-// (never a heuristic) — R002/NFR002.
+// (never a heuristic).
 function resolveMemoryScope(explicitScope, sourceKd) {
   if (explicitScope === "project" || explicitScope === "generic" || explicitScope === "swarm") return explicitScope;
   const fromSource = readSourceKdScope(sourceKd);
@@ -214,7 +214,7 @@ function getNextMemoryId() {
 }
 
 /**
- * Gets the next sequential memory ID within ONE store dir (NFR005 per-store
+ * Gets the next sequential memory ID within ONE store dir (per-store
  * assignment): `max(numeric entry id)+1`. Each store owns an independent ID
  * sequence, so callers must scan the scope-resolved target dir — scanning
  * the swarm MEMORY_DIR for a non-swarm write would hand out IDs that can
@@ -286,7 +286,7 @@ function validateMemoryEntry(entry) {
   if (entry.version !== "1.0.0") {
     return { valid: false, error: 'version must be "1.0.0"' };
   }
-  // Optional scope field (R005): injected at write time; validated when present.
+  // Optional scope field: injected at write time; validated when present.
   if (entry.scope !== undefined && !VALID_SCOPES.includes(entry.scope)) {
     return { valid: false, error: `scope must be one of: ${VALID_SCOPES.join(", ")}, got "${entry.scope}"` };
   }
@@ -532,7 +532,7 @@ function getNextIssueId() {
 }
 
 /**
- * Gets the next numeric issue ID within ONE store dir (R003 per-store
+ * Gets the next numeric issue ID within ONE store dir (per-store
  * assignment): `max(numeric id)+1`, tolerating legacy padded ids. The
  * frontmatter id wins when parseable; a malformed file falls back to the
  * numeric part of its filename. Returns 1 for an empty/missing dir.
@@ -569,9 +569,9 @@ function getNextIssueIdForStore(issuesDir) {
 }
 
 /**
- * Validates an issue against the persisted frontmatter schema (R003).
+ * Validates an issue against the persisted frontmatter schema.
  * `scope: "project"|"swarm"` is REQUIRED — a write without a resolvable
- * scope is rejected, never inferred (R002/NFR002). `id` is optional;
+ * scope is rejected, never inferred. `id` is optional;
  * when present it must be a positive integer (auto-assigned per store
  * otherwise). Body fields are optional strings. Returns
  * { valid, error? } mirroring validateMemoryEntry.
@@ -616,7 +616,7 @@ function validateIssue(issue) {
 }
 
 /**
- * Serializes an issue to the on-disk markdown form (R003): YAML frontmatter
+ * Serializes an issue to the on-disk markdown form: YAML frontmatter
  * (persisted schema incl. `scope`) + `# Issue {id}: {title}` heading and the
  * canonical body sections (Description, Source KD Reference, Recommended Fix,
  * Acceptance Criteria). Quoted values round-trip through parseIssueFile.
@@ -850,7 +850,7 @@ export default {
   server: async function knowledgeGateServer(input, options) {
     const sessionAgentMap = new Map(); // sessionID → agent name
 
-    // Project store root (R001): captured once per server instance at init.
+    // Project store root: captured once per server instance at init.
     // Precedence: env KNOWLEDGE_GATE_PROJECT_ROOT ?? input.directory ??
     // process.cwd() — env first (test seam), then the opencode PluginInput
     // workspace, then the cwd fallback (tests call server({}, {})). When the
@@ -860,7 +860,7 @@ export default {
       ? resolve(process.env.KNOWLEDGE_GATE_PROJECT_ROOT)
       : (input && input.directory ? resolve(input.directory) : process.cwd());
 
-    // Classification → store root (R002). Explicit scope only: an invalid
+    // Classification → store root. Explicit scope only: an invalid
     // scope maps to null so the write path can reject it loudly instead of
     // silently routing to a default store.
     function storeRootForScope(scope) {
@@ -870,7 +870,7 @@ export default {
       return null;
     }
 
-    // Per-store memory dir resolution (R005): resolves the memory directory
+    // Per-store memory dir resolution: resolves the memory directory
     // for a given store scope. The legacy seam overrides apply to both stores.
     // Generic store nests under CONFIG_STORE_ROOT/knowledge/generic/ — bypass
     // storeDirFor which would double the "knowledge" segment.
@@ -896,13 +896,13 @@ export default {
       return storeDirFor("issues", storeRootForScope(scope));
     }
 
-    // Per-store memory index path (R006): each store owns its own
+    // Per-store memory index path: each store owns its own
     // memory-search-index.jsonl.
     function memoryIndexPathForScope(scope) {
       return join(memoryDirForScope(scope), MEMORY_INDEX_FILE);
     }
 
-    // --- Per-store in-memory cache (R006, per server instance) ---
+    // --- Per-store in-memory cache (per server instance) ---
     // Each store gets its own cache with its own TTL, file count, and entry
     // list. The cache lives in the server closure, not module scope, so every
     // server() call yields fresh caches — tests get clean state without
@@ -985,11 +985,11 @@ export default {
       return entries;
     }
 
-    // --- Derived memory search index (R001) ---
+    // --- Derived memory search index ---
     // The index is a derived projection of the entry files: it never replaces
     // them as the source of truth, and rebuilding it never modifies an entry.
 
-    // R001.4 — the same file-count signal isCacheValid already uses (L645)
+    // The same file-count signal isCacheValid already uses (L645)
     function getMemoryEntryFileCount(scope) {
       const dir = memoryDirForScope(scope);
       try {
@@ -999,7 +999,7 @@ export default {
       }
     }
 
-    // R001.4 — usable iff it exists, parses, version === 1, and entryCount
+    // Usable iff it exists, parses, version === 1, and entryCount
     // matches the on-disk entry file count. `updated` is diagnostics-only.
     function isMemoryIndexValid(doc, scope) {
       if (!doc || typeof doc !== "object") return false;
@@ -1009,7 +1009,7 @@ export default {
       return doc.entryCount === getMemoryEntryFileCount(scope);
     }
 
-    // R001.3 — the exact searchable projection searchMemory needs, plus the
+    // The exact searchable projection searchMemory needs, plus the
     // tombstone marker. Tombstoned entries stay in the index with
     // superseded_by preserved; the unchanged !e.superseded_by filter in
     // searchMemory remains the exclusion mechanism.
@@ -1028,7 +1028,7 @@ export default {
       };
     }
 
-    // R001.5 backfill builder — reuses the existing readdir+parse scan; entry
+    // Backfill builder — reuses the existing readdir+parse scan; entry
     // files are never modified by a rebuild.
     function buildMemoryIndexDoc(scope) {
       const entries = loadEntriesFromDisk(scope);
@@ -1041,16 +1041,16 @@ export default {
       };
     }
 
-    // R001.5 atomicity — tmp-file + rename so a crash never leaves a
+    // Atomicity — tmp-file + rename so a crash never leaves a
     // truncated-but-parseable index; a truncated file is corrupt and rebuilds
     // on the next miss. Non-throwing: a failed index write is logged and the
     // scan-backed cache remains the fallback (failure isolation).
     function writeMemoryIndex(doc, scope) {
       const dir = memoryDirForScope(scope);
-      // R001 — an absent store memory dir means a never-written store: an
+      // An absent store memory dir means a never-written store: an
       // empty store has nothing to index, so skip the write instead of
       // failing ENOENT on the tmp file. The scan-backed cache serves the
-      // empty result set (NFR004 failure isolation).
+      // empty result set (failure isolation).
       if (!existsSync(dir)) {
         debug(`memory index: store dir absent for scope ${scope} — skipping index write`);
         return false;
@@ -1071,7 +1071,7 @@ export default {
       }
     }
 
-    // R001.5 — single rebuild path for write-through and backfill. Guarded
+    // Single rebuild path for write-through and backfill. Guarded
     // by the existing cache.isLoading flag; the sync body makes a real
     // overlap impossible, but the guard pins the contract. Never throws:
     // a rebuild failure leaves the store fully functional and the missing/
@@ -1081,9 +1081,9 @@ export default {
       if (cache.isLoading) return cache.entries || [];
       cache.isLoading = true;
       try {
-        // R001 — short-circuit never-written stores before the write path:
+        // Short-circuit never-written stores before the write path:
         // a merged search over absent stores stays diagnostic-silent and
-        // creates zero directories (R002); the scan serves the empty set.
+        // creates zero directories; the scan serves the empty set.
         if (!existsSync(memoryDirForScope(scope))) {
           debug(`memory index: store dir absent for scope ${scope} — scan served, index write skipped`);
           return loadEntriesFromDisk(scope);
@@ -1100,7 +1100,7 @@ export default {
       }
     }
 
-    // R001.6 — cache-miss load path: serve from the single index document
+    // Cache-miss load path: serve from the single index document
     // when valid, otherwise rebuild (backfill) and serve. All scoring, sort,
     // limit, and result-shaping in searchMemory stays unchanged.
     function loadEntriesForSearch(scope) {
@@ -1132,7 +1132,7 @@ export default {
      * Uses per-store in-memory cache with configurable TTL to reduce disk I/O.
      * Returns entries sorted by tag-match count (descending), then recency.
      * When store is omitted, searches all stores and merges results; each
-     * result carries a `store: "project"|"generic"|"swarm"` field (R006).
+     * result carries a `store: "project"|"generic"|"swarm"` field.
      */
     function searchMemory(query) {
       const { tags = [], topic = "", limit = 5, store: storeFilter } = query;
@@ -1357,10 +1357,10 @@ export default {
             return JSON.stringify({ error: "Only Scribe agent has permission to write memory entries. Called by: " + (agent || "unknown") });
           }
 
-          // Scope resolution (R005): explicit → source_kd frontmatter → "swarm"
+          // Scope resolution: explicit → source_kd frontmatter → "swarm"
           const scope = resolveMemoryScope(args.scope, entry.source_kd);
           // Inject resolved scope into entry JSON before validation and
-          // serialization — every entry on disk carries its scope (R005).
+          // serialization — every entry on disk carries its scope.
           entry.scope = scope;
           const targetDir = memoryDirForScope(scope);
 
@@ -1417,7 +1417,7 @@ export default {
             const cache = getCacheForScope(scope);
             cache.entries = null;
             cache.lastLoaded = null;
-            // R001.5 write-through: rebuild the derived index after the write
+            // Write-through: rebuild the derived index after the write
             rebuildMemoryIndex(scope);
             debug(`memory_write: written ${filePath} (scope: ${scope})`);
             return JSON.stringify({ message: "Memory entry written", id: entry.id, scope });
@@ -1457,7 +1457,7 @@ export default {
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
 
-          // Locate: named store first, then all stores by id (R005 cross-store).
+          // Locate: named store first, then all stores by id (cross-store).
           // When scope is given, search only that store; when omitted, search
           // swarm first then project then generic — an id found in multiple
           // targets the first match (swarm takes priority for backward compat).
@@ -1523,7 +1523,7 @@ export default {
             const cache = getCacheForScope(found.scope);
             cache.entries = null;
             cache.lastLoaded = null;
-            // R001.5 write-through: rebuild the derived index after the update
+            // Write-through: rebuild the derived index after the update
             rebuildMemoryIndex(found.scope);
             debug(`memory_update: updated ${found.filePath} (scope: ${found.scope})`);
             return JSON.stringify({ message: "Memory entry updated", id: existing.id, scope: found.scope });
@@ -1555,7 +1555,7 @@ export default {
             return JSON.stringify({ error: "Memory entry not found: " + id });
           }
 
-          // Locate: named store first, then all stores by id (R005 cross-store).
+          // Locate: named store first, then all stores by id (cross-store).
           const lookupScopes = explicitScope ? [explicitScope] : ["swarm", "project", "generic"];
           let found = null;
           for (const s of lookupScopes) {
@@ -1577,7 +1577,7 @@ export default {
             const cache = getCacheForScope(found.scope);
             cache.entries = null;
             cache.lastLoaded = null;
-            // R001.5 write-through: rebuild the derived index after the delete
+            // Write-through: rebuild the derived index after the delete
             rebuildMemoryIndex(found.scope);
             debug(`memory_delete: deleted ${found.filePath} (scope: ${found.scope})`);
             return JSON.stringify({ message: "Memory entry deleted", id, scope: found.scope });
@@ -1619,7 +1619,7 @@ export default {
           }
 
           // Validation covers the required scope — missing/invalid scope is
-          // rejected here, never inferred (R002/NFR002).
+          // rejected here, never inferred.
           const validation = validateIssue(issue);
           if (!validation.valid) {
             debug(`issue_write: validation failed — ${validation.error}`);
@@ -1630,7 +1630,7 @@ export default {
           // mkdir -p on write: the target store's issues dir may not exist yet
           try { mkdirSync(issuesDir, { recursive: true }); } catch (_) {}
 
-          // Per-store numeric ID assignment (R003): explicit id honored,
+          // Per-store numeric ID assignment: explicit id honored,
           // otherwise max(id)+1 within the target store.
           const id = issue.id !== undefined ? issue.id : getNextIssueIdForStore(issuesDir);
 
@@ -1689,7 +1689,7 @@ export default {
           if (!Number.isInteger(id) || id < 1) {
             return JSON.stringify({ error: `id must be a positive integer, got "${id}"` });
           }
-          // scope is required — ambiguous scope-omission removed (AC008)
+          // scope is required — ambiguous scope-omission removed
           if (!scope || (scope !== "project" && scope !== "generic" && scope !== "swarm")) {
             return JSON.stringify({ error: "scope parameter is required for issue_update" });
           }
@@ -1730,7 +1730,7 @@ export default {
 
           // Surgical frontmatter update: replace only the touched lines and
           // keep every other frontmatter field byte-identical, so the issue
-          // schema is preserved (P004). A resolution implies closing.
+          // schema is preserved. A resolution implies closing.
           const newStatus = changes.status !== undefined ? changes.status : (changes.resolution !== undefined ? "resolved" : null);
           const outLines = [];
           let statusReplaced = false;
@@ -1843,7 +1843,7 @@ export default {
           const targetDir = issuesDirForScope(to_scope);
           const targetPath = join(targetDir, `issue-${id}.md`);
 
-          // Collision safety (NFR005): per-store ID spaces make same-ID
+          // Collision safety: per-store ID spaces make same-ID
           // collisions the expected case when bubbling low-numbered IDs
           // across stores. Never overwrite an existing target file — reassign
           // a fresh target-store ID and record the source ID as provenance.
@@ -2106,13 +2106,13 @@ export default {
       })
     };
 
-    // Promotion helper (R007 / OQ-3 copy-then-clear): reads every short-term
+    // Promotion helper (copy-then-clear): reads every short-term
     // note for a session, writes each selected note into the long-term store
     // with the session's COMPOSED KD as source_kd, then clears the session's
     // short-term store. The Scribe systemTransform instruction describes the
     // same contract in tool terms; this function is the deterministic
     // implementation exercised by the promotion tests. Clear failure is logged
-    // and non-fatal (mirrors KD cleanup) — R020 lifecycle-end cleanup remains
+    // and non-fatal (mirrors KD cleanup) — lifecycle-end cleanup remains
     // the safety net for sessions that never reach EXTRACT.
     function promoteShortTermNotes(sessionID, composedKdPath, options = {}) {
       const select = typeof options.select === "function" ? options.select : () => true;
@@ -2159,7 +2159,7 @@ export default {
           ? note.tags
           : [...(note.tags || []), "context", "lifecycle"];
         const entry = {
-          // Per-store ID assignment (NFR005): scan the scope-resolved target
+          // Per-store ID assignment: scan the scope-resolved target
           // dir, not the swarm store — the swarm sequence diverges from the
           // target's and swarm-max+1 can overwrite an existing target entry.
           id: getNextMemoryIdForStore(targetDir),
@@ -2197,14 +2197,14 @@ export default {
         }
       }
 
-      // R001.5 write-through: rebuild the derived index once after the write
+      // Write-through: rebuild the derived index once after the write
       // loop (only when at least one entry was promoted), not per note.
       if (promoted.length > 0) {
         rebuildMemoryIndex(scope);
       }
 
       // clear (copy-then-clear, OQ-3): remove the whole session store after
-      // the copies land. Failure is non-fatal — R020 cleanup runs at lifecycle end.
+      // the copies land. Failure is non-fatal — cleanup runs at lifecycle end.
       let cleared = true;
       try {
         if (existsSync(sessionRoot)) rmSync(sessionRoot, { recursive: true, force: true });
@@ -2216,7 +2216,7 @@ export default {
       return { promoted, skipped, cleared };
     }
 
-    // --- Merged issue scan (R007) ---
+    // --- Merged issue scan ---
     // Scans open issues from all stores and tags each with its scope. Used by
     // the systemTransform EVOLVE (habit-builder) and INTENT (overseer) branches
     // so both agents see the full picture across stores. The cap and audience
@@ -2255,7 +2255,7 @@ export default {
       return allIssues;
     }
 
-    // High-severity view over ALL stores (R007): the backward-transition
+    // High-severity view over ALL stores: the backward-transition
     // trigger must fire on high-severity open issues from the project and
     // generic stores too, not just swarm. Derives from scanOpenIssuesMerged
     // so read path, failure isolation, and severity/id ordering cannot
@@ -2344,8 +2344,8 @@ export default {
       );
       debug(`systemTransform: memory_search tool hint injected for session="${sessionID}" agent="${agent || "unknown"}"`);
 
-      // Short-term resume hint — the mechanical compaction-amnesia mitigation
-      // (R005). Regenerated on every LLM call, so a post-compaction model can
+      // Short-term resume hint — the mechanical compaction-amnesia mitigation.
+      // Regenerated on every LLM call, so a post-compaction model can
       // not forget the re-read instruction: any agent with ≥1 note in the
       // current session is told to read them back. Zero notes → no hint.
       const resumeNoteCount = agent ? readNotesFromDisk(sessionID, agent).length : 0;
@@ -2375,7 +2375,7 @@ export default {
           `The tool validates schema, checks tags against ` +
           `controlled vocabulary, deduplicates, auto-assigns sequential ID, and writes to disk.`
         );
-        // Promotion step (R007): Scribe is only dispatched at EXTRACT, so this
+        // Promotion step: Scribe is only dispatched at EXTRACT, so this
         // agent-gated instruction is effectively phase-gated. Copy-then-clear
         // (OQ-3): long-term copies land BEFORE the short-term notes are deleted.
         output.system.push(
@@ -2472,7 +2472,7 @@ export default {
       generateHintLines,
       checkDuplicateMemory,
       promoteShortTermNotes,
-      // Store resolution internals (R001): store roots retained for
+      // Store resolution internals: store roots retained for
       // backward compat; the three store roots + per-store helpers exposed for
       // dual-store tests (M6).
       MEMORY_DIR,
@@ -2482,7 +2482,7 @@ export default {
       GENERIC_STORE_ROOT,
       storeDirFor,
       storeRootForScope,
-      // Per-store memory/issue internals (R005/R006): exposed for M3 tests
+      // Per-store memory/issue internals: exposed for M3 tests
       memoryDirForScope,
       issuesDirForScope,
       shortTermDirForScope,
@@ -2490,7 +2490,7 @@ export default {
       getCacheForScope,
       memoryIndexPathForScope,
       resolveMemoryScope,
-      // Issue move tool (P007): exposed for testing
+      // Issue move tool: exposed for testing
       issueMove: pluginTools.issue_move.execute
     };
   }
