@@ -743,6 +743,36 @@ RESULT KD: knowledge/cleanup-foo.md`;
     });
   });
 
+  describe("Cleanup Push Framing", () => {
+    it("renders the cleanup dispatch with positive push framing", async () => {
+      // The cleanup template must instruct the committer to push by default —
+      // positive framing only, no negative push clause (the recurring
+      // lifecycle-end non-push defect came from a negative scope overriding
+      // this template).
+      const prompt = `AGENT: committer
+MODE: cleanup
+SESSION DATE: 2026-08-29
+SCOPE: Test cleanup
+RESULT KD: knowledge/cleanup-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.prompt).toMatch(/Commit and push/);
+      expect(output.args.prompt).not.toMatch(/do not push/i);
+    });
+
+    it("keeps the cleanup fallback template positively framed", async () => {
+      // The in-code fallback (disk template missing) must carry the same
+      // positive push instruction — assert it on the source so drift is
+      // caught at test time.
+      const src = readFileSync(new URL("../../../plugins/delegation-gate/index.js", import.meta.url), "utf8");
+      const fallbackLines = src.split("\n").filter(l => /^    cleanup: /.test(l));
+      expect(fallbackLines).toHaveLength(1);
+      expect(fallbackLines[0]).toMatch(/Commit and push/);
+      expect(fallbackLines[0]).not.toMatch(/do not push/i);
+    });
+  });
+
   describe("Memory Division of Labor", () => {
     // Evolve dispatches the Habit Builder — its rendered prompt must stay free
     // of the Scribe-writes-memory rule (the rule belongs to scribe.md
