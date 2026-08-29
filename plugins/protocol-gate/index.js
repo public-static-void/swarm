@@ -27,7 +27,7 @@ function getStateDir() {
 }
 
 function getKnowledgeDir() {
-  // R008: shared project-root seam with knowledge-gate. The precedence is:
+  // Shared project-root seam with knowledge-gate. The precedence is:
   // 1. PROTOCOL_GATE_KNOWLEDGE_DIR — explicit override (tests, production seam)
   // 2. KNOWLEDGE_GATE_PROJECT_ROOT — shared env seam with knowledge-gate so
   //    a session's lifecycle KDs and its issues/memories resolve to the same root
@@ -293,8 +293,8 @@ function cleanupLifecycleKDs(sessionID, generation = 0) {
     }
   }
   debug(`Cleanup of ${stale.length} stale KDs for session ${sessionID} (generation ${gen})`);
-  // Lifecycle-end cleanup also clears the session's short-term memory store
-  // (R020/R006): promotion already copies selected notes to long-term memory
+  // Lifecycle-end cleanup also clears the session's short-term memory store:
+  // promotion already copies selected notes to long-term memory
   // at EXTRACT, so the scratch notes are disposable here. Recursive + force,
   // failure non-blocking (mirrors the KD cleanup loop above). Long-term
   // knowledge/memory/ is untouched.
@@ -307,7 +307,7 @@ function cleanupLifecycleKDs(sessionID, generation = 0) {
   } catch (e) {
     debug(`cleanupLifecycleKDs: failed to remove short-term store for ${sessionID}: ${e.message}`);
   }
-  // Store-aware scratch cleanup (R005): generic and project-scoped notes live
+  // Store-aware scratch cleanup: generic and project-scoped notes live
   // outside the legacy short-term dir. Only in-config-store locations are
   // reachable here — project workspaces outside the config root own their
   // scratch dirs and are out of reach by design.
@@ -1023,7 +1023,7 @@ function findNewestEvidenceKD(sessionPhaseMap, sessionID, phase) {
 
 // On a FAIL auto-regression the milestone rows CITED by the review KD re-open
 // to in-progress, so the all-checked-off gate cannot re-advance SWARM→VERIFY
-// before fresh impl KDs land. Scoped reopen (R012): citedMilestoneIds are the
+// before fresh impl KDs land. Scoped reopen: citedMilestoneIds are the
 // registry-resolvable milestone tokens parsed from the review KD's Findings
 // section — the intersection with registry row ids reopens exactly; unrelated
 // checked-off rows are untouched. Idempotent for rows already in-progress; a
@@ -1045,8 +1045,8 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
   }
 }
 
-// Parses milestone tokens from a review KD — the provenance for scoped reopen
-// (R012): `impl-<milestone-id>-` path tokens and bare `M\d+` milestone ids.
+// Parses milestone tokens from a review KD — the provenance for scoped reopen:
+// `impl-<milestone-id>-` path tokens and bare `M\d+` milestone ids.
 // Tokens are deduplicated and case-preserved. The scan covers the WHOLE review
 // KD (Issue 69): FAIL citations live wherever the Inspector writes them —
 // Findings, Verdict commentary, Audit — so anchoring on the Findings section
@@ -1172,7 +1172,7 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
     debug(`VERDICT_MISSING: newest review KD ${verdictInfo ? verdictInfo.filename : "(none)"} lacks a valid verdict field — advancement blocked`);
     return false;
   }
-  // Fresh-PASS-after-fix (R010): a PASS verdict advances only when it is at
+  // Fresh-PASS-after-fix: a PASS verdict advances only when it is at
   // least as new as the newest impl-* KD. A fix cycle that landed after the
   // review (newer impl KD) makes the PASS stale — a fresh review is required
   // before EXTRACT starts. No impl KD ⇒ no fix cycle ⇒ trivially fresh.
@@ -1182,7 +1182,7 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
     debug(`STALE_PASS: verdict KD ${verdictInfo.filename} mtime=${verdictMtime} < newest impl KD mtime=${newestImpl} — fresh review required after last fix`);
     return false;
   }
-  // The merged review+audit surface advances on a single review KD (R010).
+  // The merged review+audit surface advances on a single review KD.
   // The regression side stays OR (checkPhaseStateConsistency) so a single-KD
   // VERIFY holds instead of directly regressing to SWARM — otherwise the
   // unbounded VERIFY⇄SWARM loop returns.
