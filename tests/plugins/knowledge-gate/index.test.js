@@ -693,7 +693,7 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint).toContain("- [ISSUE-002] (medium) [swarm] Format check issue — assigned to inspector");
+        expect(hint).toContain("- [swarm/ISSUE-002] (medium) Format check issue — assigned to inspector");
         expect(hint).toContain("Triage Notes");
       });
 
@@ -794,25 +794,25 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        const issueLines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        const issueLines = hint.split("\n").filter(l => l.startsWith("- ["));
         // Triple-store seam: each issue appears with [swarm], [project], and [generic] scope,
         // interleaved within each severity group.
         expect(issueLines).toEqual([
-          "- [ISSUE-002] (high) [swarm] High A — assigned to habit-builder",
-          "- [ISSUE-002] (high) [project] High A — assigned to habit-builder",
-          "- [ISSUE-002] (high) [generic] High A — assigned to habit-builder",
-          "- [ISSUE-004] (high) [swarm] High B — assigned to habit-builder",
-          "- [ISSUE-004] (high) [project] High B — assigned to habit-builder",
-          "- [ISSUE-004] (high) [generic] High B — assigned to habit-builder",
-          "- [ISSUE-003] (medium) [swarm] Medium C — assigned to habit-builder",
-          "- [ISSUE-003] (medium) [project] Medium C — assigned to habit-builder",
-          "- [ISSUE-003] (medium) [generic] Medium C — assigned to habit-builder",
-          "- [ISSUE-001] (low) [swarm] Low D — assigned to habit-builder",
-          "- [ISSUE-001] (low) [project] Low D — assigned to habit-builder",
-          "- [ISSUE-001] (low) [generic] Low D — assigned to habit-builder",
-          "- [ISSUE-005] (low) [swarm] Low E — assigned to habit-builder",
-          "- [ISSUE-005] (low) [project] Low E — assigned to habit-builder",
-          "- [ISSUE-005] (low) [generic] Low E — assigned to habit-builder"
+          "- [swarm/ISSUE-002] (high) High A — assigned to habit-builder",
+          "- [project/ISSUE-002] (high) High A — assigned to habit-builder",
+          "- [generic/ISSUE-002] (high) High A — assigned to habit-builder",
+          "- [swarm/ISSUE-004] (high) High B — assigned to habit-builder",
+          "- [project/ISSUE-004] (high) High B — assigned to habit-builder",
+          "- [generic/ISSUE-004] (high) High B — assigned to habit-builder",
+          "- [swarm/ISSUE-003] (medium) Medium C — assigned to habit-builder",
+          "- [project/ISSUE-003] (medium) Medium C — assigned to habit-builder",
+          "- [generic/ISSUE-003] (medium) Medium C — assigned to habit-builder",
+          "- [swarm/ISSUE-001] (low) Low D — assigned to habit-builder",
+          "- [project/ISSUE-001] (low) Low D — assigned to habit-builder",
+          "- [generic/ISSUE-001] (low) Low D — assigned to habit-builder",
+          "- [swarm/ISSUE-005] (low) Low E — assigned to habit-builder",
+          "- [project/ISSUE-005] (low) Low E — assigned to habit-builder",
+          "- [generic/ISSUE-005] (low) Low E — assigned to habit-builder"
         ]);
       });
     });
@@ -839,7 +839,7 @@ Body`;
       }
 
       function issueLines(hint) {
-        return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        return hint.split("\n").filter(l => l.startsWith("- ["));
       }
 
       it("injects exactly 10 issue lines under the default cap, high severity first", async () => {
@@ -924,7 +924,7 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        const lines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        const lines = hint.split("\n").filter(l => l.startsWith("- ["));
         // Triple-store seam: each issue file appears in all 3 stores, so 2 audience-matched × 3 = 6
         expect(lines).toHaveLength(6);
         expect(hint).toContain("Inspector item");
@@ -949,7 +949,7 @@ Body`;
         );
         let hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(9);
+        expect(hint.split("\n").filter(l => l.startsWith("- ["))).toHaveLength(9);
 
         // empty string
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "";
@@ -960,7 +960,7 @@ Body`;
         );
         hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- [ISSUE-"))).toHaveLength(9);
+        expect(hint.split("\n").filter(l => l.startsWith("- ["))).toHaveLength(9);
       });
 
       it("matches the audience case-insensitively as a substring", async () => {
@@ -999,7 +999,7 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        const lines = hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        const lines = hint.split("\n").filter(l => l.startsWith("- ["));
         // Filter yields 2 inspector issues; cap 1 → 1 line, and it must be an
         // inspector issue (a cap-then-filter order could never produce this).
         expect(lines).toHaveLength(1);
@@ -1033,7 +1033,7 @@ Body`;
         output.system.find(s => s.includes("Open issues from all stores detected"));
 
       function issueLines(hint) {
-        return hint.split("\n").filter(l => l.startsWith("- [ISSUE-"));
+        return hint.split("\n").filter(l => l.startsWith("- ["));
       }
 
       it("starts the injected block with the marker line, count = injected lines", async () => {
@@ -1124,8 +1124,8 @@ Body`;
 
         const closeHint = output.system.find(s => s.includes("Open issues detected"));
         expect(closeHint).toBeTruthy();
-        // Unchanged line format, Close Issues step intact, resolved excluded
-        expect(closeHint).toContain("- [ISSUE-001] (medium) [swarm] Open issue A — assigned to habit-builder");
+        // [scope/id] line format, Close Issues step intact, resolved excluded
+        expect(closeHint).toContain("- [swarm/ISSUE-001] (medium) Open issue A — assigned to habit-builder");
         expect(closeHint).toContain("Close Issues");
         expect(closeHint).not.toContain("Closed issue B");
         // The marker line is overseer-only — never in the EVOLVE block
@@ -2167,7 +2167,7 @@ Body`;
     // F-001 collision safety: per-store independent ID spaces make same-ID
     // collisions the expected case when bubbling low-numbered project IDs up
     // to the swarm store. A move must never overwrite an existing target file
-    // (NFR005) — it reassigns a fresh target-store ID and records provenance
+    // — it reassigns a fresh target-store ID and records provenance
     // in frontmatter instead. Fresh module instance without seams so swarm
     // and project stores are physically distinct dirs.
     describe("issue_move collision safety (fresh module instance)", () => {
@@ -2203,7 +2203,7 @@ Body`;
       }
 
       it("reassigns a fresh target-store ID instead of overwriting an existing same-ID issue", async () => {
-        // Both stores legitimately hold their own issue-1 (per-store counters)
+        // Both stores legitimately hold their own first issue (per-store counters)
         const swarmSeeded = await seedIssueIn("swarm", "Swarm bubble-up candidate");
         const projectSeeded = await seedIssueIn("project", "Existing project issue one");
         expect(swarmSeeded.id).toBe(1);
@@ -2218,7 +2218,7 @@ Body`;
         expect(result.error).toBeUndefined();
         expect(result.id).toBe(2);
         expect(result.source_id).toBe(1);
-        // Existing project issue-1 preserved byte-for-byte — no data loss (NFR005)
+        // Existing project issue file preserved byte-for-byte — no data loss
         expect(readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8")).toBe(projectOneBefore);
         // Moved issue landed under the fresh ID with updated frontmatter
         const movedRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-2.md"), "utf8");
@@ -2279,7 +2279,7 @@ Body`;
       rmSync(projectRoot, { recursive: true, force: true });
     });
 
-    it("writes scope:swarm to the config store and scope:project to the project store, each with its own issue-1.md", async () => {
+    it("writes scope:swarm to the config store and scope:project to the project store, each with its own issue file", async () => {
       const base = { title: "Sep", severity: "high", created: "2026-08-16", session: "ses_sep" };
       const swarm = JSON.parse(await storeHooks.tool.issue_write.execute(
         { issue: { ...base, scope: "swarm" } },
@@ -2505,11 +2505,11 @@ Body`;
     });
   });
 
-  describe("memory search index (R001 derived index)", () => {
+  describe("memory search index (derived, rebuildable)", () => {
     // The index (memory-search-index.jsonl) is a derived, rebuildable
     // projection of the entry files — never the source of truth. Its name
     // must NOT end in ".json" and must NOT start with "entry-" so every
-    // existing filter/count assertion stays intact (R001.2). All file
+    // existing filter/count assertion stays intact. All file
     // expectations are verified from disk under the temp MEMORY_DIR seam.
 
     it("creates a compliant index on memory_write and leaves the entry unmodified", async () => {
@@ -2652,13 +2652,13 @@ Body`;
     it("rebuilds a version- or count-mismatched index on cache miss (validity gate)", async () => {
       writeEntries(MEMORY_DIR, [addMemoryEntry(1, { tags: ["auth", "permissions"], topic: "Auth token design" })]);
 
-      // Version mismatch (version: 2) → invalid per R001.4 → rebuild
+      // Version mismatch (version: 2) → invalid → rebuild
       writeFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), JSON.stringify({ version: 2, updated: new Date().toISOString(), entryCount: 1, entries: [] }), "utf8");
       const r1 = await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
       expect(JSON.parse(r1).map(e => e.id)).toEqual(["MEM-001"]);
 
       // Count mismatch (entryCount 5 but 1 entry on disk) + external change
-      // forces a cache miss → invalid per R001.4 → rebuild
+      // forces a cache miss → invalid → rebuild
       writeFileSync(join(MEMORY_DIR, "memory-search-index.jsonl"), JSON.stringify({ version: 1, updated: new Date().toISOString(), entryCount: 5, entries: [] }), "utf8");
       writeEntries(MEMORY_DIR, [addMemoryEntry(2, { tags: ["auth", "testing"], topic: "Auth refresh tokens" })]);
       const r2 = await hooks.tool.memory_search.execute({ tags: ["auth"] }, { agent: "artisan", sessionID: "s" });
@@ -2776,7 +2776,7 @@ Body`;
     it("writes only into the caller's namespace (structural cross-agent write boundary)", async () => {
       // memory_note takes no agent/session args — the namespace is derived
       // from caller identity, so a write can never target another agent's
-      // namespace (R003 boundary is structural).
+      // namespace — the boundary is structural.
       await hooks.tool.memory_note.execute({ topic: "mine", content: "only" }, { agent: "artisan", sessionID: "note-session" });
       expect(readdirSync(join(SHORT_TERM_DIR, "note-session"))).toEqual(["artisan"]);
       expect(existsSync(join(SHORT_TERM_DIR, "note-session", "scribe"))).toBe(false);
@@ -2889,7 +2889,7 @@ Body`;
     it("short-term notes never appear in memory_search and never reuse MEM-* IDs", async () => {
       await hooks.tool.memory_note.execute({ topic: "resume state", content: "pending step" }, { agent: "artisan", sessionID: "note-session" });
       // Long-term search reads MEMORY_DIR only — structurally excludes the
-      // short-term store (R001: notes never surface in memory_search).
+      // short-term store (notes never surface in memory_search).
       const search = await hooks.tool.memory_search.execute({ tags: [], topic: "resume", limit: 20 }, { agent: "artisan", sessionID: "note-session" });
       expect(JSON.parse(search)).toEqual([]);
 
@@ -3019,7 +3019,7 @@ Body`;
   // code assigned via module-scope getNextMemoryId(), which scans only the
   // swarm MEMORY_DIR — non-swarm promotions diverged from the target
   // sequence and could silently overwrite an existing target entry when
-  // swarm-max+1 ≤ target-max (NFR005). Fresh module instance without seams
+  // swarm-max+1 ≤ target-max. Fresh module instance without seams
   // for physically distinct per-store dirs.
   describe("promotion ID assignment — per-store sequence (fresh module instance)", () => {
     let promoHooks;
@@ -3133,9 +3133,9 @@ Body`;
     });
   });
 
-  // --- M3: Memory scope support + per-store index (R005/R006) ---
-  describe("Memory scope support (M3 — R005)", () => {
-    // M3 tests use the existing seam setup. The legacy memory seam overrides
+  // --- Memory scope support + per-store index ---
+  describe("Memory scope support", () => {
+    // These tests use the existing seam setup. The legacy memory seam overrides
     // both stores to the same dir, so we test scope routing via return values
     // and the store field on search results — the physical dual-store
     // routing evidence lives in the disjoint-root suites below
@@ -3261,7 +3261,7 @@ Body`;
     });
   });
 
-  describe("Per-store memory index (M3 — R006)", () => {
+  describe("Per-store memory index", () => {
     it("memory_search results carry store field", async () => {
       // Write entries to both stores (under the seam, both go to the same dir)
       await hooks.tool.memory_write.execute({
@@ -3435,7 +3435,7 @@ Body`;
     });
   });
 
-  // Memory-index absent-store hygiene (M1 — R001/R002): a merged search
+  // Memory-index absent-store hygiene: a merged search
   // touches every store, so never-written project/generic stores used to
   // hit an ENOENT on the index write and log "memory index: write failed"
   // per search. The fix skips the write for absent store dirs; these tests
@@ -3502,15 +3502,15 @@ Body`;
       expect(results[0].store).toBe("swarm");
       expect(results[0].topic).toBe("Absent-store probe");
 
-      // R001: zero error-level index diagnostics for never-written stores
+      // Zero error-level index diagnostics for never-written stores
       expect(appended).not.toContain("memory index: write failed");
       expect(appended).not.toContain("memory index: rebuild write failed");
 
-      // R002: merged searches create no directories under absent roots
+      // Merged searches create no directories under absent roots
       expect(existsSync(join(projectRoot, "knowledge"))).toBe(false);
       expect(existsSync(join(configRoot, "knowledge", "generic"))).toBe(false);
 
-      // Failure isolation (NFR004) leaves zero tmp residue behind
+      // Failure isolation leaves zero tmp residue behind
       const residue = readdirSync(swarmDir).filter(f => f.endsWith(".tmp"));
       expect(residue).toEqual([]);
     });
@@ -3665,7 +3665,7 @@ Body`;
       expect(hooksA.scanOpenIssuesMerged().map(i => i.title)).toEqual(["Alpha open debt"]);
       expect(hooksB.scanOpenIssuesMerged().map(i => i.title)).toEqual(["Beta open debt"]);
 
-      // Each config root holds its own issue-1.md — independent per-store
+      // Each config root holds its own first issue file — independent per-store
       // counters over physically separate dirs.
       expect(existsSync(join(configRootA, "knowledge", "issues", "issue-1.md"))).toBe(true);
       expect(existsSync(join(configRootB, "knowledge", "issues", "issue-1.md"))).toBe(true);

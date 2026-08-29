@@ -101,9 +101,9 @@ ${table}
   }
 
   // Builds a REVIEW KD with the machine-readable verdict frontmatter field the
-  // VERIFY gate reads (P012). The optional findings body carries milestone
+  // VERIFY gate reads. The optional findings body carries milestone
   // citations (`impl-<milestone-id>-` tokens / M\d+ ids) — the provenance the
-  // scoped-reopen + malformed-FAIL rules parse (P014/P015). The findings
+  // scoped-reopen + malformed-FAIL rules parse. The findings
   // section uses the TEMPLATE-CONFORMANT `## Review Findings` header
   // (skills/template-review/SKILL.md, inspector.md) — regression guard: if the
   // citation parser drifts back to only accepting the legacy `## Findings`
@@ -786,7 +786,7 @@ ${findings}
     expect(removed).toBe(1); // only the ending-generation KD
     expect(existsSync(join(knowledgeDir, `intent-cleanup-${s}.md`))).toBe(true);
     expect(existsSync(join(knowledgeDir, `intent-cleanup-${s}-gen2.md`))).toBe(false);
-    // The session short-term store is gone (R020/R006); long-term memory/
+    // The session short-term store is gone; long-term memory/
     // (never created here) is untouched by the cleanup.
     expect(existsSync(join(knowledgeDir, "short-term", s))).toBe(false);
     expect(existsSync(join(knowledgeDir, "memory"))).toBe(false);
@@ -1437,7 +1437,7 @@ ${findings}
     expect(hooks.getCurrentGeneration(s)).toBe(1);
   });
 
-  // Review-only VERIFY surface (R010/R013): a single fresh PASS review KD
+  // Review-only VERIFY surface: a single fresh PASS review KD
   // advances VERIFY→EXTRACT — the audit is a section of the review KD, not a
   // separate KD. Legacy audit- KDs are inert (never verdict KDs, never gate
   // evidence). A single KD must hold VERIFY without consistency-regressing to
@@ -3462,7 +3462,7 @@ milestones:
     });
 
     it("a fresh PASS review KD advances on the merged surface; a MISSING verdict blocks", async () => {
-      // Fresh PASS advances — single review KD, no audit KD required (R010).
+      // Fresh PASS advances — single review KD, no audit KD required.
       const pass = sid("f1-ac105-pass");
       await initOverseer(pass);
       hooks.sessionPhaseMap.set(pass, hooks.STATES.VERIFY);
@@ -3474,7 +3474,7 @@ milestones:
       );
       expect(hooks.sessionPhaseMap.get(pass)).toBe(hooks.STATES.EXTRACT);
 
-      // MISSING (no verdict field) blocks — never treated as PASS (P012).
+      // MISSING (no verdict field) blocks — never treated as PASS.
       const missing = sid("f1-ac105-missing");
       await initOverseer(missing);
       hooks.sessionPhaseMap.set(missing, hooks.STATES.VERIFY);
@@ -3733,7 +3733,7 @@ milestones:
     });
   });
 
-  describe("issue-46: verdict freshness and fix-cycle regression (P012/P013)", () => {
+  describe("verdict freshness and fix-cycle regression", () => {
     it("a: FAIL regresses after a prior same-KD regression when a fix cycle landed", async () => {
       const s = sid("i46a");
       await initOverseer(s);
@@ -3833,7 +3833,7 @@ milestones:
     });
   });
 
-  describe("issue-49: scoped milestone reopen + malformed-FAIL (P014/P015)", () => {
+  describe("scoped milestone reopen + malformed-FAIL", () => {
     // Parses the registry's machine-readable YAML block back into row states.
     function regressedRegistryRows(s) {
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
@@ -3950,8 +3950,8 @@ milestones:
       expect(rows.M1).toBe("in-progress");
       expect(rows.M2).toBe("checked-off");
 
-      // A fix cycle lands and the same FAIL KD re-evaluates (regresses again
-      // per P013) — still only the cited row re-opens.
+      // A fix cycle lands and the same FAIL KD re-evaluates (regresses again)
+      // — still only the cited row re-opens.
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       createKD(`impl-M1-fix-${s}.md`);
       utimesSync(join(knowledgeDir, `impl-M1-fix-${s}.md`), new Date(), new Date(Date.now() + 5000));
@@ -4390,7 +4390,7 @@ The failing surface is described without milestone tokens.
     });
   });
 
-  describe("merged-KD advancement/regression asymmetry (P011/P016)", () => {
+  describe("merged-KD advancement/regression asymmetry", () => {
     it("a single review KD advances on fresh PASS (no audit KD required)", async () => {
       const s = sid("merged-advance");
       await initOverseer(s);
@@ -4409,7 +4409,7 @@ The failing surface is described without milestone tokens.
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      // A MISSING-verdict review blocks advancement (P012) but must NOT
+      // A MISSING-verdict review blocks advancement but must NOT
       // consistency-regress to SWARM — the regression-side OR holds the phase.
       createKD(`review-noverdict-${s}.md`, "test content");
       for (let i = 1; i <= 5; i++) {

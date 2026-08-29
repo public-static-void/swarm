@@ -935,7 +935,7 @@ KD PATHS: knowledge/plan-foo.md`;
       for (const bad of ["knowledge/*.md", "/abs/path.md"]) {
         await expect(dispatch("explore", `SESSION_KDS, ${bad}`, { generation: 1 })).rejects.toThrow("Foreign paths detected");
       }
-      // knowledge/nested/foo.md is now accepted per R001 (subdirectory paths allowed)
+      // knowledge/nested/foo.md is now accepted (subdirectory paths allowed)
       // The explore template doesn't render KD PATHS, so the path won't appear in the prompt.
       // The key assertion is that the dispatch succeeds (no FOREIGN_PATH error).
       const output = await dispatch("explore", `SESSION_KDS, knowledge/nested/foo.md`, { generation: 1 });
@@ -1623,7 +1623,7 @@ RESULT KD: knowledge/checkpoint-foo.md`;
   // BRANCH Contract tests removed — BRANCH parameter eliminated from delegation system
 
   describe("Backward Compatibility - BRANCH Removal", () => {
-    it("accepts a preflight dispatch without BRANCH field (AC011)", async () => {
+    it("accepts a preflight dispatch without BRANCH field", async () => {
       const prompt = `AGENT: committer
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
@@ -1636,7 +1636,7 @@ RESULT KD: knowledge/preflight-foo.md`;
       expect(output.args.prompt).toContain("MODE: preflight");
     });
 
-    it("does not crash when BRANCH is present in prompt (backward compat, AC012)", async () => {
+    it("does not crash when BRANCH is present in prompt (backward compat)", async () => {
       const prompt = `AGENT: committer
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
