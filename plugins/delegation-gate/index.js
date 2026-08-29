@@ -396,7 +396,7 @@ function detectForeignPaths(prompt) {
     if (/\*/.test(trimmed) && /^(knowledge\/|\/|[A-Z]:\/)|\.\.[\/\\]/.test(trimmed)) return true;
     // Allow lines containing knowledge/ paths (positive whitelist)
     // This handles KD paths embedded in body text from template rendering or agent text,
-    // including subdirectory paths like knowledge/issues/issue-1.md
+    // including subdirectory paths under knowledge/issues/
     if (/^knowledge\//i.test(trimmed)) continue;
   }
   return false;
