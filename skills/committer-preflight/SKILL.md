@@ -38,7 +38,7 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 
 4. **Establish working branch** — Create a feature branch from the detected base branch. The Committer derives the feature branch name from the INTENT KD context using the Branch Naming Convention below. Branch establishment runs once per PREFLIGHT — CHECKPOINT and CLEANUP modes operate on the established branch.
    1. **Derive feature branch name** — Read the INTENT KD context to derive a feature branch name using the Branch Naming Convention table (task type → branch prefix). If INTENT KD is not available or context is insufficient, use `improve/<timestamp>` as fallback.
-   2. **Detect base branch** — Run `git log --oneline -10` to find where the current HEAD branched off. The base branch is the branch point, not always `main`.
+   2. **Detect base branch** — Run `git log --oneline -10` to find where the current HEAD branched off. The base branch is the branch point, which may differ from `main`.
    3. **Create feature branch** — Run `git checkout -b <feature-branch> <base>`.
    4. **Restore stashed changes** — If step 1 stashed pending changes (dirty repo), run `git stash pop` after the working branch is established. If pop fails, log a warning but continue.
 

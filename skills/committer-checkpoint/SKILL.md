@@ -80,6 +80,6 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 ## Exit
 
-1. **Verify-output reporting discipline (issue #53)** — Before writing the CHECKPOINT KD, ground-truth verify every commit hash or artifact it reports: `git log`/`git show` for hashes (extends the step-10 `git show --stat -1` self-verification), `read`/`glob` from disk for files. Never write an unverified hash; a commit that could not be created is reported as "UNCOMMITTED" with the working-tree state. This reporting discipline complements — it does not replace — the per-commit self-verification steps.
+1. **Verify-output reporting discipline (issue #53)** — Before writing the CHECKPOINT KD, ground-truth verify every commit hash or artifact it reports: `git log`/`git show` for hashes (extends the step-10 `git show --stat -1` self-verification), `read`/`glob` from disk for files. Write verified hashes; a commit that could not be created is reported as "UNCOMMITTED" with the working-tree state. This reporting discipline complements — it does not replace — the per-commit self-verification steps.
 2. **Write CHECKPOINT KD** — Write a CHECKPOINT KD at the `RESULT KD` path specified in the dispatch context using the `template-checkpoint.md` template from the kd-system skill. The KD documents what was committed and signals to the protocol-gate that the checkpoint is complete.
 3. Report what was committed. Exit after all batches are committed.
