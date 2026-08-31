@@ -836,6 +836,61 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   return promoted;
 }
 
+// Explicit, audited remediation path (Issue 74): advances a superseded-only
+// milestone row to checked-off. Distinct from the /phase VERIFY override —
+// this never routes through SAFETY_ESCAPE and never touches the phase machine.
+// It is the deliberate counterpart to the automatic reconcile path: where
+// reconcileStuckRowsFromDiskEvidence refuses to promote superseded-only rows
+// (staleness design, issue-69 AC2), this path lets an operator explicitly
+// accept the superseded impl KD(s) as completion evidence. It requires an
+// explicit invocation (never fires automatically) and goes through the strict
+// registry writer's transition rules (in-progress → checked-off), so the
+// registry state machine remains the guard (MEM-243). A row that is already
+// checked-off, or one with live (non-superseded) impl evidence, is left
+// untouched — the remediation is scoped to the superseded-only case.
+// Returns { ok, reason?, milestoneId, evidence, actor }.
+function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, actor) {
+  const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!located) return { ok: false, reason: "no-registry", milestoneId };
+  const rowPattern = new RegExp(`^\\s*${escapeRegExp(milestoneId)}:\\s*([A-Za-z-]+)[ \\t]*$`, "mi");
+  const rowMatch = located.block.match(rowPattern);
+  if (!rowMatch) return { ok: false, reason: "milestone-not-found", milestoneId };
+  const current = rowMatch[1];
+  if (current === "checked-off") {
+    return { ok: false, reason: "already-checked-off", milestoneId };
+  }
+  // Scope the remediation to the superseded-only case: if the row has live
+  // (non-superseded) same-session impl evidence, the automatic reconcile path
+  // already handles it — an explicit remediation would be redundant and could
+  // mask a live-evidence check-off. Only a row whose sole same-session impl
+  // evidence is `.superseded.md` file(s) qualifies.
+  const knowledgeDir = getKnowledgeDir();
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return { ok: false, reason: "no-knowledge-dir", milestoneId }; }
+  const prefix = `impl-${milestoneId}-`;
+  const live = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID));
+  if (live) return { ok: false, reason: "live-evidence-present", milestoneId };
+  const superseded = files.filter(f => {
+    if (!f.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+    if (!f.toLowerCase().endsWith(".superseded.md")) return false;
+    return matchesSessionKDAnyGeneration(f.slice(0, -".superseded.md".length), sessionID);
+  });
+  if (superseded.length === 0) {
+    return { ok: false, reason: "no-superseded-evidence", milestoneId };
+  }
+  // Advance through the strict registry writer's transition rules. The row is
+  // <stuck> (in-progress/assigned/pending/failed) → checked-off; the writer
+  // only permits checked-off from in-progress, so mirror the reconcile path's
+  // two audited steps (stuck → in-progress → checked-off).
+  const opened = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, ["in-progress"]);
+  if (!opened.ok) return { ok: false, reason: opened.reason, milestoneId };
+  const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, ["checked-off"]);
+  if (!result.ok) return { ok: false, reason: result.reason, milestoneId };
+  const who = actor || "unknown";
+  loud(`SUPERSEDED_RECONCILED: milestone ${milestoneId} advanced to checked-off via explicit remediation — superseded evidence cited: ${superseded.join(", ")} — actor: ${who}`);
+  return { ok: true, milestoneId, evidence: superseded, actor: who };
+}
+
 // The all-checked-off gate — SWARM→VERIFY advances ONLY when every registry
 // row is checked-off AND its milestone-scoped impl KD is on disk
 // (checkMilestoneCheckedOff semantics: registry state + disk evidence).
@@ -2088,6 +2143,26 @@ export default {
     // the LLM never hand-writes state files.
     async function commandExecuteBefore(input, output) {
       const commandName = String(input.command || "").replace(/^\/+/, "");
+      // Explicit, audited remediation path (Issue 74): /reconcile-superseded
+      // advances a superseded-only milestone row to checked-off. Distinct from
+      // /phase — it never routes through SAFETY_ESCAPE and never touches the
+      // phase machine. Requires explicit invocation; never fires automatically.
+      if (commandName === "reconcile-superseded") {
+        const { sessionID, arguments: arg } = input;
+        const trimmed = String(arg ?? "").trim();
+        if (!trimmed) {
+          output.parts = [{ type: "text", text: "Error: /reconcile-superseded requires a milestone ID. Usage: /reconcile-superseded <MILESTONE_ID>" }];
+          return;
+        }
+        const actor = sessionAgentMap.get(sessionID) || "overseer";
+        const result = reconcileSupersededMilestone(sessionID, sessionPhaseMap, trimmed, actor);
+        if (result.ok) {
+          output.parts = [{ type: "text", text: `SUPERSEDED_RECONCILED: milestone ${result.milestoneId} advanced to checked-off via explicit remediation (evidence: ${result.evidence.join(", ")}, actor: ${result.actor}).` }];
+        } else {
+          output.parts = [{ type: "text", text: `Error: could not reconcile milestone "${trimmed}" — ${result.reason}.` }];
+        }
+        return;
+      }
       if (commandName !== "phase") return;
       const { sessionID, arguments: arg } = input;
       const trimmed = String(arg ?? "").trim();
@@ -3194,6 +3269,7 @@ export default {
       readMilestoneRegistry,
       checkAllMilestonesCheckedOff,
       reconcileStuckRowsFromDiskEvidence,
+      reconcileSupersededMilestone,
       supersedeMilestoneImplKDs,
       matchesSessionKDAnyGeneration,
       matchesSessionKD,
