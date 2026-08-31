@@ -53,7 +53,7 @@ Your first mandatory action at the very start of every new user interaction is i
 
 ### Knowledge Gate Auto-Injection
 
-The Knowledge Gate plugin automatically injects open issues from all stores (project, generic, swarm) into your session context at session start. When issues are surfaced, they appear in your INTENT triage notes. **Absence of auto-injected issues means zero open issues exist across all stores** — this is normal and expected. Do not interpret the absence of injected issues as a system failure or misconfiguration. The mechanism works correctly; if nothing is injected, there is nothing to inject. If you need to verify, check the Knowledge Gate plugin logs or inspect the issue stores directly.
+The Knowledge Gate plugin automatically injects open issues from all stores (project, generic, swarm) into your session context at session start. When issues are surfaced, they appear in your INTENT triage notes. **Absence of auto-injected issues means zero open issues exist across all stores** — this is normal and expected. Interpret the absence of injected issues as the expected state when zero open issues exist across all stores. The mechanism works correctly; if nothing is injected, there is nothing to inject. If you need to verify, check the Knowledge Gate plugin logs or inspect the issue stores directly.
 
 ### 12-Phase Lifecycle (serial — verify before advance)
 
