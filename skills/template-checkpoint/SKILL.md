@@ -12,6 +12,7 @@ type: checkpoint
 session_id: "{{session_id}}"
 author: Committer
 superseded_by: null
+scope: {{project|generic|swarm}}  # optional — omission defaults to swarm
 ---
 
 <!-- Filename: knowledge/checkpoint-{{feature}}-{{session_id}}-gen{{generation}}.md -->

@@ -148,7 +148,7 @@ function loadTemplates(config) {
   // disk shape (the older fallback was also missing GENERATION entirely).
   const fallbackHeader = (mode) => {
     const intentKdLine = mode === "cleanup" ? "" : "INTENT KD: {intent_kd}\n";
-    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n`;
+    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nSCOPE CLASSIFICATION: {scope_classification}\nRESULT KD: {result_kd}\n\n---\n\n`;
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
@@ -187,7 +187,11 @@ function extractFromText(text, fields, override = false) {
       if (override || !fields["agent"]) fields["agent"] = agentMatch[2].trim().replace(/\*\*/g, "").trim();
       continue;
     }
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    // Match full multi-word keys (e.g. SCOPE CLASSIFICATION) as well as the
+    // underscore/lowercase variants (intent_kd, session_date). The alternation
+    // lists every recognized field; the key is normalized (lowercase,
+    // spaces/dots → underscores) so SCOPE CLASSIFICATION → scope_classification.
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE[. _]CLASSIFICATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       let key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       const assigned = override || !fields[key];
@@ -287,6 +291,16 @@ function validateScope(scope) {
   return true;
 }
 
+// Valid scope classifications for structured scope propagation.
+// Agents extract this value from the dispatch header and pass it as the
+// explicit `scope` argument to memory_write / issue_write.
+const VALID_SCOPE_CLASSIFICATIONS = ["project", "generic", "swarm"];
+
+function validateScopeClassification(scopeClassification) {
+  if (!scopeClassification || scopeClassification.trim() === "") return true; // omitting is valid (falls back to swarm)
+  return VALID_SCOPE_CLASSIFICATIONS.includes(scopeClassification.trim().toLowerCase());
+}
+
 // Reserved KD PATHS token (Issue 67): expands at render time to every on-disk
 // KD of the dispatching session's CURRENT lifecycle generation, so all-upstream
 // dispatches are complete by construction instead of hand-enumerated (11–17 of
@@ -382,7 +396,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim().replace(/\\/g, "/");
-    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE[. _]CLASSIFICATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     // Drive-letter paths are normalized to forward slashes above (C:\Windows →
@@ -497,6 +511,7 @@ SESSION DATE: today's date (e.g. 2026-08-08)
 SESSION ID: your session id (e.g. ses_abc)
 GENERATION: the lifecycle generation number
 SCOPE: optional context
+SCOPE CLASSIFICATION: project|generic|swarm (defaults to swarm when omitted — agents pass this to memory_write/issue_write)
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
 `;
@@ -538,6 +553,7 @@ SESSION DATE: ${today}
 SESSION ID: (your session id)
 GENERATION: (the lifecycle generation number)
 SCOPE: (optional context)
+SCOPE CLASSIFICATION: project|generic|swarm (defaults to swarm — agents pass this to memory_write/issue_write)
 RESULT KD: ${resultKdExamples} (when subagent produces a KD)
 
 RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
@@ -653,6 +669,18 @@ export default {
       // Scope validation — advisory only, never blocks delegation
       if (fields.scope !== undefined && !validateScope(fields.scope)) {
         debug(`WARNING: scope validation failed (len=${fields.scope.length}, content='${fields.scope}') — proceeding anyway`);
+      }
+
+      // Scope classification is structured — validates against the three-value
+      // enum but never blocks delegation. When omitted, defaults to "swarm"
+      // (backward compatible with dispatches that lack the field).
+      if (fields.scope_classification) {
+        if (!validateScopeClassification(fields.scope_classification)) {
+          debug(`WARNING: scope_classification '${fields.scope_classification}' is not a valid classification (valid: ${VALID_SCOPE_CLASSIFICATIONS.join(", ")}) — proceeding anyway`);
+        }
+      } else {
+        fields.scope_classification = "swarm";
+        debug(`SCOPE CLASSIFICATION fallback: defaulted to swarm (field omitted)`);
       }
 
       // SWARM mode multi-milestone scope warning — large plans overload

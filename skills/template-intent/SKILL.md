@@ -12,6 +12,7 @@ type: intent
 session_id: "{{session_id}}"
 author: Overseer
 superseded_by: null
+scope: {{project|generic|swarm}}  # optional — omission defaults to swarm
 ---
 
 <!-- Filename: knowledge/intent-{{name}}-{{session_id}}-gen{{generation}}.md -->

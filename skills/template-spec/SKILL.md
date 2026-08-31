@@ -12,6 +12,7 @@ type: spec
 session_id: "{{session_id}}"
 author: Spec Weaver
 superseded_by: null
+scope: {{project|generic|swarm}}  # optional — omission defaults to swarm
 ---
 
 <!-- Filename: knowledge/spec-{{feature}}-{{session_id}}-gen{{generation}}.md -->

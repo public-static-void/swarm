@@ -12,6 +12,7 @@ type: analysis
 session_id: "{{session_id}}"
 author: Explorer/Analyzer
 superseded_by: null
+scope: {{project|generic|swarm}}  # optional — omission defaults to swarm
 ---
 
 <!-- Filename: knowledge/analysis-{{topic}}-{{session_id}}-gen{{generation}}.md -->
