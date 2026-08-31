@@ -13,6 +13,7 @@ session_id: "{{session_id}}"
 author: Inspector
 superseded_by: null
 verdict: {{PASS | FAIL | FUNDAMENTAL}}
+scope: {{project|generic|swarm}}  # optional — omission defaults to swarm
 ---
 
 <!-- Filename: knowledge/review-{{artifact}}-{{session_id}}-gen{{generation}}.md -->

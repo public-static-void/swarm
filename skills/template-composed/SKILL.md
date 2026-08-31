@@ -12,6 +12,7 @@ type: composed
 session_id: "{{session_id}}"
 author: Scribe
 superseded_by: null
+scope: {{project|generic|swarm}}  # optional — omission defaults to swarm
 ---
 
 <!-- Filename: knowledge/composed-{{agent}}-{{task}}-{{session_id}}-gen{{generation}}.md -->
