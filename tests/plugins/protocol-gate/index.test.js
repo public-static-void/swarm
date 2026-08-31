@@ -2733,6 +2733,35 @@ ${findings}
       expect(content).toContain("  M2: in-progress");
     });
 
+    it("SUPERSEDED_EVIDENCE diagnostic includes milestone ID, superseded files, current state, and remediation options", async () => {
+      const s = sid("m1-superseded-remedy");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M2", "in-progress"]]);
+      createKD(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+        const log = readLoudLog();
+        // R001: diagnostic names the stuck milestone
+        expect(log).toContain("milestone M2");
+        // R001: diagnostic lists the superseded file(s)
+        expect(log).toContain(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+        // R001: diagnostic states the row's current state
+        expect(log).toContain("stays in-progress");
+        // R001: diagnostic states exact remediation options
+        expect(log).toContain("Remediation options:");
+        expect(log).toContain("restore a canonical-path impl KD");
+        expect(log).toContain("invoke the remediation path");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
     it("live impl evidence alongside superseded files promotes the row via the live file with zero SUPERSEDED_EVIDENCE", async () => {
       const s = sid("m1-live-plus-superseded");
       await initOverseer(s);

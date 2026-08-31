@@ -816,7 +816,7 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
         return matchesSessionKDAnyGeneration(f.slice(0, -".superseded.md".length), sessionID);
       });
       if (superseded.length > 0) {
-        loud(`SUPERSEDED_EVIDENCE: milestone ${row.id} stays ${row.state} — same-session impl evidence exists solely as superseded file(s): ${superseded.join(", ")}`);
+        loud(`SUPERSEDED_EVIDENCE: milestone ${row.id} stays ${row.state} — same-session impl evidence exists solely as superseded file(s): ${superseded.join(", ")}. Remediation options: (a) restore a canonical-path impl KD for milestone ${row.id}, or (b) invoke the remediation path to advance the row to checked-off citing the superseded impl KD(s) as evidence.`);
       }
       continue;
     }
