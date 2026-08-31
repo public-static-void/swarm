@@ -7,27 +7,27 @@ steps: 50
 permission:
   read:
     "*": deny
-    "knowledge/preflight-*.md": allow
-    "knowledge/checkpoint-*.md": allow
-    "knowledge/cleanup-*.md": allow
-    "knowledge/intent-*.md": allow
-    "knowledge/impl-*.md": allow
-    "knowledge/plan-*.md": allow
-    "knowledge/spec-*.md": allow
-    "knowledge/composed-*.md": allow
-    "knowledge/process-*.md": allow
-    "knowledge/report-*.md": allow
-    ".ignore": allow
-    ".gitignore": allow
-    ".gitkeep": allow
+    "*/knowledge/preflight-*.md": allow
+    "*/knowledge/checkpoint-*.md": allow
+    "*/knowledge/cleanup-*.md": allow
+    "*/knowledge/intent-*.md": allow
+    "*/knowledge/impl-*.md": allow
+    "*/knowledge/plan-*.md": allow
+    "*/knowledge/spec-*.md": allow
+    "*/knowledge/composed-*.md": allow
+    "*/knowledge/process-*.md": allow
+    "*/knowledge/report-*.md": allow
+    "*/.ignore": allow
+    "*/.gitignore": allow
+    "*/.gitkeep": allow
   edit:
     "*": deny
-    "knowledge/preflight-*.md": allow
-    "knowledge/checkpoint-*.md": allow
-    "knowledge/cleanup-*.md": allow
-    ".ignore": allow
-    ".gitignore": allow
-    ".gitkeep": allow
+    "*/knowledge/preflight-*.md": allow
+    "*/knowledge/checkpoint-*.md": allow
+    "*/knowledge/cleanup-*.md": allow
+    "*/.ignore": allow
+    "*/.gitignore": allow
+    "*/.gitkeep": allow
   glob: allow
   grep: allow
   task: deny
