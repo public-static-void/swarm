@@ -114,7 +114,7 @@ const PHASE_INSTRUCTIONS = {
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
   CLEANUP: "Dispatch the Committer agent.",
-  REPORT: "Write a report KD summarizing lifecycle results."
+  REPORT: "Write a report KD summarizing lifecycle results. Include any corrections and amendments from the lifecycle (e.g., Issue-75 Correction sections) in the report content."
 };
 
 const TOOL_ALLOWLIST = {
@@ -258,6 +258,96 @@ function hasSupersededImplEvidence(files, sessionID) {
     if (!f.toLowerCase().endsWith(".superseded.md")) return false;
     return matchesSessionKDAnyGeneration(f.slice(0, -".superseded.md".length), sessionID);
   });
+}
+
+// Correction-section headers the pre-cleanup hook recognizes in lifecycle
+// KDs. SPEC amendments and critical corrections land in sections like
+// `## Issue-75 Correction`, `## Correction`, or `## Amendment`; the hook
+// archives these before cleanupLifecycleKDs() deletes the KDs.
+const CORRECTION_SECTION_RE = /^##\s+(?:Issue-\d+\s+)?(?:Correction|Amendment)\b/i;
+
+// Extracts correction sections from a KD's content. Returns an array of
+// { header, body } objects; empty when the file carries no correction
+// section. A section runs from its `##` header to the next `##` header.
+function extractCorrectionSections(content) {
+  const lines = String(content || "").split(/\r?\n/);
+  const sections = [];
+  let current = null;
+  for (const line of lines) {
+    if (/^##\s+/.test(line)) {
+      current = CORRECTION_SECTION_RE.test(line) ? { header: line, body: [] } : null;
+      if (current) sections.push(current);
+    } else if (current) {
+      current.body.push(line);
+    }
+  }
+  return sections;
+}
+
+// Pre-cleanup hook: scans the ending generation's KDs for correction
+// sections and archives them to knowledge/issues/ before
+// cleanupLifecycleKDs() deletes the KDs. Runs synchronously ahead of the
+// cleanup; archive failures are logged and non-blocking so the REPORT phase
+// reset is never delayed. Returns the number of correction sections archived.
+function preCleanupHook(sessionID, generation = 0) {
+  const knowledgeDir = getKnowledgeDir();
+  let files = [];
+  try {
+    files = readdirSync(knowledgeDir);
+  } catch (e) {
+    debug(`preCleanupHook: knowledge/ dir not found for session ${sessionID} — nothing to archive`);
+    return 0;
+  }
+  const gen = Number(generation) || 0;
+  const genPattern = new RegExp(`-${sessionID}-gen${gen}\\.md$`, "i");
+  const endingKDs = files.filter(f => (gen === 0 && f.endsWith(`-${sessionID}.md`)) || genPattern.test(f));
+  const entries = [];
+  for (const f of endingKDs) {
+    let content = "";
+    try {
+      content = readFileSync(join(knowledgeDir, f), "utf8");
+    } catch (e) {
+      debug(`preCleanupHook: failed to read ${f}: ${e.message}`);
+      continue;
+    }
+    const sections = extractCorrectionSections(content);
+    if (sections.length > 0) entries.push({ file: f, sections });
+  }
+  if (entries.length === 0) return 0;
+  const issuesDir = join(knowledgeDir, "issues");
+  try {
+    mkdirSync(issuesDir, { recursive: true });
+  } catch (e) {
+    debug(`preCleanupHook: failed to create issues dir: ${e.message}`);
+    return 0;
+  }
+  const archivePath = join(issuesDir, `corrections-${sessionID}-gen${gen}.md`);
+  const body = entries.map(({ file, sections }) => {
+    const sectionText = sections.map(s => `${s.header}\n${s.body.join("\n")}`).join("\n\n");
+    return `## Source: ${file}\n\n${sectionText}`;
+  }).join("\n\n");
+  const archiveContent = `---
+title: "CORRECTIONS ARCHIVE: ${sessionID} generation ${gen}"
+version: 1.0.0
+status: draft
+type: report
+session_id: "${sessionID}"
+author: protocol-gate
+superseded_by: null
+---
+
+# Corrections archived before lifecycle-end cleanup
+
+${body}
+`;
+  try {
+    atomicWriteFileSync(archivePath, archiveContent);
+    debug(`preCleanupHook: archived ${entries.reduce((n, e) => n + e.sections.length, 0)} correction sections from ${entries.length} KDs to ${archivePath}`);
+  } catch (e) {
+    debug(`preCleanupHook: failed to write archive ${archivePath}: ${e.message}`);
+    return 0;
+  }
+  return entries.reduce((n, e) => n + e.sections.length, 0);
 }
 
 // Deletes ONLY the knowledge KDs of a session's ENDING lifecycle generation:
@@ -2460,6 +2550,13 @@ export default {
           // failure must not block the phase reset — wrapped in try-catch.
           // Accepted race: any KD written between the REPORT trigger and
           // this cleanup belongs to the ending lifecycle; deletion is safe.
+          // Archive correction sections before deletion so SPEC amendments
+          // and critical corrections survive lifecycle-end cleanup.
+          try {
+            preCleanupHook(sessionID, currentGen);
+          } catch (e) {
+            debug(`preCleanupHook error for session ${sessionID}: ${e.message}`);
+          }
           try {
             cleanupLifecycleKDs(sessionID, currentGen);
           } catch (e) {
@@ -2600,7 +2697,13 @@ export default {
           }
           // Cleanup the ending lifecycle's KDs: pass the
           // ENDING generation (currentGen) so newer generations survive a
-          // reused session ID; try-catch (see write handler).
+          // reused session ID; try-catch (see write handler). Archive
+          // correction sections first so they are not lost.
+          try {
+            preCleanupHook(sessionID, currentGen);
+          } catch (e) {
+            debug(`preCleanupHook error for session ${sessionID}: ${e.message}`);
+          }
           try {
             cleanupLifecycleKDs(sessionID, currentGen);
           } catch (e) {
@@ -3258,6 +3361,8 @@ export default {
       checkPhaseStateConsistency,
       checkDiskAdvancement,
       cleanupLifecycleKDs,
+      preCleanupHook,
+      extractCorrectionSections,
       extractMilestoneIdFromPrompt,
       collectMilestoneIds,
       milestoneRedispatchKey,
