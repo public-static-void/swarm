@@ -8,8 +8,8 @@ permission:
   read: allow
   edit:
     "*": deny
-    "*/knowledge/plan-*.md": allow
-    "*/knowledge/milestones-*.md": allow
+    "knowledge/plan-*.md": allow
+    "knowledge/milestones-*.md": allow
   glob: allow
   grep: allow
   task: deny
