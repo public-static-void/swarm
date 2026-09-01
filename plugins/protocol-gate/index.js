@@ -841,8 +841,9 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
 // this never routes through SAFETY_ESCAPE and never touches the phase machine.
 // It is the deliberate counterpart to the automatic reconcile path: where
 // reconcileStuckRowsFromDiskEvidence refuses to promote superseded-only rows
-// (staleness design, issue-69 AC2), this path lets an operator explicitly
-// accept the superseded impl KD(s) as completion evidence. It requires an
+// (staleness design — a superseded impl KD is provenance of a prior completion
+// invalidated by a reopen), this path lets an operator explicitly accept the
+// superseded impl KD(s) as completion evidence. It requires an
 // explicit invocation (never fires automatically) and goes through the strict
 // registry writer's transition rules (in-progress → checked-off), so the
 // registry state machine remains the guard (MEM-243). A row that is already

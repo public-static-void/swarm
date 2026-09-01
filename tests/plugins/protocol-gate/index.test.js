@@ -2746,13 +2746,13 @@ ${findings}
       try {
         expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
         const log = readLoudLog();
-        // R001: diagnostic names the stuck milestone
+        // The diagnostic names the stuck milestone.
         expect(log).toContain("milestone M2");
-        // R001: diagnostic lists the superseded file(s)
+        // The diagnostic lists the superseded file(s).
         expect(log).toContain(`impl-M2-stale-${s}-gen1.md.superseded.md`);
-        // R001: diagnostic states the row's current state
+        // The diagnostic states the row's current state.
         expect(log).toContain("stays in-progress");
-        // R001: diagnostic states exact remediation options
+        // The diagnostic states the exact remediation options.
         expect(log).toContain("Remediation options:");
         expect(log).toContain("restore a canonical-path impl KD");
         expect(log).toContain("invoke the remediation path");
@@ -2796,7 +2796,7 @@ ${findings}
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
-        // R002: the remediation path advances the row to checked-off.
+        // The remediation path advances the row to checked-off.
         const result = hooks.reconcileSupersededMilestone(s, hooks.sessionPhaseMap, "M2", "overseer");
         expect(result.ok).toBe(true);
         expect(result.milestoneId).toBe("M2");
@@ -2804,7 +2804,7 @@ ${findings}
         expect(result.actor).toBe("overseer");
         const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
         expect(content).toContain("  M2: checked-off");
-        // R002: the SUPERSEDED_RECONCILED diagnostic names milestone, evidence, and actor.
+        // The SUPERSEDED_RECONCILED diagnostic names milestone, evidence, and actor.
         const log = readLoudLog();
         expect(log).toContain("SUPERSEDED_RECONCILED");
         expect(log).toContain("milestone M2");
