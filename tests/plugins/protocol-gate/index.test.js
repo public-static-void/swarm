@@ -871,6 +871,152 @@ ${findings}
     }
   });
 
+  it("preCleanupHook archives correction sections from ending-generation KDs before cleanup", () => {
+    const s = sid("precleanup-archive");
+    const specContent = `---
+title: "SPEC: test"
+version: 1.0.0
+status: draft
+type: spec
+session_id: "${s}"
+author: Spec Weaver
+superseded_by: null
+---
+
+# SPEC: test
+
+## Issue-75 Correction
+
+The corrected wording is accurate.
+
+## Amendment
+
+An additional amendment here.
+`;
+    createKD(`spec-corrections-${s}.md`, specContent);
+    // A KD with no correction section must not be archived
+    createKD(`intent-plain-${s}.md`, "# INTENT: plain\n\nNo corrections here.");
+
+    const archived = hooks.preCleanupHook(s, 0);
+
+    expect(archived).toBe(2);
+    const archivePath = join(knowledgeDir, "issues", `corrections-${s}-gen0.md`);
+    expect(existsSync(archivePath)).toBe(true);
+    const archive = readFileSync(archivePath, "utf8");
+    expect(archive).toContain("## Source: spec-corrections-");
+    expect(archive).toContain("## Issue-75 Correction");
+    expect(archive).toContain("The corrected wording is accurate.");
+    expect(archive).toContain("## Amendment");
+    expect(archive).toContain("An additional amendment here.");
+    expect(archive).not.toContain("intent-plain-");
+  });
+
+  it("preCleanupHook archives only the ending generation's KDs", () => {
+    const s = sid("precleanup-gen");
+    createKD(`spec-a-${s}-gen1.md`, "## Correction\n\nGen1 correction.");
+    createKD(`spec-b-${s}-gen2.md`, "## Correction\n\nGen2 correction.");
+
+    const archived = hooks.preCleanupHook(s, 1);
+
+    expect(archived).toBe(1);
+    const archivePath = join(knowledgeDir, "issues", `corrections-${s}-gen1.md`);
+    expect(existsSync(archivePath)).toBe(true);
+    const archive = readFileSync(archivePath, "utf8");
+    expect(archive).toContain("spec-a-");
+    expect(archive).toContain("Gen1 correction.");
+    expect(archive).not.toContain("spec-b-");
+    expect(archive).not.toContain("Gen2 correction.");
+  });
+
+  it("preCleanupHook returns 0 when no ending-generation KDs carry corrections", () => {
+    const s = sid("precleanup-none");
+    createKD(`spec-plain-${s}.md`, "# SPEC: plain\n\nNo corrections.");
+    createKD(`spec-other-${s}-gen1.md`, "## Correction\n\nOther generation.");
+
+    const archived = hooks.preCleanupHook(s, 0);
+
+    expect(archived).toBe(0);
+    expect(existsSync(join(knowledgeDir, "issues", `corrections-${s}-gen0.md`))).toBe(false);
+  });
+
+  it("preCleanupHook on a missing knowledge dir returns 0 without throwing", () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "protocol-gate-precleanup-"));
+    const prevCwd = process.cwd();
+    try {
+      process.chdir(tmpRoot);
+      expect(hooks.preCleanupHook("ghost-session", 0)).toBe(0);
+    } finally {
+      process.chdir(prevCwd);
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("REPORT write archives corrections before cleanupLifecycleKDs deletes the KDs", async () => {
+    const s = sid("precleanup-report-write");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    hooks.sessionPhaseMap.set(`${s}:gen`, 0);
+    const specContent = "## Issue-75 Correction\n\nPreserved correction text.";
+    createKD(`spec-corr-${s}.md`, specContent);
+
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: s, callID: "c1" },
+      { args: { filePath: `knowledge/report-final-${s}.md`, content: "report" } }
+    );
+
+    // The ending-generation KD is deleted by cleanup...
+    expect(existsSync(join(knowledgeDir, `spec-corr-${s}.md`))).toBe(false);
+    // ...but its correction section survives in the archive.
+    const archivePath = join(knowledgeDir, "issues", `corrections-${s}-gen0.md`);
+    expect(existsSync(archivePath)).toBe(true);
+    expect(readFileSync(archivePath, "utf8")).toContain("Preserved correction text.");
+  });
+
+  it("REPORT edit archives corrections before cleanupLifecycleKDs deletes the KDs", async () => {
+    const s = sid("precleanup-report-edit");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    hooks.sessionPhaseMap.set(`${s}:gen`, 0);
+    createKD(`spec-corr-${s}.md`, "## Amendment\n\nPreserved amendment.");
+
+    await hooks["tool.execute.before"](
+      { tool: "edit", sessionID: s, callID: "c1" },
+      { args: { filePath: `knowledge/report-final-${s}.md` } }
+    );
+
+    expect(existsSync(join(knowledgeDir, `spec-corr-${s}.md`))).toBe(false);
+    const archivePath = join(knowledgeDir, "issues", `corrections-${s}-gen0.md`);
+    expect(existsSync(archivePath)).toBe(true);
+    expect(readFileSync(archivePath, "utf8")).toContain("Preserved amendment.");
+  });
+
+  it("extractCorrectionSections captures header and body until the next heading", () => {
+    const content = `# KD
+
+## Issue-75 Correction
+
+First line.
+Second line.
+
+## Next Section
+
+Not a correction.
+
+## Amendment
+
+Amendment body.
+`;
+    const sections = hooks.extractCorrectionSections(content);
+    expect(sections).toHaveLength(2);
+    expect(sections[0].header).toBe("## Issue-75 Correction");
+    expect(sections[0].body.join("\n")).toContain("First line.");
+    expect(sections[0].body.join("\n")).toContain("Second line.");
+    expect(sections[1].header).toBe("## Amendment");
+    expect(sections[1].body.join("\n")).toContain("Amendment body.");
+  });
+
   it("after REPORT the phase entry is deleted so a manual state edit is honored on the next message", async () => {
     const s = sid("reset-r005");
     await initOverseer(s);
