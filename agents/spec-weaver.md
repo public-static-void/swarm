@@ -8,7 +8,7 @@ permission:
   read: allow
   edit:
     "*": deny
-    "*/knowledge/spec-*.md": allow
+    "knowledge/spec-*.md": allow
   glob: allow
   grep: allow
   task: deny

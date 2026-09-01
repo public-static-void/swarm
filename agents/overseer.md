@@ -7,17 +7,17 @@ steps: 50
 permission:
   read:
     "*": deny
-    "*/knowledge/intent-*.md": allow
-    "*/knowledge/report-*.md": allow
-    "*/knowledge/milestones-*.md": allow
+    "knowledge/intent-*.md": allow
+    "knowledge/report-*.md": allow
+    "knowledge/milestones-*.md": allow
   grep: deny
   edit:
     "*": deny
-    "*/knowledge/intent-*.md": allow
-    "*/knowledge/report-*.md": allow
+    "knowledge/intent-*.md": allow
+    "knowledge/report-*.md": allow
   glob:
     "*": deny
-    "*/knowledge/*.md": allow
+    "knowledge/*.md": allow
   task: allow
   skill:
     "*": deny

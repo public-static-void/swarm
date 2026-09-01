@@ -7,12 +7,12 @@ steps: 100
 permission:
   read:
     "*": deny
-    "*/knowledge/*.md": allow
-    "*/knowledge/memory/*.json": allow
+    "knowledge/*.md": allow
+    "knowledge/memory/*.json": allow
   edit:
     "*": deny
-    "*/knowledge/process-*.md": allow
-    "*/knowledge/issues/*.md": allow
+    "knowledge/process-*.md": allow
+    "knowledge/issues/*.md": allow
   glob: allow
   grep: allow
   task: deny
