@@ -2733,6 +2733,35 @@ ${findings}
       expect(content).toContain("  M2: in-progress");
     });
 
+    it("SUPERSEDED_EVIDENCE diagnostic includes milestone ID, superseded files, current state, and remediation options", async () => {
+      const s = sid("m1-superseded-remedy");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M2", "in-progress"]]);
+      createKD(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+        const log = readLoudLog();
+        // The diagnostic names the stuck milestone.
+        expect(log).toContain("milestone M2");
+        // The diagnostic lists the superseded file(s).
+        expect(log).toContain(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+        // The diagnostic states the row's current state.
+        expect(log).toContain("stays in-progress");
+        // The diagnostic states the exact remediation options.
+        expect(log).toContain("Remediation options:");
+        expect(log).toContain("restore a canonical-path impl KD");
+        expect(log).toContain("invoke the remediation path");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
     it("live impl evidence alongside superseded files promotes the row via the live file with zero SUPERSEDED_EVIDENCE", async () => {
       const s = sid("m1-live-plus-superseded");
       await initOverseer(s);
@@ -2754,6 +2783,90 @@ ${findings}
         try { rmSync(logPath); } catch (_) {}
       }
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
+    });
+
+    it("the explicit remediation path advances a superseded-only row to checked-off and emits SUPERSEDED_RECONCILED", async () => {
+      const s = sid("m1-reconcile-ok");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M2", "in-progress"]]);
+      createKD(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        // The remediation path advances the row to checked-off.
+        const result = hooks.reconcileSupersededMilestone(s, hooks.sessionPhaseMap, "M2", "overseer");
+        expect(result.ok).toBe(true);
+        expect(result.milestoneId).toBe("M2");
+        expect(result.evidence).toContain(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+        expect(result.actor).toBe("overseer");
+        const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(content).toContain("  M2: checked-off");
+        // The SUPERSEDED_RECONCILED diagnostic names milestone, evidence, and actor.
+        const log = readLoudLog();
+        expect(log).toContain("SUPERSEDED_RECONCILED");
+        expect(log).toContain("milestone M2");
+        expect(log).toContain(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+        expect(log).toContain("actor: overseer");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("the remediation path refuses a row with live impl evidence (superseded-only scope)", async () => {
+      const s = sid("m1-reconcile-live");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "in-progress"]]);
+      createKD(`impl-M1-old-${s}.md.superseded.md`);
+      createKD(`impl-M1-fix-${s}.md`);
+
+      const result = hooks.reconcileSupersededMilestone(s, hooks.sessionPhaseMap, "M1", "overseer");
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe("live-evidence-present");
+      // The row is untouched — the automatic reconcile path owns live evidence.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
+    });
+
+    it("the remediation path refuses a row with no superseded evidence and an already-checked-off row", async () => {
+      const s = sid("m1-reconcile-refuse");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
+      createKD(`impl-M1-fix-${s}.md`);
+
+      // Already checked-off → refused.
+      expect(hooks.reconcileSupersededMilestone(s, hooks.sessionPhaseMap, "M1", "overseer").reason).toBe("already-checked-off");
+      // No superseded evidence → refused.
+      expect(hooks.reconcileSupersededMilestone(s, hooks.sessionPhaseMap, "M2", "overseer").reason).toBe("no-superseded-evidence");
+      // Unknown milestone → refused.
+      expect(hooks.reconcileSupersededMilestone(s, hooks.sessionPhaseMap, "M9", "overseer").reason).toBe("milestone-not-found");
+    });
+
+    it("the /reconcile-superseded slash command advances a superseded-only row and is distinct from /phase", async () => {
+      const s = sid("m1-reconcile-cmd");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M2", "in-progress"]]);
+      createKD(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+
+      const out = {};
+      await hooks["command.execute.before"](
+        { command: "/reconcile-superseded", sessionID: s, arguments: "M2" },
+        out
+      );
+      expect(out.parts[0].text).toContain("SUPERSEDED_RECONCILED");
+      expect(out.parts[0].text).toContain("milestone M2");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M2: checked-off");
+      // The phase is untouched — the remediation path never routes through
+      // SAFETY_ESCAPE / the phase machine.
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
     });
 
     it("the session-KD predicate keeps rejecting .superseded.md filenames across both naming eras", () => {
