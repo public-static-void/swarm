@@ -90,7 +90,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 1. Read the SPEC KD (requirements), PLAN KD (steps), and the artifact to review
 2. Build a traceability matrix: map every acceptance criterion to verification evidence
 3. For each criterion, record PASS or FAIL with specific evidence (file:line)
-4. **Scan modified files for code quality issues**: Check for meta comments (patterns like "here is the fix", "changed from X to Y", "this function was added to"), references to internal project documentation, and commented-out code blocks. Flag commented-out code blocks and require written justification. Record any findings as failures.
+4. **Scan modified files for code quality issues**: Check for meta comments (patterns like "here is the fix", "changed from X to Y", "this function was added to"), requirement-ID codes (R/AC/M) in comments or test labels, references to internal project documentation, and commented-out code blocks. Flag commented-out code blocks and require written justification. Record any findings as failures.
 5. Categorize failures by severity: Critical, Major, Minor
 6. Check off completed items in the TODO list as you go
 7. Record the security audit findings (see Audit Protocol) in the review KD's `## Audit` section
