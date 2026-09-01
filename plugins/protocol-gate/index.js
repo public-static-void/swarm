@@ -262,8 +262,8 @@ function hasSupersededImplEvidence(files, sessionID) {
 
 // Correction-section headers the pre-cleanup hook recognizes in lifecycle
 // KDs. SPEC amendments and critical corrections land in sections like
-// `## Issue-75 Correction`, `## Correction`, or `## Amendment`; the hook
-// archives these before cleanupLifecycleKDs() deletes the KDs.
+// `## Correction` or `## Amendment`; the hook archives these before
+// cleanupLifecycleKDs() deletes the KDs.
 const CORRECTION_SECTION_RE = /^##\s+(?:Issue-\d+\s+)?(?:Correction|Amendment)\b/i;
 
 // Extracts correction sections from a KD's content. Returns an array of
