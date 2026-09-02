@@ -4167,6 +4167,71 @@ milestones:
       }
     });
 
+    it("d: FAIL with a References section listing all impl KDs reopens ONLY the cited rows (Issue 78 regression)", async () => {
+      const s = sid("i49d");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+      // The FAIL finding cites ONLY M1, but the review KD's References section
+      // lists ALL impl KDs (standard Inspector practice — the artifacts
+      // reviewed). Those `impl-<milestone-id>-` path tokens are provenance,
+      // not FAIL citations: the reopen must stay scoped to M1.
+      createKD(
+        `review-fail-${s}.md`,
+        `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: impl-M1-short-term-store
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact                 | Test/Check | Status |
+| ------ | --------- | ------------------------ | ---------- | ------ |
+| R001   | P001      | impl-M1-short-term-store | test       | FAIL   |
+
+## Audit
+
+### Scope
+
+audited
+
+## References
+
+- \`knowledge/impl-M1-short-term-store-${s}.md\` — M1 impl
+- \`knowledge/impl-M2-resume-hint-${s}.md\` — M2 impl
+- \`knowledge/impl-M3-promotion-${s}.md\` — M3 impl
+`
+      );
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const rows = regressedRegistryRows(s);
+      expect(rows.M1).toBe("in-progress");
+      expect(rows.M2).toBe("checked-off");
+      expect(rows.M3).toBe("checked-off");
+    });
+
     it("a citation-driven reopen names the citing review KD in a loud diagnostic", async () => {
       const s = sid("i49-reopen-diag");
       await initOverseer(s);
@@ -4498,6 +4563,52 @@ the audit re-run flagged milestone M2
 `;
       const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
       expect(citations).toEqual(["M2"]);
+    });
+
+    it("the citation parser ignores impl-KD path tokens in the References section (provenance, not FAIL citations)", () => {
+      const s = sid("f001-refs-guard");
+      const content = `---
+title: "REVIEW: test"
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: impl-M1-short-term-store
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact                 | Test/Check | Status |
+| ------ | --------- | ------------------------ | ---------- | ------ |
+| R001   | P001      | impl-M1-short-term-store | test       | FAIL   |
+
+## Audit
+
+### Scope
+
+audited
+
+## References
+
+- \`knowledge/impl-M1-short-term-store-${s}.md\` — M1 impl
+- \`knowledge/impl-M2-resume-hint-${s}.md\` — M2 impl
+- \`knowledge/impl-M3-promotion-${s}.md\` — M3 impl
+`;
+      const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+      // The finding's own citation legitimately yields M1 (plus its
+      // non-resolvable `M1-short-term` impl-token fragment); the References
+      // section must not leak M2/M3 into the citation set.
+      expect(citations).toContain("M1");
+      expect(citations).not.toContain("M2");
+      expect(citations).not.toContain("M3");
     });
 
     it("a FAIL review citing M2 only in its Verdict section reopens M2", async () => {
