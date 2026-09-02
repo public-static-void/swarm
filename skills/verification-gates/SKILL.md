@@ -124,7 +124,7 @@ Phase Output ──► Gate ──► Next Phase
 
 ## Behavior-Based Tests
 
-Tests verify behavior, not wording. Group tests by behavior — one group per behavior, each test covering one meaningful case — and name each test after the behavior it verifies. Test names and comments carry no requirement-ID codes (R/AC/M); the traceability matrix maps acceptance criteria to the test groups that verify them. A suite grows when new behavior appears, not when a requirement count suggests volume, and consolidation of overlapping or stale tests is part of normal maintenance. Static configuration guards are behavior tests when they protect a runtime contract — assert the contract, not the prose that describes it.
+Tests verify behavior, not wording. Group tests by behavior — one group per behavior, each test covering one meaningful case — and name each test after the behavior it verifies. Test names and comments describe behavior, with requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) living in the traceability matrix. A suite grows when new behavior appears, not when a requirement count suggests volume, and consolidation of overlapping or stale tests is part of normal maintenance. Static configuration guards are behavior tests when they protect a runtime contract — assert the contract, not the prose that describes it.
 
 ## Gate Protocol
 

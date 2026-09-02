@@ -26,7 +26,7 @@ Tests verify behavior — what the code does — rather than the wording of rule
 
 - Group tests by behavior — one test group per behavior, with each test covering one meaningful case of that behavior.
 - Name each test after the behavior it verifies, e.g., `rejects orders with zero quantity`.
-- Keep test names and comments free of requirement-ID codes (R/AC/M); the REVIEW traceability matrix in KDs carries the mapping, so test files stay readable and reframes stay cheap.
+- Test names and comments describe behavior — requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) live in the REVIEW traceability matrix, keeping test files readable and reframes cheap. The `noMetaMarker` lint rule enforces this in plugin and test code.
 - Grow the suite when a new behavior appears, not when a requirement count suggests volume; consolidate overlapping groups and delete stale cases as part of normal maintenance.
 - Static guards over configuration files are behavior tests when they protect a runtime contract: assert the contract (file existence, permission scoping, gitignore coverage), not the sentence describing it.
 - Coverage thresholds measure exploration, not volume; a meaningful assertion beats a batch of duplicate cases.
