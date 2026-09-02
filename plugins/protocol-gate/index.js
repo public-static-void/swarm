@@ -1199,15 +1199,19 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 // alone left Verdict/Audit-cited rows unreopened mid-cycle. `### Traceability
 // Matrix` subsections stay excluded everywhere: a bare milestone token in a
 // PASS-row matrix cell is provenance, not a FAIL citation, and scanning it
-// would reopen that row on a FAIL verdict. Splitting on `### ` keeps the
-// exclusion local to matrix subsections; real FAIL findings (`### F\d+`
-// subsections or raw body text) are unaffected, and a KD with zero tokens
-// anywhere still yields zero citations (fail-closed for the malformed-FAIL
-// rule).
+// would reopen that row on a FAIL verdict. The `## References` section is
+// excluded for the same reason (Issue 78): it lists every impl KD the review
+// touched, so its `impl-<milestone-id>-` path tokens would reopen ALL
+// milestone rows on any FAIL verdict instead of only the cited ones. Splitting
+// on `## `/`### ` headings keeps both exclusions local to their sections; real
+// FAIL findings (`### F\d+` subsections or raw body text) are unaffected, and
+// a KD with zero tokens anywhere still yields zero citations (fail-closed for
+// the malformed-FAIL rule).
 function extractMilestoneCitationsFromReviewKD(content) {
   if (typeof content !== "string") return [];
   const tokens = new Set();
-  for (const sub of content.split(/^### /m)) {
+  for (const sub of content.split(/^#{2,3} /m)) {
+    if (/^References/i.test(sub)) continue;
     if (/^Traceability Matrix/i.test(sub)) continue;
     let m;
     const implPattern = /impl-([A-Za-z0-9_-]+)-/gi;

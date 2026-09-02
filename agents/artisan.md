@@ -162,13 +162,13 @@ Proposed resolution: Review Committer logs, fix workspace state, or adjust permi
 - **Match project language**: Comments and naming must match the project's primary language. Before writing any comment, detect the predominant comment language from existing code
 - **Substantive Comments**: Add comments to explain rationale that is unobvious from the code itself. Comments explain the reasoning behind the code
 - **External References**: Reference public APIs, specs, or external documentation in code when necessary
-- **Meta-Marker Convention**: Comments and test names describe behavior — requirement-ID codes (R/AC/M) live in the SPEC/PLAN KDs and the REVIEW traceability matrix, not in code comments or test labels
+- **Meta-Marker Convention**: Comments and test names describe behavior — requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) live in the SPEC/PLAN KDs and the REVIEW traceability matrix, with the `noMetaMarker` lint rule enforcing this in plugin and test code
 - **Self-check**: Review all added comments. Verify against these examples:
   - ✅ `// Uses BigNumber to keep floating-point arithmetic exact` (comment WHY)
   - ✅ No comment explaining `function calculateTotal()` (self-documenting code)
   - ✅ Comments match the project's predominant language
 - **Framing self-check**: Skill/config edits state instructions positively — before submission, scan each edited skills/*.md and agents/*.md file with the prohibition-lexicon lint (`npx eslint -c eslint.security.config.mjs`) and rewrite every hit to describe the desired behavior
-- **Meta-Marker self-check**: Plugin/test edits describe behavior — before submission, scan each edited `plugins/**/*.js` and `tests/**/*.js` file with the meta-marker lint (`npx eslint -c eslint.security.config.mjs`) and rewrite every hit to describe the behavior instead of the requirement code
+- **Meta-Marker self-check**: Plugin/test edits describe behavior — before submission, scan each edited `plugins/**/*.js` and `tests/**/*.js` file with the meta-marker lint (`npx eslint -c eslint.security.config.mjs`) and rewrite every hit so test names and comments describe the behavior, with requirement-ID codes and issue-number tokens living in KDs
 
 ## Principles
 

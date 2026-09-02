@@ -1411,6 +1411,10 @@ export default {
           // Write entry to disk
           const entryId = entry.id.replace("MEM-", "");
           const filePath = join(targetDir, `entry-${entryId}.json`);
+          if (existsSync(filePath)) {
+            debug(`memory_write: collision — ${filePath} already exists`);
+            return JSON.stringify({ error: `Memory entry ${entry.id} already exists — use memory_update to modify it` });
+          }
           try {
             writeFileSync(filePath, JSON.stringify(entry, null, 2), "utf8");
             // Invalidate cache so next search picks up the new entry

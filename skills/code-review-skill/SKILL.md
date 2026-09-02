@@ -40,7 +40,7 @@ Covers systematic code review processes including review criteria evaluation, V-
 - [ ] Error handling follows project pattern (consistent error types, propagation strategy)
 - [ ] Logging follows structured format with appropriate levels (debug, info, warn, error)
 - [ ] Code formatting matches project linter/formatter configuration
-- [ ] Test names and comments carry no requirement-ID codes (R/AC/M) — the traceability matrix carries the mapping
+- [ ] Test names and comments describe behavior — requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) live in the traceability matrix
 
 ### Testing and Traceability
 
