@@ -1602,6 +1602,24 @@ Body`;
       const parsed = JSON.parse(result);
       expect(parsed.message).toContain("Duplicate");
     });
+
+    it("rejects explicit id collision — second write with same id errors and preserves first file", async () => {
+      // First write: explicit id MEM-020 succeeds
+      const first = { id: "MEM-020", type: "fact", source_kd: "knowledge/first.md", tags: ["test", "sample"], topic: "First entry", insight: "Original content.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
+      const r1 = JSON.parse(await hooks.tool.memory_write.execute({ entry: first }, { agent: "scribe", sessionID: "scribe-session" }));
+      expect(r1.message).toContain("written");
+      expect(r1.id).toBe("MEM-020");
+
+      // Second write: different entry, same explicit id — must error
+      const second = { id: "MEM-020", type: "fact", source_kd: "knowledge/second.md", tags: ["test", "sample"], topic: "Second entry", insight: "Overwrite attempt.", created: "2026-07-30T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
+      const r2 = JSON.parse(await hooks.tool.memory_write.execute({ entry: second }, { agent: "scribe", sessionID: "scribe-session" }));
+      expect(r2.error).toContain("already exists");
+
+      // First file is preserved unchanged
+      const onDisk = JSON.parse(readFileSync(join(MEMORY_DIR, "entry-020.json"), "utf8"));
+      expect(onDisk.topic).toBe("First entry");
+      expect(onDisk.insight).toBe("Original content.");
+    });
   });
 
   describe("memory_update tool (registered execute)", () => {
