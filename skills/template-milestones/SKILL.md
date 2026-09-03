@@ -59,3 +59,4 @@ protocol-gate reads the `## Milestone States` fenced YAML block (`milestones:` m
 - One row per plan milestone; IDs must match `/^[A-Za-z0-9][A-Za-z0-9_-]*$/` and be unique within the plan.
 - Writers use read-modify-write on the single registry file. Dispatches are serial (one `task` call at a time), so no concurrent writers are expected.
 - The registry is the live state SSOT; the PLAN KD remains immutable after approval.
+- **Update-in-place**: If a milestone registry already exists for this session, update it in-place using the edit tool. Only create a new file if no registry exists for the current session and generation. Creating a duplicate registry causes the protocol-gate plugin to silently track the wrong file.
