@@ -2152,15 +2152,14 @@ Body`;
       expect(parsed.error).toContain("permission");
     });
 
-    it("allows Overseer to move issues", async () => {
+    it("rejects Overseer attempting to move issues", async () => {
       await seedIssue(2);
       const result = await hooks.tool.issue_move.execute(
         { id: 2, from_scope: "swarm", to_scope: "generic" },
         { agent: "overseer", sessionID: "hb-session" }
       );
       const parsed = JSON.parse(result);
-      expect(parsed.message).toContain("moved");
-      expect(parsed.to_scope).toBe("generic");
+      expect(parsed.error).toContain("permission");
     });
 
     it("rejects move to same scope", async () => {
