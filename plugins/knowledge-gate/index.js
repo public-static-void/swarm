@@ -1775,7 +1775,7 @@ export default {
         }
       }),
       issue_move: tool({
-        description: "Move an issue between stores (project|generic|swarm). Only Habit Builder and Overseer agents may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. If the target store already holds an issue with the same ID, a fresh target-store ID is assigned and the original ID is preserved as moved_from in frontmatter. Returns { message, id, source_id, path } or { error }.",
+        description: "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. If the target store already holds an issue with the same ID, a fresh target-store ID is assigned and the original ID is preserved as moved_from in frontmatter. Returns { message, id, source_id, path } or { error }.",
         args: {
           id: tool.schema.number().int().describe("Issue ID to move (numeric)"),
           from_scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Source store scope"),
@@ -1786,10 +1786,10 @@ export default {
           const { id, from_scope, to_scope, reason } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
 
-          // Permission check: only Habit Builder and Overseer can move issues
-          if (agent !== "habit-builder" && agent !== "overseer") {
+          // Permission check: only Habit Builder can move issues
+          if (agent !== "habit-builder") {
             debug(`issue_move: rejected — called by non-authorized agent "${agent}"`);
-            return JSON.stringify({ error: "Only Habit Builder and Overseer agents have permission to move issues. Called by: " + (agent || "unknown") });
+            return JSON.stringify({ error: "Only Habit Builder has permission to move issues. Called by: " + (agent || "unknown") });
           }
 
           // Validate id

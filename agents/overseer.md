@@ -36,7 +36,6 @@ permission:
   memory_note_read: allow
   memory_notes_list: allow
   memory_note_delete: allow
-  issue_move: allow
   bash:
     "*": deny
     "mkdir*": allow
@@ -116,10 +115,9 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    KD PATHS: <upstream KD paths for align/decompose/swarm/review/extract/evolve modes>
    SESSION DATE: <YYYY-MM-DD>
    SCOPE: <optional context>
-   SCOPE CLASSIFICATION: <scope_classification>
    ```
 
-   Required: `mode`, `intent_kd`, `result_kd`, `session_date`, `scope_classification`. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The plugin generates `prompt`, `description`, and `subagent_type` from the template. `scope_classification` is `project` when the lifecycle's primary work is in a project codebase, `swarm` for swarm-config work, and `generic` for cross-domain or neutral work. This field controls issue scoping and memory note propagation — set it accurately so downstream agents (Artisan, Scribe, Habit Builder) write artifacts to the correct store.
+   Required: `mode`, `intent_kd`, `result_kd`, `session_date`. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The plugin generates `prompt`, `description`, and `subagent_type` from the template.
 
 3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 
