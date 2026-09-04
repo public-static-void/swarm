@@ -776,7 +776,8 @@ Body`;
       it("injects issues ordered by severity rank and ascending numeric id", async () => {
         // Severity is deliberately permuted against the numeric id order so a
         // filesystem-order (readdirSync) read cannot satisfy the expectation.
-        // Unbounded cap: 5 issues × 3 stores = 15, exceeds default cap 10.
+        // Unbounded cap: 5 issues × 2 stores (swarm+generic, config dir) = 10,
+        // within default cap 10. Set explicit unbounded to test ordering.
         process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "0";
         writeEntries(ISSUES_DIR, [
           addIssueFile(4, { severity: "high", title: "High B" }),
@@ -795,23 +796,18 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const issueLines = hint.split("\n").filter(l => l.startsWith("- ["));
-        // Triple-store seam: each issue appears with [swarm], [project], and [generic] scope,
-        // interleaved within each severity group.
+        // Workspace-aware: config dir scans swarm+generic only (2 stores),
+        // so each issue appears twice, interleaved within each severity group.
         expect(issueLines).toEqual([
           "- [swarm/ISSUE-002] (high) High A — assigned to habit-builder",
-          "- [project/ISSUE-002] (high) High A — assigned to habit-builder",
           "- [generic/ISSUE-002] (high) High A — assigned to habit-builder",
           "- [swarm/ISSUE-004] (high) High B — assigned to habit-builder",
-          "- [project/ISSUE-004] (high) High B — assigned to habit-builder",
           "- [generic/ISSUE-004] (high) High B — assigned to habit-builder",
           "- [swarm/ISSUE-003] (medium) Medium C — assigned to habit-builder",
-          "- [project/ISSUE-003] (medium) Medium C — assigned to habit-builder",
           "- [generic/ISSUE-003] (medium) Medium C — assigned to habit-builder",
           "- [swarm/ISSUE-001] (low) Low D — assigned to habit-builder",
-          "- [project/ISSUE-001] (low) Low D — assigned to habit-builder",
           "- [generic/ISSUE-001] (low) Low D — assigned to habit-builder",
           "- [swarm/ISSUE-005] (low) Low E — assigned to habit-builder",
-          "- [project/ISSUE-005] (low) Low E — assigned to habit-builder",
           "- [generic/ISSUE-005] (low) Low E — assigned to habit-builder"
         ]);
       });
@@ -853,16 +849,19 @@ Body`;
         expect(hint).toBeTruthy();
         const lines = issueLines(hint);
         expect(lines).toHaveLength(10);
-        // Triple-store seam: each issue appears with [swarm], [project], and [generic] scope,
-        // so severity groups are interleaved (A-swarm, A-project, A-generic, B-swarm…).
+        // Workspace-aware: config dir scans swarm+generic only (2 stores).
+        // 12 issues → 24 total; cap 10 takes the 10 highest-severity entries.
+        // 4 high issues × 2 stores = 8, cap remaining = 2 → first medium × 2.
         expect(lines[0]).toContain("High A");
         expect(lines[1]).toContain("High A");
-        expect(lines[2]).toContain("High A");
+        expect(lines[2]).toContain("High B");
         expect(lines[3]).toContain("High B");
-        expect(lines[4]).toContain("High B");
-        expect(lines[5]).toContain("High B");
-        expect(lines[6]).toContain("High C");
-        expect(lines[7]).toContain("High C");
+        expect(lines[4]).toContain("High C");
+        expect(lines[5]).toContain("High C");
+        expect(lines[6]).toContain("High D");
+        expect(lines[7]).toContain("High D");
+        expect(lines[8]).toContain("Medium E");
+        expect(lines[9]).toContain("Medium E");
       });
 
       it("treats KNOWLEDGE_GATE_MAX_OPEN_ISSUES=0 as unbounded", async () => {
@@ -875,8 +874,9 @@ Body`;
         );
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        // Triple-store seam: each issue file appears in all 3 stores, so 12 unique issues × 3 = 36
-        expect(issueLines(hint)).toHaveLength(36);
+        // Workspace-aware: config dir scans swarm+generic only (2 stores),
+        // so 12 unique issues × 2 = 24
+        expect(issueLines(hint)).toHaveLength(24);
       });
 
       it("falls back to the default cap 10 for an invalid env value", async () => {
@@ -925,8 +925,9 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         const lines = hint.split("\n").filter(l => l.startsWith("- ["));
-        // Triple-store seam: each issue file appears in all 3 stores, so 2 audience-matched × 3 = 6
-        expect(lines).toHaveLength(6);
+        // Workspace-aware: config dir scans swarm+generic only (2 stores),
+        // so 2 audience-matched × 2 = 4
+        expect(lines).toHaveLength(4);
         expect(hint).toContain("Inspector item");
         expect(hint).toContain("Ownerless item");
         expect(hint).toContain("— assigned to unassigned");
@@ -949,7 +950,8 @@ Body`;
         );
         let hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- ["))).toHaveLength(9);
+        // Workspace-aware: config dir scans swarm+generic (2 stores), 3 issues × 2 = 6
+        expect(hint.split("\n").filter(l => l.startsWith("- ["))).toHaveLength(6);
 
         // empty string
         process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "";
@@ -960,7 +962,7 @@ Body`;
         );
         hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint.split("\n").filter(l => l.startsWith("- ["))).toHaveLength(9);
+        expect(hint.split("\n").filter(l => l.startsWith("- ["))).toHaveLength(6);
       });
 
       it("matches the audience case-insensitively as a substring", async () => {
@@ -1053,9 +1055,10 @@ Body`;
         expect(hint).toBeTruthy();
         const lines = hint.split("\n");
         expect(lines[0]).toBe("[Knowledge Gate] Open issues from all stores detected:");
-        expect(lines[1]).toBe("<!-- issues-snapshot v1: 9 open, stable order -->");
-        // Triple-store seam: each issue file appears in all 3 stores, so 3 × 3 = 9
-        expect(issueLines(hint)).toHaveLength(9);
+        // Workspace-aware: config dir scans swarm+generic only (2 stores),
+        // so 3 issue files × 2 = 6
+        expect(lines[1]).toBe("<!-- issues-snapshot v1: 6 open, stable order -->");
+        expect(issueLines(hint)).toHaveLength(6);
       });
 
       it("reports the post-cap count in the marker", async () => {
@@ -1104,9 +1107,10 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        // Triple-store seam: 2 audience-matched issues × 3 stores = 6
-        expect(hint).toContain("<!-- issues-snapshot v1: 6 open, stable order -->");
-        expect(issueLines(hint)).toHaveLength(6);
+        // Workspace-aware: config dir scans swarm+generic (2 stores),
+        // 2 audience-matched issues × 2 = 4
+        expect(hint).toContain("<!-- issues-snapshot v1: 4 open, stable order -->");
+        expect(issueLines(hint)).toHaveLength(4);
         expect(hint).not.toContain("Permission item");
       });
 
@@ -3835,6 +3839,103 @@ Body`;
       expect(projectHits.map(r => r.topic)).toEqual(["Project-side entry"]);
       const merged = resolveHooks.searchMemory({ tags: ["resolve-probe"], topic: "", limit: 10 });
       expect(merged.map(r => r.topic).sort()).toEqual(["Project-side entry", "Swarm-side entry"]);
+    });
+  });
+
+  describe("Workspace-aware issue injection", () => {
+    let waHooks;
+    let configRoot;
+    let projectRoot;
+
+    afterAll(() => {
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      if (configRoot) rmSync(configRoot, { recursive: true, force: true });
+      if (projectRoot) rmSync(projectRoot, { recursive: true, force: true });
+    });
+
+    describe("scopesForInjection — config dir (PROJECT === CONFIG)", () => {
+      beforeAll(async () => {
+        configRoot = mkdtempSync(join(tmpdir(), "kg-wa-configdir-"));
+        projectRoot = configRoot; // Same dir → isInConfigDir = true
+        delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+        delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+        delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+        process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+        process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+        const fresh = await import("../../../plugins/knowledge-gate/index.js?wa-configdir");
+        waHooks = await fresh.default.server({}, {});
+      });
+
+      it("returns swarm and generic when running in the config directory", () => {
+        expect(waHooks.scopesForInjection()).toEqual(["swarm", "generic"]);
+      });
+
+      it("scanOpenIssuesWorkspaceAware only returns swarm+generic issues, not project", () => {
+        // Swarm scope resolves to join(CONFIG_STORE_ROOT, "knowledge", "issues")
+        const swarmDir = join(configRoot, "knowledge", "issues");
+        // Generic scope resolves to join(GENERIC_STORE_ROOT, "issues")
+        const genericDir = join(configRoot, "knowledge", "generic", "issues");
+        mkdirSync(swarmDir, { recursive: true });
+        mkdirSync(genericDir, { recursive: true });
+
+        writeFileSync(join(swarmDir, "issue-001.md"),
+          addIssueFile(1, { severity: "high", title: "Swarm issue" }).content);
+        writeFileSync(join(genericDir, "issue-002.md"),
+          addIssueFile(2, { severity: "medium", title: "Generic issue" }).content);
+        writeFileSync(join(swarmDir, "issue-003.md"),
+          addIssueFile(3, { severity: "low", title: "Third issue" }).content);
+
+        const results = waHooks.scanOpenIssuesWorkspaceAware();
+        const scopes = results.map(i => i.scope).sort();
+        expect(scopes).toEqual(["generic", "swarm", "swarm"]); // 2 swarm + 1 generic
+        expect(results).toHaveLength(3); // 2 from swarm + 1 from generic
+      });
+    });
+
+    describe("scopesForInjection — other project (PROJECT !== CONFIG)", () => {
+      beforeAll(async () => {
+        configRoot = mkdtempSync(join(tmpdir(), "kg-wa-otherproj-config-"));
+        projectRoot = mkdtempSync(join(tmpdir(), "kg-wa-otherproj-project-"));
+        delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+        delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+        delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+        process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+        process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+        const fresh = await import("../../../plugins/knowledge-gate/index.js?wa-otherproj");
+        waHooks = await fresh.default.server({}, {});
+      });
+
+      it("returns generic and project when running in a non-config project", () => {
+        expect(waHooks.scopesForInjection()).toEqual(["generic", "project"]);
+      });
+
+      it("scanOpenIssuesWorkspaceAware only returns generic+project issues, not swarm", () => {
+        // Swarm scope resolves to join(CONFIG_STORE_ROOT, "knowledge", "issues")
+        const swarmDir = join(configRoot, "knowledge", "issues");
+        // Generic scope resolves to join(CONFIG_STORE_ROOT, "knowledge", "generic", "issues")
+        // (GENERIC_STORE_ROOT is derived from CONFIG_STORE_ROOT, not PROJECT_STORE_ROOT)
+        const genericDir = join(configRoot, "knowledge", "generic", "issues");
+        // Project scope resolves to join(PROJECT_STORE_ROOT, "knowledge", "issues")
+        // when projectRoot !== CONFIG_STORE_ROOT (via storeDirFor)
+        const projectDir = join(projectRoot, "knowledge", "issues");
+        mkdirSync(swarmDir, { recursive: true });
+        mkdirSync(genericDir, { recursive: true });
+        mkdirSync(projectDir, { recursive: true });
+
+        writeFileSync(join(swarmDir, "issue-001.md"),
+          addIssueFile(1, { severity: "high", title: "Swarm issue" }).content);
+        writeFileSync(join(genericDir, "issue-002.md"),
+          addIssueFile(2, { severity: "medium", title: "Generic issue" }).content);
+        writeFileSync(join(projectDir, "issue-003.md"),
+          addIssueFile(3, { severity: "low", title: "Project issue" }).content);
+
+        const results = waHooks.scanOpenIssuesWorkspaceAware();
+        const scopes = results.map(i => i.scope).sort();
+        expect(scopes).toEqual(["generic", "project"]);
+        expect(results).toHaveLength(2); // 1 generic + 1 project
+        expect(results.every(i => i.severity !== "high" || i.scope !== "swarm")).toBe(true);
+      });
     });
   });
 });
