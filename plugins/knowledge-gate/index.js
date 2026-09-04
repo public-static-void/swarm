@@ -2375,7 +2375,7 @@ export default {
       }
 
       if (toolID === "issue_move") {
-        output.description = "Move an issue between stores (project|generic|swarm). Only Habit Builder and Overseer agents may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.";
+        output.description = "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.";
         debug(`toolDefinition: provided description for issue_move`);
       }
     }
