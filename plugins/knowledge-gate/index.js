@@ -860,6 +860,11 @@ export default {
       ? resolve(process.env.KNOWLEDGE_GATE_PROJECT_ROOT)
       : (input && input.directory ? resolve(input.directory) : process.cwd());
 
+    // Workspace discriminator: true when the current project IS the opencode
+    // config directory. Used by scopesForInjection() to select which issue
+    // scopes are injected into Overseer/Habit Builder context.
+    const isInConfigDir = PROJECT_STORE_ROOT === CONFIG_STORE_ROOT;
+
     // Classification → store root. Explicit scope only: an invalid
     // scope maps to null so the write path can reject it loudly instead of
     // silently routing to a default store.
@@ -2259,6 +2264,51 @@ export default {
       return allIssues;
     }
 
+    // Workspace-aware scope selection for issue injection. Config dir →
+    // swarm + generic only (project-store issues are swarm-equivalent per
+    // user's model). Other project → generic + project only.
+    function scopesForInjection() {
+      if (isInConfigDir) return ["swarm", "generic"];
+      return ["generic", "project"];
+    }
+
+    // Workspace-aware merged scan: same read/sort contract as
+    // scanOpenIssuesMerged but limited to the scopes returned by
+    // scopesForInjection(). Used by the injection callers (EVOLVE and
+    // INTENT branches) so each workspace sees only its relevant issues.
+    // scanOpenIssuesMerged is preserved unchanged for the high-severity
+    // backward-transition safety net.
+    function scanOpenIssuesWorkspaceAware() {
+      const allIssues = [];
+      for (const scope of scopesForInjection()) {
+        const issuesDir = issuesDirForScope(scope);
+        try {
+          if (!existsSync(issuesDir)) continue;
+          const files = readdirSync(issuesDir).filter(f => f.startsWith("issue-") && f.endsWith(".md"));
+          for (const file of files) {
+            try {
+              const raw = readFileSync(join(issuesDir, file), "utf8");
+              const issue = parseIssueFile(raw, file);
+              if (issue && issue.status === "open") {
+                issue.scope = scope;
+                allIssues.push(issue);
+              }
+            } catch (e) {
+              debug(`scanOpenIssuesWorkspaceAware: skipping ${scope}/${file}: ${e.message}`);
+            }
+          }
+        } catch (e) {
+          debug(`scanOpenIssuesWorkspaceAware: failed to read ${scope} issues dir: ${e.message}`);
+        }
+      }
+      allIssues.sort((a, b) => {
+        const bySeverity = issueSeverityRank(a.severity) - issueSeverityRank(b.severity);
+        if (bySeverity !== 0) return bySeverity;
+        return issueNumericId(a) - issueNumericId(b);
+      });
+      return allIssues;
+    }
+
     // High-severity view over ALL stores: the backward-transition
     // trigger must fire on high-severity open issues from the project and
     // generic stores too, not just swarm. Derives from scanOpenIssuesMerged
@@ -2325,7 +2375,7 @@ export default {
       }
 
       if (toolID === "issue_move") {
-        output.description = "Move an issue between stores (project|generic|swarm). Only Habit Builder and Overseer agents may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.";
+        output.description = "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.";
         debug(`toolDefinition: provided description for issue_move`);
       }
     }
@@ -2402,11 +2452,12 @@ export default {
           `{store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.`
         );
 
-        // Surface open issues from all stores so the habit-builder can close
-        // ones whose fix is already demonstrated in lifecycle KDs. Each line
-        // carries its scope so the close targets the correct store via
-        // issue_update.
-        const mergedIssues = scanOpenIssuesMerged();
+        // Surface open issues from workspace-relevant stores so the habit-builder
+        // can close ones whose fix is already demonstrated in lifecycle KDs.
+        // Workspace-aware: config dir sees swarm+generic; other project sees
+        // generic+project. Each line carries its scope so the close targets the
+        // correct store via issue_update.
+        const mergedIssues = scanOpenIssuesWorkspaceAware();
         if (mergedIssues.length > 0) {
           const issueSummary = mergedIssues.map(i =>
             `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
@@ -2424,15 +2475,16 @@ export default {
       }
 
       // On every Overseer systemTransform (not phase-gated), scan for open issues from
-      // all stores and surface them in Triage Notes. The guard is agent === "overseer"
-      // only — injection is intentionally NOT phase-gated, so issues stay visible across
-      // the whole lifecycle. This closes the issue tracking feedback loop.
+      // workspace-relevant stores and surface them in Triage Notes. The guard is
+      // agent === "overseer" only — injection is intentionally NOT phase-gated,
+      // so issues stay visible across the whole lifecycle. Workspace-aware: config
+      // dir sees swarm+generic; other project sees generic+project.
       // The injected set is bounded (KNOWLEDGE_GATE_MAX_OPEN_ISSUES cap,
       // default 10) and optionally routed (KNOWLEDGE_GATE_ISSUE_AUDIENCE filter);
       // the filter runs BEFORE the cap so the cap measures the audience-matched set.
       // The habit-builder EVOLVE branch above stays unfiltered and uncapped.
       if (agent === "overseer") {
-        let openIssues = filterByAudience(scanOpenIssuesMerged(), process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
+        let openIssues = filterByAudience(scanOpenIssuesWorkspaceAware(), process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
         openIssues = applyCap(openIssues, envOpenIssueCap());
         if (openIssues.length > 0) {
           const issueSummary = openIssues.map(i =>
@@ -2464,6 +2516,8 @@ export default {
       scanHighSeverityIssues,
       scanOpenIssues,
       scanOpenIssuesMerged,
+      scanOpenIssuesWorkspaceAware,
+      scopesForInjection,
       parseIssueFile,
       getNextIssueId,
       getNextIssueIdForStore,

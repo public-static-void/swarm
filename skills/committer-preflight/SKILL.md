@@ -39,7 +39,12 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
 4. **Establish working branch** — Create a feature branch from the detected base branch. The Committer derives the feature branch name from the INTENT KD context using the Branch Naming Convention below. Branch establishment runs once per PREFLIGHT — CHECKPOINT and CLEANUP modes operate on the established branch.
    1. **Derive feature branch name** — Read the INTENT KD context to derive a feature branch name using the Branch Naming Convention table (task type → branch prefix). If INTENT KD is not available or context is insufficient, use `improve/<timestamp>` as fallback.
    2. **Detect base branch** — Run `git log --oneline -10` to find where the current HEAD branched off. The base branch is the branch point, which may differ from `main`.
-   3. **Create feature branch** — Run `git checkout -b <feature-branch> <base>`.
+   3. **Check for branch collision** — Run `git branch --list <feature-branch>` to check whether a branch with the derived name already exists.
+      - **When the branch does NOT exist**: Run `git checkout -b <feature-branch> <base>` to create and switch to the new branch.
+      - **When the branch already exists**:
+        1. Gather context on the existing branch: run `git log --oneline -3 <feature-branch>` to show its recent commits, and `git rev-list --left-right --count <base>...<feature-branch>` to determine whether it is ahead of or behind the base branch.
+        2. Report the collision with context and escalate: "Branch `<feature-branch>` already exists (latest commit: `<hash> <subject>`; ahead/behind `<base>`: `<ahead> ahead, <behind> behind`). The existing branch may be stale. Options: (a) delete the stale branch and recreate, (b) rename the new branch with a suffix, (c) continue on the existing branch. Escalate to Overseer for decision."
+        3. **Do not force-update, auto-rename, or proceed silently.** Wait for direction. Preserve any pending stash state — do not pop or discard the stash while the collision is unresolved.
    4. **Restore stashed changes** — If step 1 stashed pending changes (dirty repo), run `git stash pop` after the working branch is established. If pop fails, log a warning but continue.
 
 ## Branch Naming Convention
