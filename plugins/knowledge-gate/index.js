@@ -2424,6 +2424,19 @@ export default {
         output.description = "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
         debug(`toolDefinition: provided description for issue_read`);
       }
+
+      // Declare the optional project_name parameter in the exposed schema for
+      // the two tools that accept it. Without this, schema validation strips
+      // project_name before the handler resolves the project subfolder.
+      if (toolID === "memory_write" || toolID === "issue_move") {
+        output.parameters = output.parameters || {};
+        output.parameters.properties = output.parameters.properties || {};
+        output.parameters.properties.project_name = {
+          type: "string",
+          description: "Project subfolder name when scope/to_scope is project — overrides the workspace basename"
+        };
+        debug(`toolDefinition: declared project_name for ${toolID}`);
+      }
     }
 
     // --- Hook: experimental.chat.system.transform ---
