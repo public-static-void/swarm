@@ -2269,6 +2269,100 @@ Body`;
     });
   });
 
+  describe("issue_read tool (registered execute)", () => {
+    async function seedIssue(id = 1, overrides = {}) {
+      await hooks.tool.issue_write.execute(
+        {
+          issue: {
+            id,
+            title: `Read seed ${id}`,
+            severity: "medium",
+            created: "2026-08-16",
+            session: "ses_test",
+            assigned_to: "inspector",
+            tags: ["test", "mock"],
+            scope: "swarm",
+            description: "The read description.",
+            source_kd_reference: "knowledge/spec-read.md",
+            recommended_fix: "Apply the read fix.",
+            acceptance_criteria: "Read tests pass.",
+            ...overrides
+          }
+        },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+    }
+
+    it("exposes issue_read with description, args, and execute", () => {
+      expect(hooks.tool.issue_read).toBeTruthy();
+      expect(typeof hooks.tool.issue_read.description).toBe("string");
+      expect(hooks.tool.issue_read.args).toBeTruthy();
+      expect(typeof hooks.tool.issue_read.execute).toBe("function");
+    });
+
+    it("returns the full issue content for a Habit Builder caller", async () => {
+      await seedIssue(1);
+      const result = await hooks.tool.issue_read.execute(
+        { id: 1, scope: "swarm" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.id).toBe("1");
+      expect(parsed.title).toBe("Read seed 1");
+      expect(parsed.severity).toBe("medium");
+      expect(parsed.status).toBe("open");
+      expect(parsed.scope).toBe("swarm");
+      expect(parsed.assigned_to).toBe("inspector");
+      expect(parsed.tags).toEqual(["test", "mock"]);
+      // Full body sections are returned, not just frontmatter
+      expect(parsed.body).toContain("## Description");
+      expect(parsed.body).toContain("The read description.");
+      expect(parsed.body).toContain("## Source KD Reference");
+      expect(parsed.body).toContain("## Recommended Fix");
+      expect(parsed.body).toContain("## Acceptance Criteria");
+    });
+
+    it("allows any agent to read an issue (tool-exclusivity read path)", async () => {
+      await seedIssue(2);
+      const result = await hooks.tool.issue_read.execute(
+        { id: 2, scope: "swarm" },
+        { agent: "artisan", sessionID: "artisan-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.title).toBe("Read seed 2");
+    });
+
+    it("rejects a missing scope", async () => {
+      await seedIssue(3);
+      const result = await hooks.tool.issue_read.execute(
+        { id: 3 },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("scope");
+    });
+
+    it("rejects an invalid id", async () => {
+      const result = await hooks.tool.issue_read.execute(
+        { id: 0, scope: "swarm" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("positive integer");
+    });
+
+    it("returns an error when the issue does not exist in the named store", async () => {
+      const result = await hooks.tool.issue_read.execute(
+        { id: 999, scope: "swarm" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("not found");
+    });
+  });
+
   // Per-store physical separation — the one deliberate exception to this
   // file's single-import convention. Store roots (CONFIG_STORE_ROOT) and the
   // legacy per-dir seams (SEAM_DIR_OVERRIDES) are module-load constants the
@@ -4047,6 +4141,52 @@ Body`;
         expect(results).toHaveLength(2); // 1 generic + 1 project
         expect(results.every(i => i.severity !== "high" || i.scope !== "swarm")).toBe(true);
       });
+    });
+  });
+
+  describe("tool-exclusivity permission denials", () => {
+    // Static guards over the agent permission configs: issues and memories
+    // are managed exclusively through the knowledge-gate tools, so the
+    // responsible agents must not be able to read/edit the store files
+    // directly. These assert the deny patterns are present in the agent
+    // definitions (the runtime contract the tools depend on).
+
+    const HABIT_BUILDER = fileURLToPath(new URL("../../../agents/habit-builder.md", import.meta.url));
+    const SCRIBE = fileURLToPath(new URL("../../../agents/scribe.md", import.meta.url));
+
+    function readAgent(path) {
+      return readFileSync(path, "utf8");
+    }
+
+    it("habit-builder read block denies issue and memory store files", () => {
+      const content = readAgent(HABIT_BUILDER);
+      // The read block must deny both the issues store and the memory store.
+      const readBlock = content.match(/read:\n([\s\S]*?)\n  edit:/);
+      expect(readBlock).toBeTruthy();
+      expect(readBlock[1]).toContain('"knowledge/issues/*.md": deny');
+      expect(readBlock[1]).toContain('"knowledge/memory/*.json": deny');
+    });
+
+    it("habit-builder edit block denies issue store files", () => {
+      const content = readAgent(HABIT_BUILDER);
+      const editBlock = content.match(/edit:\n([\s\S]*?)\n  glob:/);
+      expect(editBlock).toBeTruthy();
+      expect(editBlock[1]).toContain('"knowledge/issues/*.md": deny');
+    });
+
+    it("habit-builder is granted the issue_read tool", () => {
+      const content = readAgent(HABIT_BUILDER);
+      expect(content).toContain("issue_read: allow");
+    });
+
+    it("scribe read and edit blocks deny memory store files", () => {
+      const content = readAgent(SCRIBE);
+      const readBlock = content.match(/read:\n([\s\S]*?)\n  edit:/);
+      expect(readBlock).toBeTruthy();
+      expect(readBlock[1]).toContain('"knowledge/memory/*.json": deny');
+      const editBlock = content.match(/edit:\n([\s\S]*?)\n  glob:/);
+      expect(editBlock).toBeTruthy();
+      expect(editBlock[1]).toContain('"knowledge/memory/*.json": deny');
     });
   });
 });
