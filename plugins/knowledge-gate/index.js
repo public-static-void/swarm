@@ -2470,8 +2470,9 @@ export default {
       if (agent === "scribe") {
         output.system.push(
           `[Knowledge Gate] After composing a COMPOSED KD, write distilled insights ` +
-          `via the memory_write tool. Copy the scope from the COMPOSED KD frontmatter ` +
-          `(scope: project|generic|swarm) when writing — the tool routes to the correct store. ` +
+          `via the memory_write tool. Pass the scope argument explicitly ` +
+          `(project|generic|swarm) on every call — classify each entry yourself using ` +
+          `the three-question heuristic; the tool does not infer it. ` +
           `The tool validates schema, checks tags against ` +
           `controlled vocabulary, deduplicates, auto-assigns sequential ID, and writes to disk.`
         );
