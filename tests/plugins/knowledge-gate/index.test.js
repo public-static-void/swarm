@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
-import { join } from "path";
+import { basename, join } from "path";
 import { tmpdir } from "os";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -1476,7 +1476,7 @@ Body`;
 
       // memory_write writes the new file instead of skipping
       const result = await hooks.tool.memory_write.execute(
-        { entry: { id: "MEM-002", type: "fact", source_kd: "knowledge/test.md", tags: ["permissions", "testing", "cache"], topic: "Cache invalidation strategy", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" } },
+        { entry: { id: "MEM-002", type: "fact", source_kd: "knowledge/test.md", tags: ["permissions", "testing", "cache"], topic: "Cache invalidation strategy", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" }, scope: "swarm" },
         { agent: "scribe", sessionID: "scribe-session" }
       );
       const parsed = JSON.parse(result);
@@ -1551,7 +1551,7 @@ Body`;
 
     it("writes exactly one file and returns { message, id } from Scribe agent", async () => {
       const entry = { id: "MEM-020", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight for tool write.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      const result = await hooks.tool.memory_write.execute({ entry, scope: "swarm" }, { agent: "scribe", sessionID: "scribe-session" });
       const parsed = JSON.parse(result);
       expect(parsed.message).toContain("written");
       expect(parsed.id).toBe("MEM-020");
@@ -1562,7 +1562,7 @@ Body`;
 
     it("auto-assigns ID when not provided", async () => {
       const entry = { type: "fact", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight for auto-id.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      const result = await hooks.tool.memory_write.execute({ entry, scope: "swarm" }, { agent: "scribe", sessionID: "scribe-session" });
       const parsed = JSON.parse(result);
       expect(parsed.id).toBe("MEM-001"); // First entry gets MEM-001
     });
@@ -1575,7 +1575,7 @@ Body`;
 
       // Try writing a similar entry (same tags, overlapping topic)
       const entry2 = { id: "MEM-051", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "duplicate"], topic: "Duplicate test content", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const result = await hooks.tool.memory_write.execute({ entry: entry2 }, { agent: "scribe", sessionID: "scribe-session" });
+      const result = await hooks.tool.memory_write.execute({ entry: entry2, scope: "swarm" }, { agent: "scribe", sessionID: "scribe-session" });
       const parsed = JSON.parse(result);
       expect(parsed.message).toContain("Duplicate");
       // No second file written
@@ -1584,7 +1584,7 @@ Body`;
 
     it("rejects invalid schema entry with no write", async () => {
       const entry = { id: "MEM-020", type: "not-a-valid-type", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      const result = await hooks.tool.memory_write.execute({ entry, scope: "swarm" }, { agent: "scribe", sessionID: "scribe-session" });
       const parsed = JSON.parse(result);
       expect(parsed.error).toBeTruthy();
       expect(readdirSync(MEMORY_DIR)).toHaveLength(0);
@@ -1602,7 +1602,7 @@ Body`;
 
       // And dedup still detects a duplicate against it
       const entry = { id: "MEM-034", type: "fact", source_kd: "knowledge/test.md", tags: ["permissions", "glob"], topic: "Permission glob patterns — cross-workspace", insight: "Test insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      const result = await hooks.tool.memory_write.execute({ entry, scope: "swarm" }, { agent: "scribe", sessionID: "scribe-session" });
       const parsed = JSON.parse(result);
       expect(parsed.message).toContain("Duplicate");
     });
@@ -1610,13 +1610,13 @@ Body`;
     it("rejects explicit id collision — second write with same id errors and preserves first file", async () => {
       // First write: explicit id MEM-020 succeeds
       const first = { id: "MEM-020", type: "fact", source_kd: "knowledge/first.md", tags: ["test", "sample"], topic: "First entry", insight: "Original content.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const r1 = JSON.parse(await hooks.tool.memory_write.execute({ entry: first }, { agent: "scribe", sessionID: "scribe-session" }));
+      const r1 = JSON.parse(await hooks.tool.memory_write.execute({ entry: first, scope: "swarm" }, { agent: "scribe", sessionID: "scribe-session" }));
       expect(r1.message).toContain("written");
       expect(r1.id).toBe("MEM-020");
 
       // Second write: different entry, same explicit id — must error
       const second = { id: "MEM-020", type: "fact", source_kd: "knowledge/second.md", tags: ["test", "sample"], topic: "Second entry", insight: "Overwrite attempt.", created: "2026-07-30T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const r2 = JSON.parse(await hooks.tool.memory_write.execute({ entry: second }, { agent: "scribe", sessionID: "scribe-session" }));
+      const r2 = JSON.parse(await hooks.tool.memory_write.execute({ entry: second, scope: "swarm" }, { agent: "scribe", sessionID: "scribe-session" }));
       expect(r2.error).toContain("already exists");
 
       // First file is preserved unchanged
@@ -1709,7 +1709,7 @@ Body`;
 
       // A similar write is no longer dedup-skipped against the tombstoned entry
       const write = await hooks.tool.memory_write.execute(
-        { entry: { id: "MEM-003", type: "fact", source_kd: "knowledge/test.md", tags: ["auth", "permissions"], topic: "Auth token design", insight: "Fresh insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" } },
+        { entry: { id: "MEM-003", type: "fact", source_kd: "knowledge/test.md", tags: ["auth", "permissions"], topic: "Auth token design", insight: "Fresh insight.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" }, scope: "swarm" },
         { agent: "scribe", sessionID: "scribe-session" }
       );
       const parsedWrite = JSON.parse(write);
@@ -2229,7 +2229,7 @@ Body`;
         const projectSeeded = await seedIssueIn("project", "Existing project issue one");
         expect(swarmSeeded.id).toBe(1);
         expect(projectSeeded.id).toBe(1);
-        const projectOneBefore = readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+        const projectOneBefore = readFileSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "issues", "issue-1.md"), "utf8");
 
         const result = JSON.parse(await moveHooks.tool.issue_move.execute(
           { id: 1, from_scope: "swarm", to_scope: "project", reason: "swarm defect found while working in a project" },
@@ -2240,9 +2240,9 @@ Body`;
         expect(result.id).toBe(2);
         expect(result.source_id).toBe(1);
         // Existing project issue file preserved byte-for-byte — no data loss
-        expect(readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8")).toBe(projectOneBefore);
+        expect(readFileSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "issues", "issue-1.md"), "utf8")).toBe(projectOneBefore);
         // Moved issue landed under the fresh ID with updated frontmatter
-        const movedRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-2.md"), "utf8");
+        const movedRaw = readFileSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "issues", "issue-2.md"), "utf8");
         expect(movedRaw).toContain("Swarm bubble-up candidate");
         expect(movedRaw).toMatch(/^id: 2$/m);
         expect(movedRaw).toMatch(/^scope: project$/m);
@@ -2261,11 +2261,105 @@ Body`;
 
         expect(result.error).toBeUndefined();
         expect(result.id).toBe(3);
-        const movedRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-3.md"), "utf8");
+        const movedRaw = readFileSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "issues", "issue-3.md"), "utf8");
         expect(movedRaw).toContain("No collision candidate");
         expect(movedRaw).toMatch(/^scope: project$/m);
         expect(movedRaw).not.toMatch(/^moved_from:/m);
       });
+    });
+  });
+
+  describe("issue_read tool (registered execute)", () => {
+    async function seedIssue(id = 1, overrides = {}) {
+      await hooks.tool.issue_write.execute(
+        {
+          issue: {
+            id,
+            title: `Read seed ${id}`,
+            severity: "medium",
+            created: "2026-08-16",
+            session: "ses_test",
+            assigned_to: "inspector",
+            tags: ["test", "mock"],
+            scope: "swarm",
+            description: "The read description.",
+            source_kd_reference: "knowledge/spec-read.md",
+            recommended_fix: "Apply the read fix.",
+            acceptance_criteria: "Read tests pass.",
+            ...overrides
+          }
+        },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+    }
+
+    it("exposes issue_read with description, args, and execute", () => {
+      expect(hooks.tool.issue_read).toBeTruthy();
+      expect(typeof hooks.tool.issue_read.description).toBe("string");
+      expect(hooks.tool.issue_read.args).toBeTruthy();
+      expect(typeof hooks.tool.issue_read.execute).toBe("function");
+    });
+
+    it("returns the full issue content for a Habit Builder caller", async () => {
+      await seedIssue(1);
+      const result = await hooks.tool.issue_read.execute(
+        { id: 1, scope: "swarm" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.id).toBe("1");
+      expect(parsed.title).toBe("Read seed 1");
+      expect(parsed.severity).toBe("medium");
+      expect(parsed.status).toBe("open");
+      expect(parsed.scope).toBe("swarm");
+      expect(parsed.assigned_to).toBe("inspector");
+      expect(parsed.tags).toEqual(["test", "mock"]);
+      // Full body sections are returned, not just frontmatter
+      expect(parsed.body).toContain("## Description");
+      expect(parsed.body).toContain("The read description.");
+      expect(parsed.body).toContain("## Source KD Reference");
+      expect(parsed.body).toContain("## Recommended Fix");
+      expect(parsed.body).toContain("## Acceptance Criteria");
+    });
+
+    it("allows any agent to read an issue (tool-exclusivity read path)", async () => {
+      await seedIssue(2);
+      const result = await hooks.tool.issue_read.execute(
+        { id: 2, scope: "swarm" },
+        { agent: "artisan", sessionID: "artisan-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toBeUndefined();
+      expect(parsed.title).toBe("Read seed 2");
+    });
+
+    it("rejects a missing scope", async () => {
+      await seedIssue(3);
+      const result = await hooks.tool.issue_read.execute(
+        { id: 3 },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("scope");
+    });
+
+    it("rejects an invalid id", async () => {
+      const result = await hooks.tool.issue_read.execute(
+        { id: 0, scope: "swarm" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("positive integer");
+    });
+
+    it("returns an error when the issue does not exist in the named store", async () => {
+      const result = await hooks.tool.issue_read.execute(
+        { id: 999, scope: "swarm" },
+        { agent: "habit-builder", sessionID: "hb-session" }
+      );
+      const parsed = JSON.parse(result);
+      expect(parsed.error).toContain("not found");
     });
   });
 
@@ -2313,9 +2407,9 @@ Body`;
       expect(swarm.id).toBe(1);
       expect(project.id).toBe(1);
       expect(existsSync(join(configRoot, "knowledge", "issues", "issue-1.md"))).toBe(true);
-      expect(existsSync(join(projectRoot, "knowledge", "issues", "issue-1.md"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "issues", "issue-1.md"))).toBe(true);
       const swarmRaw = readFileSync(join(configRoot, "knowledge", "issues", "issue-1.md"), "utf8");
-      const projectRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+      const projectRaw = readFileSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "issues", "issue-1.md"), "utf8");
       expect(swarmRaw).toContain("scope: swarm");
       expect(projectRaw).toContain("scope: project");
     });
@@ -2332,7 +2426,7 @@ Body`;
       expect(swarm2.id).toBe(2);
       expect(project2.id).toBe(2);
       expect(existsSync(join(configRoot, "knowledge", "issues", "issue-2.md"))).toBe(true);
-      expect(existsSync(join(projectRoot, "knowledge", "issues", "issue-2.md"))).toBe(true);
+      expect(existsSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "issues", "issue-2.md"))).toBe(true);
     });
 
     it("closes an issue in the project store by scope without touching the swarm copy", async () => {
@@ -2341,7 +2435,7 @@ Body`;
         { agent: "habit-builder", sessionID: "hb" }
       ));
       expect(result.message).toContain("updated");
-      const projectRaw = readFileSync(join(projectRoot, "knowledge", "issues", "issue-1.md"), "utf8");
+      const projectRaw = readFileSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "issues", "issue-1.md"), "utf8");
       expect(projectRaw).toMatch(/status: resolved/);
       expect(projectRaw).toContain("Closed from the config workspace.");
       const swarmRaw = readFileSync(join(configRoot, "knowledge", "issues", "issue-1.md"), "utf8");
@@ -2475,8 +2569,10 @@ Body`;
         { agent: "scribe", sessionID: "s" }
       ));
       expect(r.error).toBeUndefined();
-      expect(existsSync(join(otherProject, "knowledge", "memory", "entry-001.json"))).toBe(true);
-      expect(existsSync(join(configRoot, "knowledge", "projects", "myapp"))).toBe(false);
+      // Project data centralizes under the config root regardless of workspace
+      expect(existsSync(join(configRoot, "knowledge", "projects", "myapp", "memory", "entry-001.json"))).toBe(true);
+      // The workspace tree itself stays free of knowledge data
+      expect(existsSync(join(otherProject, "knowledge"))).toBe(false);
     });
 
     it("honors KNOWLEDGE_GATE_PROJECT_NAME for the collision namespace", async () => {
@@ -2489,6 +2585,116 @@ Body`;
       expect(r.error).toBeUndefined();
       expect(existsSync(join(configRoot, "knowledge", "projects", "swarm-workbench", "memory"))).toBe(true);
       delete process.env.KNOWLEDGE_GATE_PROJECT_NAME;
+    });
+  });
+
+  // project_name override — memory_write and issue_move accept an
+  // explicit project subfolder name that overrides the workspace basename.
+  // Fresh module instance without seams so the centralized project store
+  // path is observable on disk.
+  describe("project_name override — centralized project stores (fresh module instance)", () => {
+    let nameHooks;
+    let configRoot;
+    let projectRoot;
+
+    beforeAll(async () => {
+      configRoot = mkdtempSync(join(tmpdir(), "kg-name-config-"));
+      projectRoot = mkdtempSync(join(tmpdir(), "kg-name-project-"));
+      delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
+      delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
+      delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_NAME;
+      process.env.KNOWLEDGE_GATE_CONFIG_ROOT = configRoot;
+      process.env.KNOWLEDGE_GATE_PROJECT_ROOT = projectRoot;
+      const fresh = await import("../../../plugins/knowledge-gate/index.js?project-name");
+      nameHooks = await fresh.default.server({ directory: projectRoot }, {});
+    });
+
+    afterAll(() => {
+      process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
+      process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
+      process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+      delete process.env.KNOWLEDGE_GATE_CONFIG_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      delete process.env.KNOWLEDGE_GATE_PROJECT_NAME;
+      rmSync(configRoot, { recursive: true, force: true });
+      rmSync(projectRoot, { recursive: true, force: true });
+    });
+
+    it("memory_write routes project-scope entries under the project_name subfolder", async () => {
+      const result = JSON.parse(await nameHooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-name.md",
+          tags: ["testing", "scope"],
+          topic: "Named project entry",
+          insight: "Lands under the explicit project name",
+          type: "fact",
+          created: "2026-08-24T00:00:00.000Z",
+          session: "ses_name",
+          version: "1.0.0"
+        },
+        scope: "project",
+        project_name: "rt-lstm"
+      }, { agent: "scribe", sessionID: "s" }));
+
+      expect(result.error).toBeUndefined();
+      expect(result.scope).toBe("project");
+      expect(existsSync(join(configRoot, "knowledge", "projects", "rt-lstm", "memory", "entry-001.json"))).toBe(true);
+      // The workspace basename namespace was NOT used
+      expect(existsSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "memory"))).toBe(false);
+    });
+
+    it("issue_move routes the target copy under the project_name subfolder", async () => {
+      const seeded = JSON.parse(await nameHooks.tool.issue_write.execute(
+        { issue: { title: "Move me", severity: "medium", created: "2026-08-24", session: "ses_name", scope: "swarm" } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(seeded.id).toBe(1);
+
+      const result = JSON.parse(await nameHooks.tool.issue_move.execute(
+        { id: 1, from_scope: "swarm", to_scope: "project", project_name: "rt-lstm", reason: "belongs to rt-lstm" },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+
+      expect(result.error).toBeUndefined();
+      expect(result.id).toBe(1);
+      const movedRaw = readFileSync(join(configRoot, "knowledge", "projects", "rt-lstm", "issues", "issue-1.md"), "utf8");
+      expect(movedRaw).toContain("Move me");
+      expect(movedRaw).toMatch(/^scope: project$/m);
+      // Source removed from the swarm store
+      expect(existsSync(join(configRoot, "knowledge", "issues", "issue-1.md"))).toBe(false);
+    });
+
+    it("rejects an invalid project_name with a path-separator error", async () => {
+      const result = JSON.parse(await nameHooks.tool.memory_write.execute({
+        entry: {
+          source_kd: "knowledge/composed-name.md",
+          tags: ["testing", "scope"],
+          topic: "Bad name",
+          insight: "Rejected before any write",
+          type: "fact",
+          created: "2026-08-24T00:00:00.000Z",
+          session: "ses_name",
+          version: "1.0.0"
+        },
+        scope: "project",
+        project_name: "../escape"
+      }, { agent: "scribe", sessionID: "s" }));
+
+      expect(result.error).toContain("project_name must be a non-empty string without path separators");
+      expect(existsSync(join(configRoot, "knowledge", "projects", "escape", "memory"))).toBe(false);
+    });
+
+    it("toolDefinition declares project_name in the exposed memory_write and issue_move schemas", async () => {
+      for (const toolID of ["memory_write", "issue_move"]) {
+        const output = {
+          description: "orig",
+          parameters: { type: "object", properties: { scope: { type: "string" } } }
+        };
+        await nameHooks["tool.definition"]({ toolID }, output);
+        expect(output.parameters.properties.project_name).toBeDefined();
+        expect(output.parameters.properties.project_name.type).toBe("string");
+      }
     });
   });
 
@@ -2535,7 +2741,7 @@ Body`;
 
     it("creates a compliant index on memory_write and leaves the entry unmodified", async () => {
       const entry = { id: "MEM-020", type: "fact", source_kd: "knowledge/test.md", tags: ["test", "sample"], topic: "Test topic", insight: "Test insight for index write.", created: "2026-07-29T00:00:00.000Z", session: "ses_test", version: "1.0.0" };
-      const result = await hooks.tool.memory_write.execute({ entry }, { agent: "scribe", sessionID: "scribe-session" });
+      const result = await hooks.tool.memory_write.execute({ entry, scope: "swarm" }, { agent: "scribe", sessionID: "scribe-session" });
       expect(JSON.parse(result).message).toContain("written");
 
       // Write-through produced the index with a naming-compliant filename
@@ -3086,7 +3292,7 @@ Body`;
       const fresh = await import("../../../plugins/knowledge-gate/index.js?promo-ids");
       promoHooks = await fresh.default.server({ directory: projectRoot }, {});
       swarmMemoryDir = join(configRoot, "knowledge", "memory");
-      projectMemoryDir = join(projectRoot, "knowledge", "memory");
+      projectMemoryDir = join(configRoot, "knowledge", "projects", basename(projectRoot), "memory");
     });
 
     afterAll(() => {
@@ -3201,22 +3407,22 @@ Body`;
       expect(result.scope).toBe("swarm");
     });
 
-    it("memory_write defaults to swarm when no scope provided", async () => {
+    it("rejects memory_write when scope is omitted — Scribe must classify explicitly", async () => {
       const result = JSON.parse(await hooks.tool.memory_write.execute({
         entry: {
           source_kd: "knowledge/composed-test.md",
-          tags: ["test", "default"],
-          topic: "Default scope",
-          insight: "Defaults to swarm",
+          tags: ["test", "required"],
+          topic: "Required scope",
+          insight: "Scope is required",
           type: "fact",
           created: "2026-08-16T00:00:00.000Z",
-          session: "ses_m3_default",
+          session: "ses_m3_required",
           version: "1.0.0"
         }
       }, { agent: "scribe", sessionID: "s" }));
 
-      expect(result.error).toBeUndefined();
-      expect(result.scope).toBe("swarm");
+      expect(result.error).toContain("scope is required");
+      expect(readdirSync(MEMORY_DIR).filter(f => f.endsWith(".json"))).toHaveLength(0);
     });
 
     it("memory_update returns scope in the result", async () => {
@@ -3271,14 +3477,25 @@ Body`;
     });
 
     it("resolveMemoryScope returns explicit scope when provided", () => {
-      expect(hooks.resolveMemoryScope("project", null)).toBe("project");
-      expect(hooks.resolveMemoryScope("generic", null)).toBe("generic");
-      expect(hooks.resolveMemoryScope("swarm", null)).toBe("swarm");
+      expect(hooks.resolveMemoryScope("project")).toBe("project");
+      expect(hooks.resolveMemoryScope("generic")).toBe("generic");
+      expect(hooks.resolveMemoryScope("swarm")).toBe("swarm");
     });
 
-    it("resolveMemoryScope defaults to swarm when no scope and no source_kd", () => {
-      expect(hooks.resolveMemoryScope(undefined, null)).toBe("swarm");
-      expect(hooks.resolveMemoryScope(undefined, undefined)).toBe("swarm");
+    it("resolveMemoryScope returns null when no explicit scope is provided", () => {
+      expect(hooks.resolveMemoryScope(undefined)).toBeNull();
+      expect(hooks.resolveMemoryScope(null)).toBeNull();
+      expect(hooks.resolveMemoryScope("")).toBeNull();
+      expect(hooks.resolveMemoryScope("other")).toBeNull();
+    });
+
+    it("resolveMemoryScope ignores source-KD frontmatter scope — no inference", async () => {
+      // A source KD carrying scope: project must NOT influence resolution
+      const sourceKd = join(MEMORY_DIR, "..", "composed-scope-test.md");
+      writeFileSync(sourceKd, "---\nscope: project\ntitle: Test\n---\nBody\n", "utf8");
+      expect(hooks.resolveMemoryScope(undefined, sourceKd)).toBeNull();
+      expect(hooks.resolveMemoryScope("swarm", sourceKd)).toBe("swarm");
+      rmSync(sourceKd, { force: true });
     });
   });
 
@@ -3528,7 +3745,7 @@ Body`;
       expect(appended).not.toContain("memory index: rebuild write failed");
 
       // Merged searches create no directories under absent roots
-      expect(existsSync(join(projectRoot, "knowledge"))).toBe(false);
+      expect(existsSync(join(configRoot, "knowledge", "projects", basename(projectRoot), "memory"))).toBe(false);
       expect(existsSync(join(configRoot, "knowledge", "generic"))).toBe(false);
 
       // Failure isolation leaves zero tmp residue behind
@@ -3752,11 +3969,11 @@ Body`;
         builder
       );
 
-      expect(existsSync(join(projectRootA, "knowledge", "memory", "entry-001.json"))).toBe(true);
-      expect(existsSync(join(projectRootB, "knowledge", "issues", "issue-1.md"))).toBe(true);
+      expect(existsSync(join(configRootA, "knowledge", "projects", basename(projectRootA), "memory", "entry-001.json"))).toBe(true);
+      expect(existsSync(join(configRootB, "knowledge", "projects", basename(projectRootB), "issues", "issue-1.md"))).toBe(true);
       // Nothing bled into the sibling's project tree
-      expect(existsSync(join(projectRootB, "knowledge", "memory"))).toBe(false);
-      expect(existsSync(join(projectRootA, "knowledge", "issues"))).toBe(false);
+      expect(existsSync(join(configRootB, "knowledge", "projects", basename(projectRootA), "memory"))).toBe(false);
+      expect(existsSync(join(configRootA, "knowledge", "projects", basename(projectRootB), "issues"))).toBe(false);
 
       // Positive control goes through the store-filtered surface: A's
       // project entry shares the ID MEM-001 with A's earlier swarm entry
@@ -3809,7 +4026,7 @@ Body`;
       const swarmDir = resolveHooks.memoryDirForScope("swarm");
       const projectDir = resolveHooks.memoryDirForScope("project");
       expect(swarmDir).toBe(join(configRoot, "knowledge", "memory"));
-      expect(projectDir).toBe(join(projectRoot, "knowledge", "memory"));
+      expect(projectDir).toBe(join(configRoot, "knowledge", "projects", basename(projectRoot), "memory"));
       expect(swarmDir).not.toBe(projectDir);
     });
 
@@ -3817,13 +4034,13 @@ Body`;
       const swarmIdx = resolveHooks.memoryIndexPathForScope("swarm");
       const projectIdx = resolveHooks.memoryIndexPathForScope("project");
       expect(swarmIdx).toBe(join(configRoot, "knowledge", "memory", "memory-search-index.jsonl"));
-      expect(projectIdx).toBe(join(projectRoot, "knowledge", "memory", "memory-search-index.jsonl"));
+      expect(projectIdx).toBe(join(configRoot, "knowledge", "projects", basename(projectRoot), "memory", "memory-search-index.jsonl"));
       expect(swarmIdx).not.toBe(projectIdx);
     });
 
     it("serves store-filtered searches from physically separate store dirs", () => {
       const swarmDir = join(configRoot, "knowledge", "memory");
-      const projectDir = join(projectRoot, "knowledge", "memory");
+      const projectDir = join(configRoot, "knowledge", "projects", basename(projectRoot), "memory");
       mkdirSync(swarmDir, { recursive: true });
       mkdirSync(projectDir, { recursive: true });
       // Distinct IDs per store: the merged path dedupes same-ID entries
@@ -3916,9 +4133,9 @@ Body`;
         // Generic scope resolves to join(CONFIG_STORE_ROOT, "knowledge", "generic", "issues")
         // (GENERIC_STORE_ROOT is derived from CONFIG_STORE_ROOT, not PROJECT_STORE_ROOT)
         const genericDir = join(configRoot, "knowledge", "generic", "issues");
-        // Project scope resolves to join(PROJECT_STORE_ROOT, "knowledge", "issues")
-        // when projectRoot !== CONFIG_STORE_ROOT (via storeDirFor)
-        const projectDir = join(projectRoot, "knowledge", "issues");
+        // Project scope resolves to join(CONFIG_STORE_ROOT, "knowledge", "projects", {name}, "issues")
+        // — centralized under the config root regardless of the workspace
+        const projectDir = join(configRoot, "knowledge", "projects", basename(projectRoot), "issues");
         mkdirSync(swarmDir, { recursive: true });
         mkdirSync(genericDir, { recursive: true });
         mkdirSync(projectDir, { recursive: true });
@@ -3936,6 +4153,52 @@ Body`;
         expect(results).toHaveLength(2); // 1 generic + 1 project
         expect(results.every(i => i.severity !== "high" || i.scope !== "swarm")).toBe(true);
       });
+    });
+  });
+
+  describe("tool-exclusivity permission denials", () => {
+    // Static guards over the agent permission configs: issues and memories
+    // are managed exclusively through the knowledge-gate tools, so the
+    // responsible agents must not be able to read/edit the store files
+    // directly. These assert the deny patterns are present in the agent
+    // definitions (the runtime contract the tools depend on).
+
+    const HABIT_BUILDER = fileURLToPath(new URL("../../../agents/habit-builder.md", import.meta.url));
+    const SCRIBE = fileURLToPath(new URL("../../../agents/scribe.md", import.meta.url));
+
+    function readAgent(path) {
+      return readFileSync(path, "utf8");
+    }
+
+    it("habit-builder read block denies issue and memory store files", () => {
+      const content = readAgent(HABIT_BUILDER);
+      // The read block must deny both the issues store and the memory store.
+      const readBlock = content.match(/read:\n([\s\S]*?)\n  edit:/);
+      expect(readBlock).toBeTruthy();
+      expect(readBlock[1]).toContain('"knowledge/issues/*.md": deny');
+      expect(readBlock[1]).toContain('"knowledge/memory/*.json": deny');
+    });
+
+    it("habit-builder edit block denies issue store files", () => {
+      const content = readAgent(HABIT_BUILDER);
+      const editBlock = content.match(/edit:\n([\s\S]*?)\n  glob:/);
+      expect(editBlock).toBeTruthy();
+      expect(editBlock[1]).toContain('"knowledge/issues/*.md": deny');
+    });
+
+    it("habit-builder is granted the issue_read tool", () => {
+      const content = readAgent(HABIT_BUILDER);
+      expect(content).toContain("issue_read: allow");
+    });
+
+    it("scribe read and edit blocks deny memory store files", () => {
+      const content = readAgent(SCRIBE);
+      const readBlock = content.match(/read:\n([\s\S]*?)\n  edit:/);
+      expect(readBlock).toBeTruthy();
+      expect(readBlock[1]).toContain('"knowledge/memory/*.json": deny');
+      const editBlock = content.match(/edit:\n([\s\S]*?)\n  glob:/);
+      expect(editBlock).toBeTruthy();
+      expect(editBlock[1]).toContain('"knowledge/memory/*.json": deny');
     });
   });
 });

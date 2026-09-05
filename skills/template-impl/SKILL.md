@@ -12,7 +12,6 @@ type: impl
 session_id: "{{session_id}}"
 author: Artisan
 superseded_by: null
-scope: {{project|generic|swarm}}  # optional — omission defaults to swarm
 ---
 
 <!-- Filename: knowledge/impl-{{step}}-{{session_id}}-gen{{generation}}.md -->

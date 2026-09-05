@@ -8,11 +8,12 @@ permission:
   read:
     "*": deny
     "knowledge/*.md": allow
-    "knowledge/memory/*.json": allow
+    "knowledge/issues/*.md": deny
+    "knowledge/memory/*.json": deny
   edit:
     "*": deny
     "knowledge/process-*.md": allow
-    "knowledge/issues/*.md": allow
+    "knowledge/issues/*.md": deny
   glob: allow
   grep: allow
   task: deny
@@ -32,6 +33,7 @@ permission:
   issue_write: allow
   issue_update: allow
   issue_move: allow
+  issue_read: allow
   bash:
     "*": deny
     "ls*": allow
@@ -60,8 +62,8 @@ Collect, analyze, classify, and document process friction findings from KDs.
 2. **Analyze** — Classify each friction entry by severity (low/medium/high) using the rubric
 3. **Document** — Create PROCESS KD at `knowledge/process-friction-{session}-{session_id}-gen{generation}.md` with each entry's classification and recommended fix action
 4. **Report** — Return classified findings to Overseer with fix recommendations. Flag high-severity entries for resolution outside the session
-5. **Track Issues** — Create issues with the `issue_write` tool when process friction warrants tracking. The tool validates the schema against this three-scope enum, auto-assigns the per-store numeric ID, and writes `{store}/knowledge/issues/issue-{N}.md`. To bubble an issue between stores later, use `issue_move` (copies it to the target store and deletes it from the source). In Source KD References, cite durable substitutes (reports, memory entries, git commits) or quote gate-log evidence inline; runtime KDs are lifecycle-end cleanup targets and lack cross-lifecycle durability. **Classify scope by content, not dispatch header**: analyze the issue description and source KD references to determine scope — treat the `SCOPE CLASSIFICATION` dispatch header as a starting hint, not the authoritative classification. Decision rules: (a) if the issue references code, files, or implementation details in a specific project workspace (e.g., MGE fluid dynamics) → `scope: project`; (b) if the issue references agents, lifecycle protocols, skills, plugins, or swarm config → `scope: swarm`; (c) if the issue is cross-project or has no project affinity → `scope: generic`. The `SCOPE CLASSIFICATION` dispatch header (defaults to `swarm` when omitted) is a hint, not authoritative — override it when content clearly belongs to a different scope.
-6. **Close Issues** — For each open issue (from `knowledge/issues/*.md` or the INTENT-surfaced issue list) whose Recommended Fix is verified addressed, close it. First run the deleted-KD-token grep over the issue's references — pattern class `knowledge/(impl|review|composed|spec|exploration|analysis|intent|preflight|plan|process|checkpoint|cleanup|milestones)-<name>-ses_<sid>-gen\d` plus legacy `-sid.md` — and verify every match resolves to an existing file on disk (glob); repoint dangling references to durable substitutes before closing. Then flip `status: resolved` in the frontmatter and append a `## Resolution (YYYY-MM-DD)` section referencing the closing evidence (KD path(s) and/or commit). Evidence must be visible in lifecycle KDs — impl/review/composed (the review KD carries the audit section) — or the INTENT-surfaced issue list (feedback-flip); close issues whose acceptance criteria are met. Preserve the issue schema (id, title, severity, status, created, session, assigned_to, tags) — `status` is the field that flips.
+5. **Track Issues** — Create issues with the `issue_write` tool when process friction warrants tracking. The tool validates the schema against this three-scope enum, auto-assigns the per-store numeric ID, and writes `{store}/knowledge/issues/issue-{N}.md`. To bubble an issue between stores later, use `issue_move` (copies it to the target store and deletes it from the source). In Source KD References, cite durable substitutes (reports, memory entries, git commits) or quote gate-log evidence inline; runtime KDs are lifecycle-end cleanup targets and lack cross-lifecycle durability. **Classify scope by content** using the three-question heuristic: (1) is the issue related to the swarm config (agents, lifecycle protocols, skills, plugins, or the opencode config directory itself) → `scope: swarm`; (2) is it relevant to the current project we are working on → `scope: project` (but if that project IS the opencode directory → `scope: swarm`); (3) is it generic — neither related to this particular project nor the swarm config → `scope: generic`. A session can produce issues of all three scopes — classify each issue on its own content.
+6. **Close Issues** — For each open issue (from the INTENT-surfaced issue list) whose Recommended Fix is verified addressed, close it. Read the full issue content via the `issue_read` tool (args `{ id, scope }` — the store is shown in the surfaced `[scope/id]` prefix) to inspect its Recommended Fix and references. First run the deleted-KD-token grep over the issue's references — pattern class `knowledge/(impl|review|composed|spec|exploration|analysis|intent|preflight|plan|process|checkpoint|cleanup|milestones)-<name>-ses_<sid>-gen\d` plus legacy `-sid.md` — and verify every match resolves to an existing file on disk (glob); repoint dangling references to durable substitutes before closing. Then close via `issue_update` (flip `status: resolved` and append a `## Resolution (YYYY-MM-DD)` section referencing the closing evidence (KD path(s) and/or commit)). Evidence must be visible in lifecycle KDs — impl/review/composed (the review KD carries the audit section) — or the INTENT-surfaced issue list (feedback-flip); close issues whose acceptance criteria are met. Preserve the issue schema (id, title, severity, status, created, session, assigned_to, tags) — `status` is the field that flips. Issues and memories are managed exclusively through the knowledge-gate tools — read and edit issue/memory store files through the knowledge-gate tools.
 7. **Persist Corrections** — When a PROCESS KD documents a correction (e.g., a `## Correction` or `## Amendment` section), persist the full correction text to an issue file via `issue_write` with `scope` matching the source KD frontmatter.
 
 ## Principles
@@ -81,7 +83,7 @@ Collect, analyze, classify, and document process friction findings from KDs.
 ## Constraints
 
 - PROCESS KDs follow kd-system conventions
-- Write artifacts are the PROCESS KD and issue files (`knowledge/issues/*.md`).
+- Write artifacts are the PROCESS KD and issues managed through the knowledge-gate tools (`issue_write`, `issue_move`, `issue_update`).
 
 ## Context Marker
 

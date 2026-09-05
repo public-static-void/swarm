@@ -82,36 +82,13 @@ const MEMORY_INDEX_FILE = "memory-search-index.jsonl";
 const MEMORY_INDEX_PATH = join(MEMORY_DIR, MEMORY_INDEX_FILE);
 
 // --- Scope resolution helpers ---
-// Reads the `scope` field from a KD file's YAML frontmatter. Returns
-// "project"|"swarm" or null when the file is missing, unreadable, or
-// has no scope field. Used by the memory-write fallback chain: the writer
-// copies scope from the source KD when the caller omits it.
-function readSourceKdScope(sourceKd) {
-  if (!sourceKd || typeof sourceKd !== "string") return null;
-  // source_kd is a path relative to the knowledge dir (e.g.
-  // "knowledge/composed-ses_abc-gen0.md"). Resolve from process.cwd()
-  // which matches the knowledge-dir root for the active session.
-  const fullPath = join(process.cwd(), sourceKd);
-  try {
-    const raw = readFileSync(fullPath, "utf8");
-    const match = raw.match(/^---\n([\s\S]*?)\n---/);
-    if (!match) return null;
-    for (const line of match[1].split("\n")) {
-      const m = line.match(/^scope:\s*(project|generic|swarm)\s*$/);
-      if (m) return m[1];
-    }
-  } catch (_) {}
-  return null;
-}
-
-// Resolves the target store from an explicit scope, source-KD frontmatter,
-// or the documented "swarm" default. The fallback chain is deterministic
-// (never a heuristic).
-function resolveMemoryScope(explicitScope, sourceKd) {
+// Resolves the target store from an explicit scope only. Returns null when
+// the caller omits or passes an invalid scope so the write path can reject
+// loudly — Scribe must classify every entry explicitly (no inference from
+// source-KD frontmatter, no silent "swarm" default).
+function resolveMemoryScope(explicitScope) {
   if (explicitScope === "project" || explicitScope === "generic" || explicitScope === "swarm") return explicitScope;
-  const fromSource = readSourceKdScope(sourceKd);
-  if (fromSource) return fromSource;
-  return "swarm";
+  return null;
 }
 
 // --- Debug logging ---
@@ -657,28 +634,27 @@ function serializeIssueFile(doc, bodySections = []) {
 const NOTE_VERSION = "1.0.0";
 const NOTE_CAP = 100;
 
-// Namespace for project-scope data that must live inside the config store
-// (config-dir startup): KNOWLEDGE_GATE_PROJECT_NAME override, else the
-// workspace directory's basename. Sanitized — the name becomes a path segment.
-function projectNamespaceName(projectRoot) {
-  return sanitizeToken(process.env.KNOWLEDGE_GATE_PROJECT_NAME)
+// Namespace for project-scope data that must live inside the config store:
+// explicit project_name override (issue_move/memory_write), else the
+// KNOWLEDGE_GATE_PROJECT_NAME env override, else the workspace directory's
+// basename. Sanitized — the name becomes a path segment.
+function projectNamespaceName(projectRoot, projectName) {
+  return sanitizeToken(projectName)
+    || sanitizeToken(process.env.KNOWLEDGE_GATE_PROJECT_NAME)
     || sanitizeToken(basename(projectRoot))
     || "project";
 }
 
-// Project-scope dir resolution (GAP-001): when opencode runs from the config
-// dir itself, the project store would coincide with the swarm store and all
-// three tiers would bleed into one directory. Redirect into
-// knowledge/projects/{name}/ under the config store so project, swarm, and
-// generic data stay physically distinct. The seam check comes first — the
-// test suite relies on the seam collapsing stores.
-function projectDataDirFor(kind, projectRoot) {
+// Project-scope dir resolution (GAP-001): project data always lives under
+// knowledge/projects/{name}/ inside the config store — never in the project
+// workspace itself. This keeps project, swarm, and generic data physically
+// distinct regardless of where opencode runs (config dir or a project dir).
+// The seam check comes first — the test suite relies on the seam collapsing
+// stores.
+function projectDataDirFor(kind, projectRoot, projectName) {
   const seam = SEAM_DIR_OVERRIDES[kind];
   if (seam) return seam;
-  if (projectRoot === CONFIG_STORE_ROOT) {
-    return join(CONFIG_STORE_ROOT, "knowledge", "projects", projectNamespaceName(projectRoot), kind);
-  }
-  return storeDirFor(kind, projectRoot);
+  return join(CONFIG_STORE_ROOT, "knowledge", "projects", projectNamespaceName(projectRoot, projectName), kind);
 }
 
 // Per-store short-term dir resolution: maps scope to the correct store's
@@ -867,9 +843,10 @@ export default {
 
     // Classification → store root. Explicit scope only: an invalid
     // scope maps to null so the write path can reject it loudly instead of
-    // silently routing to a default store.
+    // silently routing to a default store. Project scope resolves to the
+    // config store root — projectDataDirFor appends the project namespace.
     function storeRootForScope(scope) {
-      if (scope === "project") return PROJECT_STORE_ROOT;
+      if (scope === "project") return CONFIG_STORE_ROOT;
       if (scope === "swarm") return CONFIG_STORE_ROOT;
       if (scope === "generic") return GENERIC_STORE_ROOT;
       return null;
@@ -879,25 +856,25 @@ export default {
     // for a given store scope. The legacy seam overrides apply to both stores.
     // Generic store nests under CONFIG_STORE_ROOT/knowledge/generic/ — bypass
     // storeDirFor which would double the "knowledge" segment.
-    function memoryDirForScope(scope) {
+    function memoryDirForScope(scope, projectName) {
       if (scope === "generic") {
         const seam = SEAM_DIR_OVERRIDES["memory"];
         if (seam) return seam;
         return join(GENERIC_STORE_ROOT, "memory");
       }
-      if (scope === "project") return projectDataDirFor("memory", PROJECT_STORE_ROOT);
+      if (scope === "project") return projectDataDirFor("memory", PROJECT_STORE_ROOT, projectName);
       return storeDirFor("memory", storeRootForScope(scope));
     }
 
     // Per-store issues dir resolution: same pattern as memoryDirForScope.
     // Used by issue_write and issue_update to resolve the correct store dir.
-    function issuesDirForScope(scope) {
+    function issuesDirForScope(scope, projectName) {
       if (scope === "generic") {
         const seam = SEAM_DIR_OVERRIDES["issues"];
         if (seam) return seam;
         return join(GENERIC_STORE_ROOT, "issues");
       }
-      if (scope === "project") return projectDataDirFor("issues", PROJECT_STORE_ROOT);
+      if (scope === "project") return projectDataDirFor("issues", PROJECT_STORE_ROOT, projectName);
       return storeDirFor("issues", storeRootForScope(scope));
     }
 
@@ -1337,7 +1314,7 @@ export default {
         }
       }),
       memory_write: tool({
-        description: "Write a validated memory entry to knowledge/memory/. Only Scribe may write. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version), scope (optional project|generic|swarm). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk.",
+        description: "Write a validated memory entry to knowledge/memory/. Only Scribe may write. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version), scope (required project|generic|swarm), project_name (optional — overrides the project subfolder when scope is project). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk.",
         args: {
           entry: tool.schema.object({
             id: tool.schema.string().optional().describe("Auto-assigned if omitted"),
@@ -1350,7 +1327,8 @@ export default {
             session: tool.schema.string().describe("Session ID"),
             version: tool.schema.string().describe("Schema version (1.0.0)")
           }),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store classification — falls back to source_kd scope, then 'swarm' default")
+          scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store classification — Scribe must classify the entry as project, generic, or swarm"),
+          project_name: tool.schema.string().optional().describe("Project subfolder name when scope is project — overrides the workspace basename")
         },
         async execute(args, context) {
           const entry = args.entry;
@@ -1362,12 +1340,20 @@ export default {
             return JSON.stringify({ error: "Only Scribe agent has permission to write memory entries. Called by: " + (agent || "unknown") });
           }
 
-          // Scope resolution: explicit → source_kd frontmatter → "swarm"
-          const scope = resolveMemoryScope(args.scope, entry.source_kd);
+          // Scope resolution: explicit only — Scribe must classify the entry.
+          const scope = resolveMemoryScope(args.scope);
+          if (!scope) {
+            return JSON.stringify({ error: "scope is required for memory_write — Scribe must classify the entry as project, generic, or swarm" });
+          }
+          // project_name override: sanitized before it becomes a path segment.
+          const projectName = sanitizeToken(args.project_name);
+          if (args.project_name !== undefined && !projectName) {
+            return JSON.stringify({ error: "project_name must be a non-empty string without path separators" });
+          }
           // Inject resolved scope into entry JSON before validation and
           // serialization — every entry on disk carries its scope.
           entry.scope = scope;
-          const targetDir = memoryDirForScope(scope);
+          const targetDir = memoryDirForScope(scope, projectName);
 
           // Ensure memory directory exists
           try { mkdirSync(targetDir, { recursive: true }); } catch (_) {}
@@ -1780,15 +1766,16 @@ export default {
         }
       }),
       issue_move: tool({
-        description: "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. If the target store already holds an issue with the same ID, a fresh target-store ID is assigned and the original ID is preserved as moved_from in frontmatter. Returns { message, id, source_id, path } or { error }.",
+        description: "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string), project_name (optional — overrides the project subfolder when to_scope is project). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. If the target store already holds an issue with the same ID, a fresh target-store ID is assigned and the original ID is preserved as moved_from in frontmatter. Returns { message, id, source_id, path } or { error }.",
         args: {
           id: tool.schema.number().int().describe("Issue ID to move (numeric)"),
           from_scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Source store scope"),
           to_scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Target store scope"),
-          reason: tool.schema.string().optional().describe("Reason for the move (optional)")
+          reason: tool.schema.string().optional().describe("Reason for the move (optional)"),
+          project_name: tool.schema.string().optional().describe("Project subfolder name when to_scope is project — overrides the workspace basename")
         },
         async execute(args, context) {
-          const { id, from_scope, to_scope, reason } = args;
+          const { id, from_scope, to_scope, reason, project_name } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
 
           // Permission check: only Habit Builder can move issues
@@ -1814,6 +1801,12 @@ export default {
           // Cannot move to the same scope
           if (from_scope === to_scope) {
             return JSON.stringify({ error: `Cannot move issue ${id} from ${from_scope} to ${to_scope} — same scope` });
+          }
+
+          // project_name override: sanitized before it becomes a path segment.
+          const projectName = sanitizeToken(project_name);
+          if (project_name !== undefined && !projectName) {
+            return JSON.stringify({ error: "project_name must be a non-empty string without path separators" });
           }
 
           // Read issue from source store
@@ -1849,7 +1842,7 @@ export default {
           );
 
           // Write to target store
-          const targetDir = issuesDirForScope(to_scope);
+          const targetDir = issuesDirForScope(to_scope, projectName);
           const targetPath = join(targetDir, `issue-${id}.md`);
 
           // Collision safety: per-store ID spaces make same-ID
@@ -1900,6 +1893,54 @@ export default {
             to_scope,
             reason: reason || null
           });
+        }
+      }),
+      issue_read: tool({
+        description: "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.",
+        args: {
+          id: tool.schema.number().int().describe("Numeric issue ID to read"),
+          scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store to read from — required")
+        },
+        async execute(args, context) {
+          const { id, scope } = args;
+          const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // id must be a positive integer (guards path traversal into the
+          // store dirs, mirroring issue_update).
+          if (!Number.isInteger(id) || id < 1) {
+            return JSON.stringify({ error: `id must be a positive integer, got "${id}"` });
+          }
+          // scope is required — the store to search (mirrors issue_update).
+          if (!scope || (scope !== "project" && scope !== "generic" && scope !== "swarm")) {
+            return JSON.stringify({ error: "scope parameter is required for issue_read" });
+          }
+
+          const issuesDir = issuesDirForScope(scope);
+          const filePath = join(issuesDir, `issue-${id}.md`);
+          if (!existsSync(filePath)) {
+            return JSON.stringify({ error: `Issue ${id} not found in store "${scope}"` });
+          }
+
+          let raw;
+          try {
+            raw = readFileSync(filePath, "utf8");
+          } catch (e) {
+            debug(`issue_read: failed to read ${filePath}: ${e.message}`);
+            return JSON.stringify({ error: `Failed to read issue ${id}: ${e.message}` });
+          }
+
+          const issue = parseIssueFile(raw, `issue-${id}.md`);
+          if (!issue) {
+            return JSON.stringify({ error: `Issue ${id} has no valid frontmatter` });
+          }
+
+          // Attach the body sections (everything after the frontmatter) so the
+          // caller sees the full issue content, not just the frontmatter.
+          const fmMatch = raw.match(/^---\n[\s\S]*?\n---/);
+          const body = fmMatch ? raw.slice(fmMatch[0].length).replace(/^\n+/, "").trim() : "";
+          issue.body = body;
+          debug(`issue_read: read ${filePath} for agent="${agent}"`);
+          return JSON.stringify(issue, null, 2);
         }
       }),
       memory_note: tool({
@@ -2340,7 +2381,7 @@ export default {
       }
 
       if (toolID === "memory_write") {
-        output.description = "Write a validated memory entry to knowledge/memory/. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk. Only Scribe agent has permission to write.";
+        output.description = "Write a validated memory entry to knowledge/memory/. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version), scope (required project|generic|swarm), project_name (optional — overrides the project subfolder when scope is project). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk. Only Scribe agent has permission to write.";
         debug(`toolDefinition: provided description for memory_write`);
       }
 
@@ -2375,8 +2416,26 @@ export default {
       }
 
       if (toolID === "issue_move") {
-        output.description = "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.";
+        output.description = "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string), project_name (optional — overrides the project subfolder when to_scope is project). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.";
         debug(`toolDefinition: provided description for issue_move`);
+      }
+
+      if (toolID === "issue_read") {
+        output.description = "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
+        debug(`toolDefinition: provided description for issue_read`);
+      }
+
+      // Declare the optional project_name parameter in the exposed schema for
+      // the two tools that accept it. Without this, schema validation strips
+      // project_name before the handler resolves the project subfolder.
+      if (toolID === "memory_write" || toolID === "issue_move") {
+        output.parameters = output.parameters || {};
+        output.parameters.properties = output.parameters.properties || {};
+        output.parameters.properties.project_name = {
+          type: "string",
+          description: "Project subfolder name when scope/to_scope is project — overrides the workspace basename"
+        };
+        debug(`toolDefinition: declared project_name for ${toolID}`);
       }
     }
 
@@ -2424,8 +2483,9 @@ export default {
       if (agent === "scribe") {
         output.system.push(
           `[Knowledge Gate] After composing a COMPOSED KD, write distilled insights ` +
-          `via the memory_write tool. Copy the scope from the COMPOSED KD frontmatter ` +
-          `(scope: project|generic|swarm) when writing — the tool routes to the correct store. ` +
+          `via the memory_write tool. Pass the scope argument explicitly ` +
+          `(project|generic|swarm) on every call — classify each entry yourself using ` +
+          `the three-question heuristic; the tool does not infer it. ` +
           `The tool validates schema, checks tags against ` +
           `controlled vocabulary, deduplicates, auto-assigns sequential ID, and writes to disk.`
         );
@@ -2553,5 +2613,4 @@ export default {
     };
   }
 };
-
 

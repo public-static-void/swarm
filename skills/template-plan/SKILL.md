@@ -12,7 +12,6 @@ type: plan
 session_id: "{{session_id}}"
 author: Pathfinder
 superseded_by: null
-scope: {{project|generic|swarm}}  # optional — omission defaults to swarm
 ---
 
 <!-- Filename: knowledge/plan-{{feature}}-{{session_id}}-gen{{generation}}.md -->
