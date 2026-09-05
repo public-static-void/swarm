@@ -2684,6 +2684,18 @@ Body`;
       expect(result.error).toContain("project_name must be a non-empty string without path separators");
       expect(existsSync(join(configRoot, "knowledge", "projects", "escape", "memory"))).toBe(false);
     });
+
+    it("toolDefinition declares project_name in the exposed memory_write and issue_move schemas", async () => {
+      for (const toolID of ["memory_write", "issue_move"]) {
+        const output = {
+          description: "orig",
+          parameters: { type: "object", properties: { scope: { type: "string" } } }
+        };
+        await nameHooks["tool.definition"]({ toolID }, output);
+        expect(output.parameters.properties.project_name).toBeDefined();
+        expect(output.parameters.properties.project_name.type).toBe("string");
+      }
+    });
   });
 
   describe("memory_search tool (registered execute)", () => {
