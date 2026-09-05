@@ -1498,14 +1498,16 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   let result;
   if (overrideActive) {
-    // The INTENT override target advances on PRESENCE of the intent
-    // KD — the KD IS the phase deliverable, so its write-time relative to
-    // `since` is irrelevant to whether intent work is done. This is the only
-    // freshness exemption; all other override targets (and the DECOMPOSE /
-    // VERIFY / SWARM special cases above) keep fresh-evidence semantics.
-    const freshnessRequired = phase !== STATES.INTENT;
-    result = sessionFiles.some(f => pattern.test(f) && (!freshnessRequired || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
-    debug(`Disk check ${getPhaseName(phase)}: override ${freshnessRequired ? "fresh-evidence" : "presence"} (since=${overrideUntil.since}) → ${result}`);
+    // Every override target requires fresh evidence (KD mtime >= since) —
+    // including INTENT. A pre-existing intent KD (e.g. the old KD the Overseer
+    // reads right after a /phase INTENT override) must never count as evidence
+    // and undo the override before the corrected KD is written. The in-place
+    // intent-correction path is the NON-override branch below, which keeps the
+    // presence exemption (a session-matching intent KD advances regardless of
+    // mtime).
+    const freshnessRequired = true;
+    result = sessionFiles.some(f => pattern.test(f) && getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since);
+    debug(`Disk check ${getPhaseName(phase)}: override fresh-evidence (since=${overrideUntil.since}) → ${result}`);
   } else {
     result = sessionFiles.some(f => pattern.test(f));
     debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID}, lookupSIDs=${JSON.stringify(lookupSIDs)} → ${result}`);
