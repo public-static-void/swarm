@@ -427,12 +427,9 @@ function cleanupLifecycleKDs(sessionID, generation = 0) {
   return stale.length;
 }
 
-// Parses a /phase command argument into a phase number. Accepts:
-//   - a number string 0-12 (e.g. "5" → ALIGN)
-//   - a phase name, case-insensitive (e.g. "INTENT", "preflight")
-// Returns null when the argument is not a valid phase reference — the
-// rejection cases (99, INVALID, empty) all funnel through here.
-function parsePhaseArg(arg) {
+// Parses a single phase reference (number 0-12 or case-insensitive phase name)
+// into a phase number. Returns null when the reference is not a valid phase.
+function parseSinglePhaseArg(arg) {
   if (typeof arg !== "string") return null;
   const trimmed = arg.trim().toUpperCase();
   if (trimmed === "") return null;
@@ -442,6 +439,65 @@ function parsePhaseArg(arg) {
     return null;
   }
   return Object.prototype.hasOwnProperty.call(STATES, trimmed) ? STATES[trimmed] : null;
+}
+
+// Parses a /phase command argument into a phase reference. Accepts:
+//   - a single phase: number string 0-12 (e.g. "5" → ALIGN) or a phase name,
+//     case-insensitive (e.g. "INTENT", "preflight") — returns a number
+//   - an ordered multi-phase list: comma-separated (e.g. "3,4,5") or
+//     brace-enclosed (e.g. "{3,4,5}") — returns a number[] in the given order
+// Returns null when the argument is not a valid phase reference — the
+// rejection cases (99, INVALID, empty, malformed list) all funnel through here.
+function parsePhaseArg(arg) {
+  if (typeof arg !== "string") return null;
+  const trimmed = arg.trim();
+  if (trimmed === "") return null;
+
+  // Brace-enclosed list: {3,4,5} or {INTENT,PREFLIGHT}. Strip the braces and
+  // fall through to the comma-split below.
+  let listStr = trimmed;
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    listStr = trimmed.slice(1, -1);
+  }
+
+  if (listStr.includes(",")) {
+    const parts = listStr.split(",").map(p => p.trim()).filter(p => p !== "");
+    if (parts.length === 0) return null;
+    const phases = [];
+    for (const part of parts) {
+      const n = parseSinglePhaseArg(part);
+      if (n === null) return null;
+      phases.push(n);
+    }
+    return phases;
+  }
+
+  return parseSinglePhaseArg(trimmed);
+}
+
+// Validates a multi-phase override queue against lifecycle.json
+// backwardTransitions. The queue's phases must form a connected chain in the
+// backward-transition graph (each consecutive pair adjacent via a backward
+// transition in either direction), and one end of the chain must connect to
+// the current phase. This accepts both the forward redo walk ({3,4,5} from 7:
+// the chain 7→5→4→3 traversed from 3) and the backward walk ({5,4,3} from 7:
+// the same chain traversed from 5), while rejecting forward walks from phases
+// that cannot reach the queue ({3,4,5} from 2). Returns null when the queue is
+// a valid backward chain, or { from, to } describing the first invalid hop.
+function findInvalidMultiPhaseHop(phases, currentPhase, backwardTransitions) {
+  if (!Array.isArray(phases) || phases.length < 2) return { from: currentPhase, to: phases?.[0] };
+  const bt = backwardTransitions || {};
+  const connectsTo = (a, b) => (bt[a] || []).includes(b);
+  for (let i = 0; i < phases.length - 1; i++) {
+    if (!connectsTo(phases[i], phases[i + 1]) && !connectsTo(phases[i + 1], phases[i])) {
+      return { from: phases[i], to: phases[i + 1] };
+    }
+  }
+  const currentTargets = bt[currentPhase] || [];
+  if (!currentTargets.includes(phases[0]) && !currentTargets.includes(phases[phases.length - 1])) {
+    return { from: currentPhase, to: phases[0] };
+  }
+  return null;
 }
 
 // Session IDs reach file paths and can be attacker-influenced. Reject path
@@ -1343,11 +1399,24 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
 
 // Reads the active override marker for a session — null when absent or
 // malformed. The marker is authoritative only while the current phase equals
-// its target.
+// its target. Accepts both the single-phase shape `{ phase, since }` and the
+// multi-phase queue shape `{ phases: number[], since }` (backward compatible).
 function getOverrideUntil(sessionPhaseMap, sessionID) {
   const overrideUntil = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
-  if (!overrideUntil || typeof overrideUntil.phase !== "number" || typeof overrideUntil.since !== "number") return null;
-  return overrideUntil;
+  if (!overrideUntil || typeof overrideUntil.since !== "number") return null;
+  if (typeof overrideUntil.phase === "number") return overrideUntil;
+  if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 0) return overrideUntil;
+  return null;
+}
+
+// Resolves the current override target phase from a marker — the head of the
+// queue for a multi-phase marker, or the single phase for a legacy marker.
+// Returns null when the marker is absent or has no target.
+function getOverrideTargetPhase(overrideUntil) {
+  if (!overrideUntil) return null;
+  if (typeof overrideUntil.phase === "number") return overrideUntil.phase;
+  if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 0) return overrideUntil.phases[0];
+  return null;
 }
 
 // Bounded stat — returns the file's mtimeMs or -1 on failure. Only candidate
@@ -1435,7 +1504,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // skipped; the marker clears on advance-away, restoring normal
   // advancement semantics for later phases.
   const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
-  const overrideActive = overrideUntil && phase === overrideUntil.phase;
+  const overrideActive = overrideUntil && phase === getOverrideTargetPhase(overrideUntil);
 
   // DECOMPOSE advancement requires BOTH the plan KD and the milestone registry
   // (dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM must not
@@ -1559,7 +1628,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   // transition, new /phase, or REPORT reset, after which normal regression
   // resumes.
   const overrideUntil = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
-  if (overrideUntil && currentPhase === overrideUntil.phase) {
+  if (overrideUntil && currentPhase === getOverrideTargetPhase(overrideUntil)) {
     debug(`Consistency check: skipped — /phase override pins ${getPhaseName(currentPhase)} (since=${overrideUntil.since}) for session ${sessionID}`);
     return false;
   }
@@ -1800,11 +1869,17 @@ export default {
         const state = { phase, generation, timestamp: Date.now() };
         if (sid) state.sid = sid;
         // Serialize the /phase override marker so it survives a
-        // mid-session restart. Omitted when absent — legacy state
+        // mid-session restart. Both marker shapes are persisted: the legacy
+        // single-phase `{ phase, since }` and the multi-phase queue
+        // `{ phases, since }`. Omitted when absent — legacy state
         // files without overrideUntil load unchanged.
         const overrideUntil = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
-        if (overrideUntil && typeof overrideUntil.phase === "number" && typeof overrideUntil.since === "number") {
-          state.overrideUntil = { phase: overrideUntil.phase, since: overrideUntil.since };
+        if (overrideUntil && typeof overrideUntil.since === "number") {
+          if (typeof overrideUntil.phase === "number") {
+            state.overrideUntil = { phase: overrideUntil.phase, since: overrideUntil.since };
+          } else if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 0) {
+            state.overrideUntil = { phases: overrideUntil.phases, since: overrideUntil.since };
+          }
         }
         const stateDir = getStateDir();
         mkdirSync(stateDir, { recursive: true });
@@ -1978,11 +2053,18 @@ export default {
         debug(`reconcile: recorded restore timestamp for ${sessionID}`);
       }
       // Restore the persistent override marker so a mid-session
-      // restart honors the override until fresh evidence. Omitted
+      // restart honors the override until fresh evidence. Both marker shapes
+      // are restored: the legacy single-phase `{ phase, since }` and the
+      // multi-phase queue `{ phases, since }`. Omitted
       // when absent — legacy state files load unchanged.
-      if (state.overrideUntil && typeof state.overrideUntil.phase === "number" && typeof state.overrideUntil.since === "number") {
-        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: state.overrideUntil.phase, since: state.overrideUntil.since });
-        debug(`reconcile: restored overrideUntil phase=${getPhaseName(state.overrideUntil.phase)} since=${state.overrideUntil.since} for ${sessionID}`);
+      if (state.overrideUntil && typeof state.overrideUntil.since === "number") {
+        if (typeof state.overrideUntil.phase === "number") {
+          sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: state.overrideUntil.phase, since: state.overrideUntil.since });
+          debug(`reconcile: restored overrideUntil phase=${getPhaseName(state.overrideUntil.phase)} since=${state.overrideUntil.since} for ${sessionID}`);
+        } else if (Array.isArray(state.overrideUntil.phases) && state.overrideUntil.phases.length > 0) {
+          sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: state.overrideUntil.phases, since: state.overrideUntil.since });
+          debug(`reconcile: restored overrideUntil queue=${JSON.stringify(state.overrideUntil.phases)} since=${state.overrideUntil.since} for ${sessionID}`);
+        }
       }
       if (state.sid && state.sid !== sessionID) {
         debug(`reconcile: healed stale sid ${state.sid} → ${sessionID} for ${sessionID}`);
@@ -2264,23 +2346,53 @@ export default {
       const { sessionID, arguments: arg } = input;
       const trimmed = String(arg ?? "").trim();
       if (!trimmed) {
-        output.parts = [{ type: "text", text: "Error: /phase requires an argument. Usage: /phase <0-12|PHASE_NAME>" }];
+        output.parts = [{ type: "text", text: "Error: /phase requires an argument. Usage: /phase <0-12|PHASE_NAME|{3,4,5}>" }];
         return;
       }
-      const n = parsePhaseArg(trimmed);
-      if (n === null) {
-        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 0-12 or one of ${Object.keys(STATES).join(", ")}.` }];
+      const parsed = parsePhaseArg(trimmed);
+      if (parsed === null) {
+        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 0-12, a phase name, or an ordered list like {3,4,5}.` }];
         return;
       }
+      const isMulti = Array.isArray(parsed);
+      const phases = isMulti ? parsed : [parsed];
+      // Queue-length cap: the multi-phase override queue never exceeds the
+      // total number of phases in lifecycle.json (12).
+      if (phases.length > 12) {
+        output.parts = [{ type: "text", text: `Error: too many phases in override (${phases.length}). Maximum is 12.` }];
+        return;
+      }
+      // Multi-phase overrides are scoped to backward chains: the queue's
+      // phases must form a connected chain in the backward-transition graph
+      // with one end reachable from the current phase. This accepts both the
+      // forward redo walk ({3,4,5} from 7 — the chain 7→5→4→3 traversed from
+      // 3) and the backward walk ({5,4,3} from 7 — the same chain traversed
+      // from 5), while rejecting queues that no phase can reach ({3,4,5} from
+      // 2). Single-phase overrides keep their existing behavior — any phase
+      // 0-12 is accepted without validation.
+      if (isMulti) {
+        const currentPhase = sessionPhaseMap.get(sessionID);
+        const invalidHop = findInvalidMultiPhaseHop(phases, currentPhase, BACKWARD_TRANSITIONS);
+        if (invalidHop) {
+          output.parts = [{ type: "text", text: `Error: phase ${getPhaseName(invalidHop.to)} (${invalidHop.to}) is not a legal backward transition from ${getPhaseName(invalidHop.from)} (${invalidHop.from}).` }];
+          return;
+        }
+      }
+      const n = phases[0];
       const prevPhase = sessionPhaseMap.get(sessionID);
       sessionPhaseMap.set(sessionID, n);
-      // Every /phase invocation persists an override marker
-      // { phase, since } — while the current phase equals the target, only
+      // Every /phase invocation persists an override marker — the legacy
+      // single-phase shape { phase, since } or the multi-phase queue
+      // { phases, since }. While the current phase equals the target, only
       // fresh evidence (KD mtime >= since) advances and consistency never
       // regresses. A new /phase replaces any prior marker (clear-on-new-
-      // override); the marker clears on advance-away, backward
-      // transition, or REPORT reset.
-      sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since: Date.now() });
+      // override); the marker clears on advance-away (or re-arms to the next
+      // queue entry for multi-phase), backward transition, or REPORT reset.
+      if (isMulti) {
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases, since: Date.now() });
+      } else {
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since: Date.now() });
+      }
       // A manual /phase override supersedes any pending auto-advance.
       // The one-shot announcement must not leak into the next systemTransform —
       // e.g. a stale "auto-advanced EXPLORE → INVESTIGATE" after a redispatch to
@@ -2303,8 +2415,11 @@ export default {
         // counters are preserved — only non-numeric per-milestone keys clear.
         clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       }
-      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — overrideUntil set (phase ${n}, since ${sessionPhaseMap.get(`${sessionID}:overrideUntil`).since})`);
-      output.parts = [{ type: "text", text: `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
+      const marker = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
+      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — overrideUntil set (${isMulti ? `queue ${JSON.stringify(phases)}` : `phase ${n}`}, since ${marker.since})`);
+      output.parts = [{ type: "text", text: isMulti
+        ? `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID} — override queue ${JSON.stringify(phases)}.`
+        : `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
     }
 
     // --- Hook: permission.ask ---
@@ -2770,12 +2885,20 @@ export default {
           if (await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount, { verdictRegressedKDs, backwardTransition: handleBackwardTransition })) {
             sessionPhaseMap.set(sessionID, currentPhase + 1);
             // The phase advanced away from the override target on
-            // fresh evidence — clear the marker so normal advancement
-            // semantics resume for this and later phases.
+            // fresh evidence. A multi-phase queue re-arms to the next phase
+            // (pop the head) so the chain survives the auto-advance; a
+            // single-phase marker (or an exhausted queue) clears so normal
+            // advancement semantics resume for this and later phases.
             const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
-            if (overrideUntil && currentPhase === overrideUntil.phase) {
-              sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
-              debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence`);
+            if (overrideUntil && currentPhase === getOverrideTargetPhase(overrideUntil)) {
+              if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 1) {
+                const remaining = overrideUntil.phases.slice(1);
+                sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: remaining, since: overrideUntil.since });
+                debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
+              } else {
+                sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+                debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence`);
+              }
             }
             diskCheckFailures.set(sessionID, 0);
             // Clear in-flight tracking — KD appeared on disk, dispatch is complete
@@ -3396,6 +3519,9 @@ export default {
       getPersistedGeneration,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
+      parseSinglePhaseArg,
+      getOverrideTargetPhase,
+      findInvalidMultiPhaseHop,
       saveState,
       loadState,
       getStatePath,
