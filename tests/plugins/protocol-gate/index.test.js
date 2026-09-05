@@ -3158,6 +3158,15 @@ Amendment body.
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
     });
 
+    it("PREFLIGHT allowlist does not include edit — the intent KD is corrected in INTENT, not PREFLIGHT", async () => {
+      // Static assertion — the PREFLIGHT allowlist must not gain edit; the
+      // in-place intent-correction path is scoped to INTENT's edit allowlist.
+      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      const allowlistLine = pluginSrc.split("\n").find(line => line.includes('PREFLIGHT: ["task"'));
+      expect(allowlistLine).not.toContain('"edit"');
+      expect(allowlistLine).toContain('"task"');
+    });
+
     it("a read call with no impl-KD evidence does not advance the phase", async () => {
       const s = sid("m2-nospur-1");
       await initOverseer(s);
@@ -5266,23 +5275,50 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       utimesSync(join(knowledgeDir, filename), when, when);
     }
 
-    it("a stale-mtime corrected intent KD advances a /phase INTENT override and clears the marker", async () => {
+    it("a pre-existing intent KD does not advance a /phase INTENT override — the read of the old KD cannot undo the override", async () => {
       const s = sid("f2-ac005");
       await initOverseer(s);
+      // A pre-existing intent KD (the old KD the Overseer reads right after
+      // the override) — its mtime predates the override marker's `since`.
+      createKD(`intent-old-${s}.md`);
+      ageKD(`intent-old-${s}.md`);
+
       const out = { parts: [] };
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "INTENT" }, out);
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
       expect(marker.phase).toBe(hooks.STATES.INTENT);
 
-      // The user corrected the intent KD BEFORE the override — its mtime is
-      // below `since`, which used to hold INTENT forever.
-      createKD(`intent-corrected-${s}.md`);
-      ageKD(`intent-corrected-${s}.md`);
+      // The Overseer's first read of the old intent KD (a disk-check tool
+      // call) must NOT advance INTENT → PREFLIGHT and must NOT clear the marker.
+      await hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "f2-r1" },
+        { args: { filePath: `knowledge/intent-old-${s}.md` } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.INTENT);
+    });
 
-      // Presence of the session-matching intent KD advances INTENT → PREFLIGHT
-      // on the next disk-check tool call, regardless of mtime.
+    it("a fresh post-override intent KD advances a /phase INTENT override and clears the marker", async () => {
+      const s = sid("f2-ac005b");
+      await initOverseer(s);
+      createKD(`intent-old-${s}.md`);
+      ageKD(`intent-old-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "INTENT" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phase).toBe(hooks.STATES.INTENT);
+
+      // A stale intent KD still cannot advance the override.
       await todo(s, "f2-1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+      // A FRESH intent KD (mtime >= since) advances INTENT → PREFLIGHT and
+      // clears the override marker (advance-away).
+      createKD(`intent-fresh-${s}.md`);
+      await todo(s, "f2-2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
@@ -5357,14 +5393,15 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(output.description).not.toContain("⛔");
     });
 
-    it("commands/phase.md documents overrideUntil, the INTENT exemption, the recovery path, and edit-in-place", async () => {
+    it("commands/phase.md documents overrideUntil, the INTENT fresh-evidence rule, the recovery path, and edit-in-place", async () => {
       const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
       // (a) overrideUntil marker semantics + fresh-evidence rule
       expect(template).toContain("overrideUntil");
       expect(template.toLowerCase()).toContain("fresh");
-      // (b) INTENT exemption — presence advances, freshness ignored
-      expect(template).toContain("INTENT override exemption");
-      expect(template).toContain("regardless of its mtime");
+      // (b) INTENT override requires fresh evidence — a pre-existing intent KD
+      // must not undo the override before the corrected KD is written
+      expect(template).toContain("INTENT override fresh-evidence rule");
+      expect(template).toContain("at or after `since`");
       // (c) recovery path — /phase PREFLIGHT and the general escape hatch
       expect(template).toContain("/phase PREFLIGHT");
       // (d) edit-in-place of the corrected intent KD
