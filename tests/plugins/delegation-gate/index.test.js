@@ -1791,26 +1791,23 @@ RESULT KD: knowledge/exploration-foo.md`;
     });
   });
 
-  describe("Scope Classification Propagation", () => {
-    it("renders the SCOPE CLASSIFICATION field into the swarm template when provided", async () => {
-      const prompt = `AGENT: artisan
-MODE: swarm
+  describe("Scope Classification Removal", () => {
+    it("renders no SCOPE CLASSIFICATION line for an evolve dispatch omitting scope_classification", async () => {
+      const prompt = `AGENT: habit-builder
+MODE: evolve
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-30
-SESSION ID: ses_scope
+SESSION ID: ses_scope3
 GENERATION: 0
-MILESTONE ID: M2
-SCOPE: Execute milestone M2
-SCOPE CLASSIFICATION: project
-RESULT KD: knowledge/impl-M2-foo-ses_scope-gen0.md
-KD PATHS: knowledge/spec-foo.md, knowledge/plan-foo.md`;
+SCOPE: Evolve process
+RESULT KD: knowledge/process-foo-ses_scope3-gen0.md`;
 
       const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_scope", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("SCOPE CLASSIFICATION: project");
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_scope3", callID: "c3" }, output);
+      expect(output.args.prompt).not.toContain("SCOPE CLASSIFICATION");
     });
 
-    it("defaults SCOPE CLASSIFICATION to swarm when omitted (backward compatible)", async () => {
+    it("renders no SCOPE CLASSIFICATION line for a swarm dispatch omitting scope_classification", async () => {
       const prompt = `AGENT: artisan
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
@@ -1824,59 +1821,7 @@ KD PATHS: knowledge/spec-foo.md, knowledge/plan-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_scope2", callID: "c2" }, output);
-      expect(output.args.prompt).toContain("SCOPE CLASSIFICATION: swarm");
-    });
-
-    it("renders SCOPE CLASSIFICATION into the evolve template for the Habit Builder", async () => {
-      const prompt = `AGENT: habit-builder
-MODE: evolve
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-08-30
-SESSION ID: ses_scope3
-GENERATION: 0
-SCOPE: Evolve process
-SCOPE CLASSIFICATION: swarm
-RESULT KD: knowledge/process-foo-ses_scope3-gen0.md`;
-
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_scope3", callID: "c3" }, output);
-      expect(output.args.prompt).toContain("SCOPE CLASSIFICATION: swarm");
-    });
-
-    it("accepts an invalid scope classification without blocking (advisory only)", async () => {
-      const prompt = `AGENT: artisan
-MODE: swarm
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-08-30
-SESSION ID: ses_scope4
-GENERATION: 0
-MILESTONE ID: M2
-SCOPE: Execute milestone M2
-SCOPE CLASSIFICATION: invalid-value
-RESULT KD: knowledge/impl-M2-foo-ses_scope4-gen0.md
-KD PATHS: knowledge/spec-foo.md, knowledge/plan-foo.md`;
-
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_scope4", callID: "c4" }, output);
-      expect(output.args.prompt).toContain("SCOPE CLASSIFICATION: invalid-value");
-    });
-
-    it("injects the SCOPE CLASSIFICATION line into the tool doc hint", async () => {
-      const prompt = `AGENT: artisan
-MODE: swarm
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-08-30
-SESSION ID: ses_scope5
-GENERATION: 0
-MILESTONE ID: M2
-SCOPE: Execute milestone M2
-SCOPE CLASSIFICATION: project
-RESULT KD: knowledge/impl-M2-foo-ses_scope5-gen0.md
-KD PATHS: knowledge/spec-foo.md, knowledge/plan-foo.md`;
-
-      const output = { args: { prompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_scope5", callID: "c5" }, output);
-      expect(output.args.description).toContain("SCOPE CLASSIFICATION: project|generic|swarm");
+      expect(output.args.prompt).not.toContain("SCOPE CLASSIFICATION");
     });
   });
 
