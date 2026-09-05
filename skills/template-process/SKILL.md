@@ -12,7 +12,6 @@ type: process
 session_id: "{{session_id}}"
 author: Habit Builder
 superseded_by: null
-scope: {{project|generic|swarm}}  # optional — omission defaults to swarm
 ---
 
 <!-- Filename: knowledge/process-{{pattern}}-{{session_id}}-gen{{generation}}.md -->
