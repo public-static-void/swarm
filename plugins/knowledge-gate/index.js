@@ -1895,6 +1895,54 @@ export default {
           });
         }
       }),
+      issue_read: tool({
+        description: "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.",
+        args: {
+          id: tool.schema.number().int().describe("Numeric issue ID to read"),
+          scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store to read from — required")
+        },
+        async execute(args, context) {
+          const { id, scope } = args;
+          const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // id must be a positive integer (guards path traversal into the
+          // store dirs, mirroring issue_update).
+          if (!Number.isInteger(id) || id < 1) {
+            return JSON.stringify({ error: `id must be a positive integer, got "${id}"` });
+          }
+          // scope is required — the store to search (mirrors issue_update).
+          if (!scope || (scope !== "project" && scope !== "generic" && scope !== "swarm")) {
+            return JSON.stringify({ error: "scope parameter is required for issue_read" });
+          }
+
+          const issuesDir = issuesDirForScope(scope);
+          const filePath = join(issuesDir, `issue-${id}.md`);
+          if (!existsSync(filePath)) {
+            return JSON.stringify({ error: `Issue ${id} not found in store "${scope}"` });
+          }
+
+          let raw;
+          try {
+            raw = readFileSync(filePath, "utf8");
+          } catch (e) {
+            debug(`issue_read: failed to read ${filePath}: ${e.message}`);
+            return JSON.stringify({ error: `Failed to read issue ${id}: ${e.message}` });
+          }
+
+          const issue = parseIssueFile(raw, `issue-${id}.md`);
+          if (!issue) {
+            return JSON.stringify({ error: `Issue ${id} has no valid frontmatter` });
+          }
+
+          // Attach the body sections (everything after the frontmatter) so the
+          // caller sees the full issue content, not just the frontmatter.
+          const fmMatch = raw.match(/^---\n[\s\S]*?\n---/);
+          const body = fmMatch ? raw.slice(fmMatch[0].length).replace(/^\n+/, "").trim() : "";
+          issue.body = body;
+          debug(`issue_read: read ${filePath} for agent="${agent}"`);
+          return JSON.stringify(issue, null, 2);
+        }
+      }),
       memory_note: tool({
         description: "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings), scope (optional project|generic|swarm). Returns { message, id } or { error }.",
         args: {
@@ -2371,6 +2419,11 @@ export default {
         output.description = "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string), project_name (optional — overrides the project subfolder when to_scope is project). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.";
         debug(`toolDefinition: provided description for issue_move`);
       }
+
+      if (toolID === "issue_read") {
+        output.description = "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
+        debug(`toolDefinition: provided description for issue_read`);
+      }
     }
 
     // --- Hook: experimental.chat.system.transform ---
@@ -2546,5 +2599,4 @@ export default {
     };
   }
 };
-
 
