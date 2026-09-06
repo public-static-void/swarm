@@ -1703,6 +1703,76 @@ Amendment body.
     }
   });
 
+  it("DECOMPOSE reads a milestone registry KD and advances to SWARM when both plan- and milestones- KDs exist", async () => {
+    const s = sid("decomp-read-advance");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+    // Both plan- and milestones- KDs on disk — the dual-KD gate is satisfied,
+    // so the Overseer's read of the registry succeeds and the phase advances.
+    createKD(`plan-feature-${s}.md`);
+    createRegistry(s, [["M1", "pending"]]);
+
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c1" },
+        { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
+      )
+    ).resolves.toBeUndefined();
+
+    // The read is a DISK_CHECK_TOOLS call — with both KDs present the
+    // DECOMPOSE → SWARM advance fires on the same call.
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+  });
+
+  it("DECOMPOSE does not advance to SWARM when a milestone registry read finds only the plan KD (dual-KD gate)", async () => {
+    const s = sid("decomp-read-blocked");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+    // Only the plan KD — no milestone registry. The read is allowed by the
+    // allowlist but the dual-KD gate prevents advancement, so the phase stays
+    // DECOMPOSE and the read does not advance.
+    createKD(`plan-feature-${s}.md`);
+
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c1" },
+        { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
+      )
+    ).resolves.toBeUndefined();
+
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+  });
+
+  it("DECOMPOSE blocks reads of non-milestone KDs (restriction scoped to milestone KDs only)", async () => {
+    const s = sid("decomp-read-nonmilestone");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+    // Plan KDs (relative and absolute), other KDs, and non-KD files stay
+    // blocked during DECOMPOSE — only milestone registry reads are permitted.
+    for (const bad of [
+      `knowledge/plan-feature-${s}.md`,
+      `/home/user/project/knowledge/plan-feature-${s}.md`,
+      `knowledge/impl-feature-${s}.md`,
+      `knowledge/spec-feature-${s}.md`,
+      `knowledge/review-feature-${s}.md`,
+      "src/main.js",
+      "opencode.json",
+    ]) {
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "c4" },
+          { args: { filePath: bad } }
+        )
+      ).rejects.toThrow("Read from knowledge/milestones-*.md");
+    }
+  });
+
   describe("per-milestone dispatch — registry state wiring", () => {
     it("transitions the dispatched milestone pending → assigned → in-progress in the registry YAML block", async () => {
       const s = sid("m3-reg-1");
@@ -3156,6 +3226,15 @@ Amendment body.
 
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
+    });
+
+    it("PREFLIGHT allowlist does not include edit — the intent KD is corrected in INTENT, not PREFLIGHT", async () => {
+      // Static assertion — the PREFLIGHT allowlist must not gain edit; the
+      // in-place intent-correction path is scoped to INTENT's edit allowlist.
+      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      const allowlistLine = pluginSrc.split("\n").find(line => line.includes('PREFLIGHT: ["task"'));
+      expect(allowlistLine).not.toContain('"edit"');
+      expect(allowlistLine).toContain('"task"');
     });
 
     it("a read call with no impl-KD evidence does not advance the phase", async () => {
@@ -5257,6 +5336,141 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     });
   });
 
+  describe("multi-phase /phase override", () => {
+    it("parsePhaseArg accepts comma-separated and brace-enclosed ordered lists plus single-phase", () => {
+      expect(hooks.parsePhaseArg("3")).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.parsePhaseArg("INTENT")).toBe(hooks.STATES.INTENT);
+      expect(hooks.parsePhaseArg("3,4,5")).toEqual([3, 4, 5]);
+      expect(hooks.parsePhaseArg("{3,4,5}")).toEqual([3, 4, 5]);
+      expect(hooks.parsePhaseArg("{INTENT,PREFLIGHT}")).toEqual([1, 2]);
+      expect(hooks.parsePhaseArg("99")).toBeNull();
+      expect(hooks.parsePhaseArg("INVALID")).toBeNull();
+      expect(hooks.parsePhaseArg("")).toBeNull();
+      expect(hooks.parsePhaseArg("{3,4,5")).toBeNull();
+    });
+
+    it("/phase {3,4,5} from SWARM sets a queue that re-arms across hops and clears at the end", async () => {
+      const s = sid("ac007-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,4,5}" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phases).toEqual([3, 4, 5]);
+      expect(typeof marker.since).toBe("number");
+      // The queue is persisted in the state file.
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toEqual({ phases: [3, 4, 5], since: marker.since });
+
+      // No exploration KD yet — the override holds EXPLORE.
+      await todo(s, "m1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+
+      // Fresh exploration KD advances EXPLORE → INVESTIGATE and re-arms to 4.
+      createKD(`exploration-fresh-${s}.md`);
+      await todo(s, "m2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([4, 5]);
+
+      // Fresh analysis KD advances INVESTIGATE → ALIGN and re-arms to 5.
+      createKD(`analysis-fresh-${s}.md`);
+      await todo(s, "m3");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5]);
+
+      // Fresh spec KD advances ALIGN → DECOMPOSE and clears the exhausted queue.
+      createKD(`spec-fresh-${s}.md`);
+      await todo(s, "m4");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
+    });
+
+    it("comma-separated syntax (3,4,5) works like the brace-enclosed form", async () => {
+      const s = sid("comma-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3,4,5" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([3, 4, 5]);
+    });
+
+    it("/phase {5,4,3} from SWARM validates each hop against backwardTransitions", async () => {
+      const s = sid("ac008-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{5,4,3}" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5, 4, 3]);
+      expect(out.parts[0].text).toContain("override queue [5,4,3]");
+    });
+
+    it("/phase 3 from SWARM sets the legacy single-phase marker { phase, since }", async () => {
+      const s = sid("ac009-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phase).toBe(hooks.STATES.EXPLORE);
+      expect(marker.phases).toBeUndefined();
+      expect(typeof marker.since).toBe("number");
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toEqual({ phase: hooks.STATES.EXPLORE, since: marker.since });
+    });
+
+    it("/phase {3,4,5} from PREFLIGHT is rejected — forward walks unsupported", async () => {
+      const s = sid("ac010-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,4,5}" }, out);
+      expect(out.parts[0].text).toContain("not a legal backward transition");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("the multi-phase queue is capped at 12 phases", async () => {
+      // The parser accepts a 12-phase list (the cap boundary).
+      const twelve = hooks.parsePhaseArg("{1,2,3,4,5,6,7,8,9,10,11,12}");
+      expect(twelve).toHaveLength(12);
+
+      // A 13-phase list containing the invalid phase number 13 is rejected at
+      // parse time (phases are 0-12).
+      expect(hooks.parsePhaseArg("{1,2,3,4,5,6,7,8,9,10,11,12,13}")).toBeNull();
+
+      // The command handler rejects a 13-element list of VALID phases with the
+      // length-cap error — the defensive cap fires before hop validation.
+      const s = sid("ac011-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{1,2,3,4,5,6,7,8,9,10,11,12,1}" }, out);
+      expect(out.parts[0].text).toContain("too many phases");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("a pre-existing state file with { phase, since } loads as a single-phase override", async () => {
+      const s = sid("ac022-multi");
+      const since = Date.now() - 5000;
+      writeFileSync(statePath(s), JSON.stringify({ phase: 3, generation: 0, sid: s, timestamp: Date.now(), overrideUntil: { phase: 3, since } }));
+      // Simulated restart: fresh plugin instance restores the legacy marker.
+      hooks = await pluginModule.server({}, {});
+      await initOverseer(s);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker).toEqual({ phase: 3, since });
+      // The legacy marker resolves to a single-phase queue [3].
+      expect(hooks.getOverrideTargetPhase(marker)).toBe(3);
+    });
+  });
+
   describe("/phase INTENT no longer traps the session", () => {
     // Ages a KD so its mtime predates the /phase marker — stale evidence under
     // the fresh-evidence rule. 60s of backdating dwarfs the millisecond
@@ -5266,23 +5480,50 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       utimesSync(join(knowledgeDir, filename), when, when);
     }
 
-    it("a stale-mtime corrected intent KD advances a /phase INTENT override and clears the marker", async () => {
+    it("a pre-existing intent KD does not advance a /phase INTENT override — the read of the old KD cannot undo the override", async () => {
       const s = sid("f2-ac005");
       await initOverseer(s);
+      // A pre-existing intent KD (the old KD the Overseer reads right after
+      // the override) — its mtime predates the override marker's `since`.
+      createKD(`intent-old-${s}.md`);
+      ageKD(`intent-old-${s}.md`);
+
       const out = { parts: [] };
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "INTENT" }, out);
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
       expect(marker.phase).toBe(hooks.STATES.INTENT);
 
-      // The user corrected the intent KD BEFORE the override — its mtime is
-      // below `since`, which used to hold INTENT forever.
-      createKD(`intent-corrected-${s}.md`);
-      ageKD(`intent-corrected-${s}.md`);
+      // The Overseer's first read of the old intent KD (a disk-check tool
+      // call) must NOT advance INTENT → PREFLIGHT and must NOT clear the marker.
+      await hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "f2-r1" },
+        { args: { filePath: `knowledge/intent-old-${s}.md` } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.INTENT);
+    });
 
-      // Presence of the session-matching intent KD advances INTENT → PREFLIGHT
-      // on the next disk-check tool call, regardless of mtime.
+    it("a fresh post-override intent KD advances a /phase INTENT override and clears the marker", async () => {
+      const s = sid("f2-ac005b");
+      await initOverseer(s);
+      createKD(`intent-old-${s}.md`);
+      ageKD(`intent-old-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "INTENT" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phase).toBe(hooks.STATES.INTENT);
+
+      // A stale intent KD still cannot advance the override.
       await todo(s, "f2-1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+      // A FRESH intent KD (mtime >= since) advances INTENT → PREFLIGHT and
+      // clears the override marker (advance-away).
+      createKD(`intent-fresh-${s}.md`);
+      await todo(s, "f2-2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
@@ -5357,14 +5598,15 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(output.description).not.toContain("⛔");
     });
 
-    it("commands/phase.md documents overrideUntil, the INTENT exemption, the recovery path, and edit-in-place", async () => {
+    it("commands/phase.md documents overrideUntil, the INTENT fresh-evidence rule, the recovery path, and edit-in-place", async () => {
       const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
       // (a) overrideUntil marker semantics + fresh-evidence rule
       expect(template).toContain("overrideUntil");
       expect(template.toLowerCase()).toContain("fresh");
-      // (b) INTENT exemption — presence advances, freshness ignored
-      expect(template).toContain("INTENT override exemption");
-      expect(template).toContain("regardless of its mtime");
+      // (b) INTENT override requires fresh evidence — a pre-existing intent KD
+      // must not undo the override before the corrected KD is written
+      expect(template).toContain("INTENT override fresh-evidence rule");
+      expect(template).toContain("at or after `since`");
       // (c) recovery path — /phase PREFLIGHT and the general escape hatch
       expect(template).toContain("/phase PREFLIGHT");
       // (d) edit-in-place of the corrected intent KD

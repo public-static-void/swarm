@@ -2696,6 +2696,65 @@ Body`;
         expect(output.parameters.properties.project_name.type).toBe("string");
       }
     });
+
+    it("issue_read routes to the named project store when project_name is provided", async () => {
+      // Seed an issue into the named project store via issue_move.
+      const seeded = JSON.parse(await nameHooks.tool.issue_write.execute(
+        { issue: { title: "Read named", severity: "medium", created: "2026-08-24", session: "ses_name", scope: "swarm" } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(seeded.id).toBe(1);
+      const moved = JSON.parse(await nameHooks.tool.issue_move.execute(
+        { id: 1, from_scope: "swarm", to_scope: "project", project_name: "rt-lstm-read", reason: "read target" },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(moved.error).toBeUndefined();
+
+      const result = JSON.parse(await nameHooks.tool.issue_read.execute(
+        { id: 1, scope: "project", project_name: "rt-lstm-read" },
+        { agent: "artisan", sessionID: "s" }
+      ));
+      expect(result.error).toBeUndefined();
+      expect(result.title).toBe("Read named");
+      expect(result.scope).toBe("project");
+      // The named project store file was read, not the default project store.
+      expect(existsSync(join(configRoot, "knowledge", "projects", "rt-lstm-read", "issues", "issue-1.md"))).toBe(true);
+    });
+
+    it("issue_read without project_name routes to the default project store", async () => {
+      // Seed an issue into the default project store (no project_name).
+      const seeded = JSON.parse(await nameHooks.tool.issue_write.execute(
+        { issue: { title: "Read default", severity: "medium", created: "2026-08-24", session: "ses_name", scope: "project" } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(seeded.id).toBe(1);
+
+      const result = JSON.parse(await nameHooks.tool.issue_read.execute(
+        { id: 1, scope: "project" },
+        { agent: "artisan", sessionID: "s" }
+      ));
+      expect(result.error).toBeUndefined();
+      expect(result.title).toBe("Read default");
+      expect(result.scope).toBe("project");
+    });
+
+    it("issue_read rejects an invalid project_name with a path-separator error", async () => {
+      const result = JSON.parse(await nameHooks.tool.issue_read.execute(
+        { id: 1, scope: "project", project_name: "../escape" },
+        { agent: "artisan", sessionID: "s" }
+      ));
+      expect(result.error).toContain("project_name must be a non-empty string without path separators");
+    });
+
+    it("toolDefinition declares project_name in the exposed issue_read schema", async () => {
+      const output = {
+        description: "orig",
+        parameters: { type: "object", properties: { scope: { type: "string" } } }
+      };
+      await nameHooks["tool.definition"]({ toolID: "issue_read" }, output);
+      expect(output.parameters.properties.project_name).toBeDefined();
+      expect(output.parameters.properties.project_name.type).toBe("string");
+    });
   });
 
   describe("memory_search tool (registered execute)", () => {
