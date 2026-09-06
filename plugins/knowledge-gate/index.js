@@ -1896,13 +1896,14 @@ export default {
         }
       }),
       issue_read: tool({
-        description: "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.",
+        description: "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.",
         args: {
           id: tool.schema.number().int().describe("Numeric issue ID to read"),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store to read from — required")
+          scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store to read from — required"),
+          project_name: tool.schema.string().optional().describe("Project subfolder name when scope is project — overrides the workspace basename")
         },
         async execute(args, context) {
-          const { id, scope } = args;
+          const { id, scope, project_name } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
 
           // id must be a positive integer (guards path traversal into the
@@ -1915,7 +1916,13 @@ export default {
             return JSON.stringify({ error: "scope parameter is required for issue_read" });
           }
 
-          const issuesDir = issuesDirForScope(scope);
+          // project_name override: sanitized before it becomes a path segment.
+          const projectName = sanitizeToken(project_name);
+          if (project_name !== undefined && !projectName) {
+            return JSON.stringify({ error: "project_name must be a non-empty string without path separators" });
+          }
+
+          const issuesDir = issuesDirForScope(scope, projectName);
           const filePath = join(issuesDir, `issue-${id}.md`);
           if (!existsSync(filePath)) {
             return JSON.stringify({ error: `Issue ${id} not found in store "${scope}"` });
@@ -2421,14 +2428,14 @@ export default {
       }
 
       if (toolID === "issue_read") {
-        output.description = "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
+        output.description = "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
         debug(`toolDefinition: provided description for issue_read`);
       }
 
       // Declare the optional project_name parameter in the exposed schema for
-      // the two tools that accept it. Without this, schema validation strips
+      // the tools that accept it. Without this, schema validation strips
       // project_name before the handler resolves the project subfolder.
-      if (toolID === "memory_write" || toolID === "issue_move") {
+      if (toolID === "memory_write" || toolID === "issue_move" || toolID === "issue_read") {
         output.parameters = output.parameters || {};
         output.parameters.properties = output.parameters.properties || {};
         output.parameters.properties.project_name = {
