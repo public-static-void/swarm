@@ -456,7 +456,7 @@ ${findings}
     expect(hooks.sessionPhaseMap.get(bare)).toBe(hooks.STATES.INTENT);
   });
 
-  it("restricts INTENT-phase writes to knowledge/intent-*.md and reads to skill files and intent KDs", async () => {
+  it("restricts INTENT-phase writes to knowledge/intent-*.md and reads to intent KDs", async () => {
     const s = sid("io-1");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
@@ -487,21 +487,21 @@ ${findings}
         { tool: "read", sessionID: s, callID: "c4" },
         { args: { filePath: "src/main.js" } }
       )
-    ).rejects.toThrow("Read from skill files or knowledge/intent-*.md only");
+    ).rejects.toThrow("Read from knowledge/intent-*.md only");
   });
 
-  it("INTENT-phase read allows skill files and intent KDs, rejects delegation-gate template JSON", async () => {
+  it("INTENT-phase read allows intent KDs, blocks skill files and delegation-gate template JSON", async () => {
     const s = sid("ac003");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
 
-    // Auto-loaded KD-format template skill resolves
+    // Skills are auto-injected via the skill tool — a skill-file read is BLOCKED
     await expect(
       hooks["tool.execute.before"](
         { tool: "read", sessionID: s, callID: "c1" },
         { args: { filePath: "skills/template-intent/SKILL.md" } }
       )
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("Read from knowledge/intent-*.md only");
 
     // Current session intent KD resolves
     await expect(
@@ -517,21 +517,21 @@ ${findings}
         { tool: "read", sessionID: s, callID: "c3" },
         { args: { filePath: "plugins/delegation-gate/templates/investigate.json" } }
       )
-    ).rejects.toThrow("Read from skill files or knowledge/intent-*.md only");
+    ).rejects.toThrow("Read from knowledge/intent-*.md only");
   });
 
-  it("REPORT-phase read allows skill files and knowledge KDs, rejects delegation-gate template JSON", async () => {
+  it("REPORT-phase read allows knowledge KDs, blocks skill files and delegation-gate template JSON", async () => {
     const s = sid("ac004");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
 
-    // Auto-loaded KD-format template skill resolves (skill-file check added)
+    // Skills are auto-injected via the skill tool — a skill-file read is BLOCKED
     await expect(
       hooks["tool.execute.before"](
         { tool: "read", sessionID: s, callID: "c1" },
         { args: { filePath: "skills/template-report/SKILL.md" } }
       )
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("Read from knowledge KDs only");
 
     // Knowledge KD resolves (needed to compose the report)
     await expect(
@@ -547,7 +547,7 @@ ${findings}
         { tool: "read", sessionID: s, callID: "c3" },
         { args: { filePath: "plugins/delegation-gate/templates/investigate.json" } }
       )
-    ).rejects.toThrow("Read from skill files or knowledge KDs only");
+    ).rejects.toThrow("Read from knowledge KDs only");
   });
 
   it("normalizes backslash and absolute Windows paths to project-relative knowledge/ paths", async () => {
@@ -2112,8 +2112,8 @@ Amendment body.
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("| M1 | desc | pending |");
     });
 
-    it("checked-off rows re-open on re-dispatch but stay immutable otherwise (evidence preserved)", async () => {
-      const s = sid("m3-reopen-1");
+    it("a SWARM re-dispatch of a checked-off milestone leaves the row checked-off (no reopen)", async () => {
+      const s = sid("m3-noreopen-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
@@ -2123,42 +2123,35 @@ Amendment body.
       // All rows checked-off with impl KDs → the gate would allow SWARM→VERIFY.
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
 
-      // Inspector findings → Overseer moves back to SWARM and re-dispatches M1.
-      await hooks["tool.execute.before"](
-        { tool: "task", sessionID: s, callID: "c1" },
-        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
-      );
+      // Overseer re-dispatches M1 (checkpoint recovery) — the row stays
+      // checked-off and the all-checked-off gate advances SWARM→VERIFY on the
+      // same task call, so the artisan dispatch is rejected as WRONG_AGENT
+      // (expected inspector). The milestone IS done; a redo is a deliberate
+      // user decision routed through the /phase SWARM backward override.
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID: "c1" },
+          { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+        )
+      ).rejects.toThrow("WRONG AGENT");
       let content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      expect(content).toContain("  M1: in-progress");
-
-      // The gate fails closed again until the fix impl KD is written.
-      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
-
-      // Fix delivered → auto check-off re-advances the row → gate opens again.
-      // The before-hook fires the check-off; the write tool itself lands the
-      // impl KD right after — both halves of the write operation.
-      const artisan = sid("m3-reopen-art");
-      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
-      await hooks["tool.execute.before"](
-        { tool: "write", sessionID: artisan, callID: "c1" },
-        { args: { filePath: `knowledge/impl-M1-fix-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY (fix)" } }
-      );
-      createKD(`impl-M1-fix-${s}-gen0.md`);
-      content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: checked-off");
-      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
 
-      // A non-reopen write (e.g. markStuckMilestonesFailed) never regresses a
-      // checked-off row — the completion evidence stays immutable.
-      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["failed"]);
+      // The impl-KD write for an already-checked-off row is idempotent — the
+      // row stays checked-off and the completion evidence stays immutable.
+      const result = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M1", ["checked-off"]);
       expect(result.ok).toBe(true);
       expect(result.changed).toBe(false);
       content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: checked-off");
+
+      // The gate advanced — the milestone IS done; the re-dispatch is a
+      // checkpoint-recovery no-op, not a redo.
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
     });
 
-    it("a SWARM re-dispatch of a checked-off milestone names the re-dispatch trigger in a loud diagnostic", async () => {
-      const s = sid("m3-reopen-diag");
+    it("a SWARM re-dispatch of a checked-off milestone emits no REOPEN diagnostic — reopen fires only on the FAIL-review citation path", async () => {
+      const s = sid("m3-noreopen-diag");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
@@ -2168,19 +2161,19 @@ Amendment body.
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
-        await hooks["tool.execute.before"](
-          { tool: "task", sessionID: s, callID: "c1" },
-          { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
-        );
+        await expect(
+          hooks["tool.execute.before"](
+            { tool: "task", sessionID: s, callID: "c1" },
+            { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+          )
+        ).rejects.toThrow("WRONG AGENT");
         const log = readFileSync(logPath, "utf8");
-        expect(log).toContain("REOPEN:");
-        expect(log).toContain("M1");
-        expect(log).toContain("re-dispatch");
+        expect(log).not.toContain("REOPEN:");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
     });
   });
 
@@ -2881,21 +2874,23 @@ Amendment body.
       }
     });
 
-    it("a re-opened milestone's stale impl KDs are superseded — the reopened row is not instantly re-checked-off, and fresh evidence re-completes it", async () => {
+    it("a FAIL-review-cited milestone's stale impl KDs are superseded — the reopened row is not instantly re-checked-off, and fresh evidence re-completes it", async () => {
       const s = sid("m1-supersede-1");
       await initOverseer(s);
-      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
       createRegistry(s, [["M1", "checked-off"]]);
       createKD(`impl-M1-first-${s}.md`);
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
 
-      // Inspector findings → Overseer re-dispatches M1 → the row re-opens and
-      // its prior completion evidence is superseded ON DISK.
+      // Inspector FAIL verdict citing M1 → the row re-opens and its prior
+      // completion evidence is superseded ON DISK (citation-driven reopen).
+      createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1-first has a defect"));
       await hooks["tool.execute.before"](
-        { tool: "task", sessionID: s, callID: "c1" },
-        { args: { subagent_type: "artisan", prompt: "AGENT: artisan\nMILESTONE ID: M1\nMODE: swarm" } }
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
       );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       let content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: in-progress");
       expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md`))).toBe(false);
