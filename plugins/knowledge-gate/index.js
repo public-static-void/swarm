@@ -1583,7 +1583,7 @@ export default {
         }
       }),
       issue_write: tool({
-        description: "Write a validated issue to the store named by scope (project|generic|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.",
+        description: "Write a validated issue to the store named by scope (project|generic|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria), project_name (optional — overrides the project subfolder when scope is project). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.",
         args: {
           issue: tool.schema.object({
             id: tool.schema.number().int().optional().describe("Per-store numeric ID — auto-assigned if omitted"),
@@ -1599,10 +1599,12 @@ export default {
             source_kd_reference: tool.schema.string().optional().describe("Source KD reference"),
             recommended_fix: tool.schema.string().optional().describe("Recommended fix"),
             acceptance_criteria: tool.schema.string().optional().describe("Acceptance criteria")
-          })
+          }),
+          project_name: tool.schema.string().optional().describe("Project subfolder name when scope is project — overrides the workspace basename")
         },
         async execute(args, context) {
           const issue = args.issue;
+          const project_name = args.project_name;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
 
           // Permission check: only Habit Builder can write issues (mirrors
@@ -1621,7 +1623,13 @@ export default {
             return JSON.stringify({ error: validation.error });
           }
 
-          const issuesDir = issuesDirForScope(issue.scope);
+          // project_name override: sanitized before it becomes a path segment.
+          const projectName = sanitizeToken(project_name);
+          if (project_name !== undefined && !projectName) {
+            return JSON.stringify({ error: "project_name must be a non-empty string without path separators" });
+          }
+
+          const issuesDir = issuesDirForScope(issue.scope, projectName);
           // mkdir -p on write: the target store's issues dir may not exist yet
           try { mkdirSync(issuesDir, { recursive: true }); } catch (_) {}
 
@@ -1659,7 +1667,7 @@ export default {
         }
       }),
       issue_update: tool({
-        description: "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.",
+        description: "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to), project_name (optional — overrides the project subfolder when scope is project). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.",
         args: {
           id: tool.schema.number().int().describe("Numeric issue ID to update"),
           scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store to search — required"),
@@ -1667,10 +1675,11 @@ export default {
             status: tool.schema.enum(["open", "resolved"]).optional().describe("New status (resolved closes the issue)"),
             resolution: tool.schema.string().optional().describe("Resolution text appended as a ## Resolution (YYYY-MM-DD) section"),
             assigned_to: tool.schema.string().optional().nullable().describe("New assigned_to value")
-          })
+          }),
+          project_name: tool.schema.string().optional().describe("Project subfolder name when scope is project — overrides the workspace basename")
         },
         async execute(args, context) {
-          const { id, scope, changes } = args;
+          const { id, scope, changes, project_name } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
 
           // Permission check: only Habit Builder can update issues
@@ -1704,8 +1713,14 @@ export default {
             return JSON.stringify({ error: "Nothing to update" });
           }
 
+          // project_name override: sanitized before it becomes a path segment.
+          const projectName = sanitizeToken(project_name);
+          if (project_name !== undefined && !projectName) {
+            return JSON.stringify({ error: "project_name must be a non-empty string without path separators" });
+          }
+
           // Locate issue in the specified store (scope is required)
-          const issuesDir = issuesDirForScope(scope);
+          const issuesDir = issuesDirForScope(scope, projectName);
           const filePath = join(issuesDir, `issue-${id}.md`);
           if (!existsSync(filePath)) {
             return JSON.stringify({ error: `Issue ${id} not found in store "${scope}"` });
@@ -2413,12 +2428,12 @@ export default {
       }
 
       if (toolID === "issue_write") {
-        output.description = "Write a validated issue to the store named by scope (project|generic|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.";
+        output.description = "Write a validated issue to the store named by scope (project|generic|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria), project_name (optional — overrides the project subfolder when scope is project). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.";
         debug(`toolDefinition: provided description for issue_write`);
       }
 
       if (toolID === "issue_update") {
-        output.description = "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.";
+        output.description = "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to), project_name (optional — overrides the project subfolder when scope is project). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.";
         debug(`toolDefinition: provided description for issue_update`);
       }
 
@@ -2435,7 +2450,7 @@ export default {
       // Declare the optional project_name parameter in the exposed schema for
       // the tools that accept it. Without this, schema validation strips
       // project_name before the handler resolves the project subfolder.
-      if (toolID === "memory_write" || toolID === "issue_move" || toolID === "issue_read") {
+      if (toolID === "memory_write" || toolID === "issue_move" || toolID === "issue_read" || toolID === "issue_write" || toolID === "issue_update") {
         output.parameters = output.parameters || {};
         output.parameters.properties = output.parameters.properties || {};
         output.parameters.properties.project_name = {

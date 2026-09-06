@@ -2755,6 +2755,65 @@ Body`;
       expect(output.parameters.properties.project_name).toBeDefined();
       expect(output.parameters.properties.project_name.type).toBe("string");
     });
+
+    it("issue_write routes to the named project store when project_name is provided", async () => {
+      const result = JSON.parse(await nameHooks.tool.issue_write.execute(
+        { issue: { title: "Write named", severity: "medium", created: "2026-08-24", session: "ses_name", scope: "project" }, project_name: "rt-lstm-write" },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(result.error).toBeUndefined();
+      expect(result.id).toBe(1);
+      // The named project store file was written, not the default project store.
+      expect(existsSync(join(configRoot, "knowledge", "projects", "rt-lstm-write", "issues", "issue-1.md"))).toBe(true);
+    });
+
+    it("issue_update routes to the named project store when project_name is provided", async () => {
+      // Seed an issue into the named project store via issue_write.
+      const seeded = JSON.parse(await nameHooks.tool.issue_write.execute(
+        { issue: { title: "Update named", severity: "medium", created: "2026-08-24", session: "ses_name", scope: "project" }, project_name: "rt-lstm-update" },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(seeded.error).toBeUndefined();
+      expect(seeded.id).toBe(1);
+
+      const result = JSON.parse(await nameHooks.tool.issue_update.execute(
+        { id: 1, scope: "project", project_name: "rt-lstm-update", changes: { status: "resolved", resolution: "Done" } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(result.error).toBeUndefined();
+      // The update landed in the named project store file.
+      const updatedRaw = readFileSync(join(configRoot, "knowledge", "projects", "rt-lstm-update", "issues", "issue-1.md"), "utf8");
+      expect(updatedRaw).toMatch(/^status: resolved$/m);
+      expect(updatedRaw).toContain("## Resolution");
+    });
+
+    it("issue_write rejects an invalid project_name with a path-separator error", async () => {
+      const result = JSON.parse(await nameHooks.tool.issue_write.execute(
+        { issue: { title: "Bad write", severity: "medium", created: "2026-08-24", session: "ses_name", scope: "project" }, project_name: "../escape" },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(result.error).toContain("project_name must be a non-empty string without path separators");
+    });
+
+    it("issue_update rejects an invalid project_name with a path-separator error", async () => {
+      const result = JSON.parse(await nameHooks.tool.issue_update.execute(
+        { id: 1, scope: "project", project_name: "../escape", changes: { status: "resolved" } },
+        { agent: "habit-builder", sessionID: "hb" }
+      ));
+      expect(result.error).toContain("project_name must be a non-empty string without path separators");
+    });
+
+    it("toolDefinition declares project_name in the exposed issue_write and issue_update schemas", async () => {
+      for (const toolID of ["issue_write", "issue_update"]) {
+        const output = {
+          description: "orig",
+          parameters: { type: "object", properties: { scope: { type: "string" } } }
+        };
+        await nameHooks["tool.definition"]({ toolID }, output);
+        expect(output.parameters.properties.project_name).toBeDefined();
+        expect(output.parameters.properties.project_name.type).toBe("string");
+      }
+    });
   });
 
   describe("memory_search tool (registered execute)", () => {

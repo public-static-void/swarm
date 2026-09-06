@@ -49,9 +49,9 @@ After a restart, the gate may advance one phase per tool call (`write`, `glob`, 
 
 A corrected intent KD can be fixed with `edit` (scoped to `knowledge/intent-*.md` in INTENT phase) and advances to PREFLIGHT on the next disk-check tool call. Editing the KD does not require re-running `/phase INTENT`.
 
-## Milestone-Registry Read Contract (SWARM-only)
+## Milestone-Registry Read Contract (SWARM/DECOMPOSE)
 
-Registry reads are SWARM-only; the injected milestone list is the live source after SWARM begins.
+Registry reads are SWARM/DECOMPOSE; the injected milestone list is the live source after SWARM begins.
 
 ## Correcting a Phase Artifact
 
