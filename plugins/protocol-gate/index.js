@@ -146,12 +146,12 @@ const DISK_CHECK_TOOLS = ["write", "glob", "todowrite", "task", "read", "bash"];
 // Delegation templates are JSON files auto-injected by delegation-gate at
 // dispatch — never read by the Overseer. KD-format templates are auto-loaded
 // skills loaded via the skill tool. The read restrictions below scope the read
-// tool to skill files + phase KDs; neither string instructs reading templates.
+// tool to phase KDs; neither string instructs reading templates.
 const TOOL_RESTRICTIONS = {
-  INTENT: { read: "ONLY skill files and intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", bash: "ONLY mkdir for knowledge directory creation" },
+  INTENT: { read: "ONLY intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", bash: "ONLY mkdir for knowledge directory creation" },
   DECOMPOSE: { read: "ONLY milestone registry KDs" },
   SWARM: { read: "ONLY milestone registry KDs" },
-  REPORT: { read: "ONLY skill files and knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
+  REPORT: { read: "ONLY knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
 };
 
 class ProtocolGateError extends Error {
@@ -2737,11 +2737,10 @@ export default {
       else if (tool === "read") {
         const path = args?.filePath || "";
         const relPath = toProjectRelative(path);
-        // Skill files cover the auto-loaded KD-format template skills. There is
-        // deliberately no generic "templates" allowance: delegation templates
-        // are JSON files auto-injected by delegation-gate at dispatch, never
-        // read by the Overseer.
-        const isSkillFile = relPath.endsWith("/SKILL.md") || relPath.includes("/skills/");
+        // Skills are auto-injected via the skill tool — never read via the
+        // read tool. There is deliberately no generic "templates" allowance:
+        // delegation templates are JSON files auto-injected by delegation-gate
+        // at dispatch, never read by the Overseer.
 
         if (phase === STATES.SWARM || phase === STATES.DECOMPOSE) {
           // SWARM phase: dispatcher visibility — the Overseer reads the
@@ -2758,24 +2757,26 @@ export default {
           }
         } else if (phase === STATES.INTENT || phase === STATES.REPORT) {
           if (phase === STATES.INTENT) {
-            // INTENT phase: only skill files (auto-loaded template skills) and
-            // the current session's intent KDs. Restricting to intent KDs
-            // prevents the Overseer from reading prior-session reports or other
-            // KDs and falling back to self-execution. Delegation templates are
-            // auto-injected by delegation-gate at dispatch — not read here.
+            // INTENT phase: only the current session's intent KDs. Restricting
+            // to intent KDs prevents the Overseer from reading prior-session
+            // reports or other KDs and falling back to self-execution. Skills
+            // are auto-injected via the skill tool — never read here.
+            // Delegation templates are auto-injected by delegation-gate at
+            // dispatch — not read here.
             const isIntentKD = /knowledge\/intent-/i.test(relPath);
-            if (!isSkillFile && !isIntentKD) {
-              debug(`read: BLOCKED phase=${phaseName} path=${path} (INTENT reads restricted to skill files and intent KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from skill files or knowledge/intent-*.md only — delegation templates are auto-injected by delegation-gate at dispatch, never read", "Read from skill files or knowledge/intent-*.md only");
+            if (!isIntentKD) {
+              debug(`read: BLOCKED phase=${phaseName} path=${path} (INTENT reads restricted to intent KDs)`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/intent-*.md only — delegation templates are auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", "Read from knowledge/intent-*.md only");
             }
           } else {
-            // REPORT phase: allow skill files (auto-loaded template skills) and
-            // any knowledge KD (needed to compose report). Delegation templates
-            // are auto-injected by delegation-gate at dispatch — not read here.
+            // REPORT phase: any knowledge KD (needed to compose the report).
+            // Skills are auto-injected via the skill tool — never read here.
+            // Delegation templates are auto-injected by delegation-gate at
+            // dispatch — not read here.
             const isKnowledge = relPath.startsWith("knowledge/") || relPath.includes("/knowledge/");
-            if (!isSkillFile && !isKnowledge) {
-              debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to skill files and knowledge KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from skill files or knowledge KDs only — delegation templates are auto-injected by delegation-gate at dispatch, never read", "Read from skill files or knowledge KDs only");
+            if (!isKnowledge) {
+              debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to knowledge KDs)`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge KDs only — delegation templates are auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", "Read from knowledge KDs only");
             }
           }
         }
@@ -2843,13 +2844,16 @@ export default {
         }
       }
 
-      // A SWARM re-dispatch must re-open its checked-off milestone
-      // BEFORE the all-checked-off gate runs. The gate is checked on the same
-      // task call (below); without the re-open first, an all-done registry would
-      // advance SWARM→VERIFY and the re-dispatch would be blocked as a wrong
-      // agent before the task handler ever runs. Only genuine artisan dispatches
-      // to SWARM's agent advance the registry; every other task call passes
-      // through untouched.
+      // A SWARM re-dispatch does NOT re-open checked-off milestone rows:
+      // checked-off rows stay checked-off (the impl-KD write is idempotent —
+      // updateMilestoneRegistry returns { ok: true, changed: false } for an
+      // already-checked-off row). The all-checked-off gate may then advance
+      // SWARM→VERIFY on the same task call — the desired checkpoint-recovery
+      // behavior when the milestone IS done. User-requested redos of passed
+      // milestones route through the sanctioned /phase SWARM backward override
+      // (commands/phase.md); the citation-driven reopen path (Inspector-FAIL
+      // verdicts → reopenCheckedOffMilestones via regressVerifyOnFail) is the
+      // only path that reopens checked-off rows.
       // MILESTONE_ID cardinality is validated BEFORE any
       // registry mutation. A MULTI_MILESTONE rejection must leave the registry
       // byte-identical — without this check, first-line-wins extraction would
@@ -2867,7 +2871,7 @@ export default {
             throw new ProtocolGateError(ERROR_TEMPLATES.MULTI_MILESTONE.code, ERROR_TEMPLATES.MULTI_MILESTONE.message, ERROR_TEMPLATES.MULTI_MILESTONE.guidance);
           }
           if (milestoneIds.length === 1) {
-            const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneIds[0], ["assigned", "in-progress"], { reopen: true, trigger: "SWARM re-dispatch {reopen:true}" });
+            const regResult = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneIds[0], ["assigned", "in-progress"]);
             debug(`SWARM registry update (pre-gate) for ${milestoneIds[0]}: ${JSON.stringify(regResult)}`);
           }
         }
