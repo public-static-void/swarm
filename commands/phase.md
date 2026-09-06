@@ -14,16 +14,19 @@ The hook performs every state change and persists the override marker; relay its
 
 ## overrideUntil marker
 
-Every `/phase` invocation records an override marker `{ phase, since }`:
+Every `/phase` invocation records an override marker — the single-phase shape `{ phase, since }` or the multi-phase queue `{ phases, since }`:
 
-- `phase` — the override target phase.
+- `phase` — the override target phase (single-phase override).
+- `phases` — an ordered queue of override target phases (multi-phase override, e.g. `{3,4,5}`).
 - `since` — the timestamp of the override.
 
-While the current phase equals the marker's target, disk-based advancement requires **fresh** evidence: a phase KD whose mtime is at or after `since`. This prevents a pre-existing KD from silently undoing a manual override.
+While the current phase equals the marker's target (the head of the queue for multi-phase), disk-based advancement requires **fresh** evidence: a phase KD whose mtime is at or after `since`. This prevents a pre-existing KD from silently undoing a manual override.
+
+Multi-phase overrides accept a comma-separated or brace-enclosed ordered list (e.g. `{3,4,5}` or `3,4,5`). The order is meaningful: `{3,4,5}` overrides to 3, then 4, then 5. Each hop must be a legal backward transition from the preceding phase (backward chains only; forward walks are rejected). The queue is capped at 12 phases. When the phase advances away from the current target on fresh evidence, the marker re-arms to the next phase in the queue; when the queue is exhausted, the marker clears.
 
 The marker is cleared when:
 
-- the phase advances away from the override target on fresh evidence;
+- the phase advances away from the override target on fresh evidence and the queue is exhausted;
 - a backward transition moves to an earlier phase;
 - the lifecycle ends with a REPORT KD;
 - a new `/phase` invocation replaces it.
