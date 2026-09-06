@@ -1703,6 +1703,76 @@ Amendment body.
     }
   });
 
+  it("DECOMPOSE reads a milestone registry KD and advances to SWARM when both plan- and milestones- KDs exist", async () => {
+    const s = sid("decomp-read-advance");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+    // Both plan- and milestones- KDs on disk — the dual-KD gate is satisfied,
+    // so the Overseer's read of the registry succeeds and the phase advances.
+    createKD(`plan-feature-${s}.md`);
+    createRegistry(s, [["M1", "pending"]]);
+
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c1" },
+        { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
+      )
+    ).resolves.toBeUndefined();
+
+    // The read is a DISK_CHECK_TOOLS call — with both KDs present the
+    // DECOMPOSE → SWARM advance fires on the same call.
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+  });
+
+  it("DECOMPOSE does not advance to SWARM when a milestone registry read finds only the plan KD (dual-KD gate)", async () => {
+    const s = sid("decomp-read-blocked");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+    // Only the plan KD — no milestone registry. The read is allowed by the
+    // allowlist but the dual-KD gate prevents advancement, so the phase stays
+    // DECOMPOSE and the read does not advance.
+    createKD(`plan-feature-${s}.md`);
+
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c1" },
+        { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
+      )
+    ).resolves.toBeUndefined();
+
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+  });
+
+  it("DECOMPOSE blocks reads of non-milestone KDs (restriction scoped to milestone KDs only)", async () => {
+    const s = sid("decomp-read-nonmilestone");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+    // Plan KDs (relative and absolute), other KDs, and non-KD files stay
+    // blocked during DECOMPOSE — only milestone registry reads are permitted.
+    for (const bad of [
+      `knowledge/plan-feature-${s}.md`,
+      `/home/user/project/knowledge/plan-feature-${s}.md`,
+      `knowledge/impl-feature-${s}.md`,
+      `knowledge/spec-feature-${s}.md`,
+      `knowledge/review-feature-${s}.md`,
+      "src/main.js",
+      "opencode.json",
+    ]) {
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "c4" },
+          { args: { filePath: bad } }
+        )
+      ).rejects.toThrow("Read from knowledge/milestones-*.md");
+    }
+  });
+
   describe("per-milestone dispatch — registry state wiring", () => {
     it("transitions the dispatched milestone pending → assigned → in-progress in the registry YAML block", async () => {
       const s = sid("m3-reg-1");

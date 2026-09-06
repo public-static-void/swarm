@@ -124,7 +124,7 @@ const TOOL_ALLOWLIST = {
   EXPLORE: ["task", "todowrite", "glob", "memory_search"],
   INVESTIGATE: ["task", "todowrite", "glob", "memory_search"],
   ALIGN: ["task", "todowrite", "glob", "memory_search"],
-  DECOMPOSE: ["task", "todowrite", "glob", "memory_search"],
+  DECOMPOSE: ["task", "todowrite", "glob", "read", "memory_search"],
   SWARM: ["task", "todowrite", "glob", "read", "memory_search"],
   VERIFY: ["task", "todowrite", "glob", "memory_search"],
   EXTRACT: ["task", "todowrite", "glob", "memory_search"],
@@ -149,6 +149,7 @@ const DISK_CHECK_TOOLS = ["write", "glob", "todowrite", "task", "read", "bash"];
 // tool to skill files + phase KDs; neither string instructs reading templates.
 const TOOL_RESTRICTIONS = {
   INTENT: { read: "ONLY skill files and intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", bash: "ONLY mkdir for knowledge directory creation" },
+  DECOMPOSE: { read: "ONLY milestone registry KDs" },
   SWARM: { read: "ONLY milestone registry KDs" },
   REPORT: { read: "ONLY skill files and knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
 };
@@ -2742,13 +2743,17 @@ export default {
         // read by the Overseer.
         const isSkillFile = relPath.endsWith("/SKILL.md") || relPath.includes("/skills/");
 
-        if (phase === STATES.SWARM) {
+        if (phase === STATES.SWARM || phase === STATES.DECOMPOSE) {
           // SWARM phase: dispatcher visibility — the Overseer reads the
           // milestone registry to track milestone state and drive
           // per-milestone artisan dispatches. All other reads stay blocked.
+          // DECOMPOSE phase: the Overseer reads the milestone registry the
+          // Pathfinder just produced, before the disk-advance check catches
+          // up to SWARM. Scoped to milestone KDs only — plan KDs and all
+          // other files stay blocked.
           const isMilestonesKD = /^knowledge\/milestones-/i.test(relPath) || /\/knowledge\/milestones-/i.test(relPath);
           if (!isMilestonesKD) {
-            debug(`read: BLOCKED phase=${phaseName} path=${path} (SWARM reads restricted to milestone registry KDs)`);
+            debug(`read: BLOCKED phase=${phaseName} path=${path} (${phaseName} reads restricted to milestone registry KDs)`);
             throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/milestones-*.md only", "Read from knowledge/milestones-*.md only");
           }
         } else if (phase === STATES.INTENT || phase === STATES.REPORT) {
