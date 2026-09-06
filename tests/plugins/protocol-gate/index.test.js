@@ -5266,6 +5266,141 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     });
   });
 
+  describe("multi-phase /phase override", () => {
+    it("parsePhaseArg accepts comma-separated and brace-enclosed ordered lists plus single-phase", () => {
+      expect(hooks.parsePhaseArg("3")).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.parsePhaseArg("INTENT")).toBe(hooks.STATES.INTENT);
+      expect(hooks.parsePhaseArg("3,4,5")).toEqual([3, 4, 5]);
+      expect(hooks.parsePhaseArg("{3,4,5}")).toEqual([3, 4, 5]);
+      expect(hooks.parsePhaseArg("{INTENT,PREFLIGHT}")).toEqual([1, 2]);
+      expect(hooks.parsePhaseArg("99")).toBeNull();
+      expect(hooks.parsePhaseArg("INVALID")).toBeNull();
+      expect(hooks.parsePhaseArg("")).toBeNull();
+      expect(hooks.parsePhaseArg("{3,4,5")).toBeNull();
+    });
+
+    it("/phase {3,4,5} from SWARM sets a queue that re-arms across hops and clears at the end", async () => {
+      const s = sid("ac007-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,4,5}" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phases).toEqual([3, 4, 5]);
+      expect(typeof marker.since).toBe("number");
+      // The queue is persisted in the state file.
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toEqual({ phases: [3, 4, 5], since: marker.since });
+
+      // No exploration KD yet — the override holds EXPLORE.
+      await todo(s, "m1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+
+      // Fresh exploration KD advances EXPLORE → INVESTIGATE and re-arms to 4.
+      createKD(`exploration-fresh-${s}.md`);
+      await todo(s, "m2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([4, 5]);
+
+      // Fresh analysis KD advances INVESTIGATE → ALIGN and re-arms to 5.
+      createKD(`analysis-fresh-${s}.md`);
+      await todo(s, "m3");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5]);
+
+      // Fresh spec KD advances ALIGN → DECOMPOSE and clears the exhausted queue.
+      createKD(`spec-fresh-${s}.md`);
+      await todo(s, "m4");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
+    });
+
+    it("comma-separated syntax (3,4,5) works like the brace-enclosed form", async () => {
+      const s = sid("comma-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3,4,5" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([3, 4, 5]);
+    });
+
+    it("/phase {5,4,3} from SWARM validates each hop against backwardTransitions", async () => {
+      const s = sid("ac008-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{5,4,3}" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5, 4, 3]);
+      expect(out.parts[0].text).toContain("override queue [5,4,3]");
+    });
+
+    it("/phase 3 from SWARM sets the legacy single-phase marker { phase, since }", async () => {
+      const s = sid("ac009-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phase).toBe(hooks.STATES.EXPLORE);
+      expect(marker.phases).toBeUndefined();
+      expect(typeof marker.since).toBe("number");
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toEqual({ phase: hooks.STATES.EXPLORE, since: marker.since });
+    });
+
+    it("/phase {3,4,5} from PREFLIGHT is rejected — forward walks unsupported", async () => {
+      const s = sid("ac010-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,4,5}" }, out);
+      expect(out.parts[0].text).toContain("not a legal backward transition");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("the multi-phase queue is capped at 12 phases", async () => {
+      // The parser accepts a 12-phase list (the cap boundary).
+      const twelve = hooks.parsePhaseArg("{1,2,3,4,5,6,7,8,9,10,11,12}");
+      expect(twelve).toHaveLength(12);
+
+      // A 13-phase list containing the invalid phase number 13 is rejected at
+      // parse time (phases are 0-12).
+      expect(hooks.parsePhaseArg("{1,2,3,4,5,6,7,8,9,10,11,12,13}")).toBeNull();
+
+      // The command handler rejects a 13-element list of VALID phases with the
+      // length-cap error — the defensive cap fires before hop validation.
+      const s = sid("ac011-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{1,2,3,4,5,6,7,8,9,10,11,12,1}" }, out);
+      expect(out.parts[0].text).toContain("too many phases");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("a pre-existing state file with { phase, since } loads as a single-phase override", async () => {
+      const s = sid("ac022-multi");
+      const since = Date.now() - 5000;
+      writeFileSync(statePath(s), JSON.stringify({ phase: 3, generation: 0, sid: s, timestamp: Date.now(), overrideUntil: { phase: 3, since } }));
+      // Simulated restart: fresh plugin instance restores the legacy marker.
+      hooks = await pluginModule.server({}, {});
+      await initOverseer(s);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker).toEqual({ phase: 3, since });
+      // The legacy marker resolves to a single-phase queue [3].
+      expect(hooks.getOverrideTargetPhase(marker)).toBe(3);
+    });
+  });
+
   describe("/phase INTENT no longer traps the session", () => {
     // Ages a KD so its mtime predates the /phase marker — stale evidence under
     // the fresh-evidence rule. 60s of backdating dwarfs the millisecond
