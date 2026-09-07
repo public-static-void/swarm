@@ -42,3 +42,7 @@ _This section is optional — include it when friction was encountered during wo
 | ID     | Issue                       | Severity            | Status                  | Fixed by            |
 | ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |
 | PF-001 | {{description of friction}} | {{low/medium/high}} | {{unresolved/resolved}} | {{agent or PR ref}} |
+
+## KD Supersession Convention
+
+When superseding an impl KD, write the new canonical file FIRST, then rename the old one to `.superseded.md`. This ensures the canonical path is always occupied, preventing the SWARM→VERIFY gate from stalling on a missing impl KD. Never remove the old file before the new one is committed to disk.
