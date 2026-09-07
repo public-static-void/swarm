@@ -1648,6 +1648,48 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.prompt).toContain("knowledge/checkpoint-foo.md");
     });
+
+    it("accepts a swarm result KD carrying a hyphenated milestone ID matching the dispatched ID", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+MILESTONE ID: M-core
+SCOPE: Execute milestone M-core
+RESULT KD: knowledge/impl-M-core-feature-ses_x-gen0.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_x", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/impl-M-core-feature-ses_x-gen0.md");
+    });
+
+    it("accepts a hyphenated milestone ID with a case-insensitive result KD token", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+MILESTONE ID: M-core
+SCOPE: Execute milestone M-core
+RESULT KD: knowledge/impl-m-core-feature-ses_x-gen0.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_x", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("knowledge/impl-m-core-feature-ses_x-gen0.md");
+    });
+
+    it("rejects a hyphenated milestone ID when the result KD carries a different milestone", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-08-01
+MILESTONE ID: M-core
+SCOPE: Execute milestone M-core
+RESULT KD: knowledge/impl-M5-feature-ses_x-gen0.md`;
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } })
+      ).rejects.toThrow("Swarm result KD does not match the MILESTONE ID");
+    });
   });
 
   // BRANCH Contract tests removed — BRANCH parameter eliminated from delegation system

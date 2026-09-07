@@ -1854,6 +1854,20 @@ Amendment body.
       expect(hooks.extractMilestoneIdFromPrompt(null)).toBeNull();
     });
 
+    it("extracts a hyphenated milestone ID when the known ID prefix-matches the impl KD name portion", async () => {
+      // Known ID `M-core` prefix-matches `impl-M-core-...` → returns the filename token
+      expect(hooks.extractMilestoneIdFromImplKD("impl-M-core-feature-ses_x-gen0.md", "M-core")).toBe("M-core");
+      // Case-insensitive known ID still matches and returns the filename's own casing
+      expect(hooks.extractMilestoneIdFromImplKD("impl-M-core-feature-ses_x-gen0.md", "m-core")).toBe("M-core");
+    });
+
+    it("returns null when the known milestone ID does not prefix-match the impl KD name portion", async () => {
+      // Known ID `M5` does not prefix-match `impl-M-core-...` → null
+      expect(hooks.extractMilestoneIdFromImplKD("impl-M-core-feature-ses_x-gen0.md", "M5")).toBeNull();
+      // A known ID that is a strict prefix of the name portion but not followed by `-` does not match
+      expect(hooks.extractMilestoneIdFromImplKD("impl-Mcore-feature-ses_x-gen0.md", "M")).toBeNull();
+    });
+
     it("findMilestoneImplKD locates the milestone-scoped impl KD on disk (filename-generation evidence, session match mandatory)", async () => {
       const s = sid("m4-find-1");
       await initOverseer(s);
@@ -1927,6 +1941,27 @@ Amendment body.
 
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
       expect(content).toContain("  M4: checked-off");
+    });
+
+    it("checks off a hyphenated milestone row when the impl KD carries the hyphenated ID", async () => {
+      // A registry row `M-core` (in-progress) transitions to checked-off
+      // when `impl-M-core-feature-<session>-gen0.md` lands — the legacy first-token
+      // extractor would yield `M`, so the row resolution must use the registry SSOT.
+      const overseer = sid("mcore-auto-1");
+      await initOverseer(overseer);
+      hooks.sessionPhaseMap.set(overseer, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${overseer}:sid`, overseer);
+      createRegistry(overseer, [["M-core", "in-progress"]]);
+
+      const artisan = sid("mcore-auto-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M-core-feature-${overseer}-gen0.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
+      expect(content).toContain("  M-core: checked-off");
     });
 
     it("does not check off when the impl KD uses the legacy unscoped naming", async () => {

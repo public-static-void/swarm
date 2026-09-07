@@ -931,6 +931,29 @@ function readMilestoneRegistry(sessionID, sessionPhaseMap) {
   return { rows, ...located };
 }
 
+// Resolves the milestone row to check off for an impl KD against the parent
+// session's registry rows (the SSOT of milestone IDs). The legacy extractor
+// truncates hyphenated IDs (`impl-M-core-...` → `M`), so the row whose ID
+// prefix-matches the impl KD's name portion is the authoritative ID. A row
+// whose ID exactly matches the legacy-extracted token is preferred over a
+// prefix match — `impl-M-core-...` prefix-matches both `M` and `M-core`, and
+// the exact token match wins (no more permissive than the legacy first-token).
+// Returns the resolved canonical row ID, or the legacy-extracted milestoneId
+// when no row matches (the caller's updateMilestoneRegistry then reports
+// milestone-not-found).
+function resolveMilestoneRowId(registry, relPath, milestoneId) {
+  if (!registry || !Array.isArray(registry.rows) || registry.rows.length === 0) {
+    return milestoneId;
+  }
+  const exact = registry.rows.find(r => r.id.toLowerCase() === milestoneId.toLowerCase());
+  if (exact) return exact.id;
+  const base = relPath.replace(/\\/g, "/").split("/").pop();
+  const namePortion = base.replace(/\.md$/, "").replace(/^impl-/i, "");
+  const nameLower = namePortion.toLowerCase();
+  const prefix = registry.rows.find(r => nameLower.startsWith(`${r.id.toLowerCase()}-`));
+  return prefix ? prefix.id : milestoneId;
+}
+
 // Disk-evidence reconciliation (Issue 64): before the all-checked-off
 // verdict is computed, every non-checked-off row (`in-progress`, `assigned`,
 // `pending`, `failed`) whose milestone-scoped impl KD exists on disk under the
@@ -1128,12 +1151,27 @@ function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger, mileston
 // token after the `impl-` prefix is the milestone ID. Returns null for non-impl
 // filenames (other KD types) and invalid input — a legacy unscoped impl KD
 // yields its first name token, which never matches a registry row.
-function extractMilestoneIdFromImplKD(filename) {
+//
+// When a known milestone ID is provided, the name portion after `impl-` must
+// start with `<knownMilestoneId>-` (case-insensitive) — this is what lets
+// hyphenated milestone IDs (e.g. `M-core`) survive extraction, since the legacy
+// first-token split truncates them to `M`. On a prefix match the filename's own
+// token is returned (filename casing preserved); on mismatch null is returned.
+// Without a known ID the legacy first-token behavior is unchanged.
+function extractMilestoneIdFromImplKD(filename, knownMilestoneId) {
   if (typeof filename !== "string") return null;
   const base = filename.replace(/\\/g, "/").split("/").pop();
   if (!/^impl-/i.test(base)) return null;
   const name = base.replace(/\.md$/, "");
-  const token = name.replace(/^impl-/i, "").split("-")[0];
+  const namePortion = name.replace(/^impl-/i, "");
+  if (typeof knownMilestoneId === "string" && knownMilestoneId.length > 0) {
+    const prefix = `${knownMilestoneId}-`;
+    if (namePortion.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return namePortion.slice(0, knownMilestoneId.length) || null;
+    }
+    return null;
+  }
+  const token = namePortion.split("-")[0];
   return token || null;
 }
 
@@ -2255,22 +2293,31 @@ export default {
           if (!sessionPhaseMap.has(`${candidate}:gen`)) {
             sessionPhaseMap.set(`${candidate}:gen`, generation);
           }
-          const result = updateMilestoneRegistry(candidate, sessionPhaseMap, milestoneId, ["checked-off"]);
-          debug(`auto check-off: impl KD for milestone ${milestoneId} (parent ${candidate}) → ${JSON.stringify(result)}`);
+          // Resolve the milestone against the parent-session registry rows —
+          // the SSOT of milestone IDs. Hyphenated IDs (e.g. `M-core`) are
+          // truncated to their first token (`M`) by the legacy extractor, so
+          // the row whose ID prefix-matches the impl KD's name portion is the
+          // authoritative ID to check off. An exact row-ID match is preferred
+          // over a prefix match — `impl-M-core-...` prefix-matches both `M`
+          // and `M-core`, and the exact row wins.
+          const registry = readMilestoneRegistry(candidate, sessionPhaseMap);
+          const resolvedId = resolveMilestoneRowId(registry, relPath, milestoneId);
+          const result = updateMilestoneRegistry(candidate, sessionPhaseMap, resolvedId, ["checked-off"]);
+          debug(`auto check-off: impl KD for milestone ${resolvedId} (parent ${candidate}) → ${JSON.stringify(result)}`);
           // Only a SUCCESSFUL check-off resets the per-milestone
           // redispatch budget. A failed registry update keeps the counter so
           // retries still count toward the cap; a re-opened milestone
           // starts fresh because its budget was cleared at the earlier
           // check-off — the desired re-open semantics.
           if (result.ok) {
-            phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, milestoneId));
-            debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${milestoneId} (session ${candidate})`);
+            phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, resolvedId));
+            debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${resolvedId} (session ${candidate})`);
           } else {
             // Loud, non-blocking diagnostic: silent failures here left
             // registries stuck in SWARM (Issue 64). Visible without
             // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
             // (no-registry / milestone-not-found / invalid-transition / write-failed).
-            warn(`AUTO_CHECKOFF_FAILED: milestone ${milestoneId} (parent ${candidate}) — ${result.reason}`);
+            warn(`AUTO_CHECKOFF_FAILED: milestone ${resolvedId} (parent ${candidate}) — ${result.reason}`);
           }
           return;
         }
