@@ -45,4 +45,4 @@ _This section is optional — include it when friction was encountered during wo
 
 ## KD Supersession Convention
 
-When superseding an impl KD, write the new canonical file FIRST, then rename the old one to `.superseded.md`. This ensures the canonical path is always occupied, preventing the SWARM→VERIFY gate from stalling on a missing impl KD. Never remove the old file before the new one is committed to disk.
+When superseding an impl KD, write the new canonical file FIRST, then rename the old one to `.superseded.md`. The canonical path stays occupied, so the SWARM→VERIFY gate does not stall on a missing impl KD. Remove the old file after the new one is committed to disk.
