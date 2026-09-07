@@ -6,11 +6,11 @@ Set the protocol phase for the current session.
 
 Argument: $ARGUMENTS
 
-Phase was manually overridden to $ARGUMENTS. The protocol-gate /phase hook already applied and persisted the override — relay its response.
+Phase was manually overridden to $ARGUMENTS. The protocol-gate /phase hook processes this command. Relay the hook's actual response — whether it applied, rejected, or errored. Do not assume success.
 
 ## What /phase does
 
-The hook performs every state change and persists the override marker; relay its confirmation.
+The hook performs every state change and persists the override marker. Read the hook's output and relay what actually happened — including any errors or rejections. Do not fabricate a confirmation.
 
 ## overrideUntil marker
 
