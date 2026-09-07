@@ -3678,6 +3678,68 @@ milestones:
     });
   });
 
+  describe("duplicate milestone registry guard", () => {
+    it("two milestone registries for the same session/generation fail closed with a DUPLICATE_REGISTRY diagnostic", async () => {
+      const s = sid("dup-registry");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      // A second registry for the same session/generation — the ambiguity the
+      // guard must fail closed on instead of silently tracking one of them.
+      createKD(`milestones-other-${s}.md`, registryContent([["M2", "pending"]]));
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Fail closed: the gate never tracks an ambiguous registry — SWARM
+        // stays put (no spurious advance from a duplicate).
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        // The registry helpers surface the fail-closed null (REGISTRY_MISSING).
+        expect(hooks.readMilestoneRegistry(s, hooks.sessionPhaseMap)).toBeNull();
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("DUPLICATE_REGISTRY");
+        expect(log).toContain(`milestones-feature-${s}.md`);
+        expect(log).toContain(`milestones-other-${s}.md`);
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("a second registry for a different session does not trigger the guard", async () => {
+      const s = sid("dup-cross-session");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-fix-${s}.md`);
+      // A prior lifecycle's registry (different session id) must not collide
+      // with the current session's lookup.
+      createKD(`milestones-other-${sid("dup-other")}.md`, registryContent([["M2", "pending"]]));
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Single-registry behavior unchanged: the current session's registry
+        // resolves and the gate advances normally.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(readFileSync(logPath, "utf8")).not.toContain("DUPLICATE_REGISTRY");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+  });
+
   describe("verdict-aware VERIFY gate", () => {
     // Delegates to the shared reviewKD builder — FAIL fixtures pass milestone
     // citations in the Findings section (the scoped-reopen provenance).
