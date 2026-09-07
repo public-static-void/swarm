@@ -791,7 +791,17 @@ function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
   // Registry lookup is scoped to the current session only — no cross-session
   // adoption means a prior lifecycle's registry never gates a fresh session's
   // SWARM.
-  const registry = files.find(f => /^milestones-/i.test(f) && matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
+  const registries = files.filter(f => /^milestones-/i.test(f) && matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
+  if (registries.length > 1) {
+    // Duplicate-registry guard: a second milestones-*.md for the same
+    // session/generation makes the registry ambiguous. Fail closed (null →
+    // REGISTRY_MISSING) rather than silently tracking whichever file sorts
+    // first — the old find() behavior cascaded into the supersede-impl-KD
+    // stall.
+    warn(`DUPLICATE_REGISTRY: ${registries.length} milestone registries match session ${sessionID} generation ${generation}: ${registries.join(", ")} — failing closed (REGISTRY_MISSING)`);
+    return null;
+  }
+  const registry = registries[0];
   if (!registry) return null;
 
   const path = join(knowledgeDir, registry);
