@@ -4275,6 +4275,7 @@ FAIL
 ### F001: defect
 
 - **Milestone citation**: impl-M1-short-term-store
+- **Status**: FAIL
 
 ### Traceability Matrix
 
@@ -4400,6 +4401,7 @@ FAIL
 ### F001: defect
 
 - **Milestone citation**: M2 and impl-M3-promotion
+- **Status**: FAIL
 
 ## Audit
 
@@ -4455,6 +4457,7 @@ FAIL
 ### F001: defect
 
 - **Milestone citation**: M2
+- **Status**: FAIL
 
 ### Traceability Matrix
 
@@ -4530,6 +4533,7 @@ impl-M1-short-term-store has a defect
 ### F001: defect
 
 - **Milestone citation**: M2
+- **Status**: FAIL
 
 ### Traceability Matrix
 
@@ -4577,6 +4581,7 @@ FAIL
 ### F001: defect
 
 - **Milestone citation**: M2
+- **Status**: FAIL
 
 ### Traceability Matrix
 
@@ -4601,6 +4606,86 @@ audited
         expect(rows.M2).toBe("in-progress");
         expect(rows.M1).toBe("checked-off");
         expect(rows.M3).toBe("checked-off");
+      });
+
+      it("a FAIL review citing only M1 does not reopen M2 when PASS findings' File fields reference impl-M2 paths", async () => {
+        const s = sid("f001-fail-scoped-multi");
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+        hooks.sessionPhaseMap.set(`${s}:sid`, s);
+        createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+        createKD(`impl-M1-feature-${s}.md`);
+        createKD(`impl-M2-feature-${s}.md`);
+        // FAIL finding cites only M1; PASS findings' File fields reference
+        // impl-M2 paths — those are provenance, not FAIL citations, and must
+        // not leak M2 into the reopen set.
+        createKD(
+          `review-fail-${s}.md`,
+          `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M1
+- **Status**: FAIL
+
+### F002: pass
+
+- **File**: impl-M2-feature-${s}.md
+- **Status**: PASS
+
+### F003: pass
+
+- **File**: impl-M2-other-${s}.md
+- **Status**: PASS
+`
+        );
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+        const rows = regressedRegistryRows(s);
+        expect(rows.M1).toBe("in-progress");
+        expect(rows.M2).toBe("checked-off");
+        // M1's stale impl KD is superseded on disk; M2's stays canonical.
+        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md`))).toBe(false);
+        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md.superseded.md`))).toBe(true);
+        expect(existsSync(join(knowledgeDir, `impl-M2-feature-${s}.md`))).toBe(true);
+        expect(existsSync(join(knowledgeDir, `impl-M2-feature-${s}.md.superseded.md`))).toBe(false);
+      });
+
+      it("a citation-less FAIL finding with PASS findings referencing impl paths yields zero citations (fail-closed, no masking)", () => {
+        const s = sid("f001-fail-scoped-masking");
+        const content = `## Review Findings
+
+### F001: defect
+
+- **Status**: FAIL
+
+### F002: pass
+
+- **File**: impl-M2-feature-${s}.md
+- **Status**: PASS
+`;
+        const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+        expect(citations).toEqual([]);
       });
     });
 
@@ -4657,6 +4742,7 @@ FAIL
 ### F001: defect
 
 - **Milestone citation**: impl-M1-short-term-store
+- **Status**: FAIL
 
 ### Traceability Matrix
 
