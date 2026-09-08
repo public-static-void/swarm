@@ -1301,10 +1301,10 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 // Tokens are deduplicated and case-preserved. The scan is FAIL-context-only
 // (swarm/99): FAIL citations live in FAIL-status findings and explicit Verdict
 // citation lines, so prose tokens elsewhere are provenance, not citations.
-// Scanned locations (R102): (a) `### F\d+` finding subsections whose `Status`
+// Scanned locations: (a) `### F\d+` finding subsections whose `Status`
 // is `FAIL`; (b) `### A\d+` audit-finding subsections whose `Status` is `FAIL`;
 // (c) explicit `Milestone citation:` lines within the `## Verdict` section.
-// Never scanned (R103): the KD preamble, `## Verdict Rules`, `## Registry/Plan
+// Never scanned: the KD preamble, `## Verdict Rules`, `## Registry/Plan
 // Consistency Note`, `## Test Results`, `## Pass Rate`, `## Process Friction`,
 // `## Audit` prose, `## References`, `### Traceability Matrix`, and any other
 // section that is not a FAIL-status finding or the `## Verdict` section — the

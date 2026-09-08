@@ -109,8 +109,8 @@ ${table}
   // citation parser drifts back to only accepting the legacy `## Findings`
   // header, the FAIL fixtures below yield zero citations and the scoped-reopen
   // tests fail. Content beyond the frontmatter and Review Findings section is
-  // irrelevant to the gate. FAIL findings are wrapped in a `### F001` FAIL
-  // finding (Status: FAIL + Milestone citation) because the citation parser is
+  // irrelevant to the gate. FAIL findings are wrapped in a FAIL-status finding
+  // (Status: FAIL + Milestone citation) because the citation parser is
   // FAIL-context-only (swarm/99): prose tokens outside FAIL-status findings are
   // provenance, not citations, and would yield zero citations → MALFORMED.
   function reviewKD(verdict, findings = "") {
@@ -5034,7 +5034,7 @@ The failing surface is described without milestone tokens.
       }
     });
 
-    it("AC101: a FAIL review with M1/M2 tokens in excluded prose sections reopens ONLY the cited M3 (swarm/99 live anomaly)", async () => {
+    it("a FAIL review with M1/M2 tokens in excluded prose sections reopens ONLY the cited M3 (swarm/99 live anomaly)", async () => {
       const s = sid("ac101-prose-leak");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -5102,7 +5102,7 @@ No friction observed for M1 or M2.
       expect(rows.M2).toBe("checked-off");
     });
 
-    it("AC103: a FAIL finding citing M3 via an explicit Verdict citation line reopens M3", async () => {
+    it("a FAIL finding citing M3 via an explicit Verdict citation line reopens M3", async () => {
       const s = sid("ac103-verdict-line");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -5147,7 +5147,7 @@ The deficient milestone is named in the Verdict section above.
       expect(rows.M2).toBe("checked-off");
     });
 
-    it("AC104: a FAIL verdict whose only M-tokens sit in excluded prose sections is MALFORMED — no regress, no reopen", async () => {
+    it("a FAIL verdict whose only M-tokens sit in excluded prose sections is MALFORMED — no regress, no reopen", async () => {
       const s = sid("ac104-prose-malformed");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -5208,7 +5208,7 @@ The failing surface is described without milestone tokens.
       }
     });
 
-    it("AC105: a FAIL audit finding citing M3 reopens M3; a PASS audit finding referencing impl-M2 paths does not leak M2", async () => {
+    it("a FAIL audit finding citing M3 reopens M3; a PASS audit finding referencing impl-M2 paths does not leak M2", async () => {
       const s = sid("ac105-audit-scope");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -5263,7 +5263,7 @@ The defect details live in the Audit section below.
       expect(rows.M2).toBe("checked-off");
     });
 
-    it("AC106: extractMilestoneCitationsFromReviewKD returns zero tokens when the only M-tokens sit in excluded sections (fail-closed)", () => {
+    it("extractMilestoneCitationsFromReviewKD returns zero tokens when the only M-tokens sit in excluded sections (fail-closed)", () => {
       const content = `---
 title: "REVIEW: test"
 verdict: FAIL
