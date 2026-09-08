@@ -1703,6 +1703,42 @@ Amendment body.
     }
   });
 
+  it("VERIFY phase reads are restricted to milestone registry KDs (FAIL-verdict regression visibility)", async () => {
+    const s = sid("verify-read-1");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+    // milestones- KDs are readable — after a FAIL verdict regresses
+    // VERIFY→SWARM, the Overseer reads the registry to see which rows the
+    // findings reopened before re-dispatching the same artisans.
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c2" },
+        { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
+      )
+    ).resolves.toBeUndefined();
+
+    // Plan KDs (relative and absolute), other KDs, and non-KD files stay
+    // blocked during VERIFY — only milestone registry reads are permitted.
+    for (const bad of [
+      `knowledge/plan-feature-${s}.md`,
+      `/home/user/project/knowledge/plan-feature-${s}.md`,
+      `knowledge/impl-feature-${s}.md`,
+      `knowledge/spec-feature-${s}.md`,
+      `knowledge/review-feature-${s}.md`,
+      "src/main.js",
+      "opencode.json",
+    ]) {
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "c4" },
+          { args: { filePath: bad } }
+        )
+      ).rejects.toThrow("Read from knowledge/milestones-*.md");
+    }
+  });
+
   it("DECOMPOSE reads a milestone registry KD and advances to SWARM when both plan- and milestones- KDs exist", async () => {
     const s = sid("decomp-read-advance");
     await initOverseer(s);
@@ -2188,6 +2224,17 @@ Amendment body.
     await hooks["tool.definition"]({ toolID: "read" }, readOut);
     expect(readOut.description).not.toContain("⛔");
     expect(readOut.description).toContain("SWARM phase restriction: ONLY milestone registry KDs");
+
+    // VERIFY: read is allowlisted and carries the milestone-registry restriction
+    const s3 = sid("verify-def-1");
+    await initOverseer(s3);
+    hooks.sessionPhaseMap.set(s3, hooks.STATES.VERIFY);
+    hooks.sessionPhaseMap.set(`${s3}:sid`, s3);
+
+    const verifyReadOut = { description: "Test read", parameters: {} };
+    await hooks["tool.definition"]({ toolID: "read" }, verifyReadOut);
+    expect(verifyReadOut.description).not.toContain("⛔");
+    expect(verifyReadOut.description).toContain("VERIFY phase restriction: ONLY milestone registry KDs");
 
     // A tool still outside the SWARM allowlist keeps the blocking notice
     const editOut = { description: "Test edit", parameters: {} };

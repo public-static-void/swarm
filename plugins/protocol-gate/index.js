@@ -126,7 +126,7 @@ const TOOL_ALLOWLIST = {
   ALIGN: ["task", "todowrite", "glob", "memory_search"],
   DECOMPOSE: ["task", "todowrite", "glob", "read", "memory_search"],
   SWARM: ["task", "todowrite", "glob", "read", "memory_search"],
-  VERIFY: ["task", "todowrite", "glob", "memory_search"],
+  VERIFY: ["task", "todowrite", "glob", "read", "memory_search"],
   EXTRACT: ["task", "todowrite", "glob", "memory_search"],
   EVOLVE: ["task", "todowrite", "glob", "memory_search"],
   CLEANUP: ["task", "todowrite", "glob", "bash", "memory_search"],
@@ -151,6 +151,7 @@ const TOOL_RESTRICTIONS = {
   INTENT: { read: "ONLY intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", bash: "ONLY mkdir for knowledge directory creation" },
   DECOMPOSE: { read: "ONLY milestone registry KDs" },
   SWARM: { read: "ONLY milestone registry KDs" },
+  VERIFY: { read: "ONLY milestone registry KDs" },
   REPORT: { read: "ONLY knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
 };
 
@@ -2762,7 +2763,7 @@ export default {
         // delegation templates are JSON files auto-injected by delegation-gate
         // at dispatch, never read by the Overseer.
 
-        if (phase === STATES.SWARM || phase === STATES.DECOMPOSE) {
+        if (phase === STATES.SWARM || phase === STATES.DECOMPOSE || phase === STATES.VERIFY) {
           // SWARM phase: dispatcher visibility — the Overseer reads the
           // milestone registry to track milestone state and drive
           // per-milestone artisan dispatches. All other reads stay blocked.
@@ -2770,6 +2771,10 @@ export default {
           // Pathfinder just produced, before the disk-advance check catches
           // up to SWARM. Scoped to milestone KDs only — plan KDs and all
           // other files stay blocked.
+          // VERIFY phase: a FAIL verdict regresses VERIFY→SWARM and reopens
+          // cited milestone rows — the Overseer reads the registry to see
+          // which rows were reopened before re-dispatching the same artisans.
+          // Same milestone-KD-only scope as SWARM/DECOMPOSE.
           const isMilestonesKD = /^knowledge\/milestones-/i.test(relPath) || /\/knowledge\/milestones-/i.test(relPath);
           if (!isMilestonesKD) {
             debug(`read: BLOCKED phase=${phaseName} path=${path} (${phaseName} reads restricted to milestone registry KDs)`);
