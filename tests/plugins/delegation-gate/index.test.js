@@ -171,13 +171,15 @@ SESSION ID: (your session id)
 GENERATION: (the lifecycle generation number)
 SCOPE: (optional context)
 RESULT KD: knowledge/exploration-<name>-<session_id>.md (when subagent produces a KD)
-KD PATHS: upstream KD paths, comma-separated (optional)`;
+KD PATHS: upstream KD paths, comma-separated (optional)
+TASK ID: task id (optional — same-instance redispatch identifier)`;
       const output = { args: { prompt: "", description, subagent_type: "explorer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       // The hint's instructional lines must not leak into the rendered prompt.
       expect(output.args.prompt).not.toContain("upstream KD paths");
       expect(output.args.prompt).not.toContain("(optional context)");
       expect(output.args.prompt).not.toContain("(when subagent produces a KD)");
+      expect(output.args.prompt).not.toContain("same-instance redispatch");
       // The legitimate description fields are still extracted.
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
       expect(output.args.prompt).toContain("2026-08-27");
@@ -1275,7 +1277,7 @@ RESULT KD: knowledge/checkpoint-foo.md`;
     // angle-bracket placeholder — such a line, copied verbatim into a dispatch,
     // is exactly the leak source fixed. The RESULT KD example lines keep
     // <name>-<session_id> path components but are never whole-value <...>.
-    const wholeValueAngleLine = /^(?:#{1,6}\s*)?(?:\*\*)?(?:AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*<[^>]+>$/;
+    const wholeValueAngleLine = /^(?:#{1,6}\s*)?(?:\*\*)?(?:AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|TASK[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*<[^>]+>$/;
 
     it("emits no extractable whole-value angle-bracket line from dispatcherFormatHint", async () => {
       const output = { description: "Delegate work to another agent." };
@@ -1412,6 +1414,117 @@ RESULT KD: knowledge/impl-foo.md`;
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: null, callID: "c1" }, output);
       expect(output.args.prompt).not.toContain("{session_id}");
+    });
+  });
+
+  describe("TASK ID Field", () => {
+    it("extracts TASK ID from the prompt and passes it through to output.args.task_id", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_abc
+GENERATION: 1
+MILESTONE ID: M1
+TASK ID: ses_abc_task_42
+SCOPE: Execute milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output);
+      expect(output.args.task_id).toBe("ses_abc_task_42");
+      expect(output.args.prompt).toContain("TASK ID: ses_abc_task_42");
+    });
+
+    it("recognizes the underscore variant task_id", async () => {
+      const prompt = `AGENT: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+task_id: ses_underscore
+SCOPE: Explore
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.task_id).toBe("ses_underscore");
+      expect(output.args.prompt).toContain("TASK ID: ses_underscore");
+    });
+
+    it("extracts TASK ID from the description as a fallback and lets the prompt override it", async () => {
+      const descriptionOnly = {
+        args: {
+          prompt: `AGENT: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SCOPE: Explore
+RESULT KD: knowledge/exploration-foo.md`,
+          description: "TASK ID: ses_from_description"
+        }
+      };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, descriptionOnly);
+      expect(descriptionOnly.args.task_id).toBe("ses_from_description");
+
+      const both = {
+        args: {
+          prompt: `AGENT: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+TASK ID: ses_from_prompt
+SCOPE: Explore
+RESULT KD: knowledge/exploration-foo.md`,
+          description: "TASK ID: ses_from_description"
+        }
+      };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c2" }, both);
+      expect(both.args.task_id).toBe("ses_from_prompt");
+    });
+
+    it("renders no TASK ID line and no task_id passthrough when the field is omitted", async () => {
+      const prompt = `AGENT: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SCOPE: Explore
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
+      expect(output.args.task_id).toBeUndefined();
+      expect(output.args.prompt).not.toMatch(/^TASK ID:/m);
+    });
+
+    it("injects the TASK ID hint into the swarm tool doc only", async () => {
+      const swarmPrompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+MILESTONE ID: M1
+SCOPE: Execute milestone M1
+RESULT KD: knowledge/impl-M1-foo.md`;
+
+      const swarmOutput = { args: { prompt: swarmPrompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, swarmOutput);
+      expect(swarmOutput.args.description).toContain("TASK ID: (optional — same-instance redispatch identifier)");
+
+      const ckptPrompt = `AGENT: committer
+MODE: checkpoint
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SCOPE: Commit X
+RESULT KD: knowledge/checkpoint-foo.md`;
+
+      const ckptOutput = { args: { prompt: ckptPrompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c2" }, ckptOutput);
+      expect(ckptOutput.args.description).not.toContain("TASK ID:");
+    });
+
+    it("annotates the task tool definition with the TASK ID convention", async () => {
+      const output = { description: "Delegate work to another agent." };
+      await hooks["tool.definition"]({ toolID: "task" }, output);
+      expect(output.description).toContain("TASK ID: task id (optional — same-instance redispatch identifier)");
     });
   });
 
