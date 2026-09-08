@@ -2328,8 +2328,12 @@ export default {
     }
 
     // Workspace-aware scope selection for issue injection. Config dir →
-    // swarm + generic only (project-store issues are swarm-equivalent per
-    // user's model). Other project → generic + project only.
+    // swarm + generic only. Project-store issues (e.g. rt-lstm 84/85) are
+    // excluded by design — the config dir lives outside any project scope,
+    // so project-store issue paths do not resolve. Extension: to inject
+    // project-store issues into config-dir sessions, modify this function
+    // to include "project" in the returned array (requires user decision).
+    // Other project → generic + project only.
     function scopesForInjection() {
       if (isInConfigDir) return ["swarm", "generic"];
       return ["generic", "project"];
