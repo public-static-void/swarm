@@ -931,6 +931,29 @@ function readMilestoneRegistry(sessionID, sessionPhaseMap) {
   return { rows, ...located };
 }
 
+// Resolves the milestone row to check off for an impl KD against the parent
+// session's registry rows (the SSOT of milestone IDs). The legacy extractor
+// truncates hyphenated IDs (`impl-M-core-...` → `M`), so the row whose ID
+// prefix-matches the impl KD's name portion is the authoritative ID. A row
+// whose ID exactly matches the legacy-extracted token is preferred over a
+// prefix match — `impl-M-core-...` prefix-matches both `M` and `M-core`, and
+// the exact token match wins (no more permissive than the legacy first-token).
+// Returns the resolved canonical row ID, or the legacy-extracted milestoneId
+// when no row matches (the caller's updateMilestoneRegistry then reports
+// milestone-not-found).
+function resolveMilestoneRowId(registry, relPath, milestoneId) {
+  if (!registry || !Array.isArray(registry.rows) || registry.rows.length === 0) {
+    return milestoneId;
+  }
+  const exact = registry.rows.find(r => r.id.toLowerCase() === milestoneId.toLowerCase());
+  if (exact) return exact.id;
+  const base = relPath.replace(/\\/g, "/").split("/").pop();
+  const namePortion = base.replace(/\.md$/, "").replace(/^impl-/i, "");
+  const nameLower = namePortion.toLowerCase();
+  const prefix = registry.rows.find(r => nameLower.startsWith(`${r.id.toLowerCase()}-`));
+  return prefix ? prefix.id : milestoneId;
+}
+
 // Disk-evidence reconciliation (Issue 64): before the all-checked-off
 // verdict is computed, every non-checked-off row (`in-progress`, `assigned`,
 // `pending`, `failed`) whose milestone-scoped impl KD exists on disk under the
@@ -1128,12 +1151,27 @@ function markStuckMilestonesFailed(sessionID, sessionPhaseMap, trigger, mileston
 // token after the `impl-` prefix is the milestone ID. Returns null for non-impl
 // filenames (other KD types) and invalid input — a legacy unscoped impl KD
 // yields its first name token, which never matches a registry row.
-function extractMilestoneIdFromImplKD(filename) {
+//
+// When a known milestone ID is provided, the name portion after `impl-` must
+// start with `<knownMilestoneId>-` (case-insensitive) — this is what lets
+// hyphenated milestone IDs (e.g. `M-core`) survive extraction, since the legacy
+// first-token split truncates them to `M`. On a prefix match the filename's own
+// token is returned (filename casing preserved); on mismatch null is returned.
+// Without a known ID the legacy first-token behavior is unchanged.
+function extractMilestoneIdFromImplKD(filename, knownMilestoneId) {
   if (typeof filename !== "string") return null;
   const base = filename.replace(/\\/g, "/").split("/").pop();
   if (!/^impl-/i.test(base)) return null;
   const name = base.replace(/\.md$/, "");
-  const token = name.replace(/^impl-/i, "").split("-")[0];
+  const namePortion = name.replace(/^impl-/i, "");
+  if (typeof knownMilestoneId === "string" && knownMilestoneId.length > 0) {
+    const prefix = `${knownMilestoneId}-`;
+    if (namePortion.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return namePortion.slice(0, knownMilestoneId.length) || null;
+    }
+    return null;
+  }
+  const token = namePortion.split("-")[0];
   return token || null;
 }
 
@@ -1260,41 +1298,48 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 
 // Parses milestone tokens from a review KD — the provenance for scoped reopen:
 // `impl-<milestone-id>-` path tokens and bare `M\d+` milestone ids.
-// Tokens are deduplicated and case-preserved. The scan covers the WHOLE review
-// KD (Issue 69): FAIL citations live wherever the Inspector writes them —
-// Findings, Verdict commentary, Audit — so anchoring on the Findings section
-// alone left Verdict/Audit-cited rows unreopened mid-cycle. `### Traceability
-// Matrix` subsections stay excluded everywhere: a bare milestone token in a
-// PASS-row matrix cell is provenance, not a FAIL citation, and scanning it
-// would reopen that row on a FAIL verdict. The `## References` section is
-// excluded for the same reason (Issue 78): it lists every impl KD the review
-// touched, so its `impl-<milestone-id>-` path tokens would reopen ALL
-// milestone rows on any FAIL verdict instead of only the cited ones.
-// `### F\d+` finding subsections are scoped to `Status: FAIL` only: PASS
-// findings' `File`-field path tokens carry sibling milestone ids as
-// provenance, not FAIL citations — scanning them leaked tokens into the reopen
-// set and reopened unrelated milestones. `## Verdict` and `## Audit` / `### A\d+`
-// sections remain fully scanned (they are always FAIL-context). Splitting on
-// `## `/`### ` headings keeps exclusions local to their sections; real FAIL
-// findings (`### F\d+` with Status: FAIL) are unaffected, and a KD with zero
-// tokens anywhere still yields zero citations (fail-closed for the
+// Tokens are deduplicated and case-preserved. The scan is FAIL-context-only
+// (swarm/99): FAIL citations live in FAIL-status findings and explicit Verdict
+// citation lines, so prose tokens elsewhere are provenance, not citations.
+// Scanned locations: (a) `### F\d+` finding subsections whose `Status`
+// is `FAIL`; (b) `### A\d+` audit-finding subsections whose `Status` is `FAIL`;
+// (c) explicit `Milestone citation:` lines within the `## Verdict` section.
+// Never scanned: the KD preamble, `## Verdict Rules`, `## Registry/Plan
+// Consistency Note`, `## Test Results`, `## Pass Rate`, `## Process Friction`,
+// `## Audit` prose, `## References`, `### Traceability Matrix`, and any other
+// section that is not a FAIL-status finding or the `## Verdict` section — the
+// review template's own Verdict Rules prose carries literal example tokens
+// (F7), and scanning prose leaked sibling milestones into the reopen set (the
+// live swarm/99 anomaly: a FAIL citing only M3 reopened M1/M2). PASS findings'
+// `File`-field path tokens stay excluded (swarm/96 behavior retained). A KD
+// with zero FAIL-context tokens yields zero citations (fail-closed for the
 // malformed-FAIL rule).
 function extractMilestoneCitationsFromReviewKD(content) {
   if (typeof content !== "string") return [];
   const tokens = new Set();
-  for (const sub of content.split(/^#{2,3} /m)) {
-    if (/^References/i.test(sub)) continue;
-    if (/^Traceability Matrix/i.test(sub)) continue;
-    // Only extract tokens from ### F\d+ findings that carry Status: FAIL.
-    // PASS findings' File-field path tokens are provenance, not FAIL citations,
-    // and scanning them leaks sibling milestone tokens into the reopen set.
-    // `[^:\n]*` tolerates markdown bold markers (`- **Status**: FAIL`).
-    if (/^F\d+/i.test(sub) && !/Status[^:\n]*:\s*FAIL/i.test(sub)) continue;
+  const collect = (text) => {
     let m;
     const implPattern = /impl-([A-Za-z0-9_-]+)-/gi;
-    while ((m = implPattern.exec(sub)) !== null) tokens.add(m[1]);
+    while ((m = implPattern.exec(text)) !== null) tokens.add(m[1]);
     const idPattern = /\bM\d+\b/g;
-    while ((m = idPattern.exec(sub)) !== null) tokens.add(m[0]);
+    while ((m = idPattern.exec(text)) !== null) tokens.add(m[0]);
+  };
+  for (const sub of content.split(/^#{2,3} /m)) {
+    const heading = sub.split("\n")[0];
+    // `[^:\n]*` tolerates markdown bold markers (`- **Status**: FAIL`).
+    const isFailFinding = /^F\d+/i.test(heading) && /Status[^:\n]*:\s*FAIL/i.test(sub);
+    const isFailAudit = /^A\d+/i.test(heading) && /Status[^:\n]*:\s*FAIL/i.test(sub);
+    const isVerdict = /^Verdict\s*$/i.test(heading);
+    if (!isFailFinding && !isFailAudit && !isVerdict) continue;
+    if (isVerdict) {
+      // Verdict prose is not scanned — only explicit `Milestone citation:` lines.
+      // `[^:\n]*` tolerates markdown bold markers (`- **Milestone citation**: M2`).
+      for (const line of sub.split("\n")) {
+        if (/Milestone citation[^:\n]*:/i.test(line)) collect(line);
+      }
+      continue;
+    }
+    collect(sub);
   }
   return [...tokens];
 }
@@ -2255,22 +2300,31 @@ export default {
           if (!sessionPhaseMap.has(`${candidate}:gen`)) {
             sessionPhaseMap.set(`${candidate}:gen`, generation);
           }
-          const result = updateMilestoneRegistry(candidate, sessionPhaseMap, milestoneId, ["checked-off"]);
-          debug(`auto check-off: impl KD for milestone ${milestoneId} (parent ${candidate}) → ${JSON.stringify(result)}`);
+          // Resolve the milestone against the parent-session registry rows —
+          // the SSOT of milestone IDs. Hyphenated IDs (e.g. `M-core`) are
+          // truncated to their first token (`M`) by the legacy extractor, so
+          // the row whose ID prefix-matches the impl KD's name portion is the
+          // authoritative ID to check off. An exact row-ID match is preferred
+          // over a prefix match — `impl-M-core-...` prefix-matches both `M`
+          // and `M-core`, and the exact row wins.
+          const registry = readMilestoneRegistry(candidate, sessionPhaseMap);
+          const resolvedId = resolveMilestoneRowId(registry, relPath, milestoneId);
+          const result = updateMilestoneRegistry(candidate, sessionPhaseMap, resolvedId, ["checked-off"]);
+          debug(`auto check-off: impl KD for milestone ${resolvedId} (parent ${candidate}) → ${JSON.stringify(result)}`);
           // Only a SUCCESSFUL check-off resets the per-milestone
           // redispatch budget. A failed registry update keeps the counter so
           // retries still count toward the cap; a re-opened milestone
           // starts fresh because its budget was cleared at the earlier
           // check-off — the desired re-open semantics.
           if (result.ok) {
-            phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, milestoneId));
-            debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${milestoneId} (session ${candidate})`);
+            phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, resolvedId));
+            debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${resolvedId} (session ${candidate})`);
           } else {
             // Loud, non-blocking diagnostic: silent failures here left
             // registries stuck in SWARM (Issue 64). Visible without
             // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
             // (no-registry / milestone-not-found / invalid-transition / write-failed).
-            warn(`AUTO_CHECKOFF_FAILED: milestone ${milestoneId} (parent ${candidate}) — ${result.reason}`);
+            warn(`AUTO_CHECKOFF_FAILED: milestone ${resolvedId} (parent ${candidate}) — ${result.reason}`);
           }
           return;
         }

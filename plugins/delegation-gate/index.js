@@ -441,14 +441,27 @@ function containsPlaceholder(value) {
 }
 
 // Extracts the milestone token from a swarm result KD path per the
-// milestone-scoped impl naming contract — the first token after `impl-`.
+// milestone-scoped impl naming contract `impl-<milestone-id>-<name>-<session>[-gen{N}].md`.
+// When a known milestone ID is provided, the name portion after `impl-` must
+// start with `<milestoneId>-` (case-insensitive) — this is what lets hyphenated
+// milestone IDs (e.g. `M-core`) survive extraction, since the legacy first-token
+// split truncates them to `M`. On a prefix match the filename's own token is
+// returned (filename casing preserved); on mismatch the legacy first-token is
+// used. Without a known ID the legacy first-token behavior is unchanged.
 // Returns null when the path is not an impl KD at all.
-function extractMilestoneTokenFromResultKd(resultKd) {
+function extractMilestoneTokenFromResultKd(resultKd, milestoneId) {
   if (typeof resultKd !== "string") return null;
   const base = resultKd.replace(/\\/g, "/").split("/").pop();
   if (!/^impl-/i.test(base)) return null;
   const name = base.replace(/\.md$/, "");
-  return name.replace(/^impl-/i, "").split("-")[0] || null;
+  const namePortion = name.replace(/^impl-/i, "");
+  if (typeof milestoneId === "string" && milestoneId.length > 0) {
+    const prefix = `${milestoneId}-`;
+    if (namePortion.toLowerCase().startsWith(prefix.toLowerCase())) {
+      return namePortion.slice(0, milestoneId.length) || null;
+    }
+  }
+  return namePortion.split("-")[0] || null;
 }
 
 function renderTemplate(template, fields) {
@@ -735,7 +748,7 @@ export default {
         // case-insensitive so a lowercase milestone token satisfies the
         // uppercase milestone ID.
         if (fields.result_kd) {
-          const resultToken = extractMilestoneTokenFromResultKd(fields.result_kd);
+          const resultToken = extractMilestoneTokenFromResultKd(fields.result_kd, milestoneId);
           if (!resultToken || resultToken.toLowerCase() !== milestoneId.toLowerCase()) {
             debug(`VALIDATION FAILED: swarm result KD '${fields.result_kd}' does not carry milestone '${milestoneId}'`);
             throw new DelegationGateError(ERRORS.RESULT_KD_MILESTONE_MISMATCH.code, ERRORS.RESULT_KD_MILESTONE_MISMATCH.message, ERRORS.RESULT_KD_MILESTONE_MISMATCH.guidance);

@@ -109,8 +109,14 @@ ${table}
   // citation parser drifts back to only accepting the legacy `## Findings`
   // header, the FAIL fixtures below yield zero citations and the scoped-reopen
   // tests fail. Content beyond the frontmatter and Review Findings section is
-  // irrelevant to the gate.
+  // irrelevant to the gate. FAIL findings are wrapped in a FAIL-status finding
+  // (Status: FAIL + Milestone citation) because the citation parser is
+  // FAIL-context-only (swarm/99): prose tokens outside FAIL-status findings are
+  // provenance, not citations, and would yield zero citations → MALFORMED.
   function reviewKD(verdict, findings = "") {
+    const body = verdict === "FAIL" && findings
+      ? `### F001: defect\n\n- **Milestone citation**: ${findings}\n- **Status**: FAIL\n`
+      : findings;
     return `---
 title: "REVIEW: test"
 version: 1.0.0
@@ -130,7 +136,7 @@ ${verdict}
 
 ## Review Findings
 
-${findings}
+${body}
 `;
   }
 
@@ -1854,6 +1860,20 @@ Amendment body.
       expect(hooks.extractMilestoneIdFromPrompt(null)).toBeNull();
     });
 
+    it("extracts a hyphenated milestone ID when the known ID prefix-matches the impl KD name portion", async () => {
+      // Known ID `M-core` prefix-matches `impl-M-core-...` → returns the filename token
+      expect(hooks.extractMilestoneIdFromImplKD("impl-M-core-feature-ses_x-gen0.md", "M-core")).toBe("M-core");
+      // Case-insensitive known ID still matches and returns the filename's own casing
+      expect(hooks.extractMilestoneIdFromImplKD("impl-M-core-feature-ses_x-gen0.md", "m-core")).toBe("M-core");
+    });
+
+    it("returns null when the known milestone ID does not prefix-match the impl KD name portion", async () => {
+      // Known ID `M5` does not prefix-match `impl-M-core-...` → null
+      expect(hooks.extractMilestoneIdFromImplKD("impl-M-core-feature-ses_x-gen0.md", "M5")).toBeNull();
+      // A known ID that is a strict prefix of the name portion but not followed by `-` does not match
+      expect(hooks.extractMilestoneIdFromImplKD("impl-Mcore-feature-ses_x-gen0.md", "M")).toBeNull();
+    });
+
     it("findMilestoneImplKD locates the milestone-scoped impl KD on disk (filename-generation evidence, session match mandatory)", async () => {
       const s = sid("m4-find-1");
       await initOverseer(s);
@@ -1927,6 +1947,27 @@ Amendment body.
 
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
       expect(content).toContain("  M4: checked-off");
+    });
+
+    it("checks off a hyphenated milestone row when the impl KD carries the hyphenated ID", async () => {
+      // A registry row `M-core` (in-progress) transitions to checked-off
+      // when `impl-M-core-feature-<session>-gen0.md` lands — the legacy first-token
+      // extractor would yield `M`, so the row resolution must use the registry SSOT.
+      const overseer = sid("mcore-auto-1");
+      await initOverseer(overseer);
+      hooks.sessionPhaseMap.set(overseer, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${overseer}:sid`, overseer);
+      createRegistry(overseer, [["M-core", "in-progress"]]);
+
+      const artisan = sid("mcore-auto-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M-core-feature-${overseer}-gen0.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+
+      const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
+      expect(content).toContain("  M-core: checked-off");
     });
 
     it("does not check off when the impl KD uses the legacy unscoped naming", async () => {
@@ -4475,7 +4516,7 @@ audited
         expect(citations).toEqual(expect.arrayContaining(["M2", "M3"]));
       });
 
-      it("the citation parser keeps accepting the legacy `## Findings` header (backward compat)", async () => {
+      it("the citation parser does not scan legacy `## Findings` prose (FAIL-context-only, swarm/99)", async () => {
         const s = sid("f001-parser-legacy");
         await initOverseer(s);
         const content = `## Findings
@@ -4483,7 +4524,9 @@ audited
 impl-M1-short-term-store is broken and M2 too
 `;
         const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
-        expect(citations).toEqual(expect.arrayContaining(["M1", "M2"]));
+        // Prose outside FAIL-status findings is provenance, not a FAIL citation —
+        // fail-closed (zero tokens) so a legacy prose-only review is MALFORMED.
+        expect(citations).toEqual([]);
       });
 
       it("a template-conformant merged FAIL review (Review Findings + Audit sections) regresses and reopens exactly the cited rows", async () => {
@@ -4545,7 +4588,7 @@ audited
         expect(rows.M3).toBe("checked-off");
       });
 
-      it("gate-level backward compat: a legacy `## Findings` FAIL review still regresses and reopens cited rows", async () => {
+      it("gate-level fail-closed: a legacy `## Findings` FAIL review with prose-only tokens is MALFORMED — no regress, no reopen (swarm/99)", async () => {
         const s = sid("f001-gate-legacy");
         await initOverseer(s);
         hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -4579,8 +4622,11 @@ impl-M1-short-term-store has a defect
           { tool: "glob", sessionID: s, callID: "c1" },
           { args: { pattern: "knowledge/*.md" } }
         );
-        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
-        expect(regressedRegistryRows(s).M1).toBe("in-progress");
+        // Prose outside FAIL-status findings is provenance, not a FAIL citation —
+        // zero citations → MALFORMED_FAIL → the gate stays in VERIFY and the
+        // checked-off row is NOT reopened.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(regressedRegistryRows(s).M1).toBe("checked-off");
       });
 
       it("the citation parser ignores milestone tokens inside the Traceability Matrix (PASS-row provenance is not a FAIL citation)", async () => {
@@ -4751,7 +4797,7 @@ FAIL
       });
     });
 
-    it("the citation scan covers the whole review KD — a Verdict-only citation yields the token, matrix tokens stay excluded", () => {
+    it("the citation scan covers the whole review KD — a Verdict citation line yields the token, matrix tokens stay excluded", () => {
       const s = sid("f001-scan-whole-kd");
       const content = `---
 title: "REVIEW: test"
@@ -4762,7 +4808,9 @@ verdict: FAIL
 
 ## Verdict
 
-FAIL — milestone M2 regressed after the fix cycle
+FAIL
+
+- **Milestone citation**: M2
 
 ## Review Findings
 
@@ -4783,6 +4831,8 @@ The deficient milestone is named in the Verdict section above.
 the audit re-run flagged milestone M2
 `;
       const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+      // Verdict prose and Audit prose are not scanned (FAIL-context-only) — the
+      // explicit Verdict citation line yields M2, the matrix stays excluded.
       expect(citations).toEqual(["M2"]);
     });
 
@@ -4856,7 +4906,9 @@ verdict: FAIL
 
 ## Verdict
 
-FAIL — milestone M2 shipped with a defect
+FAIL
+
+- **Milestone citation**: M2
 
 ## Review Findings
 
@@ -4875,7 +4927,7 @@ The deficient milestone is named in the Verdict section above.
       expect(rows.M1).toBe("checked-off");
     });
 
-    it("a FAIL review citing M2 only in its Audit section reopens M2", async () => {
+    it("a FAIL review citing M2 only in a FAIL audit finding reopens M2", async () => {
       const s = sid("f001-audit-cite");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -4908,9 +4960,10 @@ The defect details live in the Audit section below.
 
 ## Audit
 
-### Scope
+### A001: audit finding
 
-impl-M2-resume-hint regressed during the audit re-run
+- **Milestone citation**: M2
+- **Status**: FAIL
 `
       );
       await hooks["tool.execute.before"](
@@ -4979,6 +5032,290 @@ The failing surface is described without milestone tokens.
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
+    });
+
+    it("a FAIL review with M1/M2 tokens in excluded prose sections reopens ONLY the cited M3 (swarm/99 live anomaly)", async () => {
+      const s = sid("ac101-prose-leak");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+      // The review template's own prose sections carry literal example tokens
+      // (Verdict Rules F7) and status prose — those are provenance, not FAIL
+      // citations. The live swarm/99 anomaly: a FAIL citing only M3 reopened
+      // M1 and M2 because prose tokens were scanned.
+      createKD(
+        `review-fail-${s}.md`,
+        `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Verdict Rules
+
+The template's own rules prose carries literal example tokens: impl-M1-short-term-store and M2 must never be treated as citations.
+
+## Registry/Plan Consistency Note
+
+M1 and M2 rows were consistent at review time.
+
+## Test Results
+
+impl-M1-short-term-store tests: 12 passed. M2 tests: 3 passed.
+
+## Pass Rate
+
+M1: 100%. M2: 100%.
+
+## Process Friction
+
+No friction observed for M1 or M2.
+
+## Review Findings
+
+### F001: defect
+
+- **Milestone citation**: M3
+- **Status**: FAIL
+`
+      );
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const rows = regressedRegistryRows(s);
+      expect(rows.M3).toBe("in-progress");
+      expect(rows.M1).toBe("checked-off");
+      expect(rows.M2).toBe("checked-off");
+    });
+
+    it("a FAIL finding citing M3 via an explicit Verdict citation line reopens M3", async () => {
+      const s = sid("ac103-verdict-line");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+      createKD(
+        `review-fail-${s}.md`,
+        `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+- **Milestone citation**: M3
+
+## Review Findings
+
+### F001: defect
+
+The deficient milestone is named in the Verdict section above.
+`
+      );
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const rows = regressedRegistryRows(s);
+      expect(rows.M3).toBe("in-progress");
+      expect(rows.M1).toBe("checked-off");
+      expect(rows.M2).toBe("checked-off");
+    });
+
+    it("a FAIL verdict whose only M-tokens sit in excluded prose sections is MALFORMED — no regress, no reopen", async () => {
+      const s = sid("ac104-prose-malformed");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+      createKD(
+        `review-fail-${s}.md`,
+        `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Verdict Rules
+
+Literal example tokens: impl-M1-short-term-store and M2.
+
+## Test Results
+
+impl-M1-short-term-store tests: 12 passed. M2 tests: 3 passed.
+
+## Review Findings
+
+### F001: defect
+
+The failing surface is described without milestone tokens.
+`
+      );
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Fail closed: blocked in VERIFY, zero regression, zero reopen.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
+        const rows = regressedRegistryRows(s);
+        expect(rows.M1).toBe("checked-off");
+        expect(rows.M2).toBe("checked-off");
+        expect(rows.M3).toBe("checked-off");
+        expect(readFileSync(logPath, "utf8")).toContain("MALFORMED_FAIL");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("a FAIL audit finding citing M3 reopens M3; a PASS audit finding referencing impl-M2 paths does not leak M2", async () => {
+      const s = sid("ac105-audit-scope");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"], ["M3", "checked-off"]]);
+      createKD(
+        `review-fail-${s}.md`,
+        `---
+title: "REVIEW: test"
+version: 1.0.0
+status: draft
+type: review
+session_id: "ses_test"
+author: Inspector
+superseded_by: null
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Review Findings
+
+### F001: defect
+
+The defect details live in the Audit section below.
+
+## Audit
+
+### A001: audit finding
+
+- **Milestone citation**: M3
+- **Status**: FAIL
+
+### A002: audit note
+
+- **File**: impl-M2-resume-hint
+- **Status**: PASS
+`
+      );
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const rows = regressedRegistryRows(s);
+      expect(rows.M3).toBe("in-progress");
+      expect(rows.M1).toBe("checked-off");
+      expect(rows.M2).toBe("checked-off");
+    });
+
+    it("extractMilestoneCitationsFromReviewKD returns zero tokens when the only M-tokens sit in excluded sections (fail-closed)", () => {
+      const content = `---
+title: "REVIEW: test"
+verdict: FAIL
+---
+
+# REVIEW: test
+
+## Verdict
+
+FAIL
+
+## Verdict Rules
+
+Literal example tokens: impl-M1-short-term-store and M2.
+
+## Registry/Plan Consistency Note
+
+M1 and M2 rows were consistent.
+
+## Test Results
+
+impl-M1-short-term-store tests: 12 passed. M2 tests: 3 passed.
+
+## Pass Rate
+
+M1: 100%. M2: 100%.
+
+## Process Friction
+
+No friction for M1 or M2.
+
+## Audit
+
+### Scope
+
+impl-M2-resume-hint regressed during the audit re-run.
+
+## References
+
+- \`knowledge/impl-M1-short-term-store-ses_test.md\`
+- \`knowledge/impl-M2-resume-hint-ses_test.md\`
+
+## Review Findings
+
+### Traceability Matrix
+
+| Req ID | Plan Step | Artifact                 | Test/Check | Status |
+| ------ | --------- | ------------------------ | ---------- | ------ |
+| R001   | P001      | impl-M1-short-term-store | test       | PASS   |
+`;
+      const citations = hooks.extractMilestoneCitationsFromReviewKD(content);
+      expect(citations).toEqual([]);
     });
   });
 
