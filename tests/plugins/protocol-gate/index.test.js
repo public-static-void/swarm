@@ -2068,6 +2068,35 @@ Amendment body.
       expect(output3.system).toHaveLength(2); // appended, existing entries untouched
     });
 
+    it("systemTransform prefers input.sessionID over lastSeenSession when a subagent tool call overwrites it", async () => {
+      // Regression for the session-ID injection race: a subagent tool call
+      // between the Overseer's chat.params and its systemTransform overwrites
+      // lastSeenSession. systemTransform must read input.sessionID directly so
+      // the Overseer still receives its own session ID in INTENT phase.
+      const overseer = sid("m4-race-ov");
+      const subagent = sid("m4-race-sub");
+      await initOverseer(overseer);
+      hooks.sessionPhaseMap.set(overseer, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${overseer}:sid`, overseer);
+      hooks.sessionPhaseMap.set(`${overseer}:gen`, 1);
+
+      // A subagent tool call fires between the Overseer's chat.params and its
+      // systemTransform, clobbering lastSeenSession with the subagent's ID.
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: subagent, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M1-feature-${subagent}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+      expect(hooks.lastSeenSession).toBe(subagent);
+
+      // The Overseer's systemTransform still injects its own session ID.
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: overseer }, output);
+      const system = output.system.join("\n");
+      expect(system).toContain(`Your session ID is: ${overseer}`);
+      expect(system).toContain(`knowledge/intent-{name}-${overseer}-gen1.md`);
+      expect(system).not.toContain(subagent);
+    });
+
     it("checks off a milestone after restart — parent session and generation derived from the impl KD filename + on-disk state", async () => {
       // Simulate a restart: the fresh plugin instance has an EMPTY
       // overseerSessions set. Only the persisted .state file and the registry
