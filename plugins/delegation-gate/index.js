@@ -148,7 +148,7 @@ function loadTemplates(config) {
   // disk shape (the older fallback was also missing GENERATION entirely).
   const fallbackHeader = (mode) => {
     const intentKdLine = mode === "cleanup" ? "" : "INTENT KD: {intent_kd}\n";
-    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n\n---\n\n`;
+    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nTASK ID: {task_id}\n\n---\n\n`;
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
@@ -191,7 +191,7 @@ function extractFromText(text, fields, override = false) {
     // underscore/lowercase variants (intent_kd, session_date). The alternation
     // lists every recognized field; the key is normalized (lowercase,
     // spaces/dots → underscores) so SESSION ID → session_id.
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|TASK[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       let key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       const assigned = override || !fields[key];
@@ -386,7 +386,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim().replace(/\\/g, "/");
-    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|TASK[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     // Drive-letter paths are normalized to forward slashes above (C:\Windows →
@@ -483,6 +483,11 @@ function renderTemplate(template, fields) {
     result = result.replace(/^KD PATHS:.*$/m, "");
     result = result.replace(/Read [^.]*KD PATHS[^.]*\./g, "");
   }
+  // TASK ID is optional — when task_id is falsy, drop the `TASK ID:` header
+  // line so dispatches without a redispatch identifier render no empty header.
+  if (!fields.task_id) {
+    result = result.replace(/^TASK ID:.*$/m, "");
+  }
   return result;
 }
 
@@ -516,6 +521,7 @@ GENERATION: the lifecycle generation number
 SCOPE: optional context
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
+TASK ID: task id (optional — same-instance redispatch identifier)
 `;
 }
 
@@ -546,11 +552,15 @@ function injectToolDocs(output, agentName, mode, generation) {
   // protocol-gate registry transition keys on. Only injected for swarm
   // so other modes don't see a field they must not include.
   const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: (exactly one, required for swarm)\n" : "";
+  // TASK ID resumes the same subagent session (task tool task_id). Swarm-only
+  // like MILESTONE ID — the same-instance redispatch preference is exercised
+  // on reopened milestone rows, so other modes don't see the field.
+  const taskIdLine = displayMode === "swarm" ? "TASK ID: (optional — same-instance redispatch identifier)\n" : "";
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
 MODE: ${displayMode}
-${milestoneLine}INTENT KD: knowledge/intent-(name).md
+${milestoneLine}${taskIdLine}INTENT KD: knowledge/intent-(name).md
 SESSION DATE: ${today}
 SESSION ID: (your session id)
 GENERATION: (the lifecycle generation number)
@@ -614,6 +624,11 @@ export default {
       }
 
       const fields = extractFieldsFromPrompt(prompt, subagentType, description);
+
+      // TASK ID passthrough — the task tool's task_id resumes the same
+      // subagent session. Extracted from the prompt (or description fallback)
+      // and forwarded untouched; absent field means no passthrough.
+      if (fields.task_id) output.args.task_id = fields.task_id;
 
       // session_id from opencode hook input — fills {session_id} when prompt omits SESSION ID:
       if (!fields["session_id"] && sessionID) {

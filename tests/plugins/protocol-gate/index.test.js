@@ -1709,6 +1709,42 @@ Amendment body.
     }
   });
 
+  it("VERIFY phase reads are restricted to milestone registry KDs (FAIL-verdict regression visibility)", async () => {
+    const s = sid("verify-read-1");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+    // milestones- KDs are readable — after a FAIL verdict regresses
+    // VERIFY→SWARM, the Overseer reads the registry to see which rows the
+    // findings reopened before re-dispatching the same artisans.
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c2" },
+        { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
+      )
+    ).resolves.toBeUndefined();
+
+    // Plan KDs (relative and absolute), other KDs, and non-KD files stay
+    // blocked during VERIFY — only milestone registry reads are permitted.
+    for (const bad of [
+      `knowledge/plan-feature-${s}.md`,
+      `/home/user/project/knowledge/plan-feature-${s}.md`,
+      `knowledge/impl-feature-${s}.md`,
+      `knowledge/spec-feature-${s}.md`,
+      `knowledge/review-feature-${s}.md`,
+      "src/main.js",
+      "opencode.json",
+    ]) {
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "c4" },
+          { args: { filePath: bad } }
+        )
+      ).rejects.toThrow("Read from knowledge/milestones-*.md");
+    }
+  });
+
   it("DECOMPOSE reads a milestone registry KD and advances to SWARM when both plan- and milestones- KDs exist", async () => {
     const s = sid("decomp-read-advance");
     await initOverseer(s);
@@ -2073,6 +2109,35 @@ Amendment body.
       expect(output3.system).toHaveLength(2); // appended, existing entries untouched
     });
 
+    it("systemTransform prefers input.sessionID over lastSeenSession when a subagent tool call overwrites it", async () => {
+      // Regression for the session-ID injection race: a subagent tool call
+      // between the Overseer's chat.params and its systemTransform overwrites
+      // lastSeenSession. systemTransform must read input.sessionID directly so
+      // the Overseer still receives its own session ID in INTENT phase.
+      const overseer = sid("m4-race-ov");
+      const subagent = sid("m4-race-sub");
+      await initOverseer(overseer);
+      hooks.sessionPhaseMap.set(overseer, hooks.STATES.INTENT);
+      hooks.sessionPhaseMap.set(`${overseer}:sid`, overseer);
+      hooks.sessionPhaseMap.set(`${overseer}:gen`, 1);
+
+      // A subagent tool call fires between the Overseer's chat.params and its
+      // systemTransform, clobbering lastSeenSession with the subagent's ID.
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: subagent, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M1-feature-${subagent}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+      expect(hooks.lastSeenSession).toBe(subagent);
+
+      // The Overseer's systemTransform still injects its own session ID.
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: overseer }, output);
+      const system = output.system.join("\n");
+      expect(system).toContain(`Your session ID is: ${overseer}`);
+      expect(system).toContain(`knowledge/intent-{name}-${overseer}-gen1.md`);
+      expect(system).not.toContain(subagent);
+    });
+
     it("checks off a milestone after restart — parent session and generation derived from the impl KD filename + on-disk state", async () => {
       // Simulate a restart: the fresh plugin instance has an EMPTY
       // overseerSessions set. Only the persisted .state file and the registry
@@ -2229,6 +2294,17 @@ Amendment body.
     await hooks["tool.definition"]({ toolID: "read" }, readOut);
     expect(readOut.description).not.toContain("⛔");
     expect(readOut.description).toContain("SWARM phase restriction: ONLY milestone registry KDs");
+
+    // VERIFY: read is allowlisted and carries the milestone-registry restriction
+    const s3 = sid("verify-def-1");
+    await initOverseer(s3);
+    hooks.sessionPhaseMap.set(s3, hooks.STATES.VERIFY);
+    hooks.sessionPhaseMap.set(`${s3}:sid`, s3);
+
+    const verifyReadOut = { description: "Test read", parameters: {} };
+    await hooks["tool.definition"]({ toolID: "read" }, verifyReadOut);
+    expect(verifyReadOut.description).not.toContain("⛔");
+    expect(verifyReadOut.description).toContain("VERIFY phase restriction: ONLY milestone registry KDs");
 
     // A tool still outside the SWARM allowlist keeps the blocking notice
     const editOut = { description: "Test edit", parameters: {} };

@@ -132,6 +132,23 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 7. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
 8. **Branch management** — The Committer self-manages branching during PREFLIGHT: derives a feature branch name from INTENT KD context and detects the base branch from git history.
 
+### Redispatch Preference Rules
+
+When re-dispatching an agent for the same task, choose the target instance deliberately. The `TASK ID` delegation field (passed through to the task tool's `task_id`) resumes the same subagent session, preserving its in-flight context and partial work.
+
+**Prefer the same instance** (reuse the prior `TASK ID`) when the agent:
+- returned an empty result;
+- stopped mid-task before completing;
+- exhausted its token budget;
+- worked on a milestone that a VERIFY FAIL verdict reopened — reuse the same artisans who worked on the reopened milestones so they continue from their existing context.
+
+**Prefer a fresh instance** (omit `TASK ID` or use a new one) when the agent:
+- is looping or repeating the same action without progress;
+- is misbehaving or producing unreliable output;
+- has a prior session that is stale or evicted.
+
+Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, include the same `TASK ID` to continue the same agent's work.
+
 ## Context Marker
 
 Start every response with 🧠.

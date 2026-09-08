@@ -133,6 +133,23 @@ RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
 
 The delegation-gate plugin extracts these fields from the prompt text and renders the checkpoint dispatch from its template; it does not read structured fields from top-level `task()` arguments. `intent_kd` is not part of the checkpoint field set — the checkpoint template renders no INTENT KD reference, so omit it for committer-owned modes. `description` and `prompt` carry real values; placeholder text is rejected by the delegation-gate.
 
+### Same-Instance Redispatch
+
+When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt so the task tool resumes the same instance via its `task_id` parameter. Reusing the same `TASK ID` preserves the agent's in-flight context and partial work.
+
+**Reuse the same `TASK ID`** when the prior dispatch:
+- returned an empty result;
+- stopped mid-task before completing;
+- exhausted its token budget;
+- worked on a milestone that a VERIFY FAIL verdict reopened — continue with the same artisan who worked on the reopened milestone.
+
+**Start a fresh instance** (omit `TASK ID` or use a new one) when the prior dispatch:
+- is looping or repeating the same action without progress;
+- is misbehaving or producing unreliable output;
+- has a prior session that is stale or evicted.
+
+Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, reuse the same `TASK ID` to continue the same agent's work.
+
 ### Checkpoint Verification
 
 After dispatching the Committer for checkpoint commits, verify the checkpoint was persisted before proceeding:
