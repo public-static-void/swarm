@@ -1298,41 +1298,48 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 
 // Parses milestone tokens from a review KD — the provenance for scoped reopen:
 // `impl-<milestone-id>-` path tokens and bare `M\d+` milestone ids.
-// Tokens are deduplicated and case-preserved. The scan covers the WHOLE review
-// KD (Issue 69): FAIL citations live wherever the Inspector writes them —
-// Findings, Verdict commentary, Audit — so anchoring on the Findings section
-// alone left Verdict/Audit-cited rows unreopened mid-cycle. `### Traceability
-// Matrix` subsections stay excluded everywhere: a bare milestone token in a
-// PASS-row matrix cell is provenance, not a FAIL citation, and scanning it
-// would reopen that row on a FAIL verdict. The `## References` section is
-// excluded for the same reason (Issue 78): it lists every impl KD the review
-// touched, so its `impl-<milestone-id>-` path tokens would reopen ALL
-// milestone rows on any FAIL verdict instead of only the cited ones.
-// `### F\d+` finding subsections are scoped to `Status: FAIL` only: PASS
-// findings' `File`-field path tokens carry sibling milestone ids as
-// provenance, not FAIL citations — scanning them leaked tokens into the reopen
-// set and reopened unrelated milestones. `## Verdict` and `## Audit` / `### A\d+`
-// sections remain fully scanned (they are always FAIL-context). Splitting on
-// `## `/`### ` headings keeps exclusions local to their sections; real FAIL
-// findings (`### F\d+` with Status: FAIL) are unaffected, and a KD with zero
-// tokens anywhere still yields zero citations (fail-closed for the
+// Tokens are deduplicated and case-preserved. The scan is FAIL-context-only
+// (swarm/99): FAIL citations live in FAIL-status findings and explicit Verdict
+// citation lines, so prose tokens elsewhere are provenance, not citations.
+// Scanned locations (R102): (a) `### F\d+` finding subsections whose `Status`
+// is `FAIL`; (b) `### A\d+` audit-finding subsections whose `Status` is `FAIL`;
+// (c) explicit `Milestone citation:` lines within the `## Verdict` section.
+// Never scanned (R103): the KD preamble, `## Verdict Rules`, `## Registry/Plan
+// Consistency Note`, `## Test Results`, `## Pass Rate`, `## Process Friction`,
+// `## Audit` prose, `## References`, `### Traceability Matrix`, and any other
+// section that is not a FAIL-status finding or the `## Verdict` section — the
+// review template's own Verdict Rules prose carries literal example tokens
+// (F7), and scanning prose leaked sibling milestones into the reopen set (the
+// live swarm/99 anomaly: a FAIL citing only M3 reopened M1/M2). PASS findings'
+// `File`-field path tokens stay excluded (swarm/96 behavior retained). A KD
+// with zero FAIL-context tokens yields zero citations (fail-closed for the
 // malformed-FAIL rule).
 function extractMilestoneCitationsFromReviewKD(content) {
   if (typeof content !== "string") return [];
   const tokens = new Set();
-  for (const sub of content.split(/^#{2,3} /m)) {
-    if (/^References/i.test(sub)) continue;
-    if (/^Traceability Matrix/i.test(sub)) continue;
-    // Only extract tokens from ### F\d+ findings that carry Status: FAIL.
-    // PASS findings' File-field path tokens are provenance, not FAIL citations,
-    // and scanning them leaks sibling milestone tokens into the reopen set.
-    // `[^:\n]*` tolerates markdown bold markers (`- **Status**: FAIL`).
-    if (/^F\d+/i.test(sub) && !/Status[^:\n]*:\s*FAIL/i.test(sub)) continue;
+  const collect = (text) => {
     let m;
     const implPattern = /impl-([A-Za-z0-9_-]+)-/gi;
-    while ((m = implPattern.exec(sub)) !== null) tokens.add(m[1]);
+    while ((m = implPattern.exec(text)) !== null) tokens.add(m[1]);
     const idPattern = /\bM\d+\b/g;
-    while ((m = idPattern.exec(sub)) !== null) tokens.add(m[0]);
+    while ((m = idPattern.exec(text)) !== null) tokens.add(m[0]);
+  };
+  for (const sub of content.split(/^#{2,3} /m)) {
+    const heading = sub.split("\n")[0];
+    // `[^:\n]*` tolerates markdown bold markers (`- **Status**: FAIL`).
+    const isFailFinding = /^F\d+/i.test(heading) && /Status[^:\n]*:\s*FAIL/i.test(sub);
+    const isFailAudit = /^A\d+/i.test(heading) && /Status[^:\n]*:\s*FAIL/i.test(sub);
+    const isVerdict = /^Verdict\s*$/i.test(heading);
+    if (!isFailFinding && !isFailAudit && !isVerdict) continue;
+    if (isVerdict) {
+      // Verdict prose is not scanned — only explicit `Milestone citation:` lines.
+      // `[^:\n]*` tolerates markdown bold markers (`- **Milestone citation**: M2`).
+      for (const line of sub.split("\n")) {
+        if (/Milestone citation[^:\n]*:/i.test(line)) collect(line);
+      }
+      continue;
+    }
+    collect(sub);
   }
   return [...tokens];
 }
