@@ -3393,10 +3393,11 @@ export default {
     // --- Hook: tool.definition ---
     // Layer 1 prevention: modify descriptions of blocked tools so the LLM
     // sees them as unavailable. Runs for EVERY tool on EVERY LLM call.
-    // Uses lastSeenSession since the hook doesn't receive sessionID.
+    // Prefer input.sessionID when available (authoritative); fall back to
+    // lastSeenSession for hooks that don't receive it.
     async function toolDefinition(input, output) {
       const { toolID } = input;
-      const sessionID = lastSeenSession;
+      const sessionID = input?.sessionID || lastSeenSession;
       if (!sessionID) return;
       if (!isOverseerSession(sessionID)) return;
       const phase = sessionPhaseMap.get(sessionID);
@@ -3425,7 +3426,7 @@ export default {
     // telling the LLM exactly which tools it may use in the current phase.
     // The SDK passes output.system as an array of strings.
     async function systemTransform(input, output) {
-      const sessionID = lastSeenSession;
+      const sessionID = input?.sessionID || lastSeenSession;
       if (!sessionID) return;
       if (!isOverseerSession(sessionID)) return;
       const phase = sessionPhaseMap.get(sessionID);
