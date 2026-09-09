@@ -579,6 +579,17 @@ function warn(msg) {
   }
 }
 
+// Always-on trace channel — writes injection events to a dedicated file
+// independent of PROTOCOL_GATE_DEBUG. File-only (MEM-213: no stderr).
+// LOG_DIR env seam for test isolation (NFR002).
+function trace(msg) {
+  try {
+    const logDir = process.env.PROTOCOL_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
+    mkdirSync(logDir, { recursive: true });
+    appendFileSync(join(logDir, "protocol-gate-trace.log"), `[${new Date().toISOString()}] [protocol-gate] TRACE: ${msg}\n`);
+  } catch (_) {}
+}
+
 function loadConfig() {
   try {
     const configPath = join(PLUGIN_DIR, "lifecycle.json");
