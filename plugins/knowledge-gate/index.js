@@ -115,8 +115,8 @@ function debug(msg) {
 }
 
 // Always-on trace channel — writes injection events to a dedicated file
-// independent of KNOWLEDGE_GATE_DEBUG. File-only (MEM-213: no stderr).
-// LOG_DIR env seam for test isolation (NFR002).
+// independent of KNOWLEDGE_GATE_DEBUG. File-only (never stderr).
+// LOG_DIR env seam so tests can redirect output to a temp dir.
 function trace(msg) {
   try {
     const logDir = process.env.KNOWLEDGE_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
@@ -2372,11 +2372,11 @@ export default {
                 allIssues.push(issue);
               }
             } catch (e) {
-              debug(`scanOpenIssuesWorkspaceAware: skipping ${scope}/${file}: ${e.message}`);
+              trace(`systemTransform: scan error — scope=${scope} file=${file} error=${e.message}`);
             }
           }
         } catch (e) {
-          debug(`scanOpenIssuesWorkspaceAware: failed to read ${scope} issues dir: ${e.message}`);
+          trace(`systemTransform: scan error — scope=${scope} file=${"<dir>"} error=${e.message}`);
         }
       }
       allIssues.sort((a, b) => {
@@ -2555,6 +2555,7 @@ export default {
         // generic+project. Each line carries its scope so the close targets the
         // correct store via issue_update.
         const mergedIssues = scanOpenIssuesWorkspaceAware();
+        trace(`systemTransform: EVOLVE issue scan — scanned=${mergedIssues.length} injected=${mergedIssues.length}`);
         if (mergedIssues.length > 0) {
           const issueSummary = mergedIssues.map(i =>
             `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
@@ -2581,10 +2582,13 @@ export default {
       // the filter runs BEFORE the cap so the cap measures the audience-matched set.
       // The habit-builder EVOLVE branch above stays unfiltered and uncapped.
       if (agent === "overseer") {
-        let openIssues = filterByAudience(scanOpenIssuesWorkspaceAware(), process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
-        openIssues = applyCap(openIssues, envOpenIssueCap());
-        if (openIssues.length > 0) {
-          const issueSummary = openIssues.map(i =>
+        const scanned = scanOpenIssuesWorkspaceAware();
+        const filtered = filterByAudience(scanned, process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
+        const capped = applyCap(filtered, envOpenIssueCap());
+        const injected = capped.length;
+        trace(`systemTransform: Overseer issue scan — scanned=${scanned.length} filtered=${filtered.length} capped=${capped.length} injected=${injected}`);
+        if (injected > 0) {
+          const issueSummary = capped.map(i =>
             `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
           ).join("\n");
           // The machine-checkable marker line starts the injected block.
@@ -2593,11 +2597,11 @@ export default {
           // against the issue registry.
           output.system.push(
             `[Knowledge Gate] Open issues from all stores detected:\n` +
-            `<!-- issues-snapshot v1: ${openIssues.length} open, stable order -->\n${issueSummary}\n` +
+            `<!-- issues-snapshot v1: ${injected} open, stable order -->\n${issueSummary}\n` +
             `Include these in the Triage Notes section of your intent KD. ` +
             `Reference the issue IDs and recommend which ones to address in this session.`
           );
-          debug(`INTENT: surfaced ${openIssues.length} open issues to Overseer`);
+          debug(`INTENT: surfaced ${injected} open issues to Overseer`);
         }
       }
     }
