@@ -3481,10 +3481,10 @@ export default {
     // The SDK passes output.system as an array of strings.
     async function systemTransform(input, output) {
       const sessionID = input?.sessionID || lastSeenSession;
-      if (!sessionID) return;
+      if (!sessionID) { debug("systemTransform: skip — no sessionID"); return; }
       if (!isOverseerSession(sessionID)) return;
       const phase = sessionPhaseMap.get(sessionID);
-      if (phase === undefined) return;
+      if (phase === undefined) { debug(`systemTransform: skip — phase undefined for session=${sessionID}`); return; }
       const phaseName = getPhaseName(phase);
       if (!phaseName) return;
       const instructions = PHASE_INSTRUCTIONS[phaseName];
@@ -3498,6 +3498,7 @@ export default {
           const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
           systemMsg += `\n\nYour session ID is: ${sessionID}`;
           systemMsg += `\nUse this session ID and generation in the intent KD filename: knowledge/intent-{name}-${sessionID}-gen${generation}.md`;
+          debug(`systemTransform: INTENT injected session=${sessionID} gen=${generation}`);
         }
 
         // During SWARM, surface the milestone list (IDs + live

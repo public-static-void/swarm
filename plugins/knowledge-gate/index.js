@@ -2570,10 +2570,13 @@ export default {
       // the filter runs BEFORE the cap so the cap measures the audience-matched set.
       // The habit-builder EVOLVE branch above stays unfiltered and uncapped.
       if (agent === "overseer") {
-        let openIssues = filterByAudience(scanOpenIssuesWorkspaceAware(), process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
-        openIssues = applyCap(openIssues, envOpenIssueCap());
-        if (openIssues.length > 0) {
-          const issueSummary = openIssues.map(i =>
+        const scanned = scanOpenIssuesWorkspaceAware();
+        const filtered = filterByAudience(scanned, process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
+        const capped = applyCap(filtered, envOpenIssueCap());
+        const injected = capped.length;
+        debug(`systemTransform: Overseer issue scan — scanned=${scanned.length} filtered=${filtered.length} capped=${capped.length} injected=${injected}`);
+        if (injected > 0) {
+          const issueSummary = capped.map(i =>
             `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
           ).join("\n");
           // The machine-checkable marker line starts the injected block.
@@ -2582,11 +2585,11 @@ export default {
           // against the issue registry.
           output.system.push(
             `[Knowledge Gate] Open issues from all stores detected:\n` +
-            `<!-- issues-snapshot v1: ${openIssues.length} open, stable order -->\n${issueSummary}\n` +
+            `<!-- issues-snapshot v1: ${injected} open, stable order -->\n${issueSummary}\n` +
             `Include these in the Triage Notes section of your intent KD. ` +
             `Reference the issue IDs and recommend which ones to address in this session.`
           );
-          debug(`INTENT: surfaced ${openIssues.length} open issues to Overseer`);
+          debug(`INTENT: surfaced ${injected} open issues to Overseer`);
         }
       }
     }
