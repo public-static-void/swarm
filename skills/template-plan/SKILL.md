@@ -31,7 +31,7 @@ flowchart LR
 
 ## Milestones
 
-Every milestone is an independently dispatchable unit: one Artisan dispatch completes exactly one milestone. Milestones are scoped to the SWARM phase and executed by the Artisan agent. Plans include only implementation milestones (code changes, config edits, file operations) — verification is handled by the protocol's VERIFY phase. Milestone IDs must be unique within the plan and match `/^[A-Za-z0-9][A-Za-z0-9_-]*$/` (filesystem-safe — IDs appear in registry filenames and dispatch prompts). Every plan step `P###` must belong to exactly one milestone. State is tracked in the milestone registry KD `knowledge/milestones-{{feature}}-{{session_id}}-gen{{generation}}.md` written by Pathfinder at DECOMPOSE.
+Every milestone is an independently dispatchable unit: one Artisan dispatch completes exactly one milestone. Milestones are planned for the SWARM phase and executed by the Artisan agent. Plans include implementation milestones — code changes, config edits, file operations. Verification is handled by the protocol's VERIFY phase. Milestone IDs must be unique within the plan and match `/^[A-Za-z0-9][A-Za-z0-9_-]*$/` (filesystem-safe — IDs appear in registry filenames and dispatch prompts). Every plan step `P###` must belong to exactly one milestone. State is tracked in the milestone registry KD `knowledge/milestones-{{feature}}-{{session_id}}-gen{{generation}}.md` written by Pathfinder at DECOMPOSE.
 
 ### M1: {{milestone description}}
 

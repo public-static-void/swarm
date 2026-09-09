@@ -62,7 +62,7 @@ Read the specification, break it into the smallest independently verifiable step
 4. Before creating a milestone registry, check if one already exists for this session and generation — glob `knowledge/milestones-*-{session_id}-gen{N}.md`
    - If it exists, update it in-place using the edit tool. **Never** create a new milestone registry file when one already exists
    - Only create a new registry file if no existing registry is found
-5. Group into milestones with completion criteria — each milestone is an independently dispatchable unit: a single Artisan dispatch completes exactly one milestone. Milestones are scoped to the SWARM phase and executed by the Artisan agent. Plans include only implementation milestones (code changes, config edits, file operations) — verification is handled by the protocol's VERIFY phase. Produce the machine-readable Milestones section and the milestone registry KD.
+5. Group into milestones with completion criteria — each milestone is an independently dispatchable unit: a single Artisan dispatch completes exactly one milestone. Milestones are planned for the SWARM phase and executed by the Artisan agent. Plans include implementation milestones — code changes, config edits, file operations. Verification is handled by the protocol's VERIFY phase. Produce the machine-readable Milestones section and the milestone registry KD.
 6. Identify risks, blockers, and ambiguous requirements — propose mitigations
 7. Create PLAN KD with dependency graph (Mermaid flowchart)
 8. Verify completeness: cross-check every acceptance criterion from SPEC against plan tasks
