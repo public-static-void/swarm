@@ -70,6 +70,7 @@ permission:
     "git merge*": allow
     "git push*": allow
     "git rm*": allow
+    "rm plugins/logs/*": allow
 ---
 
 # Committer
