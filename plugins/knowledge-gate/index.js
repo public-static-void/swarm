@@ -114,6 +114,17 @@ function debug(msg) {
   }
 }
 
+// Always-on trace channel — writes injection events to a dedicated file
+// independent of KNOWLEDGE_GATE_DEBUG. File-only (MEM-213: no stderr).
+// LOG_DIR env seam for test isolation (NFR002).
+function trace(msg) {
+  try {
+    const logDir = process.env.KNOWLEDGE_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
+    mkdirSync(logDir, { recursive: true });
+    appendFileSync(join(logDir, "knowledge-gate-trace.log"), `[${new Date().toISOString()}] [knowledge-gate] TRACE: ${msg}\n`);
+  } catch (_) {}
+}
+
 // --- Memory validation ---
 
 /**
