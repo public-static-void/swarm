@@ -579,17 +579,6 @@ function warn(msg) {
   }
 }
 
-// Always-on trace channel — writes injection events to a dedicated file
-// independent of PROTOCOL_GATE_DEBUG. File-only (never stderr).
-// LOG_DIR env seam so tests can redirect output to a temp dir.
-function trace(msg) {
-  try {
-    const logDir = process.env.PROTOCOL_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
-    mkdirSync(logDir, { recursive: true });
-    appendFileSync(join(logDir, "protocol-gate-trace.log"), `[${new Date().toISOString()}] [protocol-gate] TRACE: ${msg}\n`);
-  } catch (_) {}
-}
-
 function loadConfig() {
   try {
     const configPath = join(PLUGIN_DIR, "lifecycle.json");
@@ -3492,10 +3481,10 @@ export default {
     // The SDK passes output.system as an array of strings.
     async function systemTransform(input, output) {
       const sessionID = input?.sessionID || lastSeenSession;
-      if (!sessionID) { trace("systemTransform: skip — no sessionID"); return; }
+      if (!sessionID) { debug("systemTransform: skip — no sessionID"); return; }
       if (!isOverseerSession(sessionID)) return;
       const phase = sessionPhaseMap.get(sessionID);
-      if (phase === undefined) { trace(`systemTransform: skip — phase undefined for session=${sessionID}`); return; }
+      if (phase === undefined) { debug(`systemTransform: skip — phase undefined for session=${sessionID}`); return; }
       const phaseName = getPhaseName(phase);
       if (!phaseName) return;
       const instructions = PHASE_INSTRUCTIONS[phaseName];
@@ -3509,7 +3498,7 @@ export default {
           const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
           systemMsg += `\n\nYour session ID is: ${sessionID}`;
           systemMsg += `\nUse this session ID and generation in the intent KD filename: knowledge/intent-{name}-${sessionID}-gen${generation}.md`;
-          trace(`systemTransform: INTENT injected session=${sessionID} gen=${generation}`);
+          debug(`systemTransform: INTENT injected session=${sessionID} gen=${generation}`);
         }
 
         // During SWARM, surface the milestone list (IDs + live
@@ -3526,7 +3515,6 @@ export default {
         }
 
         output.system.push(systemMsg);
-        trace(`systemTransform: phase=${phaseName} injected for session=${sessionID}`);
 
         // One-shot phase-transition announcement. The map
         // entry is consumed in this same transform — deleted right after

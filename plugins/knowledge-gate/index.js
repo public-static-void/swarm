@@ -114,17 +114,6 @@ function debug(msg) {
   }
 }
 
-// Always-on trace channel — writes injection events to a dedicated file
-// independent of KNOWLEDGE_GATE_DEBUG. File-only (never stderr).
-// LOG_DIR env seam so tests can redirect output to a temp dir.
-function trace(msg) {
-  try {
-    const logDir = process.env.KNOWLEDGE_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
-    mkdirSync(logDir, { recursive: true });
-    appendFileSync(join(logDir, "knowledge-gate-trace.log"), `[${new Date().toISOString()}] [knowledge-gate] TRACE: ${msg}\n`);
-  } catch (_) {}
-}
-
 // --- Memory validation ---
 
 /**
@@ -2372,11 +2361,11 @@ export default {
                 allIssues.push(issue);
               }
             } catch (e) {
-              trace(`systemTransform: scan error — scope=${scope} file=${file} error=${e.message}`);
+              debug(`scanOpenIssuesWorkspaceAware: skipping ${scope}/${file}: ${e.message}`);
             }
           }
         } catch (e) {
-          trace(`systemTransform: scan error — scope=${scope} file=${"<dir>"} error=${e.message}`);
+          debug(`scanOpenIssuesWorkspaceAware: failed to read ${scope} issues dir: ${e.message}`);
         }
       }
       allIssues.sort((a, b) => {
@@ -2555,7 +2544,6 @@ export default {
         // generic+project. Each line carries its scope so the close targets the
         // correct store via issue_update.
         const mergedIssues = scanOpenIssuesWorkspaceAware();
-        trace(`systemTransform: EVOLVE issue scan — scanned=${mergedIssues.length} injected=${mergedIssues.length}`);
         if (mergedIssues.length > 0) {
           const issueSummary = mergedIssues.map(i =>
             `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
@@ -2586,7 +2574,7 @@ export default {
         const filtered = filterByAudience(scanned, process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
         const capped = applyCap(filtered, envOpenIssueCap());
         const injected = capped.length;
-        trace(`systemTransform: Overseer issue scan — scanned=${scanned.length} filtered=${filtered.length} capped=${capped.length} injected=${injected}`);
+        debug(`systemTransform: Overseer issue scan — scanned=${scanned.length} filtered=${filtered.length} capped=${capped.length} injected=${injected}`);
         if (injected > 0) {
           const issueSummary = capped.map(i =>
             `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
