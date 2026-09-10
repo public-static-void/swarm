@@ -24,6 +24,7 @@ permission:
     "kd-system": allow
     "template-intent": allow
     "template-report": allow
+    "resume-protocol": allow
   lsp: deny
   question: deny
   webfetch: deny

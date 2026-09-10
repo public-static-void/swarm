@@ -120,16 +120,16 @@ const PHASE_INSTRUCTIONS = {
 const TOOL_ALLOWLIST = {
   PROTOCOL_NOT_LOADED: ["todowrite"],
   INTENT: ["todowrite", "write", "edit", "read", "skill", "bash", "memory_search"],
-  PREFLIGHT: ["task", "todowrite", "glob", "bash", "memory_search"],
-  EXPLORE: ["task", "todowrite", "glob", "memory_search"],
-  INVESTIGATE: ["task", "todowrite", "glob", "memory_search"],
-  ALIGN: ["task", "todowrite", "glob", "memory_search"],
-  DECOMPOSE: ["task", "todowrite", "glob", "read", "memory_search"],
-  SWARM: ["task", "todowrite", "glob", "read", "memory_search"],
-  VERIFY: ["task", "todowrite", "glob", "read", "memory_search"],
-  EXTRACT: ["task", "todowrite", "glob", "memory_search"],
-  EVOLVE: ["task", "todowrite", "glob", "memory_search"],
-  CLEANUP: ["task", "todowrite", "glob", "bash", "memory_search"],
+  PREFLIGHT: ["task", "todowrite", "glob", "bash", "memory_search", "skill"],
+  EXPLORE: ["task", "todowrite", "glob", "memory_search", "skill"],
+  INVESTIGATE: ["task", "todowrite", "glob", "memory_search", "skill"],
+  ALIGN: ["task", "todowrite", "glob", "memory_search", "skill"],
+  DECOMPOSE: ["task", "todowrite", "glob", "read", "memory_search", "skill"],
+  SWARM: ["task", "todowrite", "glob", "read", "skill", "memory_search"],
+  VERIFY: ["task", "todowrite", "glob", "read", "memory_search", "skill"],
+  EXTRACT: ["task", "todowrite", "glob", "memory_search", "skill"],
+  EVOLVE: ["task", "todowrite", "glob", "memory_search", "skill"],
+  CLEANUP: ["task", "todowrite", "glob", "bash", "memory_search", "skill"],
   REPORT: ["todowrite", "edit", "read", "write", "skill", "memory_search"]
 };
 
