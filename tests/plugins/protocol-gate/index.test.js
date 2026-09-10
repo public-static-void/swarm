@@ -6267,7 +6267,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     });
   });
 
-  describe("SWARM phase skill tool allowlist", () => {
+  describe("skill tool allowlist across phases", () => {
     it("skill is allowed in SWARM — permissionAsk does not deny, toolExecuteBefore does not block, toolDefinition has no ⛔", async () => {
       const s = sid("swarm-skill-1");
       await initOverseer(s);
@@ -6288,23 +6288,92 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(output.description).not.toContain("⛔");
     });
 
-    it("skill is blocked in DECOMPOSE — permissionAsk denies, toolExecuteBefore throws, toolDefinition shows ⛔", async () => {
-      const s = sid("decompose-skill-block-1");
+    it("skill is allowed in INTENT — permissionAsk does not deny, toolExecuteBefore does not block, toolDefinition has no ⛔", async () => {
+      const s = sid("intent-skill-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+
+      const permOutput = {};
+      await hooks["permission.ask"]({ sessionID: s, type: "skill" }, permOutput);
+      expect(permOutput.status).not.toBe("deny");
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "i1" }, { args: {} })
+      ).resolves.toBeUndefined();
+
+      await hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "i1" }, { args: {} });
+      const output = { description: "Load a skill", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "skill" }, output);
+      expect(output.description).not.toContain("⛔");
+    });
+
+    it("skill is allowed in REPORT — permissionAsk does not deny, toolExecuteBefore does not block, toolDefinition has no ⛔", async () => {
+      const s = sid("report-skill-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
+
+      const permOutput = {};
+      await hooks["permission.ask"]({ sessionID: s, type: "skill" }, permOutput);
+      expect(permOutput.status).not.toBe("deny");
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "r1" }, { args: {} })
+      ).resolves.toBeUndefined();
+
+      await hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "r1" }, { args: {} });
+      const output = { description: "Load a skill", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "skill" }, output);
+      expect(output.description).not.toContain("⛔");
+    });
+
+    it("skill is allowed in DECOMPOSE — permissionAsk does not deny, toolExecuteBefore does not block, toolDefinition has no ⛔", async () => {
+      const s = sid("decompose-skill-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
 
       const permOutput = {};
       await hooks["permission.ask"]({ sessionID: s, type: "skill" }, permOutput);
-      expect(permOutput.status).toBe("deny");
+      expect(permOutput.status).not.toBe("deny");
 
       await expect(
         hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "d1" }, { args: {} })
-      ).rejects.toThrow();
+      ).resolves.toBeUndefined();
 
-      await hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "d1" }, { args: {} }).catch(() => {});
+      await hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "d1" }, { args: {} });
       const output = { description: "Load a skill", parameters: {} };
       await hooks["tool.definition"]({ toolID: "skill" }, output);
-      expect(output.description).toContain("⛔");
+      expect(output.description).not.toContain("⛔");
+    });
+
+    it("skill is allowed in every active phase except PROTOCOL_NOT_LOADED", async () => {
+      const activePhases = [
+        "INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN",
+        "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"
+      ];
+      for (const phase of activePhases) {
+        const s = sid(`cross-phase-${phase.toLowerCase()}`);
+        await initOverseer(s);
+        hooks.sessionPhaseMap.set(s, hooks.STATES[phase]);
+
+        const permOutput = {};
+        await hooks["permission.ask"]({ sessionID: s, type: "skill" }, permOutput);
+        expect(permOutput.status, `permission.ask denies skill in ${phase}`).not.toBe("deny");
+
+        await expect(
+          hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "x1" }, { args: {} }),
+          `tool.execute.before blocks skill in ${phase}`
+        ).resolves.toBeUndefined();
+      }
+
+      const blocked = sid("cross-phase-protocol-not-loaded");
+      await initOverseer(blocked);
+      hooks.sessionPhaseMap.set(blocked, hooks.STATES.PROTOCOL_NOT_LOADED);
+      const blockedPermOutput = {};
+      await hooks["permission.ask"]({ sessionID: blocked, type: "skill" }, blockedPermOutput);
+      expect(blockedPermOutput.status).toBe("deny");
+      await expect(
+        hooks["tool.execute.before"]({ tool: "skill", sessionID: blocked, callID: "x1" }, { args: {} })
+      ).rejects.toThrow();
     });
   });
 });
