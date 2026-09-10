@@ -125,7 +125,7 @@ const TOOL_ALLOWLIST = {
   INVESTIGATE: ["task", "todowrite", "glob", "memory_search"],
   ALIGN: ["task", "todowrite", "glob", "memory_search"],
   DECOMPOSE: ["task", "todowrite", "glob", "read", "memory_search"],
-  SWARM: ["task", "todowrite", "glob", "read", "memory_search"],
+  SWARM: ["task", "todowrite", "glob", "read", "skill", "memory_search"],
   VERIFY: ["task", "todowrite", "glob", "read", "memory_search"],
   EXTRACT: ["task", "todowrite", "glob", "memory_search"],
   EVOLVE: ["task", "todowrite", "glob", "memory_search"],
