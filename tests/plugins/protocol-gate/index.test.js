@@ -6266,4 +6266,45 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(entries[entries.length - 1]).toEqual({ messageID: "m11", text: "message 11" });
     });
   });
+
+  describe("SWARM phase skill tool allowlist", () => {
+    it("skill is allowed in SWARM — permissionAsk does not deny, toolExecuteBefore does not block, toolDefinition has no ⛔", async () => {
+      const s = sid("swarm-skill-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const permOutput = {};
+      await hooks["permission.ask"]({ sessionID: s, type: "skill" }, permOutput);
+      expect(permOutput.status).not.toBe("deny");
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "s1" }, { args: {} })
+      ).resolves.toBeUndefined();
+
+      // toolDefinition reads lastSeenSession — set it with a real tool call.
+      await hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "s1" }, { args: {} });
+      const output = { description: "Load a skill", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "skill" }, output);
+      expect(output.description).not.toContain("⛔");
+    });
+
+    it("skill is blocked in DECOMPOSE — permissionAsk denies, toolExecuteBefore throws, toolDefinition shows ⛔", async () => {
+      const s = sid("decompose-skill-block-1");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+
+      const permOutput = {};
+      await hooks["permission.ask"]({ sessionID: s, type: "skill" }, permOutput);
+      expect(permOutput.status).toBe("deny");
+
+      await expect(
+        hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "d1" }, { args: {} })
+      ).rejects.toThrow();
+
+      await hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID: "d1" }, { args: {} }).catch(() => {});
+      const output = { description: "Load a skill", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "skill" }, output);
+      expect(output.description).toContain("⛔");
+    });
+  });
 });
