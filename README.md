@@ -73,4 +73,4 @@ The suite runs via `npx vitest run` from the repository root — the canonical i
 
 ## The Git Contract
 
-git tracks swarm config: `AGENTS.md`, `agents/`, `skills/`, `plugins/`, `tests/`, `commands/`, `opencode.json`. `knowledge/` is workflow meta and stays gitignored. Verification is tree-level — working tree and tracked diffs — using the standard git workflow with hooks enabled.
+git tracks swarm config: `AGENTS.md`, `agents/`, `skills/`, `plugins/`, `tests/`, `commands/`, `opencode.json`. `knowledge/` is workflow meta and stays gitignored. Verification is tree-level — working tree and tracked diffs — using the standard git workflow with hooks enabled. A version-controlled pre-commit hook (`.githooks/pre-commit`, wired via `core.hooksPath` set by the `prepare` script on `npm install`) runs the repo gates — `npx vitest run` + `npx eslint -c eslint.security.config.mjs` — automatically at commit time and fails the commit when a gate fails. The Committer stays git-only; manual gate runs are the Artisan's job.
