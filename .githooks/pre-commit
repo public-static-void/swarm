@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Runs the repository gates before each commit. A failing gate blocks the
+# commit (fail-closed); the hook's exit code is the gate verdict.
+set -e
+
+npx vitest run
+npx eslint -c eslint.security.config.mjs
