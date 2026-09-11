@@ -44,7 +44,7 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
       - **When the branch already exists**:
         1. Gather context on the existing branch: run `git log --oneline -3 <feature-branch>` to show its recent commits, and `git rev-list --left-right --count <base>...<feature-branch>` to determine whether it is ahead of or behind the base branch.
         2. Report the collision with context and escalate: "Branch `<feature-branch>` already exists (latest commit: `<hash> <subject>`; ahead/behind `<base>`: `<ahead> ahead, <behind> behind`). The existing branch may be stale. Options: (a) delete the stale branch and recreate, (b) rename the new branch with a suffix, (c) continue on the existing branch. Escalate to Overseer for decision."
-        3. **Do not force-update, auto-rename, or proceed silently.** Wait for direction. Preserve any pending stash state — do not pop or discard the stash while the collision is unresolved.
+        3. **Wait for direction.** Force-updating, auto-renaming, or proceeding silently requires explicit approval. Preserve any pending stash state — keep the stash intact while the collision is unresolved.
    4. **Restore stashed changes** — If step 1 stashed pending changes (dirty repo), run `git stash pop` after the working branch is established. If pop fails, log a warning but continue.
 
 ## Branch Naming Convention
