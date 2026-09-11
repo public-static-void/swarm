@@ -1856,6 +1856,12 @@ export default {
     // (empty-result detection). One entry per session — a re-dispatch
     // overwrites the previous record; the entry is deleted after reconciliation.
     const lastTaskDispatch = new Map();
+    // Pending impl-KD writes by subagent sessions — sessionID → relPath.
+    // Recorded in tool.execute.before (where the tool args are visible) and
+    // consumed in tool.execute.after (where the file has landed on disk). The
+    // after-hook cannot see the tool args, so the before-hook records the path
+    // for the post-write SWARM→VERIFY auto-advance evaluation.
+    const pendingImplKDWrites = new Map();
     // Tracks active subagent dispatches per session.
     // When a task call dispatches the current phase's expected agent, the
     // expected KD prefix is stored here. checkPhaseStateConsistency skips
@@ -2344,6 +2350,58 @@ export default {
       warn(`AUTO_CHECKOFF_UNMATCHED: ${relPath}`);
     }
 
+    // Post-write SWARM→VERIFY auto-advance: after a subagent's impl KD write
+    // completes (file on disk), evaluate the parent session's SWARM gate and
+    // advance when every milestone row is checked-off with its impl KD on disk.
+    // The before-hook check-off runs before the file lands, so the gate
+    // evaluation belongs in the after-hook where the impl KD is verifiable
+    // evidence. The advance targets the parent (Overseer) session's
+    // phase-map entry only — the subagent's own session is unaffected.
+    // Returns true when the parent session advanced.
+    function advanceParentSessionFromSwarm(candidate) {
+      const currentPhase = sessionPhaseMap.get(candidate);
+      if (currentPhase !== STATES.SWARM) return false;
+      // checkDiskAdvancement applies the full SWARM gate including the
+      // override fresh-evidence requirement (registry mtime >= since).
+      if (!checkDiskAdvancement(candidate, STATES.SWARM, sessionPhaseMap, swarmDispatchCount)) return false;
+      const newPhase = STATES.VERIFY;
+      sessionPhaseMap.set(candidate, newPhase);
+      // The phase advanced away from the override target on fresh evidence —
+      // re-arm a multi-phase queue or clear a single-phase marker so normal
+      // advancement semantics resume.
+      const overrideUntil = getOverrideUntil(sessionPhaseMap, candidate);
+      if (overrideUntil && currentPhase === getOverrideTargetPhase(overrideUntil)) {
+        if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 1) {
+          const remaining = overrideUntil.phases.slice(1);
+          sessionPhaseMap.set(`${candidate}:overrideUntil`, { phases: remaining, since: overrideUntil.since });
+          debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
+        } else {
+          sessionPhaseMap.delete(`${candidate}:overrideUntil`);
+          debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence`);
+        }
+      }
+      diskCheckFailures.set(candidate, 0);
+      inFlightDispatches.delete(candidate);
+      pendingVerification.delete(candidate);
+      pendingVerificationToolCount.delete(candidate);
+      phaseRedispatchCount.delete(`${candidate}:${currentPhase}`);
+      const cycles = cycleMap.get(candidate);
+      if (cycles && cycles[currentPhase] !== undefined) {
+        delete cycles[currentPhase];
+      }
+      freshAdvancement.set(candidate, { phase: newPhase, diskCheckCount: 0 });
+      const gateEvidence = checkAllMilestonesCheckedOff(candidate, sessionPhaseMap);
+      const reason = `all milestones checked-off: ${gateEvidence.checkedOff}/${gateEvidence.total}`;
+      advancementAnnouncements.set(candidate, {
+        from: getPhaseName(currentPhase),
+        to: getPhaseName(newPhase),
+        reason
+      });
+      saveState(candidate);
+      debug(`POST_WRITE_ADVANCE: ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} for parent session ${candidate} (${reason})`);
+      return true;
+    }
+
     // --- Hook: chat.params ---
     async function chatParams(input, output) {
       const { sessionID, agent } = input;
@@ -2624,6 +2682,10 @@ export default {
               warn(`AUTO_CHECKOFF_NON_ARTISAN: agent=${writingAgent} path=${relPath}`);
             }
             autoCheckOffMilestone(relPath);
+            // Record the write for the after-hook's post-write SWARM→VERIFY
+            // auto-advance — the before-hook has the args (relPath), the
+            // after-hook needs it but cannot see them.
+            pendingImplKDWrites.set(sessionID, relPath);
           }
         }
         // Session never identified as overseer via chat.params — pass through.
@@ -3429,6 +3491,24 @@ export default {
     // continues regardless of outcome.
     async function toolExecuteAfter(input, output) {
       const { tool, sessionID } = input;
+
+      // Post-write SWARM→VERIFY auto-advance: when a subagent's impl KD write
+      // completes (file on disk), evaluate the parent session's SWARM gate.
+      // The before-hook check-off (autoCheckOffMilestone) runs before the file
+      // lands, so the gate evaluation belongs in the after-hook where the impl
+      // KD is verifiable disk evidence (the write must complete before the gate
+      // evaluates, so the before-hook records the relPath for the after-hook).
+      if ((tool === "write" || tool === "edit") && !isOverseerSession(sessionID)) {
+        const relPath = pendingImplKDWrites.get(sessionID);
+        pendingImplKDWrites.delete(sessionID);
+        if (relPath && (/^knowledge\/impl-/i.test(relPath) || /\/knowledge\/impl-/i.test(relPath))) {
+          for (const candidate of collectParentSessionCandidates()) {
+            advanceParentSessionFromSwarm(candidate);
+          }
+        }
+        return;
+      }
+
       // Mirror the :1779 gate — only overseer task dispatches touch the
       // overseer's redispatch counter; subagent→subagent task calls never do.
       if (tool !== "task" || !isOverseerSession(sessionID)) return;
@@ -3576,6 +3656,7 @@ export default {
       phaseRedispatchCount,
       blockedDispatchCount,
       lastTaskDispatch,
+      pendingImplKDWrites,
       diskCheckFailures,
       inFlightDispatches,
       pendingVerification,

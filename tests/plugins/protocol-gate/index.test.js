@@ -2862,6 +2862,162 @@ Amendment body.
       hooks.swarmDispatchCount.set(s, 5);
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
     });
+
+    it("advances SWARM→VERIFY regardless of registry frontmatter status — the YAML block is the SSOT (draft)", async () => {
+      const s = sid("m5-ssot-draft");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // Frontmatter status draft — the gate must not read it; only the
+      // `## Milestone States` YAML block and the impl-KD disk evidence count.
+      createKD(`milestones-feature-${s}.md`, `---
+title: "MILESTONE REGISTRY: test"
+version: 1.0.0
+status: draft
+type: milestones
+session_id: "${s}"
+author: Pathfinder
+superseded_by: null
+---
+
+# MILESTONE REGISTRY: test
+
+${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
+`);
+      createKD(`impl-M1-feature-${s}.md`);
+      createKD(`impl-M2-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+    });
+
+    it("advances SWARM→VERIFY regardless of registry frontmatter status — the YAML block is the SSOT (approved)", async () => {
+      const s = sid("m5-ssot-approved");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`milestones-feature-${s}.md`, `---
+title: "MILESTONE REGISTRY: test"
+version: 1.0.0
+status: approved
+type: milestones
+session_id: "${s}"
+author: Pathfinder
+superseded_by: null
+---
+
+# MILESTONE REGISTRY: test
+
+${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
+`);
+      createKD(`impl-M1-feature-${s}.md`);
+      createKD(`impl-M2-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+    });
+
+    it("blocks SWARM→VERIFY when any registry row is not checked-off — frontmatter status cannot override the YAML block", async () => {
+      const s = sid("m5-ssot-blocked");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // Even with frontmatter status approved, an in-progress row blocks the gate.
+      createKD(`milestones-feature-${s}.md`, `---
+title: "MILESTONE REGISTRY: test"
+version: 1.0.0
+status: approved
+type: milestones
+session_id: "${s}"
+author: Pathfinder
+superseded_by: null
+---
+
+# MILESTONE REGISTRY: test
+
+${registryContent([["M1", "checked-off"], ["M2", "in-progress"]])}
+`);
+      createKD(`impl-M1-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+    });
+
+    it("blocks SWARM→VERIFY when a checked-off row lacks its impl KD on disk — frontmatter status cannot override disk evidence", async () => {
+      const s = sid("m5-ssot-noimpl");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`milestones-feature-${s}.md`, `---
+title: "MILESTONE REGISTRY: test"
+version: 1.0.0
+status: approved
+type: milestones
+session_id: "${s}"
+author: Pathfinder
+superseded_by: null
+---
+
+# MILESTONE REGISTRY: test
+
+${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
+`);
+      createKD(`impl-M1-feature-${s}.md`);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+    });
+
+    it("advances the parent session SWARM→VERIFY after the final impl KD write completes — no subsequent Overseer tool call (post-write auto-advance)", async () => {
+      const s = sid("m5-postwrite-advance");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+
+      // The artisan writes the final impl KD. The before-hook checks off the
+      // row, but the file has NOT landed yet — the gate must stay closed.
+      const artisan = sid("m5-postwrite-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M2-feature-${s}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M2: checked-off");
+
+      // The write completes — the impl KD lands on disk. The after-hook
+      // evaluates the gate and advances the parent session without any
+      // Overseer tool call.
+      createKD(`impl-M2-feature-${s}.md`);
+      await hooks["tool.execute.after"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { output: "done", title: "impl" }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      // The subagent's own session is unaffected — only the parent advances.
+      expect(hooks.sessionPhaseMap.get(artisan)).toBeUndefined();
+    });
+
+    it("does not advance the parent session when the final impl KD write completes but its milestone row is not checked off", async () => {
+      const s = sid("m5-postwrite-blocked");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // M2 is in-progress with no evidence on disk — the only remaining
+      // milestone. The artisan writes an impl KD whose filename does NOT match
+      // M2 (wrong milestone ID), so the reconciliation finds no evidence for
+      // M2 and the gate stays blocked.
+      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+
+      const artisan = sid("m5-postwrite-blocked-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M3-mismatch-${s}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+      createKD(`impl-M3-mismatch-${s}.md`);
+      await hooks["tool.execute.after"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { output: "done", title: "impl" }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M2: in-progress");
+    });
   });
 
   describe("SWARM→VERIFY reconciliation + loud auto-checkoff diagnostics (Issue 64)", () => {
