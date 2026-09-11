@@ -1573,16 +1573,24 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
   const overrideActive = overrideUntil && phase === getOverrideTargetPhase(overrideUntil);
 
-  // DECOMPOSE advancement requires BOTH the plan KD and the milestone registry
-  // (dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM must not
-  // start until the registry (live state SSOT) is on disk. A plan- KD alone is
-  // the fail-closed case — no advancement. Under an override at DECOMPOSE,
-  // both KDs must be fresh (mtime >= since, contract #5).
+  // DECOMPOSE advancement requires BOTH the plan KD and a parseable milestone
+  // registry (dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM
+  // must not start until the registry (live state SSOT) is on disk and its
+  // `## Milestone States` YAML block parses — an unparsable or duplicated
+  // registry fails closed here instead of advancing into a guaranteed
+  // REGISTRY_MISSING at SWARM. A plan- KD alone is the fail-closed case — no
+  // advancement. Under an override at DECOMPOSE, both KDs must be fresh
+  // (mtime >= since, contract #5).
   if (phase === STATES.DECOMPOSE) {
     const hasPlan = sessionFiles.some(f => /^plan-/i.test(f) && (!overrideActive || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
     const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f) && (!overrideActive || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
-    const result = hasPlan && hasMilestones;
-    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones} → ${result}${overrideActive ? ` (override fresh-evidence since ${overrideUntil.since})` : ""}`);
+    // The milestones KD must parse via locateMilestoneRegistry semantics
+    // (valid `## Milestone States` YAML block, exactly one registry per
+    // session/generation). Reuses the same parser the SWARM gate uses so the
+    // two gates can never disagree on what a valid registry is.
+    const registryParses = hasMilestones && locateMilestoneRegistry(sessionID, sessionPhaseMap) !== null;
+    const result = hasPlan && registryParses;
+    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones}, registry-parses=${registryParses} → ${result}${overrideActive ? ` (override fresh-evidence since ${overrideUntil.since})` : ""}`);
     return result;
   }
 
