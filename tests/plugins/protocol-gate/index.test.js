@@ -1643,7 +1643,7 @@ Amendment body.
     expect(hooks.checkDiskAdvancement(s2, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
-  it("DECOMPOSE advances only when BOTH current-generation plan- and milestones- KDs exist (dual-KD gate)", async () => {
+  it("DECOMPOSE advances only when BOTH current-generation plan- and a parseable milestones- KD exist (dual-KD gate)", async () => {
     const s = sid("decomp-dual");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
@@ -1655,7 +1655,7 @@ Amendment body.
 
     // milestones- alone: no advancement (plan is the primary DECOMPOSE artifact)
     removeKD(`plan-only-${s}.md`);
-    createKD(`milestones-only-${s}.md`);
+    createRegistry(s, [["M1", "pending"]]);
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
 
     // both plan- + milestones-: advancement
@@ -1665,13 +1665,45 @@ Amendment body.
     // Generation scoping: a current-gen plan with a stale prior-gen registry is
     // still blocked (only the plan matches) until a current-gen registry lands.
     removeKD(`plan-both-${s}.md`);
-    removeKD(`milestones-only-${s}.md`);
+    removeKD(`milestones-feature-${s}.md`);
     hooks.sessionPhaseMap.set(`${s}:gen`, 2);
     createKD(`plan-cur-${s}-gen2.md`);
-    createKD(`milestones-stale-${s}-gen1.md`);
+    createKD(`milestones-stale-${s}-gen1.md`, registryContent([["M1", "pending"]]));
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
-    createKD(`milestones-cur-${s}-gen2.md`);
+    createKD(`milestones-cur-${s}-gen2.md`, registryContent([["M1", "pending"]]));
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+  });
+
+  it("DECOMPOSE fails closed on an unparsable or duplicated milestone registry", async () => {
+    // Plan + milestones KD lacking a valid `## Milestone States` YAML block:
+    // the registry does not parse, so the gate stays closed.
+    const s = sid("decomp-unparsable");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    createKD(`plan-${s}.md`);
+    createKD(`milestones-${s}.md`, "# no milestone states block");
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+    // Plan + two milestones KDs matching the same session/generation: the
+    // registry is ambiguous, so the gate stays closed.
+    const dup = sid("decomp-duplicate");
+    await initOverseer(dup);
+    hooks.sessionPhaseMap.set(dup, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${dup}:sid`, dup);
+    createKD(`plan-${dup}.md`);
+    createRegistry(dup, [["M1", "pending"]]);
+    createKD(`milestones-second-${dup}.md`, registryContent([["M1", "pending"]]));
+    expect(hooks.checkDiskAdvancement(dup, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+    // Plan + a valid milestones KD: advancement (existing behavior preserved).
+    const ok = sid("decomp-valid");
+    await initOverseer(ok);
+    hooks.sessionPhaseMap.set(ok, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${ok}:sid`, ok);
+    createKD(`plan-${ok}.md`);
+    createRegistry(ok, [["M1", "pending"]]);
+    expect(hooks.checkDiskAdvancement(ok, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
   it("SWARM phase reads are restricted to milestone registry KDs (dispatcher visibility)", async () => {
@@ -5787,6 +5819,9 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
 
       // A fresh milestones KD completes the dual-KD gate → advance + clear.
+      // The stale registry is removed first — a second milestones KD for the
+      // same session/generation is a duplicate registry, which fails closed.
+      removeKD(`milestones-old-${s}.md`);
       createKD(`milestones-fresh-${s}.md`, registryContent([["M1", "checked-off"]]));
       await todo(s, "d3");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
