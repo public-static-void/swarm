@@ -8,6 +8,7 @@
     "vitest": "^4.1.10"
   },
   "scripts": {
-    "audit": "npm audit --audit-level=high"
+    "audit": "npm audit --audit-level=high",
+    "prepare": "git config core.hooksPath .githooks"
   }
 }
