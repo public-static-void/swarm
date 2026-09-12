@@ -31,10 +31,6 @@ Agents accept WHAT-level dispatches — each dispatch describes the artifact to 
 - ⚠ Compound Commands — A compound/piped bash command is denied as a unit when any segment is not allowlisted; split it into separate allowlisted calls or route through the dedicated Read/Grep/Glob tools instead of rerouting around permissions
 - ⚠ Fewer Rules — More rules degrade compliance. Use focused agents and refinement loops.
 
-## Test Invocation
-
-Run the suite with `npx vitest run` from the repository root — the canonical invocation. The vitest config pins collection to `tests/**` and excludes the vendored `references/` tree, so a root-level run collects exactly the swarm suite and reports its true signal. The version-controlled pre-commit hook (`.githooks/pre-commit`, wired via `core.hooksPath`) runs the same gates — `npx vitest run` + `npx eslint -c eslint.security.config.mjs` — automatically at commit time and fails the commit when a gate fails; gate execution is the hook's job, not the Committer's.
-
 ## Searching Gitignored Trees
 
 The dedicated Grep tool searches every tree on disk — gitignored directories (`knowledge/`, `references/`, `node_modules/`) included. Log files (`*.log`, e.g. under `plugins/logs/`) fall outside its default file-type set: pass an explicit `include` glob such as `"*.log"`, or investigate them via the Read tool and bash allowlisted commands (`cat*`, `head*`, `tail*`).

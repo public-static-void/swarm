@@ -54,7 +54,9 @@ permission:
     "cargo test*": allow
     "cargo check*": allow
     "cargo clippy*": allow
+    "cargo build*": allow
     "cargo fmt --check*": allow
+    "cargo fmt --all --check*": allow
     "cargo audit*": allow
     "pytest tests*": allow
     "go test*": allow

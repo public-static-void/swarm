@@ -50,17 +50,13 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 8. **Stage** — Select one coherent group, verify clean working tree, review the batch's full content with `git diff -- <files>` limited to the batch's files, then `git add <files>`.
 
-9. **Commit** — Check off TODO item, verify staged diff non-empty (`git diff --cached --stat`), write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled — the pre-commit hook runs the repo gates automatically at commit time (see Automatic Pre-Commit Hook).
+9. **Commit** — Check off TODO item, verify staged diff non-empty (`git diff --cached --stat`), write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled.
 
 10. **Verify** — `git show --stat -1` to confirm.
 
 11. **Repeat** — Return to step 5 for remaining groups.
 
 12. **Error handling** — On failure, `git reset --mixed` to recover.
-
-## Automatic Pre-Commit Hook
-
-The repository's version-controlled pre-commit hook (`.githooks/pre-commit`, wired via `core.hooksPath` by the `prepare` script on `npm install`) runs the repo gates automatically at commit time: `npx vitest run` and `npx eslint -c eslint.security.config.mjs`. A failing gate blocks the commit. Gate execution is the hook's job — the Committer's git-only permission surface stays unchanged.
 
 ## Semantic Commit Convention
 
