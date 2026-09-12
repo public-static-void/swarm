@@ -9,6 +9,7 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
+import { execFileSync } from "child_process";
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -576,6 +577,29 @@ function warn(msg) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] WARN: ${msg}\n`);
     } catch (_) {}
+  }
+}
+
+// Git-repo bootstrap guard — guarantees the workspace is a git repo before any
+// lifecycle phase runs, so the lifecycle's first git-dependent operation
+// (PREFLIGHT branch creation) always has a repo to work in. Runs at server()
+// init with the plugin's full Node.js access (child_process), NOT through any
+// agent's bash allowlist. Idempotent: when .git exists, no subprocess is
+// spawned. Never touches .gitignore — gitignore management stays the
+// Committer's PREFLIGHT job. Failure is non-fatal: logs and continues so the
+// Committer's PREFLIGHT remains the authoritative git-error surface.
+function ensureGitRepo(directory, _execFile = execFileSync) {
+  if (existsSync(join(directory, ".git"))) {
+    debug(`ensureGitRepo: ${directory} is already a git repo — no action`);
+    return { initialized: false, reason: "already-repo" };
+  }
+  try {
+    _execFile("git", ["init"], { cwd: directory, stdio: "ignore" });
+    debug(`ensureGitRepo: initialized git repo in ${directory}`);
+    return { initialized: true, reason: "initialized" };
+  } catch (e) {
+    debug(`ensureGitRepo: git init failed in ${directory}: ${e.message}`);
+    return { initialized: false, reason: "failed" };
   }
 }
 
@@ -1821,6 +1845,11 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
 export default {
   id: "protocol-gate",
   server: async function protocolGateServer(input, options) {
+    // Git-repo bootstrap guard — runs before any lifecycle state is touched so
+    // the lifecycle's first git-dependent operation (PREFLIGHT branch
+    // creation) always has a repo to work in. Uses the plugin's full Node.js
+    // access, not any agent's bash allowlist.
+    ensureGitRepo(input?.directory ?? process.cwd());
     const config = loadConfig();
     const BACKWARD_TRANSITIONS = loadBackwardTransitions(config);
     const PHASE_AGENT_MAP = config.agents || {};
@@ -3648,6 +3677,7 @@ export default {
       // Test-access properties
       STATES,
       DISK_CHECK_TOOLS,
+      ensureGitRepo,
       sessionPhaseMap,
       overseerSessions,
       isOverseerSession,
