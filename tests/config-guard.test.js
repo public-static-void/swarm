@@ -66,6 +66,10 @@ const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
 const SCAN_COMMANDS = ["npm audit*", "npm run audit*"];
 const INSTALL_AGENTS = ["artisan.md"];
 const INSTALL_COMMANDS = ["npm install --save-dev*"];
+const RUST_BUILD_AGENTS = ["artisan.md", "inspector.md", "analyzer.md"];
+const RUST_BUILD_COMMANDS = ["cargo build*"];
+const RUST_FMT_CHECK_AGENTS = ["inspector.md", "analyzer.md"];
+const RUST_FMT_CHECK_COMMANDS = ["cargo fmt --all --check*"];
 const COMMITTER_PLAN_SPEC_READ = ["knowledge/plan-*.md", "knowledge/spec-*.md"];
 
 describe("SPEC-template git hygiene", () => {
@@ -188,6 +192,44 @@ describe("agent permission allowlists", () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  it("keeps scoped cargo build and format-check entries for the Rust workspace agents", () => {
+    const missing = [];
+    for (const f of RUST_BUILD_AGENTS) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of RUST_BUILD_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    for (const f of RUST_FMT_CHECK_AGENTS) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of RUST_FMT_CHECK_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    // Artisan's "cargo fmt*" prefix glob already covers `cargo fmt --all --check`.
+    const artisanPatterns = entriesByFile.get("artisan.md").map((e) => e.pattern);
+    if (!artisanPatterns.some((p) => p.startsWith("cargo fmt"))) {
+      missing.push("artisan.md: cargo fmt* prefix");
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps cargo run out of every agent allowlist", () => {
+    const offenders = [];
+    for (const f of files) {
+      for (const { pattern } of entriesByFile.get(f)) {
+        if (pattern.startsWith("cargo run")) {
+          offenders.push(`${f}: ${pattern}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 

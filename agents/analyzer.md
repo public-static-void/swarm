@@ -35,6 +35,8 @@ permission:
     "cargo test*": allow
     "cargo check*": allow
     "cargo clippy*": allow
+    "cargo build*": allow
+    "cargo fmt --all --check*": allow
     "pip install*": allow
     "poetry run*": allow
     "poetry install*": allow
