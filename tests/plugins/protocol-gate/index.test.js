@@ -6567,4 +6567,62 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       ).rejects.toThrow();
     });
   });
+
+  describe("git-repo bootstrap guard", () => {
+    function readLoudLog() {
+      try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
+    }
+
+    it("initializes a git repo in a directory lacking .git", () => {
+      const dir = mkdtempSync(join(tmpdir(), "pg-git-init-"));
+      try {
+        const result = hooks.ensureGitRepo(dir);
+        expect(result).toEqual({ initialized: true, reason: "initialized" });
+        expect(existsSync(join(dir, ".git"))).toBe(true);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("is a no-op when .git already exists — no error, no mutation, no subprocess spawn", () => {
+      const dir = mkdtempSync(join(tmpdir(), "pg-git-idem-"));
+      try {
+        mkdirSync(join(dir, ".git"));
+        const marker = join(dir, ".git", "marker");
+        writeFileSync(marker, "keep");
+        const result = hooks.ensureGitRepo(dir);
+        expect(result).toEqual({ initialized: false, reason: "already-repo" });
+        expect(readFileSync(marker, "utf8")).toBe("keep");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("never creates or modifies .gitignore", () => {
+      const dir = mkdtempSync(join(tmpdir(), "pg-git-ignore-"));
+      try {
+        hooks.ensureGitRepo(dir);
+        expect(existsSync(join(dir, ".gitignore"))).toBe(false);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("logs and continues when git init fails — returns failed without throwing", () => {
+      const dir = mkdtempSync(join(tmpdir(), "pg-git-fail-"));
+      const failingExec = () => { throw new Error("git not found"); };
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        const result = hooks.ensureGitRepo(dir, failingExec);
+        expect(result).toEqual({ initialized: false, reason: "failed" });
+        const log = readLoudLog();
+        expect(log).toContain("git init failed");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });
