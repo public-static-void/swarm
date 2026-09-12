@@ -58,7 +58,7 @@ Covers systematic code review processes including review criteria evaluation, V-
 
 ### Instruction Framing
 
-- [ ] Skill and agent instruction files (skills/*.md, agents/*.md) pass the prohibition-lexicon scan (`npx eslint -c eslint.security.config.mjs`) with zero errors
+- [ ] When the repo has the eslint security config (`eslint.security.config.mjs`), skill and agent instruction files (skills/*.md, agents/*.md) pass the prohibition-lexicon scan (`npx eslint -c eslint.security.config.mjs`) with zero errors; otherwise the scan does not apply
 - [ ] Every behavioral instruction states the expected action directly — LLM-amplified negations stay out of executable docs
 - [ ] Grep each edited instruction file for the limiter lexicon defined in eslint.security.config.mjs and rewrite every hit to describe the desired behavior
 

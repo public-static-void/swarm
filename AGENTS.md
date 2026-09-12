@@ -33,7 +33,7 @@ Agents accept WHAT-level dispatches — each dispatch describes the artifact to 
 
 ## Test Invocation
 
-Run the suite with `npx vitest run` from the repository root — the canonical invocation. The vitest config pins collection to `tests/**` and excludes the vendored `references/` tree, so a root-level run collects exactly the swarm suite and reports its true signal. The version-controlled pre-commit hook (`.githooks/pre-commit`, wired via `core.hooksPath`) runs the same gates — `npx vitest run` + `npx eslint -c eslint.security.config.mjs` — automatically at commit time and fails the commit when a gate fails; gate execution is the hook's job, not the Committer's.
+When the repo has JS test infra (vitest config / eslint config), run the suite with `npx vitest run` from the repository root — the canonical invocation. The vitest config pins collection to `tests/**` and excludes the vendored `references/` tree, so a root-level run collects exactly the swarm suite and reports its true signal. The version-controlled pre-commit hook (`.githooks/pre-commit`, wired via `core.hooksPath`) runs the same gates — `npx vitest run` + `npx eslint -c eslint.security.config.mjs` — automatically at commit time and fails the commit when a gate fails; gate execution is the hook's job, not the Committer's. When the repo has no JS test infra, the repo's own AGENTS.md gates apply.
 
 ## Searching Gitignored Trees
 

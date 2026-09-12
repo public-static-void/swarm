@@ -60,7 +60,7 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 ## Automatic Pre-Commit Hook
 
-The repository's version-controlled pre-commit hook (`.githooks/pre-commit`, wired via `core.hooksPath` by the `prepare` script on `npm install`) runs the repo gates automatically at commit time: `npx vitest run` and `npx eslint -c eslint.security.config.mjs`. A failing gate blocks the commit. Gate execution is the hook's job — the Committer's git-only permission surface stays unchanged.
+When the repo has JS test infra (vitest config / eslint config), the repository's version-controlled pre-commit hook (`.githooks/pre-commit`, wired via `core.hooksPath` by the `prepare` script on `npm install`) runs the repo gates automatically at commit time: `npx vitest run` and `npx eslint -c eslint.security.config.mjs`. When the repo has no JS test infra, the repo's own hook (if any) runs the repo's own gates. A failing gate blocks the commit. Gate execution is the hook's job — the Committer's git-only permission surface stays unchanged.
 
 ## Semantic Commit Convention
 
