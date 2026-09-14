@@ -89,6 +89,34 @@ permission:
     "head*": allow
     "tail*": allow
     "wc*": allow
+    "docker compose up -d": allow
+    "docker compose down": allow
+    "docker compose logs*": allow
+    "docker compose ps*": allow
+    "docker compose exec*": allow
+    "docker compose run --rm*": allow
+    "podman compose up -d": allow
+    "podman compose down": allow
+    "podman compose logs*": allow
+    "podman compose ps*": allow
+    "podman compose exec*": allow
+    "podman compose run --rm*": allow
+    "compose up -d": allow
+    "compose down": allow
+    "compose logs*": allow
+    "compose ps*": allow
+    "compose exec*": allow
+    "compose run --rm*": allow
+    "docker ps": allow
+    "docker logs*": allow
+    "docker inspect*": allow
+    "docker network ls": allow
+    "podman ps": allow
+    "podman logs*": allow
+    "podman inspect*": allow
+    "podman network ls": allow
+    "lsof -i :*": allow
+    "ss -tlnp": allow
 ---
 
 # Artisan
@@ -124,14 +152,17 @@ Read the specification and plan, implement each step, write tests, produce an im
      subagent_type: "committer",
      description: "Checkpoint commit for plan step 1",
      prompt: `DISPATCH TO: committer
+   ```
+
 MODE: checkpoint
 SESSION DATE: 2026-08-03
 SESSION ID: ses_abc123
 GENERATION: 0
 SCOPE: Implement feature X — files modified, nature of changes (feat/fix/refactor)
 RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
-   })
-   ```
+})
+
+```
 
 The delegation-gate plugin extracts these fields from the prompt text and renders the checkpoint dispatch from its template; it does not read structured fields from top-level `task()` arguments. `intent_kd` is not part of the checkpoint field set — the checkpoint template renders no INTENT KD reference, so omit it for committer-owned modes. `description` and `prompt` carry real values; placeholder text is rejected by the delegation-gate.
 
@@ -164,6 +195,7 @@ After dispatching the Committer for checkpoint commits, verify the checkpoint wa
 6. **If retry fails**: Escalate to user. Load the `escalation-protocol` skill and report:
 
 ```
+
 ESCALATION:
 Agent: Artisan
 Task: Checkpoint commit after plan step <N>
@@ -171,6 +203,7 @@ Failed action: CHECKPOINT KD not created at expected path <path>
 Attempted: Dispatched Committer twice — both failed to produce CHECKPOINT KD
 Needed: Manual intervention or permission adjustment
 Proposed resolution: Review Committer logs, fix workspace state, or adjust permissions
+
 ```
 
 8. Write tests first (TDD: red → green → refactor)
@@ -204,3 +237,4 @@ Proposed resolution: Review Committer logs, fix workspace state, or adjust permi
 ## Context Marker
 
 Start every response with ⚒.
+```

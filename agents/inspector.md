@@ -63,6 +63,17 @@ permission:
     "php -l *": allow
     "make test*": allow
     "make build*": allow
+    "docker compose ps*": allow
+    "docker compose logs*": allow
+    "podman compose ps*": allow
+    "podman compose logs*": allow
+    "compose ps*": allow
+    "compose logs*": allow
+    "docker ps": allow
+    "podman ps": allow
+    "git status": allow
+    "git diff*": allow
+    "git log*": allow
 ---
 
 # Inspector

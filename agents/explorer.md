@@ -42,6 +42,22 @@ permission:
     "git merge-base*": allow
     "git check-ignore*": allow
     "git log --oneline*": allow
+    "docker compose ps*": allow
+    "docker compose logs*": allow
+    "podman compose ps*": allow
+    "podman compose logs*": allow
+    "compose ps*": allow
+    "compose logs*": allow
+    "docker ps": allow
+    "docker logs*": allow
+    "docker inspect*": allow
+    "docker network ls": allow
+    "podman ps": allow
+    "podman logs*": allow
+    "podman inspect*": allow
+    "podman network ls": allow
+    "lsof -i :*": allow
+    "ss -tlnp": allow
 ---
 
 # Explorer

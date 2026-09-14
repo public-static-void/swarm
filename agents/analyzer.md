@@ -87,6 +87,18 @@ permission:
     "go test*": allow
     "make test*": allow
     "make build*": allow
+    "docker compose logs*": allow
+    "docker compose ps*": allow
+    "podman compose logs*": allow
+    "podman compose ps*": allow
+    "compose logs*": allow
+    "compose ps*": allow
+    "docker logs*": allow
+    "docker ps": allow
+    "docker inspect*": allow
+    "podman logs*": allow
+    "podman ps": allow
+    "podman inspect*": allow
 ---
 
 # Analyzer
