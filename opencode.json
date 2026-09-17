@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
+  "plugins": [
     "./plugins/protocol-gate",
     "./plugins/delegation-gate",
     "./plugins/knowledge-gate",
