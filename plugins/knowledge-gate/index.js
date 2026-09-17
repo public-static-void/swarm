@@ -821,9 +821,7 @@ function evictOldestIfAtCap(session, agent, scope) {
 
 // --- Main plugin export ---
 
-export default {
-  id: "knowledge-gate",
-  server: async function knowledgeGateServer(input, options) {
+async function knowledgeGateServer(input, options) {
     const sessionAgentMap = new Map(); // sessionID → agent name
 
     // Project store root: captured once per server instance at init.
@@ -2641,5 +2639,86 @@ export default {
       issueMove: pluginTools.issue_move.execute
     };
   }
-};
+
+  // --- V2 entrypoint (OpenCode V2 requires id + setup/effect) ---
+  // Reuses the V1 server() closure above so memory/issue logic stays single-source.
+  async function knowledgeGateSetup(ctx) {
+    const v1 = await knowledgeGateServer(
+      { directory: ctx?.location?.directory },
+      ctx?.options
+    );
+    const agentBySession = new Map();
+    const pushSystem = (event, text) => {
+      if (!event?.system || typeof text !== "string" || !text) return;
+      try {
+        const first = event.system[0];
+        if (first && typeof first === "object" && "type" in first) {
+          event.system.push({ type: "text", text });
+        } else {
+          event.system.push(text);
+        }
+      } catch {
+        try { event.system.push(text); } catch {}
+      }
+    };
+    const handleContext = async (event) => {
+      const sessionID = event?.sessionID;
+      const agent = event?.agent;
+      if (sessionID && agent) agentBySession.set(sessionID, String(agent).toLowerCase());
+      try { await v1["chat.params"]?.({ sessionID, agent }, {}); } catch {}
+      try {
+        const out = { system: [] };
+        await v1["experimental.chat.system.transform"]?.({ sessionID, agent }, out);
+        for (const line of out.system || []) pushSystem(event, line);
+      } catch {}
+      try {
+        const tools = event?.tools;
+        if (tools) {
+          for (const toolID of Object.keys(tools)) {
+            if (!/^(memory_|issue_)/.test(toolID)) continue;
+            const current = tools[toolID] || {};
+            const output = { description: current.description, parameters: current.input };
+            await v1["tool.definition"]?.({ toolID }, output);
+            if (output.description && output.description !== current.description) {
+              tools[toolID] = { ...current, description: output.description };
+            }
+          }
+        }
+      } catch {}
+    };
+    await ctx.session.hook("context", handleContext);
+    try { await ctx.session.hook("compaction", handleContext); } catch {}
+    try { await ctx.session.hook("generate", handleContext); } catch {}
+    // Custom memory/issue tools: V1 defines them with zod schemas via the V1
+    // `tool()` helper; V2 registers via transform with JSON Schema. The V1
+    // execute functions validate internally, so expose a permissive schema
+    // and wrap execute to return V2 { content }.
+    await ctx.tool.transform((editor) => {
+      const defs = v1.tool || {};
+      for (const [name, t] of Object.entries(defs)) {
+        try {
+          editor.add({
+            name,
+            description: t?.description || name,
+            input: { type: "object", properties: {}, additionalProperties: true },
+            execute: async (input, toolCtx) => {
+              const sessionID = toolCtx?.sessionID;
+              const agent = toolCtx?.agent
+                || (sessionID && agentBySession.get(sessionID))
+                || undefined;
+              const raw = await t.execute(input || {}, { ...toolCtx, sessionID, agent });
+              const text = typeof raw === "string" ? raw : JSON.stringify(raw ?? null);
+              return { content: text };
+            },
+          });
+        } catch {}
+      }
+    });
+  }
+
+  export default {
+    id: "knowledge-gate",
+    setup: knowledgeGateSetup,
+    server: knowledgeGateServer,
+  };
 

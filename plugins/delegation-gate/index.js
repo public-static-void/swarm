@@ -577,9 +577,7 @@ RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
   }
 }
 
-export default {
-  id: "delegation-gate",
-  server: async function delegationGateServer(input, options) {
+async function delegationGateServer(input, options) {
     const config = loadConfig();
     const templates = loadTemplates(config);
 
@@ -820,4 +818,44 @@ export default {
       templates
     };
   }
-};
+
+  // --- V2 entrypoint (OpenCode V2 requires id + setup/effect) ---
+  // Reuses the V1 server() closure above so delegation logic stays single-source.
+  async function delegationGateSetup(ctx) {
+    const v1 = await delegationGateServer(
+      { directory: ctx?.location?.directory },
+      ctx?.options
+    );
+    await ctx.tool.hook("execute.before", async (event) => {
+      const args = event?.input ?? event?.args;
+      const v1Out = { args: args && typeof args === "object" ? { ...args } : args };
+      await v1["tool.execute.before"]?.(
+        { tool: event?.tool, sessionID: event?.sessionID, callID: event?.callID },
+        v1Out
+      );
+      if (event && "input" in event) event.input = v1Out.args;
+      if (event && "args" in event) event.args = v1Out.args;
+    });
+    // task-tool format hint: V1 tool.definition is async, so apply it in the
+    // async context hook (transform callbacks must stay synchronous).
+    const annotateTaskTool = async (event) => {
+      try {
+        const current = event?.tools?.task;
+        if (!current) return;
+        const output = { description: current.description };
+        await v1["tool.definition"]?.({ toolID: "task" }, output);
+        if (output.description && output.description !== current.description) {
+          event.tools.task = { ...current, description: output.description };
+        }
+      } catch {}
+    };
+    await ctx.session.hook("context", annotateTaskTool);
+    try { await ctx.session.hook("compaction", annotateTaskTool); } catch {}
+    try { await ctx.session.hook("generate", annotateTaskTool); } catch {}
+  }
+
+  export default {
+    id: "delegation-gate",
+    setup: delegationGateSetup,
+    server: delegationGateServer,
+  };
