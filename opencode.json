@@ -26,34 +26,34 @@
     },
 
     "overseer": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     },
     "explorer": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     },
     "spec-weaver": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     },
     "pathfinder": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     },
     "analyzer": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     },
     "artisan": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     },
     "committer": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     },
     "inspector": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     },
     "scribe": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     },
     "habit-builder": {
-      "model": "opencode/big-pickle"
+      "model": "opencode/muse-spark-1.3-contributor-free"
     }
   }
 }
