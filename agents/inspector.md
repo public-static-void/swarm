@@ -1,79 +1,201 @@
 ---
 description: "Reviews artifacts against SPEC and PLAN. Performs security audits. Issues PASS/FAIL verdicts with V-Model traceability. All reviews must be performed by a different agent."
 mode: subagent
-temperature: 0.1
-top_p: 0.7
 steps: 100
-permission:
-  read: allow
-  edit:
-    "*": deny
-    "knowledge/review-*.md": allow
-  glob: allow
-  grep: allow
-  task: deny
-  skill: allow
-  lsp: allow
-  question: deny
-  webfetch: allow
-  websearch: allow
-  external_directory:
-    "*": deny
-  doom_loop: deny
-  todowrite: allow
-  memory_note: allow
-  memory_note_read: allow
-  memory_notes_list: allow
-  memory_note_delete: allow
-  bash:
-    "*": deny
-    "ls*": allow
-    "cat*": allow
-    "head*": allow
-    "tail*": allow
-    "wc*": allow
-    "mkdir*": allow
-    "git status*": allow
-    "git diff*": allow
-    "git show*": allow
-    "git status -sb*": allow
-    "git log*": allow
-    "git branch*": allow
-    "git merge-base*": allow
-    "git check-ignore*": allow
-    "git log --oneline*": allow
-    "npm test*": allow
-    "npm audit*": allow
-    "npm run audit*": allow
-    "npm run lint*": allow
-    "npx eslint*": allow
-    "npx prettier*": allow
-    "npx tsc --noEmit*": allow
-    "npx vitest*": allow
-    "bun test*": allow
-    "cargo test*": allow
-    "cargo check*": allow
-    "cargo clippy*": allow
-    "cargo build*": allow
-    "cargo fmt --check*": allow
-    "cargo fmt --all --check*": allow
-    "cargo audit*": allow
-    "pytest tests*": allow
-    "go test*": allow
-    "php -l *": allow
-    "make test*": allow
-    "make build*": allow
-    "docker compose ps*": allow
-    "docker compose logs*": allow
-    "podman compose ps*": allow
-    "podman compose logs*": allow
-    "compose ps*": allow
-    "compose logs*": allow
-    "docker ps": allow
-    "podman ps": allow
-    "git status": allow
-    "git diff*": allow
-    "git log*": allow
+request:
+  body:
+    temperature: 0.1
+    top_p: 0.7
+permissions:
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: edit
+    resource: "knowledge/review-*.md"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: "*"
+    effect: deny
+  - action: skill
+    resource: "*"
+    effect: allow
+  - action: lsp
+    resource: "*"
+    effect: allow
+  - action: question
+    resource: "*"
+    effect: deny
+  - action: webfetch
+    resource: "*"
+    effect: allow
+  - action: websearch
+    resource: "*"
+    effect: allow
+  - action: external_directory
+    resource: "*"
+    effect: deny
+  - action: doom_loop
+    resource: "*"
+    effect: deny
+  - action: memory_note
+    resource: "*"
+    effect: allow
+  - action: memory_note_read
+    resource: "*"
+    effect: allow
+  - action: memory_notes_list
+    resource: "*"
+    effect: allow
+  - action: memory_note_delete
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: deny
+  - action: shell
+    resource: "ls*"
+    effect: allow
+  - action: shell
+    resource: "cat*"
+    effect: allow
+  - action: shell
+    resource: "head*"
+    effect: allow
+  - action: shell
+    resource: "tail*"
+    effect: allow
+  - action: shell
+    resource: "wc*"
+    effect: allow
+  - action: shell
+    resource: "mkdir*"
+    effect: allow
+  - action: shell
+    resource: "git status*"
+    effect: allow
+  - action: shell
+    resource: "git diff*"
+    effect: allow
+  - action: shell
+    resource: "git show*"
+    effect: allow
+  - action: shell
+    resource: "git status -sb*"
+    effect: allow
+  - action: shell
+    resource: "git log*"
+    effect: allow
+  - action: shell
+    resource: "git branch*"
+    effect: allow
+  - action: shell
+    resource: "git merge-base*"
+    effect: allow
+  - action: shell
+    resource: "git check-ignore*"
+    effect: allow
+  - action: shell
+    resource: "git log --oneline*"
+    effect: allow
+  - action: shell
+    resource: "npm test*"
+    effect: allow
+  - action: shell
+    resource: "npm audit*"
+    effect: allow
+  - action: shell
+    resource: "npm run audit*"
+    effect: allow
+  - action: shell
+    resource: "npm run lint*"
+    effect: allow
+  - action: shell
+    resource: "npx eslint*"
+    effect: allow
+  - action: shell
+    resource: "npx prettier*"
+    effect: allow
+  - action: shell
+    resource: "npx tsc --noEmit*"
+    effect: allow
+  - action: shell
+    resource: "npx vitest*"
+    effect: allow
+  - action: shell
+    resource: "bun test*"
+    effect: allow
+  - action: shell
+    resource: "cargo test*"
+    effect: allow
+  - action: shell
+    resource: "cargo check*"
+    effect: allow
+  - action: shell
+    resource: "cargo clippy*"
+    effect: allow
+  - action: shell
+    resource: "cargo build*"
+    effect: allow
+  - action: shell
+    resource: "cargo fmt --check*"
+    effect: allow
+  - action: shell
+    resource: "cargo fmt --all --check*"
+    effect: allow
+  - action: shell
+    resource: "cargo audit*"
+    effect: allow
+  - action: shell
+    resource: "pytest tests*"
+    effect: allow
+  - action: shell
+    resource: "go test*"
+    effect: allow
+  - action: shell
+    resource: "php -l *"
+    effect: allow
+  - action: shell
+    resource: "make test*"
+    effect: allow
+  - action: shell
+    resource: "make build*"
+    effect: allow
+  - action: shell
+    resource: "docker compose ps*"
+    effect: allow
+  - action: shell
+    resource: "docker compose logs*"
+    effect: allow
+  - action: shell
+    resource: "podman compose ps*"
+    effect: allow
+  - action: shell
+    resource: "podman compose logs*"
+    effect: allow
+  - action: shell
+    resource: "compose ps*"
+    effect: allow
+  - action: shell
+    resource: "compose logs*"
+    effect: allow
+  - action: shell
+    resource: "docker ps"
+    effect: allow
+  - action: shell
+    resource: "podman ps"
+    effect: allow
+  - action: shell
+    resource: "git status"
+    effect: allow
 ---
 
 # Inspector
@@ -96,7 +218,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 
 1. Load the appropriate validation skill (code-review-skill, spec-validation-skill, or plan-validation-skill). Load security-audit-skill for the security-audit portion of the review. Also load verification-gates skill as the gate framework.
 2. **One pass, two sections**: perform the standard review (below) AND the security audit (below) in the same read of the codebase, then produce a single REVIEW KD with `## Review Findings` and `## Audit` sections.
-3. **Create a TODO checklist** using `todowrite` for each gate item — prevents skipping checks mid-review.
+3. **Record an explicit verdict entry per gate item** in the REVIEW KD findings — prevents skipping checks mid-review.
 
 ### Standard Protocol
 
@@ -105,7 +227,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 3. For each criterion, record PASS or FAIL with specific evidence (file:line)
 4. **Scan modified files for code quality issues**: Check for meta comments (patterns like "here is the fix", "changed from X to Y", "this function was added to"), requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) in comments or test labels, references to internal project documentation, and commented-out code blocks. Flag commented-out code blocks and require written justification. Record any findings as failures.
 5. Categorize failures by severity: Critical, Major, Minor
-6. Check off completed items in the TODO list as you go
+6. Check off completed gate items in the findings as you go
 7. Record the security audit findings (see Audit Protocol) in the review KD's `## Audit` section
 8. Issue binary verdict: PASS (all criteria met; all findings are Minor or below) or FAIL (blocking issues)
 9. Produce the REVIEW KD with verdict, Review Findings (with traceability matrix), and Audit sections

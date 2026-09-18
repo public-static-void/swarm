@@ -1,122 +1,336 @@
 ---
 description: "Executes technical implementations per SPEC and PLAN. Writes production code, tests, and configs."
 mode: subagent
-temperature: 0.3
-top_p: 0.4
 steps: 200
-permission:
-  read: allow
-  edit: allow
-  glob: allow
-  grep: allow
-  task:
-    "*": deny
-    "committer": allow
-  skill: allow
-  lsp: allow
-  question: deny
-  webfetch: allow
-  websearch: allow
-  external_directory:
-    "*": deny
-  doom_loop: deny
-  todowrite: allow
-  memory_note: allow
-  memory_note_read: allow
-  memory_notes_list: allow
-  memory_note_delete: allow
-  bash:
-    "*": deny
-    "mkdir*": allow
-    "ls*": allow
-    "cp*": allow
-    "mv*": ask
-    "rm*": ask
-    "git status*": allow
-    "git diff*": allow
-    "git checkout*": allow
-    "git fetch*": allow
-    "git pull*": allow
-    "git log*": allow
-    "git show*": allow
-    "git status -sb*": allow
-    "git rm*": allow
-    "npm test*": allow
-    "npm audit*": allow
-    "npm run audit*": allow
-    "npm install --save-dev*": allow
-    "npm run build*": allow
-    "npm run lint*": allow
-    "npm ci*": allow
-    "bun install*": allow
-    "bun test*": allow
-    "npx vitest*": allow
-    "npx eslint*": allow
-    "npx prettier*": allow
-    "npx tsc --noEmit*": allow
-    "poetry run*": allow
-    "poetry install*": allow
-    "pytest tests*": allow
-    "cargo test*": allow
-    "cargo check*": allow
-    "cargo clippy*": allow
-    "cargo build*": allow
-    "cargo fmt*": allow
-    "cmake --build*": allow
-    "composer install*": allow
-    "make test*": allow
-    "make build*": allow
-    "mvn test*": allow
-    "mvn verify*": allow
-    "go build*": allow
-    "go fmt*": allow
-    "go get*": allow
-    "go install*": allow
-    "go mod*": allow
-    "go test*": allow
-    "go vet*": allow
-    "gradle build*": allow
-    "gradle test*": allow
-    "rustc --version*": allow
-    "rustc --edition*": allow
-    "rustup show*": allow
-    "rustup toolchain*": allow
-    "uv run*": allow
-    "uv sync*": allow
-    "pip install*": allow
-    "php -l *": allow
-    "cat*": allow
-    "head*": allow
-    "tail*": allow
-    "wc*": allow
-    "docker compose up -d": allow
-    "docker compose down": allow
-    "docker compose logs*": allow
-    "docker compose ps*": allow
-    "docker compose exec*": allow
-    "docker compose run --rm*": allow
-    "podman compose up -d": allow
-    "podman compose down": allow
-    "podman compose logs*": allow
-    "podman compose ps*": allow
-    "podman compose exec*": allow
-    "podman compose run --rm*": allow
-    "compose up -d": allow
-    "compose down": allow
-    "compose logs*": allow
-    "compose ps*": allow
-    "compose exec*": allow
-    "compose run --rm*": allow
-    "docker ps": allow
-    "docker logs*": allow
-    "docker inspect*": allow
-    "docker network ls": allow
-    "podman ps": allow
-    "podman logs*": allow
-    "podman inspect*": allow
-    "podman network ls": allow
-    "lsof -i :*": allow
-    "ss -tlnp": allow
+request:
+  body:
+    temperature: 0.3
+    top_p: 0.4
+permissions:
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: "*"
+    effect: deny
+  - action: subagent
+    resource: committer
+    effect: allow
+  - action: skill
+    resource: "*"
+    effect: allow
+  - action: lsp
+    resource: "*"
+    effect: allow
+  - action: question
+    resource: "*"
+    effect: deny
+  - action: webfetch
+    resource: "*"
+    effect: allow
+  - action: websearch
+    resource: "*"
+    effect: allow
+  - action: external_directory
+    resource: "*"
+    effect: deny
+  - action: doom_loop
+    resource: "*"
+    effect: deny
+  - action: memory_note
+    resource: "*"
+    effect: allow
+  - action: memory_note_read
+    resource: "*"
+    effect: allow
+  - action: memory_notes_list
+    resource: "*"
+    effect: allow
+  - action: memory_note_delete
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: deny
+  - action: shell
+    resource: "mkdir*"
+    effect: allow
+  - action: shell
+    resource: "ls*"
+    effect: allow
+  - action: shell
+    resource: "cp*"
+    effect: allow
+  - action: shell
+    resource: "mv*"
+    effect: ask
+  - action: shell
+    resource: "rm*"
+    effect: ask
+  - action: shell
+    resource: "git status*"
+    effect: allow
+  - action: shell
+    resource: "git diff*"
+    effect: allow
+  - action: shell
+    resource: "git checkout*"
+    effect: allow
+  - action: shell
+    resource: "git fetch*"
+    effect: allow
+  - action: shell
+    resource: "git pull*"
+    effect: allow
+  - action: shell
+    resource: "git log*"
+    effect: allow
+  - action: shell
+    resource: "git show*"
+    effect: allow
+  - action: shell
+    resource: "git status -sb*"
+    effect: allow
+  - action: shell
+    resource: "git rm*"
+    effect: allow
+  - action: shell
+    resource: "npm test*"
+    effect: allow
+  - action: shell
+    resource: "npm audit*"
+    effect: allow
+  - action: shell
+    resource: "npm run audit*"
+    effect: allow
+  - action: shell
+    resource: "npm install --save-dev*"
+    effect: allow
+  - action: shell
+    resource: "npm run build*"
+    effect: allow
+  - action: shell
+    resource: "npm run lint*"
+    effect: allow
+  - action: shell
+    resource: "npm ci*"
+    effect: allow
+  - action: shell
+    resource: "bun install*"
+    effect: allow
+  - action: shell
+    resource: "bun test*"
+    effect: allow
+  - action: shell
+    resource: "npx vitest*"
+    effect: allow
+  - action: shell
+    resource: "npx eslint*"
+    effect: allow
+  - action: shell
+    resource: "npx prettier*"
+    effect: allow
+  - action: shell
+    resource: "npx tsc --noEmit*"
+    effect: allow
+  - action: shell
+    resource: "poetry run*"
+    effect: allow
+  - action: shell
+    resource: "poetry install*"
+    effect: allow
+  - action: shell
+    resource: "pytest tests*"
+    effect: allow
+  - action: shell
+    resource: "cargo test*"
+    effect: allow
+  - action: shell
+    resource: "cargo check*"
+    effect: allow
+  - action: shell
+    resource: "cargo clippy*"
+    effect: allow
+  - action: shell
+    resource: "cargo build*"
+    effect: allow
+  - action: shell
+    resource: "cargo fmt*"
+    effect: allow
+  - action: shell
+    resource: "cmake --build*"
+    effect: allow
+  - action: shell
+    resource: "composer install*"
+    effect: allow
+  - action: shell
+    resource: "make test*"
+    effect: allow
+  - action: shell
+    resource: "make build*"
+    effect: allow
+  - action: shell
+    resource: "mvn test*"
+    effect: allow
+  - action: shell
+    resource: "mvn verify*"
+    effect: allow
+  - action: shell
+    resource: "go build*"
+    effect: allow
+  - action: shell
+    resource: "go fmt*"
+    effect: allow
+  - action: shell
+    resource: "go get*"
+    effect: allow
+  - action: shell
+    resource: "go install*"
+    effect: allow
+  - action: shell
+    resource: "go mod*"
+    effect: allow
+  - action: shell
+    resource: "go test*"
+    effect: allow
+  - action: shell
+    resource: "go vet*"
+    effect: allow
+  - action: shell
+    resource: "gradle build*"
+    effect: allow
+  - action: shell
+    resource: "gradle test*"
+    effect: allow
+  - action: shell
+    resource: "rustc --version*"
+    effect: allow
+  - action: shell
+    resource: "rustc --edition*"
+    effect: allow
+  - action: shell
+    resource: "rustup show*"
+    effect: allow
+  - action: shell
+    resource: "rustup toolchain*"
+    effect: allow
+  - action: shell
+    resource: "uv run*"
+    effect: allow
+  - action: shell
+    resource: "uv sync*"
+    effect: allow
+  - action: shell
+    resource: "pip install*"
+    effect: allow
+  - action: shell
+    resource: "php -l *"
+    effect: allow
+  - action: shell
+    resource: "cat*"
+    effect: allow
+  - action: shell
+    resource: "head*"
+    effect: allow
+  - action: shell
+    resource: "tail*"
+    effect: allow
+  - action: shell
+    resource: "wc*"
+    effect: allow
+  - action: shell
+    resource: "docker compose up -d"
+    effect: allow
+  - action: shell
+    resource: "docker compose down"
+    effect: allow
+  - action: shell
+    resource: "docker compose logs*"
+    effect: allow
+  - action: shell
+    resource: "docker compose ps*"
+    effect: allow
+  - action: shell
+    resource: "docker compose exec*"
+    effect: allow
+  - action: shell
+    resource: "docker compose run --rm*"
+    effect: allow
+  - action: shell
+    resource: "podman compose up -d"
+    effect: allow
+  - action: shell
+    resource: "podman compose down"
+    effect: allow
+  - action: shell
+    resource: "podman compose logs*"
+    effect: allow
+  - action: shell
+    resource: "podman compose ps*"
+    effect: allow
+  - action: shell
+    resource: "podman compose exec*"
+    effect: allow
+  - action: shell
+    resource: "podman compose run --rm*"
+    effect: allow
+  - action: shell
+    resource: "compose up -d"
+    effect: allow
+  - action: shell
+    resource: "compose down"
+    effect: allow
+  - action: shell
+    resource: "compose logs*"
+    effect: allow
+  - action: shell
+    resource: "compose ps*"
+    effect: allow
+  - action: shell
+    resource: "compose exec*"
+    effect: allow
+  - action: shell
+    resource: "compose run --rm*"
+    effect: allow
+  - action: shell
+    resource: "docker ps"
+    effect: allow
+  - action: shell
+    resource: "docker logs*"
+    effect: allow
+  - action: shell
+    resource: "docker inspect*"
+    effect: allow
+  - action: shell
+    resource: "docker network ls"
+    effect: allow
+  - action: shell
+    resource: "podman ps"
+    effect: allow
+  - action: shell
+    resource: "podman logs*"
+    effect: allow
+  - action: shell
+    resource: "podman inspect*"
+    effect: allow
+  - action: shell
+    resource: "podman network ls"
+    effect: allow
+  - action: shell
+    resource: "lsof -i :*"
+    effect: allow
+  - action: shell
+    resource: "ss -tlnp"
+    effect: allow
 ---
 
 # Artisan
@@ -138,7 +352,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 1. Load the appropriate domain skill (testing-skill, frontend-skill, backend-skill, data-engineering-skill, or cicd-skill)
 2. Scan project for existing conventions — detect tech stack, file structure, coding patterns
 3. Read SPEC KD and PLAN KD — extract acceptance criteria and task assignments
-4. Create a TODO checklist using `todowrite` for each acceptance criterion. This prevents critical requirements from drifting out of focus mid-task.
+4. Track each acceptance criterion in the milestone's impl KD — check each off as verified implementation evidence lands in the KD. This prevents critical requirements from drifting out of focus mid-task.
 5. **Verify-Output Rule (mandatory)** — Verify before writing. Any commit hash, artifact existence, test result, or file-state claim reported in a KD must be ground-truth verified before it is written: `git log`/`git show` for commits, `read`/`glob` from disk for files, an actual run for test suites. Write every reported hash from verified `git log`/`git show` output; report a blocked commit as "UNCOMMITTED" with the working-tree state. Canonical one-liner: verify critical edits with `git diff`.
 6. **Gate-Verification Rule (mandatory)** — Run the repository gates and confirm they pass BEFORE dispatching the Committer for a checkpoint commit. Use the appropriate tools based on the actual tech stack of the actual current project. A green gate run is the precondition for every Committer dispatch; the pre-commit hook enforces the same gates automatically at commit time. Report the verified green run in the impl KD.
 7. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD, named milestone-scoped per the naming contract: `knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the dispatched milestone ID is the first token after `impl-` (e.g. `knowledge/impl-M4-checkoff-ses_abc-gen0.md`). Writing that impl KD checks the milestone off in the registry (protocol-gate auto-advances it to checked-off — the KD on disk is the verifiable evidence of completion). The all-checked-off gate reads those impl KDs back: the SWARM→VERIFY transition fires when every registry milestone row is checked-off AND its impl KD is on disk, so each impl KD you write is also the gate input that eventually releases the lifecycle to VERIFY. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with the delegation fields as `KEY: value` lines inside the `prompt` parameter (see Dispatching Committer). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification).
@@ -207,7 +421,7 @@ Proposed resolution: Review Committer logs, fix workspace state, or adjust permi
 ```
 
 8. Write tests first (TDD: red → green → refactor)
-9. Check off completed items in the TODO list as you go
+9. Check off completed acceptance criteria in the impl KD as you go
 10. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
 
 - **Comment Rationale**: Remove comments that restate what the code does — git history tracks changes

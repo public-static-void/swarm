@@ -1,104 +1,282 @@
 ---
 description: "Performs deep-dive investigations and root cause analysis."
 mode: subagent
-temperature: 0.1
-top_p: 0.4
 steps: 100
-permission:
-  read: allow
-  edit:
-    "*": deny
-    "knowledge/analysis-*.md": allow
-  glob: allow
-  grep: allow
-  task: deny
-  skill: allow
-  lsp: deny
-  question: deny
-  webfetch: allow
-  websearch: allow
-  external_directory:
-    "*": deny
-  doom_loop: deny
-  todowrite: allow
-  memory_note: allow
-  memory_note_read: allow
-  memory_notes_list: allow
-  memory_note_delete: allow
-  bash:
-    "*": deny
-    "npm test*": allow
-    "npm audit*": allow
-    "npm run audit*": allow
-    "npm run lint*": allow
-    "bun test*": allow
-    "cargo test*": allow
-    "cargo check*": allow
-    "cargo clippy*": allow
-    "cargo build*": allow
-    "cargo fmt --all --check*": allow
-    "pip install*": allow
-    "poetry run*": allow
-    "poetry install*": allow
-    "mvn test*": allow
-    "mvn verify*": allow
-    "gradle build*": allow
-    "gradle test*": allow
-    "cmake --build*": allow
-    "composer install*": allow
-    "rustc --version*": allow
-    "rustc --edition*": allow
-    "rustup show*": allow
-    "rustup toolchain*": allow
-    "uv run*": allow
-    "uv sync*": allow
-    "php -l *": allow
-    "go fmt*": allow
-    "go vet*": allow
-    "ls*": allow
-    "find*": allow
-    "cat*": allow
-    "head*": allow
-    "tail*": allow
-    "wc*": allow
-    "sort*": allow
-    "uniq*": allow
-    "diff*": allow
-    "tree*": allow
-    "which*": allow
-    "type*": allow
-    "stat*": allow
-    "du*": allow
-    "df*": allow
-    "mkdir*": allow
-    "git status*": allow
-    "git diff*": allow
-    "git show*": allow
-    "git log*": allow
-    "git branch*": allow
-    "git merge-base*": allow
-    "git check-ignore*": allow
-    "git log --oneline*": allow
-    "npx vitest*": allow
-    "npx eslint*": allow
-    "npx prettier*": allow
-    "npx tsc --noEmit*": allow
-    "pytest tests*": allow
-    "go test*": allow
-    "make test*": allow
-    "make build*": allow
-    "docker compose logs*": allow
-    "docker compose ps*": allow
-    "podman compose logs*": allow
-    "podman compose ps*": allow
-    "compose logs*": allow
-    "compose ps*": allow
-    "docker logs*": allow
-    "docker ps": allow
-    "docker inspect*": allow
-    "podman logs*": allow
-    "podman ps": allow
-    "podman inspect*": allow
+request:
+  body:
+    temperature: 0.1
+    top_p: 0.4
+permissions:
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: edit
+    resource: "knowledge/analysis-*.md"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: "*"
+    effect: deny
+  - action: skill
+    resource: "*"
+    effect: allow
+  - action: lsp
+    resource: "*"
+    effect: deny
+  - action: question
+    resource: "*"
+    effect: deny
+  - action: webfetch
+    resource: "*"
+    effect: allow
+  - action: websearch
+    resource: "*"
+    effect: allow
+  - action: external_directory
+    resource: "*"
+    effect: deny
+  - action: doom_loop
+    resource: "*"
+    effect: deny
+  - action: memory_note
+    resource: "*"
+    effect: allow
+  - action: memory_note_read
+    resource: "*"
+    effect: allow
+  - action: memory_notes_list
+    resource: "*"
+    effect: allow
+  - action: memory_note_delete
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: deny
+  - action: shell
+    resource: "npm test*"
+    effect: allow
+  - action: shell
+    resource: "npm audit*"
+    effect: allow
+  - action: shell
+    resource: "npm run audit*"
+    effect: allow
+  - action: shell
+    resource: "npm run lint*"
+    effect: allow
+  - action: shell
+    resource: "bun test*"
+    effect: allow
+  - action: shell
+    resource: "cargo test*"
+    effect: allow
+  - action: shell
+    resource: "cargo check*"
+    effect: allow
+  - action: shell
+    resource: "cargo clippy*"
+    effect: allow
+  - action: shell
+    resource: "cargo build*"
+    effect: allow
+  - action: shell
+    resource: "cargo fmt --all --check*"
+    effect: allow
+  - action: shell
+    resource: "pip install*"
+    effect: allow
+  - action: shell
+    resource: "poetry run*"
+    effect: allow
+  - action: shell
+    resource: "poetry install*"
+    effect: allow
+  - action: shell
+    resource: "mvn test*"
+    effect: allow
+  - action: shell
+    resource: "mvn verify*"
+    effect: allow
+  - action: shell
+    resource: "gradle build*"
+    effect: allow
+  - action: shell
+    resource: "gradle test*"
+    effect: allow
+  - action: shell
+    resource: "cmake --build*"
+    effect: allow
+  - action: shell
+    resource: "composer install*"
+    effect: allow
+  - action: shell
+    resource: "rustc --version*"
+    effect: allow
+  - action: shell
+    resource: "rustc --edition*"
+    effect: allow
+  - action: shell
+    resource: "rustup show*"
+    effect: allow
+  - action: shell
+    resource: "rustup toolchain*"
+    effect: allow
+  - action: shell
+    resource: "uv run*"
+    effect: allow
+  - action: shell
+    resource: "uv sync*"
+    effect: allow
+  - action: shell
+    resource: "php -l *"
+    effect: allow
+  - action: shell
+    resource: "go fmt*"
+    effect: allow
+  - action: shell
+    resource: "go vet*"
+    effect: allow
+  - action: shell
+    resource: "ls*"
+    effect: allow
+  - action: shell
+    resource: "find*"
+    effect: allow
+  - action: shell
+    resource: "cat*"
+    effect: allow
+  - action: shell
+    resource: "head*"
+    effect: allow
+  - action: shell
+    resource: "tail*"
+    effect: allow
+  - action: shell
+    resource: "wc*"
+    effect: allow
+  - action: shell
+    resource: "sort*"
+    effect: allow
+  - action: shell
+    resource: "uniq*"
+    effect: allow
+  - action: shell
+    resource: "diff*"
+    effect: allow
+  - action: shell
+    resource: "tree*"
+    effect: allow
+  - action: shell
+    resource: "which*"
+    effect: allow
+  - action: shell
+    resource: "type*"
+    effect: allow
+  - action: shell
+    resource: "stat*"
+    effect: allow
+  - action: shell
+    resource: "du*"
+    effect: allow
+  - action: shell
+    resource: "df*"
+    effect: allow
+  - action: shell
+    resource: "mkdir*"
+    effect: allow
+  - action: shell
+    resource: "git status*"
+    effect: allow
+  - action: shell
+    resource: "git diff*"
+    effect: allow
+  - action: shell
+    resource: "git show*"
+    effect: allow
+  - action: shell
+    resource: "git log*"
+    effect: allow
+  - action: shell
+    resource: "git branch*"
+    effect: allow
+  - action: shell
+    resource: "git merge-base*"
+    effect: allow
+  - action: shell
+    resource: "git check-ignore*"
+    effect: allow
+  - action: shell
+    resource: "git log --oneline*"
+    effect: allow
+  - action: shell
+    resource: "npx vitest*"
+    effect: allow
+  - action: shell
+    resource: "npx eslint*"
+    effect: allow
+  - action: shell
+    resource: "npx prettier*"
+    effect: allow
+  - action: shell
+    resource: "npx tsc --noEmit*"
+    effect: allow
+  - action: shell
+    resource: "pytest tests*"
+    effect: allow
+  - action: shell
+    resource: "go test*"
+    effect: allow
+  - action: shell
+    resource: "make test*"
+    effect: allow
+  - action: shell
+    resource: "make build*"
+    effect: allow
+  - action: shell
+    resource: "docker compose logs*"
+    effect: allow
+  - action: shell
+    resource: "docker compose ps*"
+    effect: allow
+  - action: shell
+    resource: "podman compose logs*"
+    effect: allow
+  - action: shell
+    resource: "podman compose ps*"
+    effect: allow
+  - action: shell
+    resource: "compose logs*"
+    effect: allow
+  - action: shell
+    resource: "compose ps*"
+    effect: allow
+  - action: shell
+    resource: "docker logs*"
+    effect: allow
+  - action: shell
+    resource: "docker ps"
+    effect: allow
+  - action: shell
+    resource: "docker inspect*"
+    effect: allow
+  - action: shell
+    resource: "podman logs*"
+    effect: allow
+  - action: shell
+    resource: "podman ps"
+    effect: allow
+  - action: shell
+    resource: "podman inspect*"
+    effect: allow
 ---
 
 # Analyzer

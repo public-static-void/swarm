@@ -1,75 +1,192 @@
 ---
 description: "Git lifecycle management: pre-flight setup (init, branch, dirty resolution, gitignore) and semantic commits (staging, batching, verifying)."
 mode: subagent
-temperature: 0.1
-top_p: 0.6
 steps: 50
-permission:
-  read:
-    "*": deny
-    "knowledge/preflight-*.md": allow
-    "knowledge/checkpoint-*.md": allow
-    "knowledge/cleanup-*.md": allow
-    "knowledge/intent-*.md": allow
-    "knowledge/impl-*.md": allow
-    "knowledge/plan-*.md": allow
-    "knowledge/spec-*.md": allow
-    "knowledge/composed-*.md": allow
-    "knowledge/process-*.md": allow
-    "knowledge/report-*.md": allow
-    ".ignore": allow
-    ".gitignore": allow
-    ".gitkeep": allow
-  edit:
-    "*": deny
-    "knowledge/preflight-*.md": allow
-    "knowledge/checkpoint-*.md": allow
-    "knowledge/cleanup-*.md": allow
-    ".ignore": allow
-    ".gitignore": allow
-    ".gitkeep": allow
-  glob: allow
-  grep: allow
-  task: deny
-  skill: allow
-  lsp: deny
-  question: deny
-  webfetch: deny
-  websearch: deny
-  external_directory:
-    "*": deny
-  doom_loop: deny
-  todowrite: allow
-  memory_note: allow
-  memory_note_read: allow
-  memory_notes_list: allow
-  memory_note_delete: allow
-  bash:
-    "*": deny
-    "ls*": allow
-    "git status*": allow
-    "git log*": allow
-    "git diff*": allow
-    "git add*": allow
-    "git add -f*": deny
-    "git commit*": allow
-    "git show*": allow
-    "git reset*": allow
-    "git init": allow
-    "git branch*": allow
-    "git checkout*": allow
-    "git pull*": allow
-    "git fetch*": allow
-    "git remote*": allow
-    "git rev-list*": allow
-    "git rebase*": allow
-    "git rebase -i*": deny
-    "git reflog*": allow
-    "git cherry-pick*": allow
-    "git stash*": allow
-    "git merge*": allow
-    "git push*": allow
-    "git rm*": allow
+request:
+  body:
+    temperature: 0.1
+    top_p: 0.6
+permissions:
+  - action: read
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "knowledge/preflight-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/checkpoint-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/cleanup-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/intent-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/impl-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/plan-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/spec-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/composed-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/process-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/report-*.md"
+    effect: allow
+  - action: read
+    resource: ".ignore"
+    effect: allow
+  - action: read
+    resource: ".gitignore"
+    effect: allow
+  - action: read
+    resource: ".gitkeep"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: edit
+    resource: "knowledge/preflight-*.md"
+    effect: allow
+  - action: edit
+    resource: "knowledge/checkpoint-*.md"
+    effect: allow
+  - action: edit
+    resource: "knowledge/cleanup-*.md"
+    effect: allow
+  - action: edit
+    resource: ".ignore"
+    effect: allow
+  - action: edit
+    resource: ".gitignore"
+    effect: allow
+  - action: edit
+    resource: ".gitkeep"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: "*"
+    effect: deny
+  - action: skill
+    resource: "*"
+    effect: allow
+  - action: lsp
+    resource: "*"
+    effect: deny
+  - action: question
+    resource: "*"
+    effect: deny
+  - action: webfetch
+    resource: "*"
+    effect: deny
+  - action: websearch
+    resource: "*"
+    effect: deny
+  - action: external_directory
+    resource: "*"
+    effect: deny
+  - action: doom_loop
+    resource: "*"
+    effect: deny
+  - action: memory_note
+    resource: "*"
+    effect: allow
+  - action: memory_note_read
+    resource: "*"
+    effect: allow
+  - action: memory_notes_list
+    resource: "*"
+    effect: allow
+  - action: memory_note_delete
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: deny
+  - action: shell
+    resource: "ls*"
+    effect: allow
+  - action: shell
+    resource: "git status*"
+    effect: allow
+  - action: shell
+    resource: "git log*"
+    effect: allow
+  - action: shell
+    resource: "git diff*"
+    effect: allow
+  - action: shell
+    resource: "git add*"
+    effect: allow
+  - action: shell
+    resource: "git add -f*"
+    effect: deny
+  - action: shell
+    resource: "git commit*"
+    effect: allow
+  - action: shell
+    resource: "git show*"
+    effect: allow
+  - action: shell
+    resource: "git reset*"
+    effect: allow
+  - action: shell
+    resource: "git init"
+    effect: allow
+  - action: shell
+    resource: "git branch*"
+    effect: allow
+  - action: shell
+    resource: "git checkout*"
+    effect: allow
+  - action: shell
+    resource: "git pull*"
+    effect: allow
+  - action: shell
+    resource: "git fetch*"
+    effect: allow
+  - action: shell
+    resource: "git remote*"
+    effect: allow
+  - action: shell
+    resource: "git rev-list*"
+    effect: allow
+  - action: shell
+    resource: "git rebase*"
+    effect: allow
+  - action: shell
+    resource: "git rebase -i*"
+    effect: deny
+  - action: shell
+    resource: "git reflog*"
+    effect: allow
+  - action: shell
+    resource: "git cherry-pick*"
+    effect: allow
+  - action: shell
+    resource: "git stash*"
+    effect: allow
+  - action: shell
+    resource: "git merge*"
+    effect: allow
+  - action: shell
+    resource: "git push*"
+    effect: allow
+  - action: shell
+    resource: "git rm*"
+    effect: allow
 ---
 
 # Committer

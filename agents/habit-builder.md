@@ -1,47 +1,108 @@
 ---
 description: "Process friction analysis and reporting. Collects, classifies, and documents friction findings from KDs during the EVOLVE phase."
 mode: subagent
-temperature: 0.2
-top_p: 0.6
 steps: 100
-permission:
-  read:
-    "*": deny
-    "knowledge/*.md": allow
-    "knowledge/issues/*.md": deny
-    "knowledge/memory/*.json": deny
-  edit:
-    "*": deny
-    "knowledge/process-*.md": allow
-    "knowledge/issues/*.md": deny
-  glob: allow
-  grep: allow
-  task: deny
-  skill: allow
-  lsp: deny
-  question: deny
-  webfetch: allow
-  websearch: allow
-  external_directory:
-    "*": deny
-  doom_loop: deny
-  todowrite: allow
-  memory_note: allow
-  memory_note_read: allow
-  memory_notes_list: allow
-  memory_note_delete: allow
-  issue_write: allow
-  issue_update: allow
-  issue_move: allow
-  issue_read: allow
-  bash:
-    "*": deny
-    "ls*": allow
-    "cat*": allow
-    "head*": allow
-    "tail*": allow
-    "wc*": allow
-    "mkdir*": allow
+request:
+  body:
+    temperature: 0.2
+    top_p: 0.6
+permissions:
+  - action: read
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "knowledge/*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/issues/*.md"
+    effect: deny
+  - action: read
+    resource: "knowledge/memory/*.json"
+    effect: deny
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: edit
+    resource: "knowledge/process-*.md"
+    effect: allow
+  - action: edit
+    resource: "knowledge/issues/*.md"
+    effect: deny
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: "*"
+    effect: deny
+  - action: skill
+    resource: "*"
+    effect: allow
+  - action: lsp
+    resource: "*"
+    effect: deny
+  - action: question
+    resource: "*"
+    effect: deny
+  - action: webfetch
+    resource: "*"
+    effect: allow
+  - action: websearch
+    resource: "*"
+    effect: allow
+  - action: external_directory
+    resource: "*"
+    effect: deny
+  - action: doom_loop
+    resource: "*"
+    effect: deny
+  - action: memory_note
+    resource: "*"
+    effect: allow
+  - action: memory_note_read
+    resource: "*"
+    effect: allow
+  - action: memory_notes_list
+    resource: "*"
+    effect: allow
+  - action: memory_note_delete
+    resource: "*"
+    effect: allow
+  - action: issue_write
+    resource: "*"
+    effect: allow
+  - action: issue_update
+    resource: "*"
+    effect: allow
+  - action: issue_move
+    resource: "*"
+    effect: allow
+  - action: issue_read
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: deny
+  - action: shell
+    resource: "ls*"
+    effect: allow
+  - action: shell
+    resource: "cat*"
+    effect: allow
+  - action: shell
+    resource: "head*"
+    effect: allow
+  - action: shell
+    resource: "tail*"
+    effect: allow
+  - action: shell
+    resource: "wc*"
+    effect: allow
+  - action: shell
+    resource: "mkdir*"
+    effect: allow
 ---
 
 # Habit Builder

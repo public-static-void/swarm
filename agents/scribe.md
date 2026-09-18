@@ -1,53 +1,126 @@
 ---
 description: "Captures and organizes knowledge across swarm lifecycle. Synthesizes context from completed phases and maintains knowledge continuity between agents."
 mode: subagent
-temperature: 0.2
-top_p: 0.6
 steps: 100
-permission:
-  read:
-    "*": deny
-    "knowledge/*.md": allow
-    "knowledge/memory/*.json": deny
-    "knowledge/issues/*.md": deny
-    "README.md": allow
-    "AGENTS.md": allow
-  edit:
-    "*": deny
-    "knowledge/*.md": allow
-    "knowledge/memory/*.json": deny
-    "knowledge/issues/*.md": deny
-    "README.md": allow
-    "AGENTS.md": allow
-  glob: allow
-  grep: allow
-  task: deny
-  skill: allow
-  lsp: deny
-  question: deny
-  webfetch: allow
-  websearch: allow
-  external_directory:
-    "*": deny
-  doom_loop: deny
-  todowrite: allow
-  memory_search: allow
-  memory_write: allow
-  memory_update: allow
-  memory_delete: allow
-  memory_note: allow
-  memory_note_read: allow
-  memory_notes_list: allow
-  memory_note_delete: allow
-  bash:
-    "*": deny
-    "ls*": allow
-    "cat*": allow
-    "head*": allow
-    "tail*": allow
-    "wc*": allow
-    "mkdir*": allow
-    "git status*": allow
+request:
+  body:
+    temperature: 0.2
+    top_p: 0.6
+permissions:
+  - action: read
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "knowledge/*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/memory/*.json"
+    effect: deny
+  - action: read
+    resource: "knowledge/issues/*.md"
+    effect: deny
+  - action: read
+    resource: "README.md"
+    effect: allow
+  - action: read
+    resource: "AGENTS.md"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: edit
+    resource: "knowledge/*.md"
+    effect: allow
+  - action: edit
+    resource: "knowledge/memory/*.json"
+    effect: deny
+  - action: edit
+    resource: "knowledge/issues/*.md"
+    effect: deny
+  - action: edit
+    resource: "README.md"
+    effect: allow
+  - action: edit
+    resource: "AGENTS.md"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: "*"
+    effect: deny
+  - action: skill
+    resource: "*"
+    effect: allow
+  - action: lsp
+    resource: "*"
+    effect: deny
+  - action: question
+    resource: "*"
+    effect: deny
+  - action: webfetch
+    resource: "*"
+    effect: allow
+  - action: websearch
+    resource: "*"
+    effect: allow
+  - action: external_directory
+    resource: "*"
+    effect: deny
+  - action: doom_loop
+    resource: "*"
+    effect: deny
+  - action: memory_search
+    resource: "*"
+    effect: allow
+  - action: memory_write
+    resource: "*"
+    effect: allow
+  - action: memory_update
+    resource: "*"
+    effect: allow
+  - action: memory_delete
+    resource: "*"
+    effect: allow
+  - action: memory_note
+    resource: "*"
+    effect: allow
+  - action: memory_note_read
+    resource: "*"
+    effect: allow
+  - action: memory_notes_list
+    resource: "*"
+    effect: allow
+  - action: memory_note_delete
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: deny
+  - action: shell
+    resource: "ls*"
+    effect: allow
+  - action: shell
+    resource: "cat*"
+    effect: allow
+  - action: shell
+    resource: "head*"
+    effect: allow
+  - action: shell
+    resource: "tail*"
+    effect: allow
+  - action: shell
+    resource: "wc*"
+    effect: allow
+  - action: shell
+    resource: "mkdir*"
+    effect: allow
+  - action: shell
+    resource: "git status*"
+    effect: allow
 ---
 
 # Scribe
