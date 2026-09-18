@@ -15,7 +15,7 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
 
 ## Commit Protocol
 
-1. **Create TODO checklist** — `todowrite` for each commit group. Prevents mixing unrelated changes.
+1. **Group commits** — one coherent group per CLEANUP KD scope. Prevents mixing unrelated changes.
 
 2. **Verify working branch** — Run `git branch --show-current`. If the branch is `develop`/`main`/`master`/`staging` (shared integration branch), load the escalation-protocol skill and escalate via ESCALATION format; otherwise proceed.
 
@@ -51,7 +51,7 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
 
 9. **Stage** — Select one coherent group, verify clean working tree, review the batch's full content with `git diff -- <files>` limited to the batch's files, then `git add <files>`.
 
-10. **Commit** — Check off TODO item, verify staged diff non-empty (`git diff --cached --stat`), write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled.
+10. **Commit** — verify staged diff non-empty (`git diff --cached --stat`), write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled.
 
 11. **Verify** — `git show --stat -1` to confirm.
 
