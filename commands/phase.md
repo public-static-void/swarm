@@ -41,7 +41,7 @@ When `/phase INTENT` is issued, the override target requires **fresh** evidence 
 
 ## Restart catch-up
 
-After a restart, the gate may advance one phase per tool call (`write`, `glob`, `todowrite`, `task`) across phases whose KDs already exist on disk. This is disk-evidence catch-up, not a bug: the state file restores the phase, and each disk check re-reads `knowledge/` — pre-existing KDs from before the restart are legitimate evidence, so the lifecycle walks forward one hop per call until it reaches the phase whose KD is missing. With `PROTOCOL_GATE_DEBUG=1`, catch-up hops are logged as `RESTART_CATCH_UP: <from> → <to> on pre-existing KD`.
+After a restart, the gate may advance one phase per tool call (`write`, `glob`, `skill`, `task`) across phases whose KDs already exist on disk. This is disk-evidence catch-up, not a bug: the state file restores the phase, and each disk check re-reads `knowledge/` — pre-existing KDs from before the restart are legitimate evidence, so the lifecycle walks forward one hop per call until it reaches the phase whose KD is missing. With `PROTOCOL_GATE_DEBUG=1`, catch-up hops are logged as `RESTART_CATCH_UP: <from> → <to> on pre-existing KD`.
 
 `/phase <phase>` pins a phase at any point — a manual override takes precedence over catch-up. The one-shot auto-advance announcement (`Phase auto-advanced: <from> → <to>`) explains each hop as it happens, so a "phase jumped" read during catch-up is accumulated disk evidence, not a skipped phase.
 
