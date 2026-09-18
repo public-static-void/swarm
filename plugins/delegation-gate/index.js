@@ -19,6 +19,7 @@
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+import { Plugin } from "@opencode/plugin";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -577,7 +578,45 @@ RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
   }
 }
 
-export default {
+const _pluginExport = {
+  ...Plugin.define({
+    id: "delegation-gate",
+    async setup(ctx) {
+      // Dual-support: reuse the V1 server() hook implementations via a thin
+      // V2 event adapter so validation/rendering logic stays single-sourced.
+      const v1 = await _pluginExport.server(
+        { directory: ctx.location?.directory },
+        ctx.options
+      );
+      const v1Before = v1["tool.execute.before"];
+      await ctx.tool.hook("execute.before", async (event) => {
+        // V1 task tool is V2 task/subagent tool; normalize to "task" for V1 logic.
+        if (event.tool !== "task" && event.tool !== "subagent") return;
+        if (typeof event.input !== "object" || event.input === null) return;
+        // V2 renamed the target-agent arg `subagent_type` → `agent`. The V1
+        // extraction below reads `subagent_type`, so alias it when only the
+        // V2 name is present (explicit `subagent_type` still wins).
+        if (event.input.subagent_type === undefined && event.input.agent !== undefined) {
+          event.input.subagent_type = event.input.agent;
+        }
+        await v1Before(
+          { tool: "task", sessionID: event.sessionID, callID: event.id },
+          { args: event.input }
+        );
+      });
+      // Static pre-compose hint: V2 equivalent of V1 tool.definition hook.
+      await ctx.tool.transform((editor) => {
+        for (const id of ["task", "subagent"]) {
+          const t = editor.get(id);
+          if (t && !String(t.description || "").includes("Delegation Prompt Format:")) {
+            editor.update(id, (d) => {
+              d.description = (d.description || "") + dispatcherFormatHint();
+            });
+          }
+        }
+      });
+    },
+  }),
   id: "delegation-gate",
   server: async function delegationGateServer(input, options) {
     const config = loadConfig();
@@ -821,3 +860,5 @@ export default {
     };
   }
 };
+
+export default _pluginExport;

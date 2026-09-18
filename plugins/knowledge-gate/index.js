@@ -16,10 +16,200 @@
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join, dirname, basename, resolve } from "path";
 import { fileURLToPath } from "url";
-// tool() registers custom tools with the runtime via the plugin `tool` hook
-// map — the documented mechanism (Hooks.tool) that puts memory_search and
-// memory_write into the agent's callable tool list.
-import { tool } from "@opencode-ai/plugin";
+// tool() identity wrapper with chainable schema stubs. The V1 `@opencode-ai/plugin`
+// package is not resolvable from the V2 server runtime, and its tool() is only
+// ever `input => input` plus zod builders whose output no code path parses
+// (validation is manual via validateMemoryEntry/validateIssue). The stubs keep
+// the pluginTools definitions (description/args/execute) intact for both the
+// V1 server() return shape and the V2 setup() adapter below.
+const schemaStub = new Proxy(function () {}, {
+  get: (_t, prop) => {
+    if (prop === Symbol.toPrimitive) return () => 0;
+    return (..._a) => schemaStub;
+  },
+  apply: () => schemaStub,
+});
+const tool = (input) => input;
+tool.schema = new Proxy({}, { get: () => (..._a) => schemaStub });
+import { Plugin } from "@opencode/plugin";
+
+// V2 JSON Schemas for the 12 knowledge-gate tools (V1 tool.schema.* builders
+// have no V2 equivalent; shapes mirror the V1 args definitions above).
+const V2_SCHEMAS = {
+  memory_search: {
+    type: "object",
+    properties: {
+      tags: { type: "array", items: { type: "string" }, description: "Tags to match against entry tags" },
+      topic: { type: "string", description: "Topic substring to match" },
+      limit: { type: "integer", description: "Maximum number of results (default 5)" },
+      store: { type: "string", enum: ["project", "generic", "swarm"], description: "Restrict search to one store" },
+    },
+    additionalProperties: false,
+  },
+  memory_write: {
+    type: "object",
+    properties: {
+      entry: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          source_kd: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          topic: { type: "string" },
+          insight: { type: "string" },
+          type: { type: "string", enum: ["fact", "decision", "pattern", "warning", "context"] },
+          created: { type: "string" },
+          session: { type: "string" },
+          version: { type: "string" },
+        },
+        required: ["source_kd", "tags", "topic", "insight", "type", "created", "session", "version"],
+        additionalProperties: true,
+      },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      project_name: { type: "string" },
+    },
+    required: ["entry", "scope"],
+    additionalProperties: false,
+  },
+  memory_update: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      entry: {
+        type: "object",
+        properties: {
+          topic: { type: "string" },
+          insight: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          source_kd: { type: "string" },
+          type: { type: "string", enum: ["fact", "decision", "pattern", "warning", "context"] },
+          superseded_by: { type: ["string", "null"] },
+        },
+        additionalProperties: true,
+      },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  },
+  memory_delete: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  },
+  issue_write: {
+    type: "object",
+    properties: {
+      issue: {
+        type: "object",
+        properties: {
+          id: { type: "integer" },
+          title: { type: "string" },
+          severity: { type: "string", enum: ["high", "medium", "low"] },
+          status: { type: "string", enum: ["open"] },
+          created: { type: "string" },
+          session: { type: "string" },
+          assigned_to: { type: ["string", "null"] },
+          tags: { type: "array", items: { type: "string" } },
+          scope: { type: "string", enum: ["project", "generic", "swarm"] },
+          description: { type: "string" },
+          source_kd_reference: { type: "string" },
+          recommended_fix: { type: "string" },
+          acceptance_criteria: { type: "string" },
+        },
+        required: ["title", "severity", "status", "created", "session", "scope"],
+        additionalProperties: true,
+      },
+      project_name: { type: "string" },
+    },
+    required: ["issue"],
+    additionalProperties: false,
+  },
+  issue_update: {
+    type: "object",
+    properties: {
+      id: { type: "integer" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      changes: {
+        type: "object",
+        properties: {
+          status: { type: "string", enum: ["open", "resolved"] },
+          resolution: { type: "string" },
+          assigned_to: { type: ["string", "null"] },
+        },
+        additionalProperties: true,
+      },
+      project_name: { type: "string" },
+    },
+    required: ["id", "scope", "changes"],
+    additionalProperties: false,
+  },
+  issue_move: {
+    type: "object",
+    properties: {
+      id: { type: "integer" },
+      from_scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      to_scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      reason: { type: "string" },
+      project_name: { type: "string" },
+    },
+    required: ["id", "from_scope", "to_scope"],
+    additionalProperties: false,
+  },
+  issue_read: {
+    type: "object",
+    properties: {
+      id: { type: "integer" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      project_name: { type: "string" },
+    },
+    required: ["id", "scope"],
+    additionalProperties: false,
+  },
+  memory_note: {
+    type: "object",
+    properties: {
+      topic: { type: "string" },
+      content: { type: "string" },
+      tags: { type: "array", items: { type: "string" } },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    required: ["topic", "content"],
+    additionalProperties: false,
+  },
+  memory_note_read: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      agent: { type: "string" },
+      session: { type: "string" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    additionalProperties: false,
+  },
+  memory_notes_list: {
+    type: "object",
+    properties: {
+      agent: { type: "string" },
+      session: { type: "string" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    additionalProperties: false,
+  },
+  memory_note_delete: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  },
+};
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -821,7 +1011,74 @@ function evictOldestIfAtCap(session, agent, scope) {
 
 // --- Main plugin export ---
 
-export default {
+const _pluginExport = {
+  ...Plugin.define({
+    id: "knowledge-gate",
+    async setup(ctx) {
+      // Dual-support: reuse V1 server() implementations via adapters.
+      const v1 = await _pluginExport.server(
+        { directory: ctx.location?.directory },
+        ctx.options
+      );
+      const v1Tools = v1.tool || {};
+      const v1ChatParams = v1["chat.params"];
+      const v1System = v1["experimental.chat.system.transform"];
+      // Register the 12 custom tools through the V2 transform API.
+      await ctx.tool.transform((editor) => {
+        for (const [name, v1tool] of Object.entries(v1Tools)) {
+          const schema = V2_SCHEMAS[name];
+          if (!schema) continue;
+          const desc = typeof v1tool?.description === "string" ? v1tool.description : name;
+          const exec = v1tool?.execute;
+          if (typeof exec !== "function") continue;
+          try {
+            editor.add({
+              name,
+              description: desc,
+              input: schema,
+              async execute(input, toolCtx) {
+                const out = await exec(input ?? {}, {
+                  agent: toolCtx?.agent,
+                  sessionID: toolCtx?.sessionID,
+                });
+                return { content: typeof out === "string" ? out : JSON.stringify(out) };
+              },
+            });
+          } catch (_) {
+            // Editor validation is fail-closed per tool; skip invalid ones.
+          }
+        }
+      });
+      // Agent tracking + memory/issue injection on every model request.
+      await ctx.session.hook("context", async (event) => {
+        if (v1ChatParams) {
+          await v1ChatParams(
+            { sessionID: event.sessionID, agent: event.agent },
+            {}
+          );
+        }
+        if (v1System) {
+          const collected = [];
+          await v1System(
+            { sessionID: event.sessionID, agent: event.agent },
+            { system: collected }
+          );
+          for (const text of collected) {
+            event.system.push({ type: "text", text: String(text) });
+          }
+        }
+        // Keep V2 tool descriptions aligned with the V1 tool.definition text.
+        if (event.tools) {
+          for (const [name, v1tool] of Object.entries(v1Tools)) {
+            const t = event.tools[name];
+            if (t && typeof v1tool?.description === "string") {
+              t.description = v1tool.description;
+            }
+          }
+        }
+      });
+    },
+  }),
   id: "knowledge-gate",
   server: async function knowledgeGateServer(input, options) {
     const sessionAgentMap = new Map(); // sessionID → agent name
@@ -2642,4 +2899,6 @@ export default {
     };
   }
 };
+
+export default _pluginExport;
 
