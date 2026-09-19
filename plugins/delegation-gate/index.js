@@ -415,10 +415,11 @@ function isBareKDPath(prompt) {
 
 // Collects every MILESTONE ID field value from a prompt — one entry per
 // `MILESTONE ID:` / `MILESTONE_ID:` line, with Markdown bold markers stripped.
-// A comma inside a single value means multiple milestones were crammed into one
-// field; both cases are rejected as MULTI_MILESTONE.
+// Mirrors protocol-gate's collectMilestoneIds so both gates agree on
+// cardinality. A comma inside a single value means multiple milestones were
+// crammed into one field; both cases are rejected as MULTI_MILESTONE.
 function collectMilestoneIds(prompt) {
-  if (!prompt) return [];
+  if (typeof prompt !== "string") return [];
   const ids = [];
   for (const line of prompt.split("\n")) {
     const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?MILESTONE[. _]ID(?:\*\*)?:\s*(.*)/i);
