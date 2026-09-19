@@ -61,8 +61,8 @@ describe("Delegation-Gate Plugin", () => {
       const result = await pluginModule.server({}, {});
       expect(typeof result["tool.execute.before"]).toBe("function");
 
-      const module = require("../../../plugins/delegation-gate/index.js");
-      const namedExports = Object.keys(module).filter(k => k !== "default" && k !== "__esModule");
+      const ns = await import("../../../plugins/delegation-gate/index.js");
+      const namedExports = Object.keys(ns).filter(k => k !== "default");
       expect(namedExports).toHaveLength(0);
     });
   });
