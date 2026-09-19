@@ -61,8 +61,8 @@ describe("Delegation-Gate Plugin", () => {
       const result = await pluginModule.server({}, {});
       expect(typeof result["tool.execute.before"]).toBe("function");
 
-      const module = require("../../../plugins/delegation-gate/index.js");
-      const namedExports = Object.keys(module).filter(k => k !== "default" && k !== "__esModule");
+      const ns = await import("../../../plugins/delegation-gate/index.js");
+      const namedExports = Object.keys(ns).filter(k => k !== "default");
       expect(namedExports).toHaveLength(0);
     });
   });
@@ -1357,6 +1357,55 @@ RESULT KD: knowledge/exploration-foo.md`;
       const output = { args: { prompt, subagent_type: "custom-agent" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       expect(output.args.subagent_type).toBe("custom-agent");
+    });
+  });
+
+  describe("V2 Agent Arg Alias", () => {
+    async function setupV2Capture() {
+      const captured = {};
+      const mockCtx = {
+        location: { directory: "/tmp" },
+        options: {},
+        tool: {
+          hook: async (name, fn) => { captured[name] = fn; },
+          transform: async () => {},
+        },
+      };
+      await pluginModule.setup(mockCtx);
+      return captured;
+    }
+
+    it("accepts the V2 `agent` arg where V1 used `subagent_type` (trace replay)", async () => {
+      const captured = await setupV2Capture();
+      // Exact shape from the live trace: V2 subagent tool, agent by name,
+      // all prompt fields present, no subagent_type.
+      const input = {
+        agent: "committer",
+        description: "Preflight git setup",
+        prompt: "MODE: preflight\nINTENT KD: knowledge/intent-foo.md\nRESULT KD: knowledge/preflight-foo.md\nSESSION DATE: 2026-09-18\nSESSION ID: ses_trace\nGENERATION: 0\nSCOPE: Prepare clean git working state",
+      };
+      await captured["execute.before"]({ tool: "subagent", sessionID: "ses_trace", id: "c1", input });
+      expect(input.prompt).toContain("DISPATCH TO: committer");
+      expect(input.prompt).toContain("knowledge/preflight-foo.md");
+    });
+
+    it("explicit subagent_type still wins over V2 agent", async () => {
+      const captured = await setupV2Capture();
+      const input = {
+        agent: "committer",
+        subagent_type: "explorer",
+        description: "",
+        prompt: "MODE: explore\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-09-18\nRESULT KD: knowledge/exploration-foo.md",
+      };
+      await captured["execute.before"]({ tool: "subagent", sessionID: "s1", id: "c1", input });
+      expect(input.prompt).toContain("DISPATCH TO: explorer");
+    });
+
+    it("ignores non-task tools in the V2 adapter", async () => {
+      const captured = await setupV2Capture();
+      const input = { agent: "committer", prompt: "MODE: preflight" };
+      await captured["execute.before"]({ tool: "read", sessionID: "s1", id: "c1", input });
+      expect(input.prompt).toBe("MODE: preflight");
     });
   });
 

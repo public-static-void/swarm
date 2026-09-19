@@ -13,13 +13,197 @@
 //    and injects them into the Overseer's system prompt for Triage Notes
 //
 // Debug logging: set KNOWLEDGE_GATE_DEBUG=1 in environment to enable.
+// Writes to plugins/logs/knowledge-gate.log; set KNOWLEDGE_GATE_LOG_DIR to
+// override the directory — the seam the test suite uses to isolate writes.
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join, dirname, basename, resolve } from "path";
 import { fileURLToPath } from "url";
-// tool() registers custom tools with the runtime via the plugin `tool` hook
-// map — the documented mechanism (Hooks.tool) that puts memory_search and
-// memory_write into the agent's callable tool list.
-import { tool } from "@opencode-ai/plugin";
+// Tool definitions below are plain { description, args, execute } objects —
+// the legacy V1 plugin dependency is removed from package.json, so there is
+// no wrapper import.
+// Each `args` points at its V2_SCHEMAS entry (the JSON schema the V2 setup()
+// adapter registers), so the schema lives in exactly one place; validation
+// itself is manual via validateMemoryEntry/validateIssue. The shape stays
+// intact for both the server() return map and the V2 setup() adapter below.
+import { Plugin } from "@opencode/plugin";
+
+// V2 JSON Schemas for the 12 knowledge-gate tools, also referenced as each
+// tool definition's `args` below.
+const V2_SCHEMAS = {
+  memory_search: {
+    type: "object",
+    properties: {
+      tags: { type: "array", items: { type: "string" }, description: "Tags to match against entry tags" },
+      topic: { type: "string", description: "Topic substring to match" },
+      limit: { type: "integer", description: "Maximum number of results (default 5)" },
+      store: { type: "string", enum: ["project", "generic", "swarm"], description: "Restrict search to one store" },
+    },
+    additionalProperties: false,
+  },
+  memory_write: {
+    type: "object",
+    properties: {
+      entry: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          source_kd: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          topic: { type: "string" },
+          insight: { type: "string" },
+          type: { type: "string", enum: ["fact", "decision", "pattern", "warning", "context"] },
+          created: { type: "string" },
+          session: { type: "string" },
+          version: { type: "string" },
+        },
+        required: ["source_kd", "tags", "topic", "insight", "type", "created", "session", "version"],
+        additionalProperties: true,
+      },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      project_name: { type: "string" },
+    },
+    required: ["entry", "scope"],
+    additionalProperties: false,
+  },
+  memory_update: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      entry: {
+        type: "object",
+        properties: {
+          topic: { type: "string" },
+          insight: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          source_kd: { type: "string" },
+          type: { type: "string", enum: ["fact", "decision", "pattern", "warning", "context"] },
+          superseded_by: { type: ["string", "null"] },
+        },
+        additionalProperties: true,
+      },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  },
+  memory_delete: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  },
+  issue_write: {
+    type: "object",
+    properties: {
+      issue: {
+        type: "object",
+        properties: {
+          id: { type: "integer" },
+          title: { type: "string" },
+          severity: { type: "string", enum: ["high", "medium", "low"] },
+          status: { type: "string", enum: ["open"] },
+          created: { type: "string" },
+          session: { type: "string" },
+          assigned_to: { type: ["string", "null"] },
+          tags: { type: "array", items: { type: "string" } },
+          scope: { type: "string", enum: ["project", "generic", "swarm"] },
+          description: { type: "string" },
+          source_kd_reference: { type: "string" },
+          recommended_fix: { type: "string" },
+          acceptance_criteria: { type: "string" },
+        },
+        required: ["title", "severity", "status", "created", "session", "scope"],
+        additionalProperties: true,
+      },
+      project_name: { type: "string" },
+    },
+    required: ["issue"],
+    additionalProperties: false,
+  },
+  issue_update: {
+    type: "object",
+    properties: {
+      id: { type: "integer" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      changes: {
+        type: "object",
+        properties: {
+          status: { type: "string", enum: ["open", "resolved"] },
+          resolution: { type: "string" },
+          assigned_to: { type: ["string", "null"] },
+        },
+        additionalProperties: true,
+      },
+      project_name: { type: "string" },
+    },
+    required: ["id", "scope", "changes"],
+    additionalProperties: false,
+  },
+  issue_move: {
+    type: "object",
+    properties: {
+      id: { type: "integer" },
+      from_scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      to_scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      reason: { type: "string" },
+      project_name: { type: "string" },
+    },
+    required: ["id", "from_scope", "to_scope"],
+    additionalProperties: false,
+  },
+  issue_read: {
+    type: "object",
+    properties: {
+      id: { type: "integer" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+      project_name: { type: "string" },
+    },
+    required: ["id", "scope"],
+    additionalProperties: false,
+  },
+  memory_note: {
+    type: "object",
+    properties: {
+      topic: { type: "string" },
+      content: { type: "string" },
+      tags: { type: "array", items: { type: "string" } },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    required: ["topic", "content"],
+    additionalProperties: false,
+  },
+  memory_note_read: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      agent: { type: "string" },
+      session: { type: "string" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    additionalProperties: false,
+  },
+  memory_notes_list: {
+    type: "object",
+    properties: {
+      agent: { type: "string" },
+      session: { type: "string" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    additionalProperties: false,
+  },
+  memory_note_delete: {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      scope: { type: "string", enum: ["project", "generic", "swarm"] },
+    },
+    required: ["id"],
+    additionalProperties: false,
+  },
+};
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -96,8 +280,10 @@ function resolveMemoryScope(explicitScope) {
 let _logFile = null;
 
 function getLogFile() {
-  if (!_logFile) {
-    const logDir = join(PLUGIN_DIR, "..", "logs");
+  const logDir = process.env.KNOWLEDGE_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
+  // Re-bind the cached path when the env seam moves the log directory — a
+  // stale cache would keep appending to the previously resolved path.
+  if (!_logFile || dirname(_logFile) !== logDir) {
     try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
     _logFile = join(logDir, "knowledge-gate.log");
   }
@@ -1289,14 +1475,9 @@ async function knowledgeGateServer(input, options) {
     // runtime passes it per call), falling back to the session map when the
     // context omits it.
     const pluginTools = {
-      memory_search: tool({
+      memory_search: {
         description: "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5), store (optional project|generic|swarm — restricts search to one store). Returns JSON array of matching entries, each carrying a store field.",
-        args: {
-          tags: tool.schema.array(tool.schema.string()).optional().describe("Tags to match against entry tags"),
-          topic: tool.schema.string().optional().describe("Topic substring to match"),
-          limit: tool.schema.number().int().optional().describe("Maximum number of results (default 5)"),
-          store: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Restrict search to one store — omitted searches all stores")
-        },
+        args: V2_SCHEMAS.memory_search,
         async execute(args, context) {
           const agent = (context?.agent || sessionAgentMap.get(context?.sessionID) || "unknown").toLowerCase();
           const query = {
@@ -1310,24 +1491,10 @@ async function knowledgeGateServer(input, options) {
           debug(`memory_search: ${results.length} result(s) returned for agent="${agent}"`);
           return JSON.stringify(results, null, 2);
         }
-      }),
-      memory_write: tool({
+      },
+      memory_write: {
         description: "Write a validated memory entry to knowledge/memory/. Only Scribe may write. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version), scope (required project|generic|swarm), project_name (optional — overrides the project subfolder when scope is project). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk.",
-        args: {
-          entry: tool.schema.object({
-            id: tool.schema.string().optional().describe("Auto-assigned if omitted"),
-            source_kd: tool.schema.string().describe("Source KD path"),
-            tags: tool.schema.array(tool.schema.string()).describe("2-8 tags from controlled vocabulary"),
-            topic: tool.schema.string().describe("Topic ≤100 chars"),
-            insight: tool.schema.string().describe("Insight ≤500 chars"),
-            type: tool.schema.enum(["fact", "decision", "pattern", "warning", "context"]).describe("Entry type"),
-            created: tool.schema.string().describe("ISO 8601 timestamp"),
-            session: tool.schema.string().describe("Session ID"),
-            version: tool.schema.string().describe("Schema version (1.0.0)")
-          }),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store classification — Scribe must classify the entry as project, generic, or swarm"),
-          project_name: tool.schema.string().optional().describe("Project subfolder name when scope is project — overrides the workspace basename")
-        },
+        args: V2_SCHEMAS.memory_write,
         async execute(args, context) {
           const entry = args.entry;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
@@ -1419,21 +1586,10 @@ async function knowledgeGateServer(input, options) {
             return JSON.stringify({ error: `Failed to write memory entry: ${e.message}` });
           }
         }
-      }),
-      memory_update: tool({
+      },
+      memory_update: {
         description: "Update an existing memory entry in knowledge/memory/. Only Scribe may update. Args: id (string MEM-XXX), entry (object with any of: topic, insight, tags, source_kd, type, superseded_by), scope (optional project|generic|swarm). Preserves id/created/session/version. Setting superseded_by to a MEM-XXX ID tombstones the entry: it is excluded from future memory_search results. Passing \"\" or null as superseded_by clears the tombstone and restores the entry to search visibility.",
-        args: {
-          id: tool.schema.string().describe("Memory entry ID to update (MEM-XXX)"),
-          entry: tool.schema.object({
-            topic: tool.schema.string().optional().describe("Topic ≤100 chars"),
-            insight: tool.schema.string().optional().describe("Insight ≤500 chars"),
-            tags: tool.schema.array(tool.schema.string()).optional().describe("2-8 tags from controlled vocabulary"),
-            source_kd: tool.schema.string().optional().describe("Source KD path"),
-            type: tool.schema.enum(["fact", "decision", "pattern", "warning", "context"]).optional().describe("Entry type"),
-            superseded_by: tool.schema.string().optional().nullable().describe("Optional tombstone: MEM-XXX ID of the replacing entry; pass \"\" or null to clear")
-          }),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to search — omitted searches all stores by id")
-        },
+        args: V2_SCHEMAS.memory_update,
         async execute(args, context) {
           const { id, entry, scope: explicitScope } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
@@ -1525,13 +1681,10 @@ async function knowledgeGateServer(input, options) {
             return JSON.stringify({ error: `Failed to update memory entry: ${e.message}` });
           }
         }
-      }),
-      memory_delete: tool({
+      },
+      memory_delete: {
         description: "Delete a memory entry from knowledge/memory/. Only Scribe may delete. Args: id (string MEM-XXX), scope (optional project|generic|swarm). Removes entry-{num}.json permanently — there is no VCS recovery (knowledge/ is gitignored). Prefer memory_update with superseded_by for supersession.",
-        args: {
-          id: tool.schema.string().describe("Memory entry ID to delete (MEM-XXX)"),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to search — omitted searches all stores by id")
-        },
+        args: V2_SCHEMAS.memory_delete,
         async execute(args, context) {
           const { id, scope: explicitScope } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
@@ -1579,27 +1732,10 @@ async function knowledgeGateServer(input, options) {
             return JSON.stringify({ error: `Failed to delete memory entry: ${e.message}` });
           }
         }
-      }),
-      issue_write: tool({
+      },
+      issue_write: {
         description: "Write a validated issue to the store named by scope (project|generic|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria), project_name (optional — overrides the project subfolder when scope is project). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.",
-        args: {
-          issue: tool.schema.object({
-            id: tool.schema.number().int().optional().describe("Per-store numeric ID — auto-assigned if omitted"),
-            title: tool.schema.string().describe("Issue title"),
-            severity: tool.schema.enum(["high", "medium", "low"]).describe("Severity"),
-            status: tool.schema.enum(["open"]).describe("Creation status (open only)"),
-            created: tool.schema.string().describe("Created date YYYY-MM-DD"),
-            session: tool.schema.string().describe("Session ID"),
-            assigned_to: tool.schema.string().optional().nullable().describe("Assigned agent or role"),
-            tags: tool.schema.array(tool.schema.string()).optional().describe("Tags"),
-            scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store classification — required"),
-            description: tool.schema.string().optional().describe("Issue description"),
-            source_kd_reference: tool.schema.string().optional().describe("Source KD reference"),
-            recommended_fix: tool.schema.string().optional().describe("Recommended fix"),
-            acceptance_criteria: tool.schema.string().optional().describe("Acceptance criteria")
-          }),
-          project_name: tool.schema.string().optional().describe("Project subfolder name when scope is project — overrides the workspace basename")
-        },
+        args: V2_SCHEMAS.issue_write,
         async execute(args, context) {
           const issue = args.issue;
           const project_name = args.project_name;
@@ -1663,19 +1799,10 @@ async function knowledgeGateServer(input, options) {
             return JSON.stringify({ error: `Failed to write issue: ${e.message}` });
           }
         }
-      }),
-      issue_update: tool({
+      },
+      issue_update: {
         description: "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to), project_name (optional — overrides the project subfolder when scope is project). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.",
-        args: {
-          id: tool.schema.number().int().describe("Numeric issue ID to update"),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store to search — required"),
-          changes: tool.schema.object({
-            status: tool.schema.enum(["open", "resolved"]).optional().describe("New status (resolved closes the issue)"),
-            resolution: tool.schema.string().optional().describe("Resolution text appended as a ## Resolution (YYYY-MM-DD) section"),
-            assigned_to: tool.schema.string().optional().nullable().describe("New assigned_to value")
-          }),
-          project_name: tool.schema.string().optional().describe("Project subfolder name when scope is project — overrides the workspace basename")
-        },
+        args: V2_SCHEMAS.issue_update,
         async execute(args, context) {
           const { id, scope, changes, project_name } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
@@ -1777,16 +1904,10 @@ async function knowledgeGateServer(input, options) {
             return JSON.stringify({ error: `Failed to update issue ${id}: ${e.message}` });
           }
         }
-      }),
-      issue_move: tool({
+      },
+      issue_move: {
         description: "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string), project_name (optional — overrides the project subfolder when to_scope is project). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. If the target store already holds an issue with the same ID, a fresh target-store ID is assigned and the original ID is preserved as moved_from in frontmatter. Returns { message, id, source_id, path } or { error }.",
-        args: {
-          id: tool.schema.number().int().describe("Issue ID to move (numeric)"),
-          from_scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Source store scope"),
-          to_scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Target store scope"),
-          reason: tool.schema.string().optional().describe("Reason for the move (optional)"),
-          project_name: tool.schema.string().optional().describe("Project subfolder name when to_scope is project — overrides the workspace basename")
-        },
+        args: V2_SCHEMAS.issue_move,
         async execute(args, context) {
           const { id, from_scope, to_scope, reason, project_name } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
@@ -1907,14 +2028,10 @@ async function knowledgeGateServer(input, options) {
             reason: reason || null
           });
         }
-      }),
-      issue_read: tool({
+      },
+      issue_read: {
         description: "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.",
-        args: {
-          id: tool.schema.number().int().describe("Numeric issue ID to read"),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).describe("Store to read from — required"),
-          project_name: tool.schema.string().optional().describe("Project subfolder name when scope is project — overrides the workspace basename")
-        },
+        args: V2_SCHEMAS.issue_read,
         async execute(args, context) {
           const { id, scope, project_name } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
@@ -1962,15 +2079,10 @@ async function knowledgeGateServer(input, options) {
           debug(`issue_read: read ${filePath} for agent="${agent}"`);
           return JSON.stringify(issue, null, 2);
         }
-      }),
-      memory_note: tool({
+      },
+      memory_note: {
         description: "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings), scope (optional project|generic|swarm). Returns { message, id } or { error }.",
-        args: {
-          topic: tool.schema.string().describe("Topic ≤100 chars"),
-          content: tool.schema.string().describe("Content ≤2000 chars"),
-          tags: tool.schema.array(tool.schema.string()).optional().describe("Optional tags 0-5"),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to route the note to — defaults to caller context scope, then 'swarm'")
-        },
+        args: V2_SCHEMAS.memory_note,
         async execute(args, context) {
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
           const session = context.sessionID || "";
@@ -2031,15 +2143,10 @@ async function knowledgeGateServer(input, options) {
             return JSON.stringify({ error: `Failed to write short-term note: ${e.message}` });
           }
         }
-      }),
-      memory_note_read: tool({
+      },
+      memory_note_read: {
         description: "Read short-term memory notes from knowledge/short-term/. Args: id (string ST-...) to read one note; agent and/or session (strings) to read a namespace (Scribe only — the promotion path). Agents may read only their own notes; Scribe may read any agent's notes. Returns the note object, an array of note objects, or { error }.",
-        args: {
-          id: tool.schema.string().optional().describe("Note ID (ST-{session}-{agent}-{NNN})"),
-          agent: tool.schema.string().optional().describe("Agent namespace to read (Scribe only)"),
-          session: tool.schema.string().optional().describe("Session for the namespace read, defaults to the current session (Scribe only)"),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to read from — defaults to 'swarm'")
-        },
+        args: V2_SCHEMAS.memory_note_read,
         async execute(args, context) {
           const caller = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
           const currentSession = context.sessionID || "";
@@ -2085,14 +2192,10 @@ async function knowledgeGateServer(input, options) {
 
           return JSON.stringify({ error: "Specify id or agent to read" });
         }
-      }),
-      memory_notes_list: tool({
+      },
+      memory_notes_list: {
         description: "List short-term memory notes in knowledge/short-term/. Returns a summary array [{ id, agent, created, topic }]. Non-Scribe agents see only their own notes in the current session; Scribe sees any agent's notes — or all agents' notes in a session when no agent is given.",
-        args: {
-          agent: tool.schema.string().optional().describe("Agent namespace to list (Scribe only)"),
-          session: tool.schema.string().optional().describe("Session to list, defaults to the current session (Scribe only)"),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to list from — defaults to 'swarm'")
-        },
+        args: V2_SCHEMAS.memory_notes_list,
         async execute(args, context) {
           const caller = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
           const currentSession = context.sessionID || "";
@@ -2138,13 +2241,10 @@ async function knowledgeGateServer(input, options) {
           const notes = readNotesFromDisk(targetSession, targetAgent, scope);
           return JSON.stringify(notes.map(toSummary), null, 2);
         }
-      }),
-      memory_note_delete: tool({
+      },
+      memory_note_delete: {
         description: "Delete a short-term memory note from knowledge/short-term/. Args: id (string ST-...). The owner may delete own notes; Scribe may delete any agent's notes. Removes note-{NNN}.json permanently — the short-term store is session-scoped scratch state.",
-        args: {
-          id: tool.schema.string().describe("Note ID to delete (ST-{session}-{agent}-{NNN})"),
-          scope: tool.schema.enum(["project", "generic", "swarm"]).optional().describe("Store to delete from — defaults to 'swarm'")
-        },
+        args: V2_SCHEMAS.memory_note_delete,
         async execute(args, context) {
           const { id, scope: explicitScope } = args;
           const scope = (explicitScope === "project" || explicitScope === "generic" || explicitScope === "swarm")
@@ -2173,7 +2273,7 @@ async function knowledgeGateServer(input, options) {
             return JSON.stringify({ error: `Failed to delete short-term note: ${e.message}` });
           }
         }
-      })
+      }
     };
 
     // Promotion helper (copy-then-clear): reads every short-term
@@ -2721,4 +2821,6 @@ async function knowledgeGateServer(input, options) {
     setup: knowledgeGateSetup,
     server: knowledgeGateServer,
   };
+
+export default _pluginExport;
 

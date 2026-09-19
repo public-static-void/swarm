@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 import delegationPlugin from "../../../plugins/delegation-gate/index.js";
 
@@ -9,7 +9,7 @@ import delegationPlugin from "../../../plugins/delegation-gate/index.js";
 // one-off accepts (VERIFY dual-KD, cleanup write+edit, generation-0/n,
 // milestone report-survivor, force-advance paths, tool.definition phases,
 // system.transform phases, dual-KD+generation, milestone-ID parsers,
-// milestone reopen+immutability, todowrite advancement pair) are merged into
+// milestone reopen+immutability, skill-driven advancement checks) are merged into
 // parameterized tests; the duplicated "saves state after advancement" test was
 // removed as covered by the state-persistence cases. The GENERATION-fallback
 // test relocated here from the delegation-gate suite — it reads the
@@ -28,8 +28,12 @@ describe("Protocol-Gate Plugin", () => {
   let delegationLogDir;
   let priorDelegationLogDir;
   let priorDelegationDebug;
-  const logPath = join(process.cwd(), "plugins", "logs", "protocol-gate.log");
-  const KEYWORDS = ["INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"];
+  // Log isolation: protocol-gate debug writes go to a per-run temp dir via
+  // the PROTOCOL_GATE_LOG_DIR seam — never the real log file on disk.
+  let protocolLogDir;
+  let priorProtocolLogDir;
+  let priorProtocolDebug;
+  let logPath;
   const usedSids = new Set();
   let hooks;
 
@@ -39,9 +43,20 @@ describe("Protocol-Gate Plugin", () => {
     stateDir = join(tempRoot, "state");
     process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = knowledgeDir;
     process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+    // Bind the module-level log cache to the temp dir BEFORE the first
+    // server() call so debug writes never append to the real
+    // protocol-gate.log on disk — even when PROTOCOL_GATE_DEBUG is set
+    // in the environment. The flag is asserted here so every server() call
+    // deterministically exercises the debug path and proves the redirect.
+    priorProtocolLogDir = process.env.PROTOCOL_GATE_LOG_DIR;
+    priorProtocolDebug = process.env.PROTOCOL_GATE_DEBUG;
+    protocolLogDir = mkdtempSync(join(tmpdir(), "pg-log-"));
+    process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+    process.env.PROTOCOL_GATE_DEBUG = "1";
+    logPath = join(protocolLogDir, "protocol-gate.log");
     // Log isolation: the relocated cross-plugin test invokes the
     // delegation-gate server() + hooks, whose debug writes would append to the
-    // real plugins/logs/delegation-gate.log whenever DELEGATION_GATE_DEBUG is
+    // real delegation-gate log file whenever DELEGATION_GATE_DEBUG is
     // set (.env sets it). Point DELEGATION_GATE_LOG_DIR at a per-run temp dir
     // BEFORE the first delegationPlugin.server() call so the delegation-gate
     // module cache binds to the temp path — the same seam the delegation-gate
@@ -57,11 +72,16 @@ describe("Protocol-Gate Plugin", () => {
   afterAll(() => {
     delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
     delete process.env.PROTOCOL_GATE_STATE_DIR;
+    if (priorProtocolLogDir === undefined) delete process.env.PROTOCOL_GATE_LOG_DIR;
+    else process.env.PROTOCOL_GATE_LOG_DIR = priorProtocolLogDir;
+    if (priorProtocolDebug === undefined) delete process.env.PROTOCOL_GATE_DEBUG;
+    else process.env.PROTOCOL_GATE_DEBUG = priorProtocolDebug;
     if (priorDelegationLogDir === undefined) delete process.env.DELEGATION_GATE_LOG_DIR;
     else process.env.DELEGATION_GATE_LOG_DIR = priorDelegationLogDir;
     if (priorDelegationDebug === undefined) delete process.env.DELEGATION_GATE_DEBUG;
     else process.env.DELEGATION_GATE_DEBUG = priorDelegationDebug;
     rmSync(delegationLogDir, { recursive: true, force: true });
+    rmSync(protocolLogDir, { recursive: true, force: true });
     rmSync(tempRoot, { recursive: true, force: true });
   });
 
@@ -152,11 +172,13 @@ ${body}
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
   }
 
-  // todowrite with all 12 lifecycle keywords — the lifecycle kickoff signal.
-  async function todo(s, callID) {
+  // skill disk-check driver — skill is allowlisted in every phase with no
+  // handler side effects, so its calls purely re-evaluate lifecycle state
+  // against KD evidence on disk.
+  async function tick(s, callID) {
     await hooks["tool.execute.before"](
-      { tool: "todowrite", sessionID: s, callID },
-      { args: { todos: KEYWORDS.map(k => ({ content: k })) } }
+      { tool: "skill", sessionID: s, callID },
+      { args: {} }
     );
   }
 
@@ -167,6 +189,10 @@ ${body}
     rmSync(stateDir, { recursive: true, force: true });
     mkdirSync(knowledgeDir, { recursive: true });
     mkdirSync(stateDir, { recursive: true });
+    // Re-assert the suite seams after any test that temporarily overrides
+    // them — getLogFile() re-resolves the cached path when the env dir differs.
+    process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+    if (!process.env.PROTOCOL_GATE_DEBUG) process.env.PROTOCOL_GATE_DEBUG = "1";
     hooks = await pluginModule.server({}, {});
   });
 
@@ -176,55 +202,55 @@ ${body}
     usedSids.clear();
   });
 
-  // Drives a full 12-phase lifecycle in one session via todowrite disk checks.
+  // Drives a full 12-phase lifecycle in one session via skill disk checks.
   // KDs are created with the -gen{gen} suffix (legacy naming when gen === 0).
   // When fromIntent is true the session is already at INTENT (e.g. after a
-  // /phase recovery) and the opening todowrite is skipped.
+  // /phase recovery) and the opening check is skipped.
   async function runLifecycle(s, gen, fromIntent = false) {
     const suffix = gen === 0 ? `-${s}.md` : `-${s}-gen${gen}.md`;
     if (!fromIntent) {
-      await todo(s, "c1");
+      // Fresh sessions initialize at INTENT via chat.params reconcile.
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
     }
     createKD(`intent-a${suffix}`);
-    await todo(s, "c2");
+    await tick(s, "c2");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
     createKD(`preflight-a${suffix}`);
-    await todo(s, "c3"); // PREFLIGHT skip consumed
+    await tick(s, "c3"); // PREFLIGHT skip consumed
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
-    await todo(s, "c4");
+    await tick(s, "c4");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
     createKD(`exploration-a${suffix}`);
-    await todo(s, "c5");
+    await tick(s, "c5");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
     createKD(`analysis-a${suffix}`);
-    await todo(s, "c6");
+    await tick(s, "c6");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
     createKD(`spec-a${suffix}`);
-    await todo(s, "c7");
+    await tick(s, "c7");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
     createKD(`plan-a${suffix}`);
     createKD(`milestones-a${suffix}`, registryContent([["M1", "checked-off"]]));
-    await todo(s, "c8");
+    await tick(s, "c8");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
     // SWARM→VERIFY advances on the registry all-checked-off gate — the
     // milestone-scoped impl KD is the disk evidence for the checked-off row.
     createKD(`impl-M1-a${suffix}`);
-    await todo(s, "c9");
+    await tick(s, "c9");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
     // VERIFY→EXTRACT advances on a single fresh PASS review KD (the merged
     // review+audit surface; legacy audit- KDs are inert), so create it before c10.
     createKD(`review-a${suffix}`, reviewKD("PASS"));
-    await todo(s, "c10");
+    await tick(s, "c10");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
     createKD(`composed-a${suffix}`);
-    await todo(s, "c11");
+    await tick(s, "c11");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EVOLVE);
     createKD(`process-a${suffix}`);
-    await todo(s, "c12");
+    await tick(s, "c12");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.CLEANUP);
     createKD(`cleanup-a${suffix}`);
-    await todo(s, "c13");
+    await tick(s, "c13");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.REPORT);
     await hooks["tool.execute.before"](
       { tool: "write", sessionID: s, callID: "c14" },
@@ -241,75 +267,68 @@ ${body}
     }
   });
 
-  it("tracks overseer sessions at PROTOCOL_NOT_LOADED and ignores non-overseer sessions", async () => {
+  it("tracks overseer sessions at INTENT and ignores non-overseer sessions", async () => {
     const overseer = sid("init-1");
     const artisan = sid("init-2");
     await initOverseer(overseer);
     await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
 
-    expect(hooks.sessionPhaseMap.get(overseer)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+    expect(hooks.sessionPhaseMap.get(overseer)).toBe(hooks.STATES.INTENT);
     expect(hooks.overseerSessions.has(overseer)).toBe(true);
     expect(hooks.sessionPhaseMap.has(artisan)).toBe(false);
     expect(hooks.overseerSessions.has(artisan)).toBe(false);
   });
 
-  it("transitions PROTOCOL_NOT_LOADED → INTENT on todowrite with all keywords; rejects incomplete todowrites", async () => {
+  it("fresh sessions start at INTENT; unlisted tools stay blocked", async () => {
     const s = sid("kw-1");
     await initOverseer(s);
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-    // The keyword gate applies only at lifecycle kickoff (PROTOCOL_NOT_LOADED).
-    // A partial todowrite at kickoff is rejected without mutating the phase.
+    // The allowlist denies anything not listed for the phase — here with a
+    // name that matches no known tool at all.
     await expect(
       hooks["tool.execute.before"](
-        { tool: "todowrite", sessionID: s, callID: "c1" },
-        { args: { todos: [{ content: "INTENT" }, { content: "REPORT" }] } }
+        { tool: "frobnicate", sessionID: s, callID: "c1" },
+        { args: {} }
       )
-    ).rejects.toThrow("Missing lifecycle keywords");
-    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+    ).rejects.toThrow("Available tools");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-    await todo(s, "c2");
+    await tick(s, "c2");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
   });
 
-  it("todowrite disk checks drive INTENT advancement only once an intent KD appears on disk", async () => {
+  it("skill disk checks drive INTENT advancement only once an intent KD appears on disk", async () => {
     const s = sid("adv-1");
     await initOverseer(s);
-    await todo(s, "c1");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-    // Second todowrite fires a disk check; with no intent KD on disk the phase
-    // stays in INTENT — the old special case regressed INTENT to
-    // PROTOCOL_NOT_LOADED here — todowrite content alone never drives
-    // advancement past INTENT.
-    await todo(s, "c2");
+    // Disk check with no intent KD on disk keeps INTENT.
+    await tick(s, "c2");
     expect(hooks.sessionPhaseMap.get(s)).toBeLessThanOrEqual(hooks.STATES.INTENT);
 
-    // Re-kickoff (a real session reaches INTENT again via the keyword gate),
-    // then the disk check advances INTENT → PREFLIGHT once a KD is on disk.
+    // With an intent KD on disk the check advances INTENT → PREFLIGHT.
     hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
     createKD(`intent-a-${s}.md`);
-    await todo(s, "c3");
+    await tick(s, "c3");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
   });
 
-  it("fresh-instance restart at INTENT stays INTENT on todowrite re-issue, allows the intent KD write, then advances to PREFLIGHT", async () => {
+  it("fresh-instance restart at INTENT stays INTENT on skill re-issue, allows the intent KD write, then advances to PREFLIGHT", async () => {
     const s = sid("n3-restart");
     // Simulated restart: state file restored at INTENT with no
-    // intent KD on disk — the live symptom where the first INTENT KD write
-    // was blocked ("Wrong phase. Available tools in PROTOCOL_NOT_LOADED:
-    // todowrite") after the consistency check regressed INTENT away.
+    // intent KD on disk.
     writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.INTENT, generation: 0, sid: s, timestamp: Date.now() }));
     hooks = await pluginModule.server({}, {});
     await initOverseer(s);
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-    // A todowrite re-issue (non-creating disk-check call) with no intent
-    // KD on disk keeps INTENT — no regression to PROTOCOL_NOT_LOADED.
-    await todo(s, "c1");
+    // A skill re-issue (non-creating disk-check call) with no intent
+    // KD on disk keeps INTENT.
+    await tick(s, "c1");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-    // The intent KD write succeeds — not blocked by the
-    // PROTOCOL_NOT_LOADED allowlist (which only permits todowrite). The hook
+    // The intent KD write succeeds — permitted by the INTENT allowlist. The hook
     // validates before the runtime creates the file; createKD materializes it
     // (mirrors the runLifecycle createKD + todo pattern).
     await hooks["tool.execute.before"](
@@ -321,7 +340,205 @@ ${body}
 
     // The next disk check sees the intent KD on disk and advances
     // INTENT → PREFLIGHT.
-    await todo(s, "c3");
+    await tick(s, "c3");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+  });
+
+  it("fresh sessions start at INTENT with INTENT rules — no bootstrap gate", async () => {
+    const s = sid("boot-fallback");
+    await initOverseer(s);
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // skill is allowed: INTENT rules apply from the first message.
+    const skillPerm = {};
+    await hooks["permission.ask"]({ sessionID: s, type: "skill" }, skillPerm);
+    expect(skillPerm.status).not.toBe("deny");
+    await hooks["tool.execute.before"](
+      { tool: "skill", sessionID: s, callID: "c0" },
+      { args: { name: "kd-system" } }
+    );
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // Non-intent writes stay blocked; intent-KD writes work immediately.
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "write", sessionID: s, callID: "c2" },
+        { args: { filePath: "src/todo.js", content: "x" } }
+      )
+    ).rejects.toThrow("Wrong phase");
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: s, callID: "c4" },
+      { args: { filePath: `knowledge/intent-a-${s}.md`, content: "intent" } }
+    );
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // Materialize the KD; the next disk check advances INTENT → PREFLIGHT.
+    createKD(`intent-a-${s}.md`);
+    await tick(s, "c5");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+  });
+
+  it("extractToolPath reads V1/V2/custom path arg shapes and fails closed on none", async () => {
+    const s = sid("pathextract");
+    await initOverseer(s);
+    expect(hooks.extractToolPath({ filePath: "knowledge/intent-a.md" })).toBe("knowledge/intent-a.md");
+    expect(hooks.extractToolPath({ path: "knowledge/intent-a.md" })).toBe("knowledge/intent-a.md");
+    expect(hooks.extractToolPath({ file: "knowledge/intent-a.md" })).toBe("knowledge/intent-a.md");
+    expect(hooks.extractToolPath({ filename: "knowledge/intent-a.md" })).toBe("knowledge/intent-a.md");
+    expect(hooks.extractToolPath({ target: "knowledge/intent-a.md" })).toBe("knowledge/intent-a.md");
+    // filePath wins over alternates when several are present.
+    expect(hooks.extractToolPath({ path: "other.md", filePath: "knowledge/intent-a.md" })).toBe("knowledge/intent-a.md");
+    expect(hooks.extractToolPath({})).toBe("");
+    expect(hooks.extractToolPath(null)).toBe("");
+    expect(hooks.extractToolPath("knowledge/intent-a.md")).toBe("");
+    expect(hooks.extractToolPath({ content: "knowledge/intent-a.md" })).toBe("");
+  });
+
+  it("canonicalToolName strips runtime namespaces and fails closed on empty", async () => {
+    const s = sid("canon");
+    await initOverseer(s);
+    expect(hooks.canonicalToolName("default.write")).toBe("write");
+    expect(hooks.canonicalToolName("write")).toBe("write");
+    expect(hooks.canonicalToolName("default.skill")).toBe("skill");
+    expect(hooks.canonicalToolName("a.b.c")).toBe("c");
+    expect(hooks.canonicalToolName("write")).toBe("write");
+    expect(hooks.canonicalToolName("")).toBe("");
+    expect(hooks.canonicalToolName(null)).toBe(null);
+    expect(hooks.canonicalToolName(undefined)).toBe(undefined);
+  });
+
+  it("knowledge-dir resolution: env seam > learned session dir > init root > cwd", async () => {
+    const s = sid("kdir-resolve");
+    await initOverseer(s);
+    const keepEnv = process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+    const keepShared = process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+    delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+    delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+    try {
+      // beforeEach server({}) captured no directory → cwd fallback.
+      expect(hooks.getKnowledgeDir(s)).toBe(join(process.cwd(), "knowledge"));
+      // Learned session dir wins over init root and cwd.
+      const learned = join(tmpdir(), `pg-learned-${s}`);
+      hooks.learnKnowledgeDirFromArgs(s, { filePath: join(learned, "knowledge", "intent-x.md") });
+      expect(hooks.getKnowledgeDir(s)).toBe(join(learned, "knowledge"));
+      // Other sessions are unaffected (no cross-contamination).
+      expect(hooks.getKnowledgeDir("other-session")).toBe(join(process.cwd(), "knowledge"));
+      // Relative paths never teach.
+      hooks.learnKnowledgeDirFromArgs("sess-n", { filePath: "knowledge/intent-x.md" });
+      expect(hooks.getKnowledgeDir("sess-n")).toBe(join(process.cwd(), "knowledge"));
+      // Content fields never teach (only dedicated path keys do).
+      hooks.learnKnowledgeDirFromArgs("sess-c", { content: "see /tmp/x/knowledge/intent.md" });
+      expect(hooks.getKnowledgeDir("sess-c")).toBe(join(process.cwd(), "knowledge"));
+      // Env seam beats everything when restored.
+      process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = keepEnv;
+      expect(hooks.getKnowledgeDir(s)).toBe(resolve(keepEnv));
+    } finally {
+      if (keepEnv === undefined) delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+      else process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = keepEnv;
+      if (keepShared === undefined) delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      else process.env.KNOWLEDGE_GATE_PROJECT_ROOT = keepShared;
+    }
+  });
+
+  it("server() input.directory becomes the knowledge base for sessions without learned dirs", async () => {
+    const keepEnv = process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+    const keepShared = process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+    delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+    delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+    try {
+      const proj = mkdtempSync(join(tmpdir(), "pg-proj-"));
+      hooks = await pluginModule.server({ directory: proj }, {});
+      const s = sid("kdir-init");
+      await initOverseer(s);
+      expect(hooks.getKnowledgeDir(s)).toBe(join(proj, "knowledge"));
+    } finally {
+      if (keepEnv === undefined) delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+      else process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = keepEnv;
+      if (keepShared === undefined) delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      else process.env.KNOWLEDGE_GATE_PROJECT_ROOT = keepShared;
+    }
+  });
+
+  it("intent KD outside the server cwd advances via learned dir (stuck-trace replay)", async () => {
+    const keepEnv = process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+    const keepShared = process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+    delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+    delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+    try {
+      // Separate workspace: invisible from process.cwd().
+      const proj = mkdtempSync(join(tmpdir(), "pg-ws-"));
+      mkdirSync(join(proj, "knowledge"), { recursive: true });
+      const s = sid("kdir-e2e");
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      const abs = join(proj, "knowledge", `intent-a-${s}.md`);
+      // Before-hook runs before the file lands: no advance, but the absolute
+      // path teaches this session's knowledge dir.
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: s, callID: "c1" },
+        { args: { filePath: abs, content: "intent" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      // Runtime creates the file; the next disk check reads the learned dir.
+      writeFileSync(abs, "intent");
+      await hooks["tool.execute.before"](
+        { tool: "skill", sessionID: s, callID: "c2" },
+        { args: {} }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+    } finally {
+      if (keepEnv === undefined) delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
+      else process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = keepEnv;
+      if (keepShared === undefined) delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
+      else process.env.KNOWLEDGE_GATE_PROJECT_ROOT = keepShared;
+    }
+  });
+
+
+  it("overseer intent-KD write advances on execute.after with no subsequent tool call (write→stop no longer stalls)", async () => {
+    const s = sid("writestop");
+    await initOverseer(s);
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // Before-hook runs before the file lands: no advancement possible yet.
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: s, callID: "c1" },
+      { args: { filePath: `knowledge/intent-a-${s}.md`, content: "intent" } }
+    );
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+    // Runtime creates the file; no further before-hook call happens (the
+    // trace shape: write → verify-read outside the gate → stop).
+    createKD(`intent-a-${s}.md`);
+    await hooks["tool.execute.after"](
+      { tool: "write", sessionID: s, callID: "c1" },
+      {}
+    );
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+  });
+
+  it("execute.after advances on edit too, exactly once (edits never drive before-hook checks)", async () => {
+    const s = sid("no-double");
+    await initOverseer(s);
+    createKD(`intent-a-${s}.md`);
+    // Edit runs no disk check in the before-hook by design (corrections
+    // must not move the phase on their own).
+    await hooks["tool.execute.before"](
+      { tool: "edit", sessionID: s, callID: "c1" },
+      { args: { filePath: `knowledge/intent-a-${s}.md`, content: "intent" } }
+    );
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+    // After-hook re-evaluation sees the existing KD and advances once.
+    await hooks["tool.execute.after"](
+      { tool: "edit", sessionID: s, callID: "c1" },
+      {}
+    );
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+    // A repeated after-hook finds no preflight KD: stays put, no double.
+    await hooks["tool.execute.after"](
+      { tool: "edit", sessionID: s, callID: "c1" },
+      {}
+    );
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
   });
 
@@ -340,11 +557,11 @@ ${body}
 
     // Call 1: disk-evidence catch-up — exactly one hop (PREFLIGHT → EXPLORE),
     // never a multi-phase skip (one-phase-per-call policy).
-    await todo(s, "c1");
+    await tick(s, "c1");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
     // Call 2: exactly one more hop (EXPLORE → INVESTIGATE).
-    await todo(s, "c2");
+    await tick(s, "c2");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
   });
 
@@ -357,12 +574,12 @@ ${body}
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
     // Call 1: the pre-existing intent KD drives INTENT → PREFLIGHT (one hop).
-    await todo(s, "c1");
+    await tick(s, "c1");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
 
     // Call 2: no PREFLIGHT KD on disk — the phase does NOT advance; the
     // entering-PREFLIGHT skip flag is consumed by this call either way.
-    await todo(s, "c2");
+    await tick(s, "c2");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
   });
 
@@ -377,13 +594,13 @@ ${body}
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
     // A disk-check call sees no gen-1 KD → no advancement.
-    await todo(s, "c1");
+    await tick(s, "c1");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
     // A current-generation gen-1 KD advances as usual — the gate is scoped,
     // not stuck.
     createKD(`intent-fresh-${s}-gen1.md`);
-    await todo(s, "c2");
+    await tick(s, "c2");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
   });
 
@@ -407,7 +624,7 @@ ${body}
       hooks = await pluginModule.server({}, {});
       await initOverseer(s);
 
-      await todo(s, "c1"); // catch-up hop PREFLIGHT → EXPLORE on pre-existing KD
+      await tick(s, "c1"); // catch-up hop PREFLIGHT → EXPLORE on pre-existing KD
       const log = readFileSync(logPath, "utf8");
       expect(log).toContain("RESTART_CATCH_UP: PREFLIGHT → EXPLORE on pre-existing KD (restore ");
       expect(log).toContain(", KD mtime ");
@@ -425,9 +642,9 @@ ${body}
       // Fresh init — no state file at startup, so no restore timestamp is
       // recorded: the diagnostic is skipped for every mid-session hop.
       await initOverseer(s);
-      await todo(s, "c1"); // PROTOCOL_NOT_LOADED → INTENT (todowrite kickoff)
+      await tick(s, "c1"); // fresh INTENT session: plain disk check
       createKD(`intent-a-${s}.md`);
-      await todo(s, "c2"); // INTENT → PREFLIGHT (mid-session advancement)
+      await tick(s, "c2"); // INTENT → PREFLIGHT (mid-session advancement)
 
       const log = readFileSync(logPath, "utf8");
       expect(log).not.toContain("RESTART_CATCH_UP");
@@ -441,7 +658,7 @@ ${body}
   it("captures the session ID from an intent KD filename on write; without it no disk advancement happens", async () => {
     const s = sid("sess-1");
     await initOverseer(s);
-    await todo(s, "c1");
+    await tick(s, "c1");
     hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
 
     // Write an intent KD whose filename carries the session ID
@@ -845,7 +1062,7 @@ ${body}
     }
   });
 
-  it("a cleanup that throws does not block the REPORT phase reset to PROTOCOL_NOT_LOADED", async () => {
+  it("a cleanup that throws does not block the REPORT phase reset to INTENT", async () => {
     // A malformed session ID makes cleanupLifecycleKDs throw while building
     // its filename pattern — the call site's try/catch must still reset the
     // phase. The session must be an overseer session for the
@@ -1061,16 +1278,46 @@ Amendment body.
     }
   });
 
-  describe("/phase command prompt simplification", () => {
-    it("commands/phase.md is confirmation-only with no state-writing instructions", async () => {
-      const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
-      // Confirmation-only prompt — the hook applies and persists the override.
-      // Case-insensitive: the sentence is capitalized at the start of a paragraph.
-      expect(template.toLowerCase()).toContain("phase was manually overridden to");
-      // No instruction to hand-write state or override files.
-      expect(template).not.toContain(".override-");
-      expect(template).not.toContain("write the override file");
-      expect(template).not.toContain(".state");
+  describe("/phase command ownership and V2 adapter", () => {
+    // The plugin owns the phase command: its execute runs the state machine
+    // and persists phase plus marker. A file-based command of the same name
+    // only submits prompt text and can never persist, so it must not exist.
+    it("no file-based phase command competes with the plugin command", async () => {
+      expect(existsSync(join(process.cwd(), "commands", "phase.md"))).toBe(false);
+    });
+
+    it("argsFromPrompt accepts bare args and prefixed invocations", async () => {
+      expect(hooks.argsFromPrompt({ prompt: { text: "1" } }, "phase")).toBe("1");
+      expect(hooks.argsFromPrompt({ prompt: { text: "/phase EXPLORE" } }, "phase")).toBe("EXPLORE");
+      expect(hooks.argsFromPrompt({ prompt: { text: "{3,4,5}" } }, "phase")).toBe("{3,4,5}");
+      expect(hooks.argsFromPrompt({}, "phase")).toBe("");
+    });
+
+    it("setup() registers a phase command whose execute persists phase and marker", async () => {
+      const added = [];
+      const synthetics = [];
+      const mockCtx = {
+        location: {},
+        options: {},
+        tool: { hook: async () => {}, transform: async () => {} },
+        permission: { hook: async () => {} },
+        session: { hook: async () => {}, synthetic: async (msg) => { synthetics.push(msg); } },
+        command: { transform: async (cb) => cb({ add: (def) => added.push(def) }) },
+      };
+      await pluginModule.setup(mockCtx);
+      const phaseCmd = added.find((d) => d.name === "phase");
+      expect(phaseCmd).toBeDefined();
+      const s = sid("v2-phase-1");
+      await phaseCmd.execute({ sessionID: s, prompt: { text: "1" }, delivery: "steer" });
+      const persisted = JSON.parse(readFileSync(statePath(s), "utf8"));
+      expect(persisted.phase).toBe(hooks.STATES.INTENT);
+      expect(persisted.overrideUntil.phase).toBe(hooks.STATES.INTENT);
+      expect(typeof persisted.overrideUntil.since).toBe("number");
+      expect(synthetics.length).toBe(1);
+      expect(synthetics[0].sessionID).toBe(s);
+      const s2 = sid("v2-phase-2");
+      await phaseCmd.execute({ sessionID: s2, prompt: { text: "/phase EXPLORE" }, delivery: "steer" });
+      expect(JSON.parse(readFileSync(statePath(s2), "utf8")).phase).toBe(hooks.STATES.EXPLORE);
     });
 
     it("/phase override persists to disk and survives a restart", async () => {
@@ -1090,12 +1337,12 @@ Amendment body.
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
     });
 
-    it("/phase jumps any distance — 0→SWARM(7) and →REPORT(12) succeed with no +3 cap", async () => {
+    it("/phase jumps any distance — INTENT(1)→SWARM(7) and →REPORT(12) succeed with no +3 cap", async () => {
       const s = sid("ac009");
       await initOverseer(s);
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-      // PROTOCOL_NOT_LOADED (0) directly to SWARM (7) — a +7 jump.
+      // INTENT (1) directly to SWARM (7) — a +6 jump.
       const out7 = { parts: [] };
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "SWARM" }, out7);
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
@@ -1108,12 +1355,10 @@ Amendment body.
       expect(out12.parts[0].text).toContain("Phase set to REPORT (12) for session");
     });
 
-    it("no .override- fallback remains in plugin source or command templates", async () => {
+    it("no .override- fallback remains in plugin source", async () => {
       const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
-      const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
       expect(pluginSrc).not.toContain(".override-");
       expect(pluginSrc).not.toContain("OVERRIDE_TTL_MS");
-      expect(template).not.toContain(".override-");
     });
   });
 
@@ -1134,9 +1379,9 @@ Amendment body.
     it("every phase transition persists the phase to the state file (forward, backward, override, reset)", async () => {
       const s = sid("ac002");
       await initOverseer(s);
-      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.INTENT);
 
-      // Forward: 0 → 12 (PROTOCOL_NOT_LOADED → REPORT), assert the file after each.
+      // Forward: 1 → 12 (INTENT → REPORT), assert the file after each.
       for (let phase = 1; phase <= 12; phase++) {
         hooks.sessionPhaseMap.set(s, phase);
         hooks.sessionPhaseMap.set(`${s}:sid`, s);
@@ -1154,14 +1399,14 @@ Amendment body.
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "EXPLORE" }, output);
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.EXPLORE);
 
-      // Reset: REPORT write → phase entry deleted, file carries phase 0.
+      // Reset: REPORT write → phase entry deleted, file carries INTENT + gen.
       hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
       await hooks["tool.execute.before"](
         { tool: "write", sessionID: s, callID: "r1" },
         { args: { filePath: `knowledge/report-ac002-${s}.md`, content: "report" } }
       );
-      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.INTENT);
     });
 
     it("same-session restart restores the phase without clobbering the file", async () => {
@@ -1171,11 +1416,11 @@ Amendment body.
       hooks = await pluginModule.server({}, {});
       await initOverseer(s);
       expect(hooks.sessionPhaseMap.get(s)).toBe(5);
-      // The file was NOT re-initialized to phase 0 and NOT clobbered.
+      // The file was NOT re-initialized and NOT clobbered.
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(5);
     });
 
-    it("a fresh session never adopts the pointed-to lifecycle — a pointer at SWARM still initializes PROTOCOL_NOT_LOADED", async () => {
+    it("a fresh session never adopts the pointed-to lifecycle — a pointer at SWARM still initializes INTENT", async () => {
       const s = sid("ac004-a");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -1188,26 +1433,26 @@ Amendment body.
 
       // Fresh session ID with a valid active-session pointer at a KD-producing
       // phase (≥ PREFLIGHT): the pointer is inert. The new session
-      // initializes PROTOCOL_NOT_LOADED with its own sid, never SWARM.
+      // initializes INTENT with its own sid, never SWARM.
       const fresh = sid("ac004-b");
       await initOverseer(fresh);
-      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.get(`${fresh}:sid`)).toBe(fresh);
-      expect(JSON.parse(readFileSync(statePath(fresh), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(JSON.parse(readFileSync(statePath(fresh), "utf8")).phase).toBe(hooks.STATES.INTENT);
       // The pointer moves to the fresh session (an active-lifecycle marker).
       expect(hooks.readActiveSession().sessionID).toBe(fresh);
 
-      // Fresh session ID with no pointer and no file → PROTOCOL_NOT_LOADED,
+      // Fresh session ID with no pointer and no file → INTENT,
       // writes a state file, and updates the pointer on fresh init.
       try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
       const bare = sid("ac004-c");
       await initOverseer(bare);
-      expect(hooks.sessionPhaseMap.get(bare)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
-      expect(JSON.parse(readFileSync(statePath(bare), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(bare)).toBe(hooks.STATES.INTENT);
+      expect(JSON.parse(readFileSync(statePath(bare), "utf8")).phase).toBe(hooks.STATES.INTENT);
       expect(hooks.readActiveSession().sessionID).toBe(bare);
     });
 
-    it("a fresh session never adopts ANY pointed-to phase — INTENT, PROTOCOL_NOT_LOADED, or a KD-producing phase (≥ PREFLIGHT); the todowrite kickoff always runs", async () => {
+    it("a fresh session never adopts ANY pointed-to phase — INTENT or a KD-producing phase (≥ PREFLIGHT); fresh sessions start at INTENT", async () => {
       // A prior process stalled at INTENT: its state file was persisted at
       // phase 1 with no intent KD on disk (INTENT→PREFLIGHT only advances
       // once the KD is written, so an INTENT pointer is always stale).
@@ -1219,26 +1464,17 @@ Amendment body.
       expect(hooks.saveState(stalled)).toBe(true);
       expect(hooks.readActiveSession().sessionID).toBe(stalled);
 
-      // Fresh session must NOT inherit the stale INTENT phase — it starts at
-      // PROTOCOL_NOT_LOADED (0) so the mandatory todowrite gate still runs.
+      // Fresh session must NOT inherit the stale INTENT phase file state as
+      // anything but a fresh start — it starts at INTENT with its own sid
+      // regardless of what the pointer references.
       const fresh = sid("adopt-fresh");
       await initOverseer(fresh);
-      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
-      expect(JSON.parse(readFileSync(statePath(fresh), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
-
-      // The FIRST todowrite performs the intended 0→1 advance — exactly one
-      // round-trip, no INTENT→PROTOCOL_NOT_LOADED consistency regression.
-      await todo(fresh, "c1");
       expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.INTENT);
+      expect(JSON.parse(readFileSync(statePath(fresh), "utf8")).phase).toBe(hooks.STATES.INTENT);
 
-      // A PROTOCOL_NOT_LOADED pointer (unstarted lifecycle) is also not
-      // adopted — nothing to resume, so the new session starts fresh.
-      hooks.sessionPhaseMap.set(stalled, hooks.STATES.PROTOCOL_NOT_LOADED);
-      hooks.sessionPhaseMap.set(`${stalled}:gen`, 2);
-      expect(hooks.saveState(stalled)).toBe(true);
-      const fresh0 = sid("adopt-fresh0");
-      await initOverseer(fresh0);
-      expect(hooks.sessionPhaseMap.get(fresh0)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      // The FIRST disk check is a plain no-op round-trip (no KDs on disk).
+      await tick(fresh, "c1");
+      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.INTENT);
 
       // A pointer at a KD-producing phase (≥ PREFLIGHT) is ALSO not adopted —
       // the restart-continuation behavior was removed entirely.
@@ -1247,7 +1483,7 @@ Amendment body.
       expect(hooks.saveState(stalled)).toBe(true);
       const fresh7 = sid("adopt-fresh7");
       await initOverseer(fresh7);
-      expect(hooks.sessionPhaseMap.get(fresh7)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(fresh7)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.get(`${fresh7}:sid`)).toBe(fresh7);
       expect(hooks.readActiveSession().sessionID).toBe(fresh7);
     });
@@ -1268,17 +1504,17 @@ Amendment body.
       createKD(`spec-f5-${a}.md`);
 
       // Session B is fresh — the pointer is inert: B starts at
-      // PROTOCOL_NOT_LOADED with its own sid, and its lookup set is [B] only.
+      // INTENT with its own sid, and its lookup set is [B] only.
       const b = sid("f5-adopt-b");
       await initOverseer(b);
-      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.get(`${b}:sid`)).toBe(b);
       expect(hooks.getKDLookupSIDs(hooks.sessionPhaseMap, b)).toEqual([b]);
       expect(hooks.readActiveSession().sessionID).toBe(b);
 
       // B has zero KDs of its own — A's KDs (named under A) must not advance
       // B's phase. checkDiskAdvancement reads only B's lookup set.
-      await todo(b, "c1");
+      await tick(b, "c1");
       expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.INTENT);
       expect(hooks.checkDiskAdvancement(b, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
 
@@ -1315,11 +1551,11 @@ Amendment body.
       createRegistry(a, [["M1", "checked-off"]]);
       createKD(`impl-M1-f5-${a}.md`);
 
-      // Session B is fresh — no adoption. B starts at PROTOCOL_NOT_LOADED
+      // Session B is fresh — no adoption. B starts at INTENT
       // with its own sid; A's registry/impl KDs never enter B's lookup set.
       const b = sid("f5-swarm-b");
       await initOverseer(b);
-      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.get(`${b}:sid`)).toBe(b);
 
       // Place B at SWARM (user /phase): the all-checked-off gate sees no
@@ -1347,9 +1583,9 @@ Amendment body.
       try { rmSync(join(stateDir, ".active-session.json")); } catch (_) {}
       const c = sid("f5-ctrl-c");
       await initOverseer(c);
-      expect(hooks.sessionPhaseMap.get(c)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(c)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.get(`${c}:sid`)).toBe(c);
-      await todo(c, "c1");
+      await tick(c, "c1");
       expect(hooks.sessionPhaseMap.get(c)).toBe(hooks.STATES.INTENT);
       expect(hooks.checkDiskAdvancement(c, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
       createKD(`intent-own-${c}.md`);
@@ -1369,7 +1605,7 @@ Amendment body.
 
       const b = sid("f5-decomp-b");
       await initOverseer(b);
-      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.get(`${b}:sid`)).toBe(b);
 
       hooks.sessionPhaseMap.set(b, hooks.STATES.DECOMPOSE);
@@ -1409,7 +1645,7 @@ Amendment body.
 
       // The disk still holds the pre-transition phase — the failed transition
       // never silently diverged the file from the in-memory intent.
-      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.INTENT);
     });
 
     it("corrupt state file — backup + log + fresh init; next valid transition writes valid JSON", async () => {
@@ -1419,7 +1655,7 @@ Amendment body.
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         await initOverseer(s);
-        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
         // The original corrupt content is preserved via a backup rename.
         const backups = readdirSync(stateDir).filter(f => f.includes(s) && f.includes("corrupt"));
         expect(backups.length).toBe(1);
@@ -1427,7 +1663,7 @@ Amendment body.
         expect(readFileSync(logPath, "utf8")).toContain("corrupt state file backed up");
 
         // The next valid transition overwrites the original path with valid JSON.
-        await todo(s, "c1");
+        await tick(s, "c1");
         const saved = JSON.parse(readFileSync(statePath(s), "utf8"));
         expect(saved.phase).toBe(hooks.STATES.INTENT);
         expect(saved.sid).toBe(s);
@@ -1493,13 +1729,13 @@ Amendment body.
         { args: { filePath: `knowledge/report-r003-${s}.md`, content: "report" } }
       );
 
-      // Phase entry gone; state file carries phase 0 + the incremented
+      // Phase entry gone; state file carries INTENT + the incremented
       // generation; the pointer is DELETED and was not re-created by saveState.
       expect(hooks.sessionPhaseMap.has(s)).toBe(false);
       expect(existsSync(join(stateDir, ".active-session.json"))).toBe(false);
       expect(hooks.readActiveSession()).toBeNull();
       const afterReset = JSON.parse(readFileSync(statePath(s), "utf8"));
-      expect(afterReset.phase).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(afterReset.phase).toBe(hooks.STATES.INTENT);
       expect(afterReset.generation).toBe(1);
       expect(afterReset.sid).toBeUndefined();
 
@@ -1508,23 +1744,23 @@ Amendment body.
       const fresh = sid("r003-fresh");
       await initOverseer(fresh);
       expect(hooks.readActiveSession().sessionID).toBe(fresh);
-      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(fresh)).toBe(hooks.STATES.INTENT);
 
-      // The finished session's restart restores PROTOCOL_NOT_LOADED from its
-      // phase-0 file WITHOUT re-creating a pointer (the heal path only
-      // persists on a stale sid; phase 0 + no sid writes nothing).
+      // The finished session's restart restores INTENT from its
+      // reset file WITHOUT re-creating a pointer (the heal path only
+      // persists on a stale sid; INTENT + no sid writes nothing).
       await initOverseer(s);
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.get(`${s}:sid`)).toBe(s);
       expect(hooks.readActiveSession().sessionID).toBe(fresh);
     });
 
-    it("a phase-0 state file (post-REPORT marker) restores PROTOCOL_NOT_LOADED with the persisted generation", async () => {
+    it("a legacy phase-0 state file maps to INTENT with the persisted generation", async () => {
       const s = sid("p005-phase0");
-      // Completed-lifecycle marker: phase 0, generation 3, no sid.
+      // Old completed-lifecycle marker: phase 0, generation 3, no sid.
       writeFileSync(statePath(s), JSON.stringify({ phase: 0, generation: 3, timestamp: Date.now() }));
       await initOverseer(s);
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PROTOCOL_NOT_LOADED);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.get(`${s}:sid`)).toBe(s);
       expect(hooks.getCurrentGeneration(s)).toBe(3);
       // The file is not clobbered — the generation counter survives restarts.
@@ -1544,13 +1780,13 @@ Amendment body.
     createKD(`preflight-stale-${s}-gen0.md`);
 
     await initOverseer(s);
-    await todo(s, "s1");
+    await tick(s, "s1");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.INTENT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
 
     // A valid gen-1 intent KD advances the second lifecycle normally
     createKD(`intent-second-${s}-gen1.md`);
-    await todo(s, "s2");
+    await tick(s, "s2");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
   });
 
@@ -3512,6 +3748,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       // Static assertion — the widened tool set is exported for tests.
       expect(hooks.DISK_CHECK_TOOLS).toContain("bash");
       expect(hooks.DISK_CHECK_TOOLS).toContain("read");
+      expect(hooks.DISK_CHECK_TOOLS).toContain("skill");
 
       // Behavioral: the exact function the disk check invokes promotes the
       // stuck row. The full tool-hook bash path is unreachable in SWARM — the
@@ -5697,18 +5934,18 @@ impl-M2-resume-hint regressed during the audit re-run.
     // the one-shot announcement is set by the gate itself, not seeded.
     async function advanceExploreToInvestigate(s) {
       await initOverseer(s);
-      await todo(s, "c1");
+      await tick(s, "c1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       createKD(`intent-a-${s}.md`);
-      await todo(s, "c2");
+      await tick(s, "c2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
       createKD(`preflight-a-${s}.md`);
-      await todo(s, "c3"); // PREFLIGHT skip consumed
+      await tick(s, "c3"); // PREFLIGHT skip consumed
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
-      await todo(s, "c4");
+      await tick(s, "c4");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
       createKD(`exploration-a-${s}.md`);
-      await todo(s, "c5");
+      await tick(s, "c5");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
       expect(hooks.advancementAnnouncements.has(s)).toBe(true);
     }
@@ -5795,7 +6032,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
 
     // The debug writes from this cross-plugin invocation (DELEGATION_GATE_DEBUG
     // is asserted in beforeAll) must land in the suite's temp log dir — never in
-    // plugins/logs/delegation-gate.log. If the temp log exists, the redirect held.
+    // the real delegation-gate log file. If the temp log exists, the redirect held.
     expect(existsSync(join(delegationLogDir, "delegation-gate.log"))).toBe(true);
 
     expect(output.args.prompt).toContain("GENERATION: 4");
@@ -5837,7 +6074,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
 
       // The next disk-check cycle must NOT advance — the preflight KD predates
       // the override and is not fresh evidence.
-      await todo(s, "o1");
+      await tick(s, "o1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
     });
 
@@ -5852,13 +6089,13 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       const out = { parts: [] };
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "PREFLIGHT" }, out);
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
-      await todo(s, "o1");
+      await tick(s, "o1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
 
       // A NEW preflight KD (mtime >= since) advances PREFLIGHT → EXPLORE and
       // clears the override marker (advance-away).
       createKD(`preflight-fresh-${s}.md`);
-      await todo(s, "o2");
+      await tick(s, "o2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
@@ -5866,14 +6103,14 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       // The pre-existing exploration KD (written before the override) now
       // advances EXPLORE → INVESTIGATE normally — disk-evidence semantics
       // resume once the marker clears.
-      await todo(s, "o3");
+      await tick(s, "o3");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
     });
 
     it("/phase EXPLORE from INTENT holds EXPLORE until a matching exploration KD is written", async () => {
       const s = sid("ac008-override");
       await initOverseer(s);
-      await todo(s, "k1");
+      await tick(s, "k1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
       const out = { parts: [] };
@@ -5882,12 +6119,12 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.EXPLORE);
 
       // No exploration KD exists — the gate must not advance earlier.
-      await todo(s, "k2");
+      await tick(s, "k2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
       // A matching exploration KD for the current session advances and clears.
       createKD(`exploration-override-${s}.md`);
-      await todo(s, "k3");
+      await tick(s, "k3");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
@@ -5943,12 +6180,12 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`)).toEqual({ phase: hooks.STATES.EXPLORE, since: marker.since });
 
       // The aged exploration KD still cannot advance the restored override.
-      await todo(s, "r1");
+      await tick(s, "r1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
       // A fresh exploration KD advances and clears the restored marker.
       createKD(`exploration-fresh-${s}.md`);
-      await todo(s, "r2");
+      await tick(s, "r2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
@@ -5966,12 +6203,12 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
 
       // Both KDs pre-exist but are stale — no advancement under the override.
-      await todo(s, "d1");
+      await tick(s, "d1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
 
       // A fresh plan alone still does not satisfy the dual-KD gate.
       createKD(`plan-fresh-${s}.md`);
-      await todo(s, "d2");
+      await tick(s, "d2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
 
       // A fresh milestones KD completes the dual-KD gate → advance + clear.
@@ -5979,7 +6216,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       // same session/generation is a duplicate registry, which fails closed.
       removeKD(`milestones-old-${s}.md`);
       createKD(`milestones-fresh-${s}.md`, registryContent([["M1", "checked-off"]]));
-      await todo(s, "d3");
+      await tick(s, "d3");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
@@ -5998,12 +6235,12 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
 
       // The all-checked-off gate passes but the registry is stale → no advance.
-      await todo(s, "sw1");
+      await tick(s, "sw1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
 
       // A fresh registry write advances SWARM → VERIFY and clears the marker.
       createRegistry(s, [["M1", "checked-off"]]);
-      await todo(s, "sw2");
+      await tick(s, "sw2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
@@ -6019,13 +6256,13 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
 
       // The review KD is stale → the override holds VERIFY.
-      await todo(s, "v1");
+      await tick(s, "v1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
 
       // A fresh PASS review KD advances + clears: the merged surface needs a
       // single fresh review KD (no separate audit KD).
       createKD(`review-fresh-${s}.md`, reviewKD("PASS"));
-      await todo(s, "v2");
+      await tick(s, "v2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
@@ -6111,24 +6348,24 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toEqual({ phases: [3, 4, 5], since: marker.since });
 
       // No exploration KD yet — the override holds EXPLORE.
-      await todo(s, "m1");
+      await tick(s, "m1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
       // Fresh exploration KD advances EXPLORE → INVESTIGATE and re-arms to 4.
       createKD(`exploration-fresh-${s}.md`);
-      await todo(s, "m2");
+      await tick(s, "m2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([4, 5]);
 
       // Fresh analysis KD advances INVESTIGATE → ALIGN and re-arms to 5.
       createKD(`analysis-fresh-${s}.md`);
-      await todo(s, "m3");
+      await tick(s, "m3");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5]);
 
       // Fresh spec KD advances ALIGN → DECOMPOSE and clears the exhausted queue.
       createKD(`spec-fresh-${s}.md`);
-      await todo(s, "m4");
+      await tick(s, "m4");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
@@ -6264,13 +6501,13 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(marker.phase).toBe(hooks.STATES.INTENT);
 
       // A stale intent KD still cannot advance the override.
-      await todo(s, "f2-1");
+      await tick(s, "f2-1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
       // A FRESH intent KD (mtime >= since) advances INTENT → PREFLIGHT and
       // clears the override marker (advance-away).
       createKD(`intent-fresh-${s}.md`);
-      await todo(s, "f2-2");
+      await tick(s, "f2-2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
@@ -6283,8 +6520,8 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "INTENT" }, out);
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-      await todo(s, "f2-1");
-      await todo(s, "f2-2");
+      await tick(s, "f2-1");
+      await tick(s, "f2-2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.INTENT);
     });
@@ -6299,7 +6536,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "EXPLORE" }, out);
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
-      await todo(s, "f2-1");
+      await tick(s, "f2-1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.EXPLORE);
     });
@@ -6309,7 +6546,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await initOverseer(s);
 
       const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
-      const allowlistLine = pluginSrc.split("\n").find(line => line.includes('INTENT: ["todowrite"'));
+      const allowlistLine = pluginSrc.split("\n").find(line => line.includes('INTENT: ["write"'));
       expect(allowlistLine).toContain('"edit"');
 
       const out = { parts: [] };
@@ -6345,20 +6582,10 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(output.description).not.toContain("⛔");
     });
 
-    it("commands/phase.md documents overrideUntil, the INTENT fresh-evidence rule, the recovery path, and edit-in-place", async () => {
-      const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
-      // (a) overrideUntil marker semantics + fresh-evidence rule
-      expect(template).toContain("overrideUntil");
-      expect(template.toLowerCase()).toContain("fresh");
-      // (b) INTENT override requires fresh evidence — a pre-existing intent KD
-      // must not undo the override before the corrected KD is written
-      expect(template).toContain("INTENT override fresh-evidence rule");
-      expect(template).toContain("at or after `since`");
-      // (c) recovery path — /phase PREFLIGHT and the general escape hatch
-      expect(template).toContain("/phase PREFLIGHT");
-      // (d) edit-in-place of the corrected intent KD
-      expect(template).toContain("`edit`");
-      expect(template).toContain("knowledge/intent-*.md");
+    it("override marker semantics live in the plugin, not a command template", async () => {
+      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      expect(pluginSrc).toContain("overrideUntil");
+      expect(pluginSrc).not.toContain("commands/phase.md");
     });
   });
 
@@ -6536,12 +6763,12 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(output.description).not.toContain("⛔");
     });
 
-    it("skill is allowed in every active phase except PROTOCOL_NOT_LOADED", async () => {
-      const activePhases = [
+    it("skill is allowed in every phase", async () => {
+      const allPhases = [
         "INTENT", "PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN",
         "DECOMPOSE", "SWARM", "VERIFY", "EXTRACT", "EVOLVE", "CLEANUP", "REPORT"
       ];
-      for (const phase of activePhases) {
+      for (const phase of allPhases) {
         const s = sid(`cross-phase-${phase.toLowerCase()}`);
         await initOverseer(s);
         hooks.sessionPhaseMap.set(s, hooks.STATES[phase]);
@@ -6555,16 +6782,6 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
           `tool.execute.before blocks skill in ${phase}`
         ).resolves.toBeUndefined();
       }
-
-      const blocked = sid("cross-phase-protocol-not-loaded");
-      await initOverseer(blocked);
-      hooks.sessionPhaseMap.set(blocked, hooks.STATES.PROTOCOL_NOT_LOADED);
-      const blockedPermOutput = {};
-      await hooks["permission.ask"]({ sessionID: blocked, type: "skill" }, blockedPermOutput);
-      expect(blockedPermOutput.status).toBe("deny");
-      await expect(
-        hooks["tool.execute.before"]({ tool: "skill", sessionID: blocked, callID: "x1" }, { args: {} })
-      ).rejects.toThrow();
     });
   });
 
@@ -6622,6 +6839,61 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
         rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("Log dir seam", () => {
+    // ensureGitRepo() emits a debug line on every path, so it doubles as the
+    // debug-write trigger without touching gate behavior. A pre-seeded .git
+    // keeps it side-effect-free (no git init subprocess is spawned).
+    function gitDir() {
+      const dir = mkdtempSync(join(tmpdir(), "pg-seam-"));
+      mkdirSync(join(dir, ".git"));
+      return dir;
+    }
+
+    it("honors a runtime PROTOCOL_GATE_LOG_DIR change with no stale-cache writes", () => {
+      const dirA = mkdtempSync(join(tmpdir(), "protocol-gate-a-"));
+      const dirB = mkdtempSync(join(tmpdir(), "protocol-gate-b-"));
+      const probe = gitDir();
+      try {
+        process.env.PROTOCOL_GATE_DEBUG = "1";
+        process.env.PROTOCOL_GATE_LOG_DIR = dirA;
+        hooks.ensureGitRepo(probe);
+        const logA = join(dirA, "protocol-gate.log");
+        expect(existsSync(logA)).toBe(true);
+        const sizeA = statSync(logA).size;
+
+        process.env.PROTOCOL_GATE_LOG_DIR = dirB;
+        hooks.ensureGitRepo(probe);
+
+        const logB = join(dirB, "protocol-gate.log");
+        expect(existsSync(logB)).toBe(true);
+        expect(readFileSync(logB, "utf8")).toContain("[protocol-gate]");
+        // The module-level _logFile cache must rebind — no write may land in A.
+        expect(statSync(logA).size).toBe(sizeA);
+      } finally {
+        process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+        rmSync(dirA, { recursive: true, force: true });
+        rmSync(dirB, { recursive: true, force: true });
+        rmSync(probe, { recursive: true, force: true });
+      }
+    });
+
+    it("writes zero bytes when PROTOCOL_GATE_DEBUG is unset even with LOG_DIR pointed at a temp dir", () => {
+      const quietDir = mkdtempSync(join(tmpdir(), "protocol-gate-quiet-"));
+      const probe = gitDir();
+      try {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        process.env.PROTOCOL_GATE_LOG_DIR = quietDir;
+        hooks.ensureGitRepo(probe);
+        expect(existsSync(join(quietDir, "protocol-gate.log"))).toBe(false);
+      } finally {
+        process.env.PROTOCOL_GATE_DEBUG = "1";
+        process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+        rmSync(quietDir, { recursive: true, force: true });
+        rmSync(probe, { recursive: true, force: true });
       }
     });
   });

@@ -15,7 +15,7 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 ## Protocol
 
-1. **Create TODO checklist** — `todowrite` for each commit group. Prevents mixing unrelated changes.
+1. **Group commits** — one coherent group per CHECKPOINT KD scope. Prevents mixing unrelated changes.
 
 2. **Survey repo** — `git log --oneline -30`. Filter out non-representative commits (merge commits, reverts, automated, initial commits). Analyze language, scope usage (`type(scope):` consistency), style (imperative present tense, capitalization, period). If fewer than 3 representative commits, fall back to: English, conventional commits with scope, imperative present tense. Subject line omits trailing period.
 
@@ -50,7 +50,7 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 8. **Stage** — Select one coherent group, verify clean working tree, review the batch's full content with `git diff -- <files>` limited to the batch's files, then `git add <files>`.
 
-9. **Commit** — Check off TODO item, verify staged diff non-empty (`git diff --cached --stat`), write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled.
+9. **Commit** — verify staged diff non-empty (`git diff --cached --stat`), write semantic message, `git commit -m "<type>(<scope>): <message>"`. Use `git commit` with all hooks and verification enabled.
 
 10. **Verify** — `git show --stat -1` to confirm.
 

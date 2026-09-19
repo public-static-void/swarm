@@ -14,11 +14,12 @@
 // breaking the other.
 //
 // Debug logging: set DELEGATION_GATE_DEBUG=1 in environment to enable.
-// Log directory: set DELEGATION_GATE_LOG_DIR to override plugins/logs — the
-// seam the test suite uses to isolate debug writes from the real log.
+// Writes to plugins/logs/delegation-gate.log; set DELEGATION_GATE_LOG_DIR to
+// override the directory — the seam the test suite uses to isolate writes.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
+import { Plugin } from "@opencode/plugin";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -414,10 +415,11 @@ function isBareKDPath(prompt) {
 
 // Collects every MILESTONE ID field value from a prompt — one entry per
 // `MILESTONE ID:` / `MILESTONE_ID:` line, with Markdown bold markers stripped.
-// A comma inside a single value means multiple milestones were crammed into one
-// field; both cases are rejected as MULTI_MILESTONE.
+// Mirrors protocol-gate's collectMilestoneIds so both gates agree on
+// cardinality. A comma inside a single value means multiple milestones were
+// crammed into one field; both cases are rejected as MULTI_MILESTONE.
 function collectMilestoneIds(prompt) {
-  if (!prompt) return [];
+  if (typeof prompt !== "string") return [];
   const ids = [];
   for (const line of prompt.split("\n")) {
     const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?MILESTONE[. _]ID(?:\*\*)?:\s*(.*)/i);

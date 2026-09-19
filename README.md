@@ -2,6 +2,10 @@
 
 This repository is the opencode configuration for the Agentic Swarm — a multi-agent system for AI-driven software development. This README sets the swarm's architecture in stone: the focused-agent concept, the subdivision of labor, how agents are dispatched, and how the configuration enforces the design. Every agent in the swarm operates within this architecture.
 
+## Requirements
+
+This configuration targets **opencode v2** — the plugins import `@opencode/plugin` and register through the v2 `setup()` adapter. Run it with an opencode v2 build.
+
 ## Design Principles
 
 - **Focused Agents** — one responsibility per agent. Each agent concentrates on a single job, and each job is owned by exactly one agent. Focused agents stay reliable: fewer responsibilities mean fewer behavioral conflicts and clearer verification.
@@ -70,6 +74,24 @@ Ground rules live in `AGENTS.md`; agent-specific knowledge lives in the agent fi
 ## Running the Tests
 
 The suite runs via `npx vitest run` from the repository root — the canonical invocation. package.json ships with an `audit` script only; the vitest config pins collection to `tests/**` and excludes the vendored `references/` tree, so a root-level run collects exactly the swarm suite and reports its true signal.
+
+## Debug Logging
+
+Plugin diagnostics are file-only by design: nothing a plugin writes reaches stdout or stderr, so debug output stays out of the user prompt. Logging stays off unless explicitly enabled per plugin.
+
+| Plugin | Enable with | Default log file | Directory override |
+| --- | --- | --- | --- |
+| delegation-gate | `DELEGATION_GATE_DEBUG=1` | `plugins/logs/delegation-gate.log` | `DELEGATION_GATE_LOG_DIR` |
+| protocol-gate | `PROTOCOL_GATE_DEBUG=1` | `plugins/logs/protocol-gate.log` | `PROTOCOL_GATE_LOG_DIR` |
+| knowledge-gate | `KNOWLEDGE_GATE_DEBUG=1` | `plugins/logs/knowledge-gate.log` | `KNOWLEDGE_GATE_LOG_DIR` |
+
+Example:
+
+```sh
+PROTOCOL_GATE_DEBUG=1 opencode
+```
+
+Point a `*_LOG_DIR` variable at any directory to redirect that plugin's log there (the directory is created as needed). A failed write is silently dropped so logging never blocks a hook. Log files (`*.log`) stay gitignored.
 
 ## The Git Contract
 

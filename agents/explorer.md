@@ -1,63 +1,159 @@
 ---
 description: "Explores codebases to map structure, technologies, and key components. Provides context reports for planning. Perform analysis to create comprehensive project maps."
 mode: subagent
-temperature: 0.4
-top_p: 0.6
 steps: 100
-permission:
-  read: allow
-  edit:
-    "*": deny
-    "knowledge/exploration-*.md": allow
-  glob: allow
-  grep: allow
-  task: deny
-  skill: allow
-  lsp: deny
-  question: deny
-  webfetch: allow
-  websearch: allow
-  external_directory:
-    "*": deny
-  doom_loop: deny
-  todowrite: allow
-  memory_note: allow
-  memory_note_read: allow
-  memory_notes_list: allow
-  memory_note_delete: allow
-  bash:
-    "*": deny
-    "ls*": allow
-    "find*": allow
-    "cat*": allow
-    "head*": allow
-    "tail*": allow
-    "wc*": allow
-    "mkdir*": allow
-    "git status*": allow
-    "git show*": allow
-    "git status -sb*": allow
-    "git log*": allow
-    "git branch*": allow
-    "git merge-base*": allow
-    "git check-ignore*": allow
-    "git log --oneline*": allow
-    "docker compose ps*": allow
-    "docker compose logs*": allow
-    "podman compose ps*": allow
-    "podman compose logs*": allow
-    "compose ps*": allow
-    "compose logs*": allow
-    "docker ps": allow
-    "docker logs*": allow
-    "docker inspect*": allow
-    "docker network ls": allow
-    "podman ps": allow
-    "podman logs*": allow
-    "podman inspect*": allow
-    "podman network ls": allow
-    "lsof -i :*": allow
-    "ss -tlnp": allow
+request:
+  body:
+    temperature: 0.4
+    top_p: 0.6
+permissions:
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: deny
+  - action: edit
+    resource: "knowledge/exploration-*.md"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: "*"
+    effect: deny
+  - action: skill
+    resource: "*"
+    effect: allow
+  - action: lsp
+    resource: "*"
+    effect: deny
+  - action: question
+    resource: "*"
+    effect: deny
+  - action: webfetch
+    resource: "*"
+    effect: allow
+  - action: websearch
+    resource: "*"
+    effect: allow
+  - action: external_directory
+    resource: "*"
+    effect: deny
+  - action: doom_loop
+    resource: "*"
+    effect: deny
+  - action: memory_note
+    resource: "*"
+    effect: allow
+  - action: memory_note_read
+    resource: "*"
+    effect: allow
+  - action: memory_notes_list
+    resource: "*"
+    effect: allow
+  - action: memory_note_delete
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: deny
+  - action: shell
+    resource: "ls*"
+    effect: allow
+  - action: shell
+    resource: "find*"
+    effect: allow
+  - action: shell
+    resource: "cat*"
+    effect: allow
+  - action: shell
+    resource: "head*"
+    effect: allow
+  - action: shell
+    resource: "tail*"
+    effect: allow
+  - action: shell
+    resource: "wc*"
+    effect: allow
+  - action: shell
+    resource: "mkdir*"
+    effect: allow
+  - action: shell
+    resource: "git status*"
+    effect: allow
+  - action: shell
+    resource: "git show*"
+    effect: allow
+  - action: shell
+    resource: "git status -sb*"
+    effect: allow
+  - action: shell
+    resource: "git log*"
+    effect: allow
+  - action: shell
+    resource: "git branch*"
+    effect: allow
+  - action: shell
+    resource: "git merge-base*"
+    effect: allow
+  - action: shell
+    resource: "git check-ignore*"
+    effect: allow
+  - action: shell
+    resource: "git log --oneline*"
+    effect: allow
+  - action: shell
+    resource: "docker compose ps*"
+    effect: allow
+  - action: shell
+    resource: "docker compose logs*"
+    effect: allow
+  - action: shell
+    resource: "podman compose ps*"
+    effect: allow
+  - action: shell
+    resource: "podman compose logs*"
+    effect: allow
+  - action: shell
+    resource: "compose ps*"
+    effect: allow
+  - action: shell
+    resource: "compose logs*"
+    effect: allow
+  - action: shell
+    resource: "docker ps"
+    effect: allow
+  - action: shell
+    resource: "docker logs*"
+    effect: allow
+  - action: shell
+    resource: "docker inspect*"
+    effect: allow
+  - action: shell
+    resource: "docker network ls"
+    effect: allow
+  - action: shell
+    resource: "podman ps"
+    effect: allow
+  - action: shell
+    resource: "podman logs*"
+    effect: allow
+  - action: shell
+    resource: "podman inspect*"
+    effect: allow
+  - action: shell
+    resource: "podman network ls"
+    effect: allow
+  - action: shell
+    resource: "lsof -i :*"
+    effect: allow
+  - action: shell
+    resource: "ss -tlnp"
+    effect: allow
 ---
 
 # Explorer
