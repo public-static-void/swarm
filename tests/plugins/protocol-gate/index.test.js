@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
@@ -28,7 +28,12 @@ describe("Protocol-Gate Plugin", () => {
   let delegationLogDir;
   let priorDelegationLogDir;
   let priorDelegationDebug;
-  const logPath = join(process.cwd(), "plugins", "logs", "protocol-gate.log");
+  // Log isolation: protocol-gate debug writes go to a per-run temp dir via
+  // the PROTOCOL_GATE_LOG_DIR seam — never the real log file on disk.
+  let protocolLogDir;
+  let priorProtocolLogDir;
+  let priorProtocolDebug;
+  let logPath;
   const usedSids = new Set();
   let hooks;
 
@@ -38,9 +43,20 @@ describe("Protocol-Gate Plugin", () => {
     stateDir = join(tempRoot, "state");
     process.env.PROTOCOL_GATE_KNOWLEDGE_DIR = knowledgeDir;
     process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+    // Bind the module-level log cache to the temp dir BEFORE the first
+    // server() call so debug writes never append to the real
+    // protocol-gate.log on disk — even when PROTOCOL_GATE_DEBUG is set
+    // in the environment. The flag is asserted here so every server() call
+    // deterministically exercises the debug path and proves the redirect.
+    priorProtocolLogDir = process.env.PROTOCOL_GATE_LOG_DIR;
+    priorProtocolDebug = process.env.PROTOCOL_GATE_DEBUG;
+    protocolLogDir = mkdtempSync(join(tmpdir(), "pg-log-"));
+    process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+    process.env.PROTOCOL_GATE_DEBUG = "1";
+    logPath = join(protocolLogDir, "protocol-gate.log");
     // Log isolation: the relocated cross-plugin test invokes the
     // delegation-gate server() + hooks, whose debug writes would append to the
-    // real plugins/logs/delegation-gate.log whenever DELEGATION_GATE_DEBUG is
+    // real delegation-gate log file whenever DELEGATION_GATE_DEBUG is
     // set (.env sets it). Point DELEGATION_GATE_LOG_DIR at a per-run temp dir
     // BEFORE the first delegationPlugin.server() call so the delegation-gate
     // module cache binds to the temp path — the same seam the delegation-gate
@@ -56,11 +72,16 @@ describe("Protocol-Gate Plugin", () => {
   afterAll(() => {
     delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
     delete process.env.PROTOCOL_GATE_STATE_DIR;
+    if (priorProtocolLogDir === undefined) delete process.env.PROTOCOL_GATE_LOG_DIR;
+    else process.env.PROTOCOL_GATE_LOG_DIR = priorProtocolLogDir;
+    if (priorProtocolDebug === undefined) delete process.env.PROTOCOL_GATE_DEBUG;
+    else process.env.PROTOCOL_GATE_DEBUG = priorProtocolDebug;
     if (priorDelegationLogDir === undefined) delete process.env.DELEGATION_GATE_LOG_DIR;
     else process.env.DELEGATION_GATE_LOG_DIR = priorDelegationLogDir;
     if (priorDelegationDebug === undefined) delete process.env.DELEGATION_GATE_DEBUG;
     else process.env.DELEGATION_GATE_DEBUG = priorDelegationDebug;
     rmSync(delegationLogDir, { recursive: true, force: true });
+    rmSync(protocolLogDir, { recursive: true, force: true });
     rmSync(tempRoot, { recursive: true, force: true });
   });
 
@@ -168,6 +189,10 @@ ${body}
     rmSync(stateDir, { recursive: true, force: true });
     mkdirSync(knowledgeDir, { recursive: true });
     mkdirSync(stateDir, { recursive: true });
+    // Re-assert the suite seams after any test that temporarily overrides
+    // them — getLogFile() re-resolves the cached path when the env dir differs.
+    process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+    if (!process.env.PROTOCOL_GATE_DEBUG) process.env.PROTOCOL_GATE_DEBUG = "1";
     hooks = await pluginModule.server({}, {});
   });
 
@@ -1253,16 +1278,46 @@ Amendment body.
     }
   });
 
-  describe("/phase command prompt simplification", () => {
-    it("commands/phase.md is confirmation-only with no state-writing instructions", async () => {
-      const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
-      // Confirmation-only prompt — the hook applies and persists the override.
-      // Case-insensitive: the sentence is capitalized at the start of a paragraph.
-      expect(template.toLowerCase()).toContain("phase was manually overridden to");
-      // No instruction to hand-write state or override files.
-      expect(template).not.toContain(".override-");
-      expect(template).not.toContain("write the override file");
-      expect(template).not.toContain(".state");
+  describe("/phase command ownership and V2 adapter", () => {
+    // The plugin owns the phase command: its execute runs the state machine
+    // and persists phase plus marker. A file-based command of the same name
+    // only submits prompt text and can never persist, so it must not exist.
+    it("no file-based phase command competes with the plugin command", async () => {
+      expect(existsSync(join(process.cwd(), "commands", "phase.md"))).toBe(false);
+    });
+
+    it("argsFromPrompt accepts bare args and prefixed invocations", async () => {
+      expect(hooks.argsFromPrompt({ prompt: { text: "1" } }, "phase")).toBe("1");
+      expect(hooks.argsFromPrompt({ prompt: { text: "/phase EXPLORE" } }, "phase")).toBe("EXPLORE");
+      expect(hooks.argsFromPrompt({ prompt: { text: "{3,4,5}" } }, "phase")).toBe("{3,4,5}");
+      expect(hooks.argsFromPrompt({}, "phase")).toBe("");
+    });
+
+    it("setup() registers a phase command whose execute persists phase and marker", async () => {
+      const added = [];
+      const synthetics = [];
+      const mockCtx = {
+        location: {},
+        options: {},
+        tool: { hook: async () => {}, transform: async () => {} },
+        permission: { hook: async () => {} },
+        session: { hook: async () => {}, synthetic: async (msg) => { synthetics.push(msg); } },
+        command: { transform: async (cb) => cb({ add: (def) => added.push(def) }) },
+      };
+      await pluginModule.setup(mockCtx);
+      const phaseCmd = added.find((d) => d.name === "phase");
+      expect(phaseCmd).toBeDefined();
+      const s = sid("v2-phase-1");
+      await phaseCmd.execute({ sessionID: s, prompt: { text: "1" }, delivery: "steer" });
+      const persisted = JSON.parse(readFileSync(statePath(s), "utf8"));
+      expect(persisted.phase).toBe(hooks.STATES.INTENT);
+      expect(persisted.overrideUntil.phase).toBe(hooks.STATES.INTENT);
+      expect(typeof persisted.overrideUntil.since).toBe("number");
+      expect(synthetics.length).toBe(1);
+      expect(synthetics[0].sessionID).toBe(s);
+      const s2 = sid("v2-phase-2");
+      await phaseCmd.execute({ sessionID: s2, prompt: { text: "/phase EXPLORE" }, delivery: "steer" });
+      expect(JSON.parse(readFileSync(statePath(s2), "utf8")).phase).toBe(hooks.STATES.EXPLORE);
     });
 
     it("/phase override persists to disk and survives a restart", async () => {
@@ -1300,12 +1355,10 @@ Amendment body.
       expect(out12.parts[0].text).toContain("Phase set to REPORT (12) for session");
     });
 
-    it("no .override- fallback remains in plugin source or command templates", async () => {
+    it("no .override- fallback remains in plugin source", async () => {
       const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
-      const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
       expect(pluginSrc).not.toContain(".override-");
       expect(pluginSrc).not.toContain("OVERRIDE_TTL_MS");
-      expect(template).not.toContain(".override-");
     });
   });
 
@@ -5979,7 +6032,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
 
     // The debug writes from this cross-plugin invocation (DELEGATION_GATE_DEBUG
     // is asserted in beforeAll) must land in the suite's temp log dir — never in
-    // plugins/logs/delegation-gate.log. If the temp log exists, the redirect held.
+    // the real delegation-gate log file. If the temp log exists, the redirect held.
     expect(existsSync(join(delegationLogDir, "delegation-gate.log"))).toBe(true);
 
     expect(output.args.prompt).toContain("GENERATION: 4");
@@ -6529,20 +6582,10 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(output.description).not.toContain("⛔");
     });
 
-    it("commands/phase.md documents overrideUntil, the INTENT fresh-evidence rule, the recovery path, and edit-in-place", async () => {
-      const template = readFileSync(join(process.cwd(), "commands", "phase.md"), "utf8");
-      // (a) overrideUntil marker semantics + fresh-evidence rule
-      expect(template).toContain("overrideUntil");
-      expect(template.toLowerCase()).toContain("fresh");
-      // (b) INTENT override requires fresh evidence — a pre-existing intent KD
-      // must not undo the override before the corrected KD is written
-      expect(template).toContain("INTENT override fresh-evidence rule");
-      expect(template).toContain("at or after `since`");
-      // (c) recovery path — /phase PREFLIGHT and the general escape hatch
-      expect(template).toContain("/phase PREFLIGHT");
-      // (d) edit-in-place of the corrected intent KD
-      expect(template).toContain("`edit`");
-      expect(template).toContain("knowledge/intent-*.md");
+    it("override marker semantics live in the plugin, not a command template", async () => {
+      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      expect(pluginSrc).toContain("overrideUntil");
+      expect(pluginSrc).not.toContain("commands/phase.md");
     });
   });
 
@@ -6796,6 +6839,61 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
         rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("Log dir seam", () => {
+    // ensureGitRepo() emits a debug line on every path, so it doubles as the
+    // debug-write trigger without touching gate behavior. A pre-seeded .git
+    // keeps it side-effect-free (no git init subprocess is spawned).
+    function gitDir() {
+      const dir = mkdtempSync(join(tmpdir(), "pg-seam-"));
+      mkdirSync(join(dir, ".git"));
+      return dir;
+    }
+
+    it("honors a runtime PROTOCOL_GATE_LOG_DIR change with no stale-cache writes", () => {
+      const dirA = mkdtempSync(join(tmpdir(), "protocol-gate-a-"));
+      const dirB = mkdtempSync(join(tmpdir(), "protocol-gate-b-"));
+      const probe = gitDir();
+      try {
+        process.env.PROTOCOL_GATE_DEBUG = "1";
+        process.env.PROTOCOL_GATE_LOG_DIR = dirA;
+        hooks.ensureGitRepo(probe);
+        const logA = join(dirA, "protocol-gate.log");
+        expect(existsSync(logA)).toBe(true);
+        const sizeA = statSync(logA).size;
+
+        process.env.PROTOCOL_GATE_LOG_DIR = dirB;
+        hooks.ensureGitRepo(probe);
+
+        const logB = join(dirB, "protocol-gate.log");
+        expect(existsSync(logB)).toBe(true);
+        expect(readFileSync(logB, "utf8")).toContain("[protocol-gate]");
+        // The module-level _logFile cache must rebind — no write may land in A.
+        expect(statSync(logA).size).toBe(sizeA);
+      } finally {
+        process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+        rmSync(dirA, { recursive: true, force: true });
+        rmSync(dirB, { recursive: true, force: true });
+        rmSync(probe, { recursive: true, force: true });
+      }
+    });
+
+    it("writes zero bytes when PROTOCOL_GATE_DEBUG is unset even with LOG_DIR pointed at a temp dir", () => {
+      const quietDir = mkdtempSync(join(tmpdir(), "protocol-gate-quiet-"));
+      const probe = gitDir();
+      try {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        process.env.PROTOCOL_GATE_LOG_DIR = quietDir;
+        hooks.ensureGitRepo(probe);
+        expect(existsSync(join(quietDir, "protocol-gate.log"))).toBe(false);
+      } finally {
+        process.env.PROTOCOL_GATE_DEBUG = "1";
+        process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+        rmSync(quietDir, { recursive: true, force: true });
+        rmSync(probe, { recursive: true, force: true });
       }
     });
   });
