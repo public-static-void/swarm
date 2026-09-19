@@ -1934,168 +1934,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   return true;
 }
 
-const _pluginExport = {
-  ...Plugin.define({
-    id: "protocol-gate",
-    async setup(ctx) {
-      // Dual-support: reuse the V1 server() state machine via V2 adapters so
-      // phase/disk/milestone/verdict logic stays single-sourced.
-      const v1 = await _pluginExport.server(
-        { directory: ctx.location?.directory },
-        ctx.options
-      );
-      const v1Params = v1["chat.params"];
-      const v1Message = v1["chat.message"];
-      const v1PermAsk = v1["permission.ask"];
-      const v1Before = v1["tool.execute.before"];
-      const v1After = v1["tool.execute.after"];
-      const v1Cmd = v1["command.execute.before"];
-      const v1ToolDef = v1["tool.definition"];
-      const v1Sys = v1["experimental.chat.system.transform"];
-
-      const track = async (sessionID, agent) => {
-        if (!sessionID || !agent) return;
-        try {
-          await v1Params({ sessionID, agent }, {});
-        } catch (_) {}
-      };
-      // V2 tool names vs V1 hook tool names: strip any runtime namespace
-      // (e.g. `default.subagent`) first, then task<->subagent, bash<->shell.
-      const toV1Tool = (t) => {
-        const base = typeof t === "string" && t.includes(".") ? t.slice(t.lastIndexOf(".") + 1) || t : t;
-        return base === "subagent" ? "task" : base === "shell" ? "bash" : base;
-      };
-      const actionCandidates = (action) => {
-        if (action === "shell") return ["bash", "shell"];
-        if (action === "subagent") return ["task", "subagent"];
-        if (action === "edit") return ["edit", "write", "patch"];
-        return [action];
-      };
-
-      await ctx.tool.hook("execute.before", async (event) => {
-        await track(event.sessionID, event.agent);
-        const v1tool = toV1Tool(event.tool);
-        const args = typeof event.input === "object" && event.input !== null ? event.input : {};
-        await v1Before(
-          { tool: v1tool, sessionID: event.sessionID, callID: event.id },
-          { args }
-        );
-      });
-
-      await ctx.tool.hook("execute.after", async (event) => {
-        await track(event.sessionID, event.agent);
-        const v1tool = toV1Tool(event.tool);
-        try {
-          await v1After(
-            { tool: v1tool, sessionID: event.sessionID, callID: event.id },
-            {}
-          );
-        } catch (_) {}
-      });
-
-      await ctx.permission.hook("evaluate", async (event) => {
-        await track(event.sessionID, event.agent);
-        // Allow if ANY candidate tool passes the V1 allowlist; deny otherwise.
-        let allowed = false;
-        for (const cand of actionCandidates(event.action)) {
-          const out = {};
-          await v1PermAsk({ sessionID: event.sessionID, type: cand }, out);
-          if (out.status !== "deny") {
-            allowed = true;
-            break;
-          }
-        }
-        if (!allowed) {
-          event.effect = "deny";
-          event.message = `Protocol gate: action "${event.action}" not allowed in current phase`;
-        }
-      });
-
-      // Raw-intent capture at admission (V1 chat.message equivalent). Agent is
-      // unknown here, so capture unconditionally; injection stays overseer-gated.
-      await ctx.session.hook("prompt", async (event) => {
-        try {
-          const text = event.prompt?.text;
-          if (typeof text === "string" && text.length > 0) {
-            await v1Message(
-              { sessionID: event.sessionID, messageID: event.messageID },
-              { parts: [{ type: "text", text }] }
-            );
-          }
-        } catch (_) {}
-      });
-
-      // Per-model-request: tracking + dynamic tool docs + phase constraints.
-      const contextHandler = async (event) => {
-        await track(event.sessionID, event.agent);
-        if (event.tools && v1ToolDef) {
-          for (const toolID of Object.keys(event.tools)) {
-            try {
-              const out = { description: event.tools[toolID]?.description };
-              await v1ToolDef({ toolID, sessionID: event.sessionID }, out);
-              if (typeof out.description === "string") {
-                event.tools[toolID].description = out.description;
-              }
-            } catch (_) {}
-          }
-        }
-        if (v1Sys) {
-          const collected = [];
-          await v1Sys({ sessionID: event.sessionID }, { system: collected });
-          for (const text of collected) {
-            event.system.push({ type: "text", text: String(text) });
-          }
-        }
-      };
-      await ctx.session.hook("context", contextHandler);
-      try {
-        await ctx.session.hook("compaction", contextHandler);
-      } catch (_) {}
-
-      // Slash-command overrides (V1 command.execute.before equivalent). The
-      // plugin owns these commands: each execute runs the V1 hook logic so the
-      // state transition persists, and the confirmation is announced as a
-      // synthetic message. Diagnostics stay file-only, never stderr.
-      const runCommand = async (sessionID, command, arg) => {
-        const out = {};
-        await v1Cmd({ command, sessionID, arguments: arg }, out);
-        const text = Array.isArray(out.parts) && out.parts.length > 0
-          ? String(out.parts[0]?.text ?? "")
-          : "";
-        if (text) {
-          try {
-            await ctx.session.synthetic({ sessionID, text });
-          } catch (_) {}
-        }
-      };
-      await ctx.command.transform((editor) => {
-        editor.add({
-          name: "phase",
-          description: "Set the protocol phase for the current session (number 1-12 or phase name)",
-          execute: async (invocation) => {
-            const arg = argsFromPrompt(invocation, "phase");
-            debug(`command execute: phase sessionID=${invocation?.sessionID} arg=${JSON.stringify(arg)}`);
-            await runCommand(invocation.sessionID, "phase", arg);
-          },
-        });
-        editor.add({
-          name: "reconcile-superseded",
-          description: "Advance a superseded-only milestone row to checked-off",
-          execute: async (invocation) => {
-            const arg = argsFromPrompt(invocation, "reconcile-superseded");
-            debug(`command execute: reconcile-superseded sessionID=${invocation?.sessionID} arg=${JSON.stringify(arg)}`);
-            await runCommand(
-              invocation.sessionID,
-              "reconcile-superseded",
-              arg
-            );
-          },
-        });
-      });
-    },
-  }),
-  id: "protocol-gate",
-  server: async function protocolGateServer(input, options) {
+async function protocolGateServer(input, options) {
     // Git-repo bootstrap guard — runs before any lifecycle state is touched so
     // the lifecycle's first git-dependent operation (PREFLIGHT branch
     // creation) always has a repo to work in. Uses the plugin's full Node.js
@@ -4024,6 +3863,134 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       get lastSeenSession() { return lastSeenSession; }
     };
   }
-};
 
-export default _pluginExport;
+  // --- V2 entrypoint (OpenCode V2 requires id + setup/effect) ---
+  // Reuses the V1 server() closure above so the phase machine stays single-source.
+  async function protocolGateSetup(ctx) {
+    const v1 = await protocolGateServer(
+      { directory: ctx?.location?.directory },
+      ctx?.options
+    );
+    const pushSystem = (event, text) => {
+      if (!event?.system || typeof text !== "string" || !text) return;
+      try {
+        const first = event.system[0];
+        if (first && typeof first === "object" && "type" in first) {
+          event.system.push({ type: "text", text });
+        } else {
+          event.system.push(text);
+        }
+      } catch {
+        try { event.system.push(text); } catch {}
+      }
+    };
+    // chat.params tracking + tool allowlist descriptions + system constraints
+    const handleContext = async (event) => {
+      const sessionID = event?.sessionID;
+      const agent = event?.agent;
+      try { await v1["chat.params"]?.({ sessionID, agent }, {}); } catch {}
+      try {
+        const tools = event?.tools;
+        if (tools && sessionID) {
+          for (const toolID of Object.keys(tools)) {
+            if (toolID === "task") continue;
+            const current = tools[toolID] || {};
+            const output = { description: current.description, parameters: current.input };
+            await v1["tool.definition"]?.({ toolID, sessionID }, output);
+            if (output.description && output.description !== current.description) {
+              tools[toolID] = { ...current, description: output.description };
+            }
+          }
+        }
+      } catch {}
+      try {
+        const out = { system: [] };
+        await v1["experimental.chat.system.transform"]?.({ sessionID, agent }, out);
+        for (const line of out.system || []) pushSystem(event, line);
+      } catch {}
+    };
+    await ctx.session.hook("context", handleContext);
+    try { await ctx.session.hook("compaction", handleContext); } catch {}
+    try { await ctx.session.hook("generate", handleContext); } catch {}
+    // Verbatim raw-intent capture (V1 chat.message is read-only).
+    await ctx.session.hook("prompt", async (event) => {
+      try {
+        const sessionID = event?.sessionID;
+        const text = event?.prompt?.text;
+        if (!sessionID || typeof text !== "string" || !text) return;
+        await v1["chat.message"]?.(
+          { sessionID, agent: "overseer" },
+          { parts: [{ type: "text", text }] }
+        );
+      } catch {}
+    });
+    // Phase allowlist enforcement (V1 permission.ask sets status deny).
+    await ctx.permission.hook("evaluate", async (event) => {
+      try {
+        const output = { status: event?.effect };
+        await v1["permission.ask"]?.(
+          { sessionID: event?.sessionID, type: event?.action },
+          output
+        );
+        if (output.status === "deny" || output.status === "allow" || output.status === "ask") {
+          event.effect = output.status;
+        }
+      } catch (e) {
+        try { event.effect = "deny"; event.message = e?.message; } catch {}
+      }
+    });
+    // WHEN-gate: dispatch validation, milestone check-off, git-stage guard.
+    // V1 throws to block — letting it propagate fails the V2 operation too.
+    await ctx.tool.hook("execute.before", async (event) => {
+      const args = event?.input ?? event?.args;
+      const v1Out = { args: args && typeof args === "object" ? { ...args } : args };
+      await v1["tool.execute.before"]?.(
+        { tool: event?.tool, sessionID: event?.sessionID, callID: event?.callID },
+        v1Out
+      );
+      if (event && "input" in event) event.input = v1Out.args;
+      if (event && "args" in event) event.args = v1Out.args;
+    });
+    await ctx.tool.hook("execute.after", async (event) => {
+      try {
+        await v1["tool.execute.after"]?.(
+          {
+            tool: event?.tool,
+            sessionID: event?.sessionID,
+            callID: event?.callID,
+            args: event?.input ?? event?.args,
+          },
+          {}
+        );
+      } catch {}
+    });
+    // /phase and /reconcile-superseded: no direct V2 command-before hook, so
+    // own the commands and surface the V1 confirmation text synthetically.
+    const wireCommand = async (name, description) => {
+      await ctx.command.transform((editor) => {
+        editor.add({
+          name,
+          description,
+          execute: async ({ sessionID, prompt }) => {
+            const raw = typeof prompt?.text === "string" ? prompt.text : "";
+            const args = raw.replace(new RegExp(`^/?${name}\\b\\s*`), "");
+            const out = {};
+            await v1["command.execute.before"]?.({ command: name, sessionID, arguments: args }, out);
+            const reply = out?.parts?.[0]?.text;
+            if (reply && sessionID) {
+              try { await ctx.session.synthetic({ sessionID, text: reply }); }
+              catch { try { await ctx.session.prompt({ sessionID, text: reply }); } catch {} }
+            }
+          },
+        });
+      });
+    };
+    try { await wireCommand("phase", "Set protocol-gate lifecycle phase (0-12, name, or {a,b,c})"); } catch {}
+    try { await wireCommand("reconcile-superseded", "Reconcile a superseded-only milestone to checked-off"); } catch {}
+  }
+
+  export default {
+    id: "protocol-gate",
+    setup: protocolGateSetup,
+    server: protocolGateServer,
+  };

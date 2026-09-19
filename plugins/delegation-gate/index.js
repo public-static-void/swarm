@@ -579,47 +579,7 @@ RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
   }
 }
 
-const _pluginExport = {
-  ...Plugin.define({
-    id: "delegation-gate",
-    async setup(ctx) {
-      // Dual-support: reuse the V1 server() hook implementations via a thin
-      // V2 event adapter so validation/rendering logic stays single-sourced.
-      const v1 = await _pluginExport.server(
-        { directory: ctx.location?.directory },
-        ctx.options
-      );
-      const v1Before = v1["tool.execute.before"];
-      await ctx.tool.hook("execute.before", async (event) => {
-        // V1 task tool is V2 task/subagent tool; normalize to "task" for V1 logic.
-        if (event.tool !== "task" && event.tool !== "subagent") return;
-        if (typeof event.input !== "object" || event.input === null) return;
-        // V2 renamed the target-agent arg `subagent_type` → `agent`. The V1
-        // extraction below reads `subagent_type`, so alias it when only the
-        // V2 name is present (explicit `subagent_type` still wins).
-        if (event.input.subagent_type === undefined && event.input.agent !== undefined) {
-          event.input.subagent_type = event.input.agent;
-        }
-        await v1Before(
-          { tool: "task", sessionID: event.sessionID, callID: event.id },
-          { args: event.input }
-        );
-      });
-      // Static pre-compose hint: V2 equivalent of V1 tool.definition hook.
-      await ctx.tool.transform((editor) => {
-        for (const id of ["task", "subagent"]) {
-          const t = editor.get(id);
-          if (t && !String(t.description || "").includes("Delegation Prompt Format:")) {
-            editor.update(id, (d) => {
-              d.description = (d.description || "") + dispatcherFormatHint();
-            });
-          }
-        }
-      });
-    },
-  }),
-  id: "delegation-gate",
-  server: async function delegationGateServer(input, options) {
+async function delegationGateServer(input, options) {
     const config = loadConfig();
     const templates = loadTemplates(config);
 
@@ -860,6 +820,44 @@ const _pluginExport = {
       templates
     };
   }
-};
 
-export default _pluginExport;
+  // --- V2 entrypoint (OpenCode V2 requires id + setup/effect) ---
+  // Reuses the V1 server() closure above so delegation logic stays single-source.
+  async function delegationGateSetup(ctx) {
+    const v1 = await delegationGateServer(
+      { directory: ctx?.location?.directory },
+      ctx?.options
+    );
+    await ctx.tool.hook("execute.before", async (event) => {
+      const args = event?.input ?? event?.args;
+      const v1Out = { args: args && typeof args === "object" ? { ...args } : args };
+      await v1["tool.execute.before"]?.(
+        { tool: event?.tool, sessionID: event?.sessionID, callID: event?.callID },
+        v1Out
+      );
+      if (event && "input" in event) event.input = v1Out.args;
+      if (event && "args" in event) event.args = v1Out.args;
+    });
+    // task-tool format hint: V1 tool.definition is async, so apply it in the
+    // async context hook (transform callbacks must stay synchronous).
+    const annotateTaskTool = async (event) => {
+      try {
+        const current = event?.tools?.task;
+        if (!current) return;
+        const output = { description: current.description };
+        await v1["tool.definition"]?.({ toolID: "task" }, output);
+        if (output.description && output.description !== current.description) {
+          event.tools.task = { ...current, description: output.description };
+        }
+      } catch {}
+    };
+    await ctx.session.hook("context", annotateTaskTool);
+    try { await ctx.session.hook("compaction", annotateTaskTool); } catch {}
+    try { await ctx.session.hook("generate", annotateTaskTool); } catch {}
+  }
+
+  export default {
+    id: "delegation-gate",
+    setup: delegationGateSetup,
+    server: delegationGateServer,
+  };
