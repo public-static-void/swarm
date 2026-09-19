@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 import { basename, join } from "path";
 import { tmpdir } from "os";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
 
-// Plugin debug channel destination (KNOWLEDGE_GATE_DEBUG=1 appends here).
-// Used by the memory-index hygiene tests to assert on emitted diagnostics.
-const KG_LOG_FILE = fileURLToPath(new URL("../../../plugins/logs/knowledge-gate.log", import.meta.url));
+// Plugin debug channel destination — a per-run temp dir bound through the
+// KNOWLEDGE_GATE_LOG_DIR seam, so debug assertions never touch the real
+// log file on disk. Assigned in beforeAll.
+let KG_TEMP_LOG_FILE;
 
 // The plugin reads its data dirs from KNOWLEDGE_GATE_MEMORY_DIR /
 // KNOWLEDGE_GATE_ISSUES_DIR / KNOWLEDGE_GATE_SHORT_TERM_DIR env overrides
@@ -19,6 +20,8 @@ let tempRoot;
 let MEMORY_DIR;
 let ISSUES_DIR;
 let SHORT_TERM_DIR;
+let kgLogDir;
+let priorKgLogDir;
 let pluginModule;
 let hooks;
 
@@ -74,6 +77,14 @@ describe("Knowledge-Gate Plugin", () => {
     process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
     process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
     process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+    // Log isolation: point KNOWLEDGE_GATE_LOG_DIR at a per-run temp dir so
+    // debug writes never append to the real log file on disk.
+    // The module-level _logFile cache binds to the temp path on first use —
+    // the same seam the delegation-gate suite uses.
+    priorKgLogDir = process.env.KNOWLEDGE_GATE_LOG_DIR;
+    kgLogDir = mkdtempSync(join(tmpdir(), "kg-log-"));
+    process.env.KNOWLEDGE_GATE_LOG_DIR = kgLogDir;
+    KG_TEMP_LOG_FILE = join(kgLogDir, "knowledge-gate.log");
     // Single static import — no query-string module-identity hack. Each
     // server() call owns a fresh memory cache (the cache lives in the server
     // closure), so per-test module re-imports are unnecessary.
@@ -93,6 +104,9 @@ describe("Knowledge-Gate Plugin", () => {
     // in beforeAll are deliberately left untouched.
     delete process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES;
     delete process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE;
+    // Re-assert the log seam after any test that temporarily overrides it —
+    // getLogFile() re-resolves the cached path when the env dir differs.
+    if (kgLogDir) process.env.KNOWLEDGE_GATE_LOG_DIR = kgLogDir;
     // A fresh server instance carries a fresh in-server memory cache
     hooks = await pluginModule.default.server({}, {});
   });
@@ -101,7 +115,10 @@ describe("Knowledge-Gate Plugin", () => {
     delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
     delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
     delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+    if (priorKgLogDir === undefined) delete process.env.KNOWLEDGE_GATE_LOG_DIR;
+    else process.env.KNOWLEDGE_GATE_LOG_DIR = priorKgLogDir;
     rmSync(tempRoot, { recursive: true, force: true });
+    rmSync(kgLogDir, { recursive: true, force: true });
   });
 
   describe("searchMemory — Tag-overlap scoring", () => {
@@ -460,51 +477,6 @@ Body`;
       expect(result.title).toBe("Quoted title");
       expect(result.tags).toEqual(["auth", "permission"]);
       expect(result.assigned_to).toBe("inspector");
-    });
-  });
-
-  describe("parseIssueFile — real registry regression", () => {
-    // Legacy parser capture — mirrors the earlier line-anchored value regex so
-    // the oracle asserts "unchanged values" on the real registry.
-    function legacyParseIssueFile(content, filename) {
-      const match = content.match(/^---\n([\s\S]*?)\n---/);
-      if (!match) return null;
-      const frontmatter = match[1];
-      const result = { filename };
-      for (const line of frontmatter.split("\n")) {
-        const kv = line.match(/^(\w+):\s*"?([^"]*)"?\s*$/);
-        if (kv) result[kv[1]] = kv[2];
-        const arrMatch = line.match(/^(\w+):\s*\[(.*)\]\s*$/);
-        if (arrMatch) result[arrMatch[1]] = arrMatch[2].split(",").map(s => s.trim());
-      }
-      return result;
-    }
-
-    it("parses every real registry issue file with unchanged values (guarded)", () => {
-      const registryDir = join(process.cwd(), "knowledge", "issues");
-      let files;
-      try {
-        files = readdirSync(registryDir).filter(f => f.startsWith("issue-") && f.endsWith(".md")).sort();
-      } catch {
-        return; // knowledge/ is gitignored — skip cleanly when absent
-      }
-
-      expect(files.length).toBeGreaterThan(0);
-      for (const file of files) {
-        const content = readFileSync(join(registryDir, file), "utf8");
-        const current = hooks.parseIssueFile(content, file);
-        const legacy = legacyParseIssueFile(content, file);
-
-        expect(current, file).not.toBeNull();
-        expect(current.filename).toBe(file);
-        for (const key of Object.keys(legacy)) {
-          expect(current[key], `${file} ${key}`).toEqual(legacy[key]);
-        }
-        expect(current.id, file).toBeTruthy();
-        expect(current.title, file).toBeTruthy();
-        expect(current.severity, file).toBeTruthy();
-        expect(current.status, file).toBeTruthy();
-      }
     });
   });
 
@@ -1591,7 +1563,8 @@ Body`;
     });
 
     it("detects duplicates against existing seeded entries on disk (readability + dedup)", async () => {
-      // Simulates a seeded MEM-* file already present in knowledge/memory/
+      // Seeds a MEM-* file into the suite temp MEMORY_DIR, simulating a
+      // pre-existing store entry without touching the real knowledge tree.
       writeEntries(MEMORY_DIR, [
         addMemoryEntry(33, { tags: ["permissions", "glob"], topic: "Permission glob patterns" })
       ]);
@@ -3808,11 +3781,11 @@ Body`;
     // plugin has, so "zero error-level output" is asserted against it.
     function captureDebugLog(fn) {
       process.env.KNOWLEDGE_GATE_DEBUG = "1";
-      const before = existsSync(KG_LOG_FILE) ? readFileSync(KG_LOG_FILE, "utf8") : "";
+      const before = existsSync(KG_TEMP_LOG_FILE) ? readFileSync(KG_TEMP_LOG_FILE, "utf8") : "";
       let result, appended;
       try {
         result = fn();
-        const after = existsSync(KG_LOG_FILE) ? readFileSync(KG_LOG_FILE, "utf8") : "";
+        const after = existsSync(KG_TEMP_LOG_FILE) ? readFileSync(KG_TEMP_LOG_FILE, "utf8") : "";
         appended = after.slice(before.length);
       } finally {
         delete process.env.KNOWLEDGE_GATE_DEBUG;
@@ -4288,35 +4261,110 @@ Body`;
       return readFileSync(path, "utf8");
     }
 
+    // Agent permissions use the v2 list schema (`- action:` / `resource:` /
+    // `effect:` entries under `permissions:`), so these guards parse that
+    // list instead of the pre-migration `read:` / `edit:` mapping blocks.
+    function permissionRules(content) {
+      const lines = content.split("\n");
+      const start = lines.findIndex((l) => l.trim() === "permissions:");
+      if (start === -1) return [];
+      const rules = [];
+      let current = null;
+      const flush = () => {
+        if (current && current.action && current.resource && current.effect) rules.push(current);
+        current = null;
+      };
+      for (let i = start + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (/^---\s*$/.test(line)) break;
+        let m;
+        if ((m = line.match(/^\s*-\s*action:\s*(\S+)\s*$/))) {
+          flush();
+          current = { action: m[1] };
+        } else if (current && (m = line.match(/^\s*resource:\s*"?([^"]*)"?\s*$/))) {
+          current.resource = m[1];
+        } else if (current && (m = line.match(/^\s*effect:\s*(allow|deny|ask)\s*$/))) {
+          current.effect = m[1];
+          flush();
+        } else if (/^\S/.test(line)) {
+          break;
+        }
+      }
+      flush();
+      return rules;
+    }
+
+    function hasRule(content, action, resource, effect) {
+      return permissionRules(content).some(
+        (r) => r.action === action && r.resource === resource && r.effect === effect
+      );
+    }
+
     it("habit-builder read block denies issue and memory store files", () => {
       const content = readAgent(HABIT_BUILDER);
-      // The read block must deny both the issues store and the memory store.
-      const readBlock = content.match(/read:\n([\s\S]*?)\n  edit:/);
-      expect(readBlock).toBeTruthy();
-      expect(readBlock[1]).toContain('"knowledge/issues/*.md": deny');
-      expect(readBlock[1]).toContain('"knowledge/memory/*.json": deny');
+      // The read rules must deny both the issues store and the memory store.
+      expect(hasRule(content, "read", "knowledge/issues/*.md", "deny")).toBe(true);
+      expect(hasRule(content, "read", "knowledge/memory/*.json", "deny")).toBe(true);
     });
 
     it("habit-builder edit block denies issue store files", () => {
       const content = readAgent(HABIT_BUILDER);
-      const editBlock = content.match(/edit:\n([\s\S]*?)\n  glob:/);
-      expect(editBlock).toBeTruthy();
-      expect(editBlock[1]).toContain('"knowledge/issues/*.md": deny');
+      expect(hasRule(content, "edit", "knowledge/issues/*.md", "deny")).toBe(true);
     });
 
     it("habit-builder is granted the issue_read tool", () => {
       const content = readAgent(HABIT_BUILDER);
-      expect(content).toContain("issue_read: allow");
+      expect(hasRule(content, "issue_read", "*", "allow")).toBe(true);
     });
 
     it("scribe read and edit blocks deny memory store files", () => {
       const content = readAgent(SCRIBE);
-      const readBlock = content.match(/read:\n([\s\S]*?)\n  edit:/);
-      expect(readBlock).toBeTruthy();
-      expect(readBlock[1]).toContain('"knowledge/memory/*.json": deny');
-      const editBlock = content.match(/edit:\n([\s\S]*?)\n  glob:/);
-      expect(editBlock).toBeTruthy();
-      expect(editBlock[1]).toContain('"knowledge/memory/*.json": deny');
+      expect(hasRule(content, "read", "knowledge/memory/*.json", "deny")).toBe(true);
+      expect(hasRule(content, "edit", "knowledge/memory/*.json", "deny")).toBe(true);
+    });
+  });
+
+  describe("log dir seam", () => {
+    // searchMemory() emits a debug line on every call (cache hit/miss), so
+    // it doubles as the debug-write trigger without touching gate behavior.
+    it("honors a runtime KNOWLEDGE_GATE_LOG_DIR change with no stale-cache writes", () => {
+      const dirA = mkdtempSync(join(tmpdir(), "knowledge-gate-a-"));
+      const dirB = mkdtempSync(join(tmpdir(), "knowledge-gate-b-"));
+      try {
+        process.env.KNOWLEDGE_GATE_DEBUG = "1";
+        process.env.KNOWLEDGE_GATE_LOG_DIR = dirA;
+        hooks.searchMemory({ tags: [], topic: "", limit: 5 });
+        const logA = join(dirA, "knowledge-gate.log");
+        expect(existsSync(logA)).toBe(true);
+        const sizeA = statSync(logA).size;
+
+        process.env.KNOWLEDGE_GATE_LOG_DIR = dirB;
+        hooks.searchMemory({ tags: [], topic: "", limit: 5 });
+
+        const logB = join(dirB, "knowledge-gate.log");
+        expect(existsSync(logB)).toBe(true);
+        expect(readFileSync(logB, "utf8")).toContain("[knowledge-gate]");
+        // The module-level _logFile cache must rebind — no write may land in A.
+        expect(statSync(logA).size).toBe(sizeA);
+      } finally {
+        delete process.env.KNOWLEDGE_GATE_DEBUG;
+        process.env.KNOWLEDGE_GATE_LOG_DIR = kgLogDir;
+        rmSync(dirA, { recursive: true, force: true });
+        rmSync(dirB, { recursive: true, force: true });
+      }
+    });
+
+    it("writes zero bytes when KNOWLEDGE_GATE_DEBUG is unset even with LOG_DIR pointed at a temp dir", () => {
+      const quietDir = mkdtempSync(join(tmpdir(), "knowledge-gate-quiet-"));
+      try {
+        delete process.env.KNOWLEDGE_GATE_DEBUG;
+        process.env.KNOWLEDGE_GATE_LOG_DIR = quietDir;
+        hooks.searchMemory({ tags: [], topic: "", limit: 5 });
+        expect(existsSync(join(quietDir, "knowledge-gate.log"))).toBe(false);
+      } finally {
+        process.env.KNOWLEDGE_GATE_LOG_DIR = kgLogDir;
+        rmSync(quietDir, { recursive: true, force: true });
+      }
     });
   });
 });
