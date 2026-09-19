@@ -9,6 +9,8 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
+// Log directory: set PROTOCOL_GATE_LOG_DIR to override plugins/logs — the
+// seam the test suite uses to isolate debug writes from the real log.
 import { execFileSync } from "child_process";
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
@@ -530,6 +532,17 @@ function parsePhaseArg(arg) {
   return parseSinglePhaseArg(trimmed);
 }
 
+// Parses a V2 command invocation into the raw argument string for a command.
+// Accepts the documented prompt-text shape and the bare-string form; strips a
+// leading `/name` prefix when present, otherwise uses the full text. Module
+// scope (not setup-local) so the suite can cover the parsing directly.
+function argsFromPrompt(invocation, name) {
+  const raw = invocation?.prompt?.text ?? invocation?.prompt ?? "";
+  const text = typeof raw === "string" ? raw : "";
+  const stripped = text.replace(new RegExp(`^\\s*\\/?${name}\\b`, "i"), "").trim();
+  return stripped === text.trim() ? text.trim() : stripped;
+}
+
 // Validates a multi-phase override queue against lifecycle.json
 // backwardTransitions. The queue's phases must form a connected chain in the
 // backward-transition graph (each consecutive pair adjacent via a backward
@@ -588,8 +601,10 @@ function atomicWriteFileSync(targetPath, data) {
 let _logFile = null;
 
 function getLogFile() {
-  if (!_logFile) {
-    const logDir = join(PLUGIN_DIR, "..", "logs");
+  const logDir = process.env.PROTOCOL_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
+  // Re-bind the cached path when the env seam moves the log directory — a
+  // stale cache would keep appending to the previously resolved path.
+  if (!_logFile || dirname(_logFile) !== logDir) {
     try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
     _logFile = join(logDir, "protocol-gate.log");
   }
@@ -620,7 +635,8 @@ function loud(msg) {
 // Warn channel — file-only diagnostics for gate-blocking failures.
 // opencode surfaces ALL process.stderr.write() output into the user prompt,
 // so stderr is a prompt-corruption vector (MEM-213). The only safe diagnostic
-// channel is fs.appendFileSync() to plugins/logs/protocol-gate.log, gated
+// channel is fs.appendFileSync() to the effective log file
+// (plugins/logs/protocol-gate.log by default), gated
 // behind PROTOCOL_GATE_DEBUG like loud(). Called for failures that block gate
 // progression (AUTO_CHECKOFF_FAILED, AUTO_CHECKOFF_UNMATCHED) and stalled
 // SWARM dispatches.
@@ -2037,8 +2053,9 @@ const _pluginExport = {
       } catch (_) {}
 
       // Slash-command overrides (V1 command.execute.before equivalent). The
-      // plugin command shadows the file-based command with deterministic state
-      // transitions; the confirmation is announced as a synthetic message.
+      // plugin owns these commands: each execute runs the V1 hook logic so the
+      // state transition persists, and the confirmation is announced as a
+      // synthetic message. Diagnostics stay file-only, never stderr.
       const runCommand = async (sessionID, command, arg) => {
         const out = {};
         await v1Cmd({ command, sessionID, arguments: arg }, out);
@@ -2051,28 +2068,26 @@ const _pluginExport = {
           } catch (_) {}
         }
       };
-      const argsFromPrompt = (invocation, name) => {
-        const raw = invocation?.prompt?.text ?? invocation?.prompt ?? "";
-        const text = typeof raw === "string" ? raw : "";
-        const stripped = text.replace(new RegExp(`^\\s*\\/?${name}\\b`, "i"), "").trim();
-        return stripped === text.trim() ? text.trim() : stripped;
-      };
       await ctx.command.transform((editor) => {
         editor.add({
           name: "phase",
           description: "Set the protocol phase for the current session (number 1-12 or phase name)",
           execute: async (invocation) => {
-            await runCommand(invocation.sessionID, "phase", argsFromPrompt(invocation, "phase"));
+            const arg = argsFromPrompt(invocation, "phase");
+            debug(`command execute: phase sessionID=${invocation?.sessionID} arg=${JSON.stringify(arg)}`);
+            await runCommand(invocation.sessionID, "phase", arg);
           },
         });
         editor.add({
           name: "reconcile-superseded",
           description: "Advance a superseded-only milestone row to checked-off",
           execute: async (invocation) => {
+            const arg = argsFromPrompt(invocation, "reconcile-superseded");
+            debug(`command execute: reconcile-superseded sessionID=${invocation?.sessionID} arg=${JSON.stringify(arg)}`);
             await runCommand(
               invocation.sessionID,
               "reconcile-superseded",
-              argsFromPrompt(invocation, "reconcile-superseded")
+              arg
             );
           },
         });
@@ -3368,7 +3383,7 @@ const _pluginExport = {
       // SWARM→VERIFY on the same task call — the desired checkpoint-recovery
       // behavior when the milestone IS done. User-requested redos of passed
       // milestones route through the sanctioned /phase SWARM backward override
-      // (commands/phase.md); the citation-driven reopen path (Inspector-FAIL
+      // (the plugin-owned phase command); the citation-driven reopen path (Inspector-FAIL
       // verdicts → reopenCheckedOffMilestones via regressVerifyOnFail) is the
       // only path that reopens checked-off rows.
       // MILESTONE_ID cardinality is validated BEFORE any
@@ -3993,6 +4008,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       parseSinglePhaseArg,
       getOverrideTargetPhase,
       findInvalidMultiPhaseHop,
+      argsFromPrompt,
       saveState,
       loadState,
       getStatePath,
