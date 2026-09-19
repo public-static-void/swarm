@@ -9,8 +9,8 @@
 // responsibility belongs to delegation-gate (HOW).
 //
 // Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
-// Log directory: set PROTOCOL_GATE_LOG_DIR to override plugins/logs — the
-// seam the test suite uses to isolate debug writes from the real log.
+// Writes to plugins/logs/protocol-gate.log; set PROTOCOL_GATE_LOG_DIR to
+// override the directory — the seam the test suite uses to isolate writes.
 import { execFileSync } from "child_process";
 import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "fs";
 import { basename, dirname, join, resolve } from "path";

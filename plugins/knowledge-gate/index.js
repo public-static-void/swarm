@@ -13,8 +13,8 @@
 //    and injects them into the Overseer's system prompt for Triage Notes
 //
 // Debug logging: set KNOWLEDGE_GATE_DEBUG=1 in environment to enable.
-// Log directory: set KNOWLEDGE_GATE_LOG_DIR to override plugins/logs — the
-// seam the test suite uses to isolate debug writes from the real log.
+// Writes to plugins/logs/knowledge-gate.log; set KNOWLEDGE_GATE_LOG_DIR to
+// override the directory — the seam the test suite uses to isolate writes.
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join, dirname, basename, resolve } from "path";
 import { fileURLToPath } from "url";

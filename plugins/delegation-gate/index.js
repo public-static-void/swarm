@@ -14,8 +14,8 @@
 // breaking the other.
 //
 // Debug logging: set DELEGATION_GATE_DEBUG=1 in environment to enable.
-// Log directory: set DELEGATION_GATE_LOG_DIR to override plugins/logs — the
-// seam the test suite uses to isolate debug writes from the real log.
+// Writes to plugins/logs/delegation-gate.log; set DELEGATION_GATE_LOG_DIR to
+// override the directory — the seam the test suite uses to isolate writes.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
