@@ -28,7 +28,7 @@ Agents accept WHAT-level dispatches — each dispatch describes the artifact to 
 - ⚠ Honest Prompts — Frame prompts to allow honest, accurate answers
 - ⚠ Revert and Retry — Know when to revert and retry
 - ⚠ Verify Output — Verify all output before accepting
-- ⚠ Compound Commands — A compound/piped bash command is denied as a unit when any segment is not allowlisted; split it into separate allowlisted calls or route through the dedicated Read/Grep/Glob tools instead of rerouting around permissions
+- ⚠ Compound Commands — A single command is judged alone; a compound/piped shell command (`&&`, `||`, `;`, `|`) is denied as a unit when any segment is not allowlisted — even its safe segments. The denial names nothing (`Permission denied: shell`): find the offending segment by re-running each segment alone; the one that still denies is the offender. Continue after one block — retry each segment as a single allowlisted call, route through the dedicated Read/Grep/Glob tools, or use your role's runners (`npm test*`, `bun test*`, `npx vitest*`, `node --check*` where held). Stay inside allowlisted permissions.
 - ⚠ Fewer Rules — More rules degrade compliance. Use focused agents and refinement loops.
 
 ## Searching Gitignored Trees
