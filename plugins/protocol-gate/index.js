@@ -2426,9 +2426,12 @@ async function protocolGateServer(input, options) {
     // Restart-proof check-off — the impl KD filename is the ONLY
     // source of the parent lifecycle. Candidate parent sessions are collected
     // from the on-disk .state files (which survive restart) plus the in-memory
-    // overseer cache; the filename's embedded `-{sessionID}-gen{N}` suffix
-    // selects the parent via matchesSessionKD. A fresh instance with an empty
-    // overseerSessions set still checks the milestone off.
+    // overseer cache; the filename's embedded `-{sessionID}` suffix selects
+    // the parent via matchesSessionKDAnyGeneration (session-id match is
+    // mandatory, generation is wildcarded — aligned with the disk-evidence
+    // predicate findMilestoneImplKD so valid evidence re-fires after a
+    // VERIFY FAIL backtrack that skews generations). A fresh instance with an
+    // empty overseerSessions set still checks the milestone off.
     function collectParentSessionCandidates() {
       const candidates = new Set(overseerSessions);
       try {
@@ -2471,8 +2474,16 @@ async function protocolGateServer(input, options) {
       if (!milestoneId) return;
       for (const candidate of collectParentSessionCandidates()) {
         // Disk generation is the SSOT (restart-proof); the map is a fallback.
+        // Seeded into the map so the generation-scoped registry lookup
+        // (locateMilestoneRegistry) finds the same lifecycle after a restart
+        // when the map is empty. The live-hook match itself is
+        // generation-wildcarded (matchesSessionKDAnyGeneration, aligned with
+        // the disk-evidence predicate) so a VERIFY FAIL backtrack that skews
+        // the persisted generation never blocks valid same-session evidence;
+        // updateMilestoneRegistry's in-progress→checked-off guard stays the
+        // strict writer.
         const generation = getPersistedGeneration(candidate) ?? getCurrentGeneration(sessionPhaseMap, candidate);
-        if (matchesSessionKD(relPath, candidate, generation)) {
+        if (matchesSessionKDAnyGeneration(relPath, candidate)) {
           // Seed the in-memory generation so the generation-scoped registry
           // lookup (locateMilestoneRegistry) finds the same lifecycle after a
           // restart when the map is empty.
