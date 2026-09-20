@@ -4335,9 +4335,9 @@ milestones:
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       const regressedAt = hooks.verdictRegressedKDs.get(s).regressedAt;
 
-      // A later re-advance to VERIFY re-evaluates the SAME filename — the
-      // fix-cycle guard suppresses a second regression when no new impl KD
-      // landed after regressedAt (no infinite FAIL→SWARM→VERIFY loop).
+      // A later re-advance to VERIFY re-evaluates the SAME unchanged filename —
+      // the consumed-verdict guard suppresses a second regression (a fix cycle
+      // is the recovery, not a re-trigger — no infinite FAIL→SWARM→VERIFY loop).
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c2" },
@@ -4683,7 +4683,7 @@ milestones:
   });
 
   describe("verdict freshness and fix-cycle regression", () => {
-    it("a: FAIL regresses after a prior same-KD regression when a fix cycle landed", async () => {
+    it("a: a consumed FAIL does not regress again on a fix cycle — only a re-emitted verdict regresses", async () => {
       const s = sid("i46a");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -4702,15 +4702,24 @@ milestones:
       const firstGuard = hooks.verdictRegressedKDs.get(s);
       expect(firstGuard.kdFilename).toBe(reviewName);
 
-      // Re-advance to VERIFY. A fix cycle lands AFTER regressedAt.
+      // Re-advance to VERIFY. A fix cycle lands AFTER regressedAt — the
+      // consumed verdict stays consumed: no second regression, no reopen.
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       createKD(`impl-M1-v2-${s}.md`);
       utimesSync(join(knowledgeDir, `impl-M1-v2-${s}.md`), new Date(), new Date(Date.now() + 5000));
 
-      // The same FAIL KD regresses again — the landed fix cycle makes the
-      // stale FAIL verdict current once more.
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      expect(hooks.verdictRegressedKDs.get(s).regressedAt).toBe(firstGuard.regressedAt);
+
+      // The Inspector re-emits the verdict (same filename, rewritten after
+      // the regression) — new information, so it regresses again.
+      utimesSync(join(knowledgeDir, reviewName), new Date(), new Date(Date.now() + 10000));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c3" },
         { args: { pattern: "knowledge/*.md" } }
       );
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
@@ -4965,8 +4974,9 @@ audited
       expect(rows.M1).toBe("in-progress");
       expect(rows.M2).toBe("checked-off");
 
-      // A fix cycle lands and the same FAIL KD re-evaluates (regresses again)
-      // — still only the cited row re-opens.
+      // A fix cycle lands and the same unchanged FAIL KD re-evaluates — the
+      // consumed verdict stays consumed, so still only the cited row is open
+      // and no second regression fires.
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       createKD(`impl-M1-fix-${s}.md`);
       utimesSync(join(knowledgeDir, `impl-M1-fix-${s}.md`), new Date(), new Date(Date.now() + 5000));
@@ -4974,7 +4984,7 @@ audited
         { tool: "glob", sessionID: s, callID: "c2" },
         { args: { pattern: "knowledge/*.md" } }
       );
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
       rows = regressedRegistryRows(s);
       expect(rows.M1).toBe("in-progress"); // still only the cited row
       expect(rows.M2).toBe("checked-off");
