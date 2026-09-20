@@ -3425,7 +3425,9 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
 
       // Inspector FAIL verdict citing M1 → the row re-opens and its prior
-      // completion evidence is superseded ON DISK (citation-driven reopen).
+      // completion evidence is superseded IN PLACE (citation-driven reopen):
+      // the canonical filename is kept and the frontmatter is stamped, so
+      // the evidence linkage never orphans.
       createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1-first has a defect"));
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c1" },
@@ -3434,8 +3436,11 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       let content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: in-progress");
-      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md`))).toBe(false);
-      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md.superseded.md`))).toBe(true);
+      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md`))).toBe(true);
+      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md.superseded.md`))).toBe(false);
+      const stale = readFileSync(join(knowledgeDir, `impl-M1-first-${s}.md`), "utf8");
+      expect(stale).toContain("status: superseded");
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M1")).toBeNull();
 
       // The stale evidence no longer re-checks-off the row — the gate stays closed.
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
@@ -3537,7 +3542,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
     });
 
-    it("the explicit remediation path advances a superseded-only row to checked-off and emits SUPERSEDED_RECONCILED", async () => {
+    it("the explicit remediation path restores the canonical filename and advances a superseded-only row, emitting SUPERSEDED_RECONCILED", async () => {
       const s = sid("m1-reconcile-ok");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3548,19 +3553,22 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
-        // The remediation path advances the row to checked-off.
+        // The remediation path restores the canonical filename once and
+        // advances the row to checked-off.
         const result = hooks.reconcileSupersededMilestone(s, hooks.sessionPhaseMap, "M2", "overseer");
         expect(result.ok).toBe(true);
         expect(result.milestoneId).toBe("M2");
-        expect(result.evidence).toContain(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+        expect(result.evidence).toContain(`impl-M2-stale-${s}-gen1.md`);
         expect(result.actor).toBe("overseer");
+        expect(existsSync(join(knowledgeDir, `impl-M2-stale-${s}-gen1.md`))).toBe(true);
+        expect(existsSync(join(knowledgeDir, `impl-M2-stale-${s}-gen1.md.superseded.md`))).toBe(false);
         const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
         expect(content).toContain("  M2: checked-off");
-        // The SUPERSEDED_RECONCILED diagnostic names milestone, evidence, and actor.
+        // The SUPERSEDED_RECONCILED diagnostic names milestone, restored evidence, and actor.
         const log = readLoudLog();
         expect(log).toContain("SUPERSEDED_RECONCILED");
         expect(log).toContain("milestone M2");
-        expect(log).toContain(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+        expect(log).toContain(`impl-M2-stale-${s}-gen1.md`);
         expect(log).toContain("actor: overseer");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
@@ -3616,6 +3624,9 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(out.parts[0].text).toContain("SUPERSEDED_RECONCILED");
       expect(out.parts[0].text).toContain("milestone M2");
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M2: checked-off");
+      // The legacy file is restored to its canonical name once.
+      expect(existsSync(join(knowledgeDir, `impl-M2-stale-${s}-gen1.md`))).toBe(true);
+      expect(existsSync(join(knowledgeDir, `impl-M2-stale-${s}-gen1.md.superseded.md`))).toBe(false);
       // The phase is untouched — the remediation path never routes through
       // SAFETY_ESCAPE / the phase machine.
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
@@ -5274,9 +5285,10 @@ FAIL
         const rows = regressedRegistryRows(s);
         expect(rows.M1).toBe("in-progress");
         expect(rows.M2).toBe("checked-off");
-        // M1's stale impl KD is superseded on disk; M2's stays canonical.
-        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md`))).toBe(false);
-        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md.superseded.md`))).toBe(true);
+        // M1's stale impl KD is superseded in place; M2's stays live.
+        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md`))).toBe(true);
+        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md.superseded.md`))).toBe(false);
+        expect(readFileSync(join(knowledgeDir, `impl-M1-feature-${s}.md`), "utf8")).toContain("status: superseded");
         expect(existsSync(join(knowledgeDir, `impl-M2-feature-${s}.md`))).toBe(true);
         expect(existsSync(join(knowledgeDir, `impl-M2-feature-${s}.md.superseded.md`))).toBe(false);
       });
