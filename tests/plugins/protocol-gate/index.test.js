@@ -6896,5 +6896,29 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
         rmSync(probe, { recursive: true, force: true });
       }
     });
+
+    it("enables logging via the DEBUG_FILE sentinel when the env flag is unset", () => {
+      const sentinelDir = mkdtempSync(join(tmpdir(), "protocol-gate-sentinel-"));
+      const sentinel = join(sentinelDir, ".debug");
+      const altDir = mkdtempSync(join(tmpdir(), "protocol-gate-sentinel-log-"));
+      const probe = gitDir();
+      writeFileSync(sentinel, "");
+      try {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        process.env.PROTOCOL_GATE_DEBUG_FILE = sentinel;
+        process.env.PROTOCOL_GATE_LOG_DIR = altDir;
+        hooks.ensureGitRepo(probe);
+        const logFile = join(altDir, "protocol-gate.log");
+        expect(existsSync(logFile)).toBe(true);
+        expect(readFileSync(logFile, "utf8")).toContain("[protocol-gate]");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG_FILE;
+        process.env.PROTOCOL_GATE_DEBUG = "1";
+        process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+        rmSync(sentinelDir, { recursive: true, force: true });
+        rmSync(altDir, { recursive: true, force: true });
+        rmSync(probe, { recursive: true, force: true });
+      }
+    });
   });
 });
