@@ -2822,5 +2822,3 @@ async function knowledgeGateServer(input, options) {
     server: knowledgeGateServer,
   };
 
-export default _pluginExport;
-

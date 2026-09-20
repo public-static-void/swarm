@@ -1,7 +1,7 @@
 // Delegation-Gate Plugin — HOW: prompt validation, field extraction, template injection
 //
-// Hooks: tool.execute.before (task tool only)
-// Scope: All dispatching agents (Overseer, Artisan, any agent that delegates via task).
+// Hooks: tool.execute.before (subagent/task tool only)
+// Scope: All dispatching agents (Overseer, Artisan, any agent that delegates via subagent).
 //
 // Extracts structured fields from delegation prompts, validates completeness,
 // loads the appropriate template from plugins/delegation-gate/templates/, renders
@@ -23,6 +23,23 @@ import { Plugin } from "@opencode/plugin";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
+
+// V2 rename (opencode.ai/v2/docs/migrate-v1): task->subagent. Accept both
+// (plus namespaced variants like `default.subagent`) so V1 callers, V1 tests,
+// and V2 runtimes share one path.
+function canonicalDelegationTool(t) {
+  let name = t;
+  if (typeof name === "string" && name.includes(".")) {
+    const base = name.slice(name.lastIndexOf(".") + 1);
+    if (base.length > 0) name = base;
+  }
+  if (name === "task") return "subagent";
+  return name;
+}
+
+function isSubagentTool(t) {
+  return canonicalDelegationTool(t) === "subagent";
+}
 
 class DelegationGateError extends Error {
   constructor(code, message, guidance) {
@@ -592,14 +609,15 @@ async function delegationGateServer(input, options) {
       // opencode API: tool args live on output.args, not input.args
       const args = output.args || {};
 
-      if (tool !== "task") return;
+      if (!isSubagentTool(tool)) return;
 
-      debug(`tool.execute.before: task tool — processing delegation prompt`);
+      debug(`tool.execute.before: subagent tool — processing delegation prompt`);
 
       // Capture original description before injectToolDocs appends format hint
       const prompt = args?.prompt || "";
-      // The Overseer puts agent in subagent_type, not in prompt text — pass as fallback
-      const subagentType = args?.subagent_type || "";
+      // The Overseer puts agent in subagent_type (V1) or agent (V2), not in
+      // prompt text — pass as fallback. Explicit subagent_type still wins.
+      const subagentType = args?.subagent_type || args?.agent || "";
       const description = args?.description || "";
 
       // Log raw inputs before any mutation — critical for debugging delegation failures.
@@ -805,10 +823,10 @@ async function delegationGateServer(input, options) {
     // subagent-facing description after compose.
     async function toolDefinition(input, output) {
       const { toolID } = input;
-      if (toolID !== "task") return;
+      if (!isSubagentTool(toolID)) return;
       if (output.description?.includes("Delegation Prompt Format:")) return;
       output.description = (output.description || "") + dispatcherFormatHint();
-      debug(`tool.definition: annotated task tool description with delegation format hint`);
+      debug(`tool.definition: annotated subagent tool description with delegation format hint`);
     }
 
     return {
@@ -829,29 +847,40 @@ async function delegationGateServer(input, options) {
       ctx?.options
     );
     await ctx.tool.hook("execute.before", async (event) => {
+      // V2 event shape carries args on event.input (tests) or event.args;
+      // the call id arrives as callID (server) or id (trace replay).
       const args = event?.input ?? event?.args;
-      const v1Out = { args: args && typeof args === "object" ? { ...args } : args };
+      if (!args || typeof args !== "object") return;
+      if (!isSubagentTool(event?.tool)) return;
+      // Pass the original object through (not a copy) so prompt rendering
+      // is visible on the caller's reference as well as event.input/args.
+      const v1Out = { args };
       await v1["tool.execute.before"]?.(
-        { tool: event?.tool, sessionID: event?.sessionID, callID: event?.callID },
+        { tool: event?.tool, sessionID: event?.sessionID, callID: event?.callID ?? event?.id },
         v1Out
       );
       if (event && "input" in event) event.input = v1Out.args;
       if (event && "args" in event) event.args = v1Out.args;
     });
-    // task-tool format hint: V1 tool.definition is async, so apply it in the
+    // subagent-tool format hint: V1 tool.definition is async, so apply it in the
     // async context hook (transform callbacks must stay synchronous).
+    // Handles both `subagent` (V2) and legacy `task` (V1) tool keys.
     const annotateTaskTool = async (event) => {
       try {
-        const current = event?.tools?.task;
+        const key = event?.tools?.subagent ? "subagent" : (event?.tools?.task ? "task" : null);
+        if (!key) return;
+        const current = event.tools[key];
         if (!current) return;
         const output = { description: current.description };
-        await v1["tool.definition"]?.({ toolID: "task" }, output);
+        await v1["tool.definition"]?.({ toolID: key }, output);
         if (output.description && output.description !== current.description) {
-          event.tools.task = { ...current, description: output.description };
+          event.tools[key] = { ...current, description: output.description };
         }
       } catch {}
     };
-    await ctx.session.hook("context", annotateTaskTool);
+    // Session hooks are optional in minimal hosts (e.g. unit tests that only
+    // capture tool hooks) — a missing session domain must not fail setup.
+    try { await ctx.session.hook("context", annotateTaskTool); } catch {}
     try { await ctx.session.hook("compaction", annotateTaskTool); } catch {}
     try { await ctx.session.hook("generate", annotateTaskTool); } catch {}
   }

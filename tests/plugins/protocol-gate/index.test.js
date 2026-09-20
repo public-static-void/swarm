@@ -3744,17 +3744,17 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
     });
 
-    it("DISK_CHECK_TOOLS includes bash and the gate promotes a stuck row at unit level", async () => {
+    it("DISK_CHECK_TOOLS includes shell and the gate promotes a stuck row at unit level", async () => {
       // Static assertion — the widened tool set is exported for tests.
-      expect(hooks.DISK_CHECK_TOOLS).toContain("bash");
+      expect(hooks.DISK_CHECK_TOOLS).toContain("shell");
       expect(hooks.DISK_CHECK_TOOLS).toContain("read");
       expect(hooks.DISK_CHECK_TOOLS).toContain("skill");
 
       // Behavioral: the exact function the disk check invokes promotes the
-      // stuck row. The full tool-hook bash path is unreachable in SWARM — the
-      // SWARM allowlist excludes bash and the allowlist check runs before the
+      // stuck row. The full tool-hook shell path is unreachable in SWARM — the
+      // SWARM allowlist excludes shell and the allowlist check runs before the
       // disk check (BR-3; widening the allowlist is out of scope).
-      const s = sid("m2-bash-1");
+      const s = sid("m2-shell-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
@@ -3769,9 +3769,9 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       // Static assertion — the PREFLIGHT allowlist must not gain edit; the
       // in-place intent-correction path is scoped to INTENT's edit allowlist.
       const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
-      const allowlistLine = pluginSrc.split("\n").find(line => line.includes('PREFLIGHT: ["task"'));
+      const allowlistLine = pluginSrc.split("\n").find(line => line.includes('PREFLIGHT: ["subagent"'));
       expect(allowlistLine).not.toContain('"edit"');
-      expect(allowlistLine).toContain('"task"');
+      expect(allowlistLine).toContain('"subagent"');
     });
 
     it("a read call with no impl-KD evidence does not advance the phase", async () => {

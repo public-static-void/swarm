@@ -3,7 +3,7 @@
   "plugins": [
     "./plugins/protocol-gate",
     "./plugins/delegation-gate",
-    "./plugins/knowledge-gate",
+    "./plugins/knowledge-gate"
   ],
   "experimental": {
     "subagent_depth": 2

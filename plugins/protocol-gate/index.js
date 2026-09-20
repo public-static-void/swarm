@@ -173,29 +173,29 @@ const PHASE_INSTRUCTIONS = {
 };
 
 const TOOL_ALLOWLIST = {
-  INTENT: ["write", "edit", "read", "skill", "bash", "memory_search"],
-  PREFLIGHT: ["task", "glob", "bash", "memory_search", "skill"],
-  EXPLORE: ["task", "glob", "memory_search", "skill"],
-  INVESTIGATE: ["task", "glob", "memory_search", "skill"],
-  ALIGN: ["task", "glob", "memory_search", "skill"],
-  DECOMPOSE: ["task", "glob", "read", "memory_search", "skill"],
-  SWARM: ["task", "glob", "read", "skill", "memory_search"],
-  VERIFY: ["task", "glob", "read", "memory_search", "skill"],
-  EXTRACT: ["task", "glob", "memory_search", "skill"],
-  EVOLVE: ["task", "glob", "memory_search", "skill"],
-  CLEANUP: ["task", "glob", "bash", "memory_search", "skill"],
+  INTENT: ["write", "edit", "read", "skill", "shell", "memory_search"],
+  PREFLIGHT: ["subagent", "glob", "shell", "memory_search", "skill"],
+  EXPLORE: ["subagent", "glob", "memory_search", "skill"],
+  INVESTIGATE: ["subagent", "glob", "memory_search", "skill"],
+  ALIGN: ["subagent", "glob", "memory_search", "skill"],
+  DECOMPOSE: ["subagent", "glob", "read", "memory_search", "skill"],
+  SWARM: ["subagent", "glob", "read", "skill", "memory_search"],
+  VERIFY: ["subagent", "glob", "read", "memory_search", "skill"],
+  EXTRACT: ["subagent", "glob", "memory_search", "skill"],
+  EVOLVE: ["subagent", "glob", "memory_search", "skill"],
+  CLEANUP: ["subagent", "glob", "shell", "memory_search", "skill"],
   REPORT: ["edit", "read", "write", "skill", "memory_search"]
 };
 
 // Tools whose calls trigger the disk-evidence advancement check
-// (checkDiskAdvancement). read/bash widen the gate's disk-check surface so the
+// (checkDiskAdvancement). read/shell widen the gate's disk-check surface so the
 // reconciliation backstop (reconcileStuckRowsFromDiskEvidence) runs on the
 // Overseer's verification reads — the F5 gap that let a stuck row go unhealed.
 // The gate still advances ONLY on the all-checked-off verdict.
 // skill is the universal disk-check driver: allowlisted in every phase
 // with no handler side effects, so its calls purely re-evaluate
 // lifecycle state against KD evidence on disk.
-const DISK_CHECK_TOOLS = ["write", "glob", "skill", "task", "read", "bash"];
+const DISK_CHECK_TOOLS = ["write", "glob", "skill", "subagent", "read", "shell"];
 
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
 // tool.definition appends these to the description so the LLM sees the restriction
@@ -205,7 +205,7 @@ const DISK_CHECK_TOOLS = ["write", "glob", "skill", "task", "read", "bash"];
 // skills loaded via the skill tool. The read restrictions below scope the read
 // tool to phase KDs; neither string instructs reading templates.
 const TOOL_RESTRICTIONS = {
-  INTENT: { read: "ONLY intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", bash: "ONLY mkdir for knowledge directory creation" },
+  INTENT: { read: "ONLY intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", shell: "ONLY mkdir for knowledge directory creation" },
   DECOMPOSE: { read: "ONLY milestone registry KDs" },
   SWARM: { read: "ONLY milestone registry KDs" },
   VERIFY: { read: "ONLY milestone registry KDs" },
@@ -1303,12 +1303,22 @@ function extractToolPath(a) {
 // handler below see the tool the agent means. Fail-safe direction: a
 // namespaced variant inherits its base tool's restrictions, never escapes
 // them.
+//
+// V2 renames (opencode.ai/v2/docs/migrate-v1): task->subagent,
+// bash->shell, patch->edit. Legacy names are normalized to the V2
+// canonical so one comparison covers both runtimes; write/edit stay
+// distinct (V2 action `edit` covers both tools, but the tool IDs remain
+// separate for KD create-vs-modify detection).
 function canonicalToolName(t) {
-  if (typeof t === "string" && t.includes(".")) {
-    const base = t.slice(t.lastIndexOf(".") + 1);
-    if (base.length > 0) return base;
+  let name = t;
+  if (typeof name === "string" && name.includes(".")) {
+    const base = name.slice(name.lastIndexOf(".") + 1);
+    if (base.length > 0) name = base;
   }
-  return t;
+  if (name === "task") return "subagent";
+  if (name === "bash") return "shell";
+  if (name === "patch") return "edit";
+  return name;
 }
 
 // Reads the `verdict` field from a KD file's YAML frontmatter — the machine
@@ -2706,10 +2716,10 @@ async function protocolGateServer(input, options) {
       if (!phaseName) return;
 
       const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-      if (tool !== "task" && !allowedTools.includes(tool)) {
+      if (tool !== "subagent" && !allowedTools.includes(tool)) {
         debug(`permission.ask: DENY tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
         output.status = "deny";
-        // Non-task tool blocks set output.status = "deny" without throwing
+        // Non-subagent tool blocks set output.status = "deny" without throwing
       } else {
         debug(`permission.ask: ALLOW tool=${tool} in phase=${phaseName}`);
       }
@@ -2852,7 +2862,7 @@ async function protocolGateServer(input, options) {
       // ignore rules and explicit knowledge/ paths are the gitignored workflow
       // set. Runs before the overseer/non-overseer split so every session is
       // covered; the positive guidance points to the allowed staging forms.
-      if (tool === "bash" && typeof args.command === "string") {
+      if (tool === "shell" && typeof args.command === "string") {
         const addSegments = args.command.split(/\s*(?:&&|\|\||;)\s*/).filter(seg => /\bgit add\b/.test(seg));
         if (addSegments.length > 0) {
           const forceFlag = addSegments.some(seg => /(^|\s)(-f|--force)(\s|$)/.test(seg));
@@ -2951,7 +2961,7 @@ async function protocolGateServer(input, options) {
       let phaseName = getPhaseName(phase);
 
       // Enforce tool allowlist — safety net for tools not gated by permission.ask.
-      if (tool !== "task") {
+      if (tool !== "subagent") {
         const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
         if (!allowedTools.includes(tool)) {
           debug(`tool.execute.before: BLOCKED tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
@@ -3231,7 +3241,7 @@ async function protocolGateServer(input, options) {
       // advance the first row before delegation-gate rejected the dispatch
       // (phantom in-progress row). Mirrors delegation-gate's collectMilestoneIds
       // semantics so both gates agree on cardinality.
-      if (tool === "task" && phase === STATES.SWARM) {
+      if (tool === "subagent" && phase === STATES.SWARM) {
         let dispatchAgent = extractAgentFromPrompt(args?.prompt || "");
         if (!dispatchAgent && args?.subagent_type) dispatchAgent = String(args.subagent_type).toLowerCase();
         const swarmAgent = PHASE_AGENT_MAP[getPhaseName(STATES.SWARM)]?.toLowerCase();
@@ -3280,7 +3290,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
               let isCreatingExpectedKD = tool === "write" && currentPhasePrefixes.some(p =>
                 (extractToolPath(args)).includes(`${p}-`) || (args?.content || "").includes(`${p}-`)
               );
-              if (!isCreatingExpectedKD && tool === "task") {
+              if (!isCreatingExpectedKD && tool === "subagent") {
                 const taskPrompt = args?.prompt || "";
                 let taskAgent = extractAgentFromPrompt(taskPrompt);
                 if (!taskAgent && args?.subagent_type) {
@@ -3351,7 +3361,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                   }
                 }
                 const redispatches = phaseRedispatchCount.get(redispatchKey) || 0;
-                if (redispatches >= (config.maxRetriesPerPhase || 5) && tool === "task") {
+                if (redispatches >= (config.maxRetriesPerPhase || 5) && tool === "subagent") {
                   if (currentPhase === STATES.SWARM) {
                     // The redispatch cap during
                     // SWARM blocks the dispatch, marks the stuck milestone
@@ -3461,7 +3471,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       phaseName = getPhaseName(phase);
 
       // --- task handler ---
-      if (tool === "task") {
+      if (tool === "subagent") {
         // Task is only allowed during delegation phases (PREFLIGHT through CLEANUP)
         if (phase < STATES.PREFLIGHT || phase > STATES.CLEANUP) {
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
@@ -3651,7 +3661,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
 
       // Mirror the :1779 gate — only overseer task dispatches touch the
       // overseer's redispatch counter; subagent→subagent task calls never do.
-      if (tool !== "task" || !isOverseerSession(sessionID)) return;
+      if (tool !== "subagent" || !isOverseerSession(sessionID)) return;
       const recorded = lastTaskDispatch.get(sessionID);
       if (!recorded) return;
       if (expectedKdExists(recorded, sessionID)) {
@@ -3687,8 +3697,8 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       const phaseName = getPhaseName(phase);
       if (!phaseName) return;
       const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-      // task is always allowed (delegation mechanism) — never block it
-      if (toolID === "task") return;
+      // subagent is always allowed (delegation mechanism) — never block it
+      if (toolID === "subagent") return;
       // Allowed tool — check if it has per-tool restrictions to display
       if (allowedTools.includes(toolID)) {
         const restriction = TOOL_RESTRICTIONS[phaseName]?.[toolID];
@@ -3893,7 +3903,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         const tools = event?.tools;
         if (tools && sessionID) {
           for (const toolID of Object.keys(tools)) {
-            if (toolID === "task") continue;
+            if (canonicalToolName(toolID) === "subagent") continue;
             const current = tools[toolID] || {};
             const output = { description: current.description, parameters: current.input };
             await v1["tool.definition"]?.({ toolID, sessionID }, output);
