@@ -8,7 +8,11 @@
 // in that state. It does NOT handle delegation prompt formatting — that
 // responsibility belongs to delegation-gate (HOW).
 //
-// Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable.
+// Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable, or
+// create a `.debug` sentinel file next to the plugin. The env var only
+// reaches the plugin host when the background service itself starts with
+// it — a later client launch cannot inject it into a running service — so
+// the sentinel file is the reliable switch across workspaces.
 // Writes to plugins/logs/protocol-gate.log; set PROTOCOL_GATE_LOG_DIR to
 // override the directory — the seam the test suite uses to isolate writes.
 import { execFileSync } from "child_process";
@@ -611,8 +615,22 @@ function getLogFile() {
   return _logFile;
 }
 
+function debugFlagFile() {
+  return process.env.PROTOCOL_GATE_DEBUG_FILE || join(PLUGIN_DIR, ".debug");
+}
+
+// Logging enablement: the per-gate DEBUG env var or the sentinel file
+// above. A single `VAR=1 opencode` launch cannot enable logging when the
+// TUI attaches to an already-running background service started without
+// the var, so the on-disk sentinel — visible to every host process — is
+// checked as well. DEBUG_FILE is the test seam (mirrors LOG_DIR).
+function isDebugEnabled() {
+  if (process.env.PROTOCOL_GATE_DEBUG) return true;
+  try { return existsSync(debugFlagFile()); } catch (_) { return false; }
+}
+
 function debug(msg) {
-  if (process.env.PROTOCOL_GATE_DEBUG) {
+  if (isDebugEnabled()) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
     } catch (_) {
@@ -621,11 +639,18 @@ function debug(msg) {
   }
 }
 
+// Startup load-signal: written whenever logging is enabled, so a
+// present-but-quiet log proves the gate loaded. No log file at all means
+// logging was never enabled in that host process — env vars set on a client
+// launch do not reach an already-running background service, in which case
+// the sentinel file above is the reliable switch.
+debug("gate loaded (plugin dir: " + PLUGIN_DIR + ")");
+
 // Loud channel — file-only logging gated behind PROTOCOL_GATE_DEBUG.
 // Previously wrote to stderr which bled into user prompts; moved to file
 // logging. Emissions are per-event and rare by nature.
 function loud(msg) {
-  if (process.env.PROTOCOL_GATE_DEBUG) {
+  if (isDebugEnabled()) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
     } catch (_) {}
@@ -641,7 +666,7 @@ function loud(msg) {
 // progression (AUTO_CHECKOFF_FAILED, AUTO_CHECKOFF_UNMATCHED) and stalled
 // SWARM dispatches.
 function warn(msg) {
-  if (process.env.PROTOCOL_GATE_DEBUG) {
+  if (isDebugEnabled()) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] WARN: ${msg}\n`);
     } catch (_) {}
