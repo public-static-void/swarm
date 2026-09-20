@@ -121,6 +121,59 @@ describe("Knowledge-Gate Plugin", () => {
     rmSync(kgLogDir, { recursive: true, force: true });
   });
 
+  describe("debug sentinel file", () => {
+    function saveDebugEnv() {
+      return {
+        debug: process.env.KNOWLEDGE_GATE_DEBUG,
+        debugFile: process.env.KNOWLEDGE_GATE_DEBUG_FILE,
+      };
+    }
+
+    function restoreDebugEnv(prior) {
+      if (prior.debug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+      else process.env.KNOWLEDGE_GATE_DEBUG = prior.debug;
+      if (prior.debugFile === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG_FILE;
+      else process.env.KNOWLEDGE_GATE_DEBUG_FILE = prior.debugFile;
+      process.env.KNOWLEDGE_GATE_LOG_DIR = kgLogDir;
+    }
+
+    it("enables logging via the DEBUG_FILE sentinel when the env flag is unset", async () => {
+      const sentinelDir = mkdtempSync(join(tmpdir(), "kg-sentinel-"));
+      const sentinel = join(sentinelDir, ".debug");
+      const flagDir = mkdtempSync(join(tmpdir(), "kg-flag-log-"));
+      writeFileSync(sentinel, "");
+      const prior = saveDebugEnv();
+      try {
+        delete process.env.KNOWLEDGE_GATE_DEBUG;
+        process.env.KNOWLEDGE_GATE_DEBUG_FILE = sentinel;
+        process.env.KNOWLEDGE_GATE_LOG_DIR = flagDir;
+        await hooks.tool.memory_search.execute({ tags: ["sentinel-probe"] }, { agent: "artisan", sessionID: "s-sentinel" });
+        const logFile = join(flagDir, "knowledge-gate.log");
+        expect(existsSync(logFile)).toBe(true);
+        expect(readFileSync(logFile, "utf8")).toContain("[knowledge-gate]");
+      } finally {
+        restoreDebugEnv(prior);
+        rmSync(sentinelDir, { recursive: true, force: true });
+        rmSync(flagDir, { recursive: true, force: true });
+      }
+    });
+
+    it("stays silent with neither env flag nor sentinel file", async () => {
+      const quietDir = mkdtempSync(join(tmpdir(), "kg-quiet-"));
+      const prior = saveDebugEnv();
+      try {
+        delete process.env.KNOWLEDGE_GATE_DEBUG;
+        delete process.env.KNOWLEDGE_GATE_DEBUG_FILE;
+        process.env.KNOWLEDGE_GATE_LOG_DIR = quietDir;
+        await hooks.tool.memory_search.execute({ tags: ["sentinel-probe"] }, { agent: "artisan", sessionID: "s-quiet" });
+        expect(existsSync(join(quietDir, "knowledge-gate.log"))).toBe(false);
+      } finally {
+        restoreDebugEnv(prior);
+        rmSync(quietDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe("searchMemory — Tag-overlap scoring", () => {
     it("returns higher score for entries with matching tags", () => {
       writeEntries(MEMORY_DIR, [
