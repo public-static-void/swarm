@@ -986,21 +986,72 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   const prefix = `impl-${milestoneId}-`;
   // Impl-KD evidence is scoped to the current session only — a prior
   // lifecycle's impl KDs (under another session id) never check off a fresh
-  // session's milestone rows.
-  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID));
+  // session's milestone rows. Files whose frontmatter carries a superseded
+  // status are stale evidence from an earlier pass (stamped in place on
+  // reopen) and never count, so a reopened row cannot re-complete on the
+  // work the review just invalidated.
+  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID) && !isSupersededByFrontmatter(knowledgeDir, f));
   return found || null;
+}
+
+// Reads the leading frontmatter block of a knowledge KD and reports whether
+// its `status` field marks it superseded. Canonical impl-KD filenames are
+// stable identifiers, so staleness lives in the frontmatter rather than in a
+// filename suffix. Fail-open: files that cannot be read or carry no parsable
+// frontmatter count as live evidence, preserving the behavior for KDs written
+// without frontmatter.
+function isSupersededByFrontmatter(knowledgeDir, filename) {
+  let content;
+  try {
+    content = readFileSync(join(knowledgeDir, filename), "utf8");
+  } catch (_) {
+    return false;
+  }
+  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
+  if (!fence) return false;
+  const status = fence[1].match(/^\s*status\s*:\s*("([^"]*)"|'([^']*)'|([^\s#\r\n]+))/im);
+  if (!status) return false;
+  const value = (status[2] ?? status[3] ?? status[4] ?? "").trim().toLowerCase();
+  return value === "superseded";
+}
+
+// Stamps a canonical impl KD as superseded in place. The filename never
+// changes — only the frontmatter gains `status: superseded` (an existing
+// replacement pointer in `superseded_by` is kept; when the field is absent
+// it is recorded as null because the replacement does not exist yet at
+// reopen time). The write is atomic so a crash cannot leave a torn KD.
+function stampImplKDSuperseded(knowledgeDir, filename, milestoneId) {
+  const target = join(knowledgeDir, filename);
+  const content = readFileSync(target, "utf8");
+  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(\s*\r?\n|$)/);
+  let next;
+  if (fence) {
+    let body = fence[1];
+    if (/^\s*status\s*:.*$/im.test(body)) {
+      body = body.replace(/^\s*status\s*:.*$/im, "status: superseded");
+    } else {
+      body = `status: superseded\n${body}`;
+    }
+    if (!/^\s*superseded_by\s*:.*$/im.test(body)) {
+      body = `${body}\nsuperseded_by: null`;
+    }
+    next = `---\n${body}\n---${fence[2]}${content.slice(fence[0].length)}`;
+  } else {
+    next = `---\nstatus: superseded\nsuperseded_by: null\n---\n${content}`;
+  }
+  atomicWriteFileSync(target, next);
+  debug(`supersede: stale impl KD ${filename} stamped superseded in place (milestone ${milestoneId} re-opened)`);
 }
 
 // Re-opening a checked-off milestone invalidates its prior completion
 // evidence: the Inspector's findings mean the delivered work no longer
 // passes, so the old impl KD must not re-check-off the row at the next gate
-// evaluation. Filenames are the evidence SSOT, so staleness is recorded ON
-// DISK by renaming the milestone's same-session impl KDs (any embedded
-// generation — reconciliation accepts any N, so staleness must cover any N)
-// to `*.superseded.md`, a suffix that no longer matches the session-KD
-// evidence predicate. Renames survive restarts — plugins load once per
-// process (MEM-059), so no in-memory epoch marker would. Best-effort: a
-// failed rename leaves the file in place and is logged.
+// evaluation. Staleness is recorded ON DISK by stamping the milestone's
+// same-session impl KDs (any embedded generation) as superseded in their
+// frontmatter — filenames stay canonical, so the evidence linkage keyed on
+// stable names cannot orphan. Stamps survive restarts — plugins load once per
+// process, so no in-memory epoch marker would. Best-effort: a failed stamp
+// leaves the file in place and is logged.
 function supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId) {
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
@@ -1009,11 +1060,11 @@ function supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId) {
   for (const f of files) {
     if (!f.toLowerCase().startsWith(prefix.toLowerCase())) continue;
     if (!matchesSessionKDAnyGeneration(f, sessionID)) continue;
+    if (isSupersededByFrontmatter(knowledgeDir, f)) continue;
     try {
-      renameSync(join(knowledgeDir, f), join(knowledgeDir, `${f}.superseded.md`));
-      debug(`supersede: stale impl KD ${f} → ${f}.superseded.md (milestone ${milestoneId} re-opened)`);
+      stampImplKDSuperseded(knowledgeDir, f, milestoneId);
     } catch (e) {
-      debug(`supersede: rename failed for ${f}: ${e.message}`);
+      debug(`supersede: stamp failed for ${f}: ${e.message}`);
     }
   }
 }
@@ -1100,7 +1151,7 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   let promoted = 0;
   for (const row of stuck) {
     const prefix = `impl-${row.id}-`;
-    const evidence = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID));
+    const evidence = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID) && !isSupersededByFrontmatter(knowledgeDir, f));
     if (!evidence) {
       // Superseded-only evidence probe (Issue 69): a reopened row's stale impl
       // KDs survive on disk as `*.superseded.md` — invisible to the predicate
@@ -1115,6 +1166,19 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
       });
       if (superseded.length > 0) {
         loud(`SUPERSEDED_EVIDENCE: milestone ${row.id} stays ${row.state} — same-session impl evidence exists solely as superseded file(s): ${superseded.join(", ")}. Remediation options: (a) restore a canonical-path impl KD for milestone ${row.id}, or (b) invoke the remediation path to advance the row to checked-off citing the superseded impl KD(s) as evidence.`);
+      }
+      // Frontmatter-stamped stale evidence: canonical files whose frontmatter
+      // carries a superseded status are invisible to the predicate above by
+      // design. Name them so a row awaiting fresh fix evidence is explainable
+      // instead of silently stuck; only a fresh canonical write re-completes
+      // such a row, never the stale file itself.
+      const stamped = files.filter(f => {
+        if (!f.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+        if (!matchesSessionKDAnyGeneration(f, sessionID)) return false;
+        return isSupersededByFrontmatter(knowledgeDir, f);
+      });
+      if (stamped.length > 0) {
+        loud(`STALE_EVIDENCE: milestone ${row.id} stays ${row.state} — prior completion evidence is frontmatter-superseded (stale, canonical names kept): ${stamped.join(", ")}. Write fresh fix evidence at a canonical impl path for milestone ${row.id} to re-complete.`);
       }
       continue;
     }
@@ -1134,20 +1198,20 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   return promoted;
 }
 
-// Explicit, audited remediation path (Issue 74): advances a superseded-only
-// milestone row to checked-off. Distinct from the /phase VERIFY override —
-// this never routes through SAFETY_ESCAPE and never touches the phase machine.
-// It is the deliberate counterpart to the automatic reconcile path: where
-// reconcileStuckRowsFromDiskEvidence refuses to promote superseded-only rows
-// (staleness design — a superseded impl KD is provenance of a prior completion
-// invalidated by a reopen), this path lets an operator explicitly accept the
-// superseded impl KD(s) as completion evidence. It requires an
-// explicit invocation (never fires automatically) and goes through the strict
-// registry writer's transition rules (in-progress → checked-off), so the
-// registry state machine remains the guard (MEM-243). A row that is already
-// checked-off, or one with live (non-superseded) impl evidence, is left
-// untouched — the remediation is scoped to the superseded-only case.
-// Returns { ok, reason?, milestoneId, evidence, actor }.
+// Explicit, audited remediation path for orphaned legacy evidence: advances
+// a superseded-only milestone row to checked-off by restoring its legacy
+// `*.superseded.md` file(s) to their canonical filename(s) once, then
+// promoting the row through the strict registry writer's transition rules.
+// Distinct from the /phase VERIFY override — this never routes through
+// SAFETY_ESCAPE and never touches the phase machine. It requires an explicit
+// invocation (never fires automatically), so the registry state machine
+// remains the guard. A row that is already checked-off, or one with live
+// (non-superseded) impl evidence, is left untouched — the remediation is
+// scoped to the superseded-only case. Frontmatter-stamped stale evidence is
+// never restored: a stamp records work the review invalidated, and only a
+// fresh canonical write re-completes such a row.
+// Returns { ok, reason?, milestoneId, evidence, actor } — evidence names the
+// restored canonical file(s).
 function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, actor) {
   const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!located) return { ok: false, reason: "no-registry", milestoneId };
@@ -1161,13 +1225,14 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
   // Scope the remediation to the superseded-only case: if the row has live
   // (non-superseded) same-session impl evidence, the automatic reconcile path
   // already handles it — an explicit remediation would be redundant and could
-  // mask a live-evidence check-off. Only a row whose sole same-session impl
-  // evidence is `.superseded.md` file(s) qualifies.
+  // mask a live-evidence check-off. Frontmatter-stamped files are stale, not
+  // live, so they do not block the remediation. Only a row whose sole
+  // same-session impl evidence is `.superseded.md` file(s) qualifies.
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return { ok: false, reason: "no-knowledge-dir", milestoneId }; }
   const prefix = `impl-${milestoneId}-`;
-  const live = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID));
+  const live = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID) && !isSupersededByFrontmatter(knowledgeDir, f));
   if (live) return { ok: false, reason: "live-evidence-present", milestoneId };
   const superseded = files.filter(f => {
     if (!f.toLowerCase().startsWith(prefix.toLowerCase())) return false;
@@ -1176,6 +1241,26 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
   });
   if (superseded.length === 0) {
     return { ok: false, reason: "no-superseded-evidence", milestoneId };
+  }
+  // Restore each legacy file to its canonical name once, so the normal
+  // evidence linkage observes it again. A canonical target that already
+  // exists is never overwritten — the legacy file stays in place instead.
+  const restored = [];
+  for (const legacy of superseded) {
+    const canonical = legacy.slice(0, -".superseded.md".length);
+    if (existsSync(join(knowledgeDir, canonical))) {
+      debug(`reconcile-superseded: canonical target ${canonical} already exists — leaving legacy ${legacy} in place`);
+      continue;
+    }
+    try {
+      renameSync(join(knowledgeDir, legacy), join(knowledgeDir, canonical));
+      restored.push(canonical);
+    } catch (e) {
+      debug(`reconcile-superseded: restore failed for ${legacy}: ${e.message}`);
+    }
+  }
+  if (restored.length === 0) {
+    return { ok: false, reason: "canonical-exists", milestoneId };
   }
   // Advance through the strict registry writer's transition rules. The row is
   // <stuck> (in-progress/assigned/pending/failed) → checked-off; the writer
@@ -1186,8 +1271,8 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
   const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, ["checked-off"]);
   if (!result.ok) return { ok: false, reason: result.reason, milestoneId };
   const who = actor || "unknown";
-  loud(`SUPERSEDED_RECONCILED: milestone ${milestoneId} advanced to checked-off via explicit remediation — superseded evidence cited: ${superseded.join(", ")} — actor: ${who}`);
-  return { ok: true, milestoneId, evidence: superseded, actor: who };
+  loud(`SUPERSEDED_RECONCILED: milestone ${milestoneId} advanced to checked-off via explicit remediation — canonical evidence restored: ${restored.join(", ")} — actor: ${who}`);
+  return { ok: true, milestoneId, evidence: restored, actor: who };
 }
 
 // The all-checked-off gate — SWARM→VERIFY advances ONLY when every registry
@@ -2639,8 +2724,9 @@ async function protocolGateServer(input, options) {
     // the LLM never hand-writes state files.
     async function commandExecuteBefore(input, output) {
       const commandName = String(input.command || "").replace(/^\/+/, "");
-      // Explicit, audited remediation path (Issue 74): /reconcile-superseded
-      // advances a superseded-only milestone row to checked-off. Distinct from
+      // Explicit, audited remediation path: /reconcile-superseded restores a
+      // superseded-only milestone row to checked-off by restoring its legacy
+      // canonical filename(s) once. Distinct from
       // /phase — it never routes through SAFETY_ESCAPE and never touches the
       // phase machine. Requires explicit invocation; never fires automatically.
       if (commandName === "reconcile-superseded") {
