@@ -3678,10 +3678,11 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8")).toContain("  M1: checked-off");
     });
 
-    it("emits AUTO_CHECKOFF_UNMATCHED on a generation-mismatched write yet the gate still promotes the row", async () => {
+    it("checks off on a generation-mismatched same-session write with no unmatched diagnostic", async () => {
       // The lifecycle persists generation 1; the impl KD filename embeds gen 0.
-      // The write-path trigger's strict-generation match fails (AUTO_CHECKOFF_UNMATCHED),
-      // but the gate's any-generation reconciliation still promotes the row.
+      // The live hook matches session-id with generation wildcarded, so valid
+      // same-session evidence re-fires the check-off even when the persisted
+      // generation skewed after a backtrack — no gate round-trip required.
       const s = sid("m1-genmis-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3700,17 +3701,17 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
           { tool: "write", sessionID: writer, callID: "c1" },
           { args: { filePath: `knowledge/impl-M1-feat-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY" } }
         );
-        expect(readLoudLog()).toContain(`AUTO_CHECKOFF_UNMATCHED: knowledge/impl-M1-feat-${s}-gen0.md`);
+        expect(readLoudLog()).not.toContain("AUTO_CHECKOFF_UNMATCHED");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
-      // The registry row is untouched by the write-path miss (strict gen).
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: in-progress");
+      // The live hook checked the row off directly despite the generation skew.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
       // The write tool lands the impl KD on disk after the before-hook.
       createKD(`impl-M1-feat-${s}-gen0.md`);
 
-      // The gate's any-generation reconciliation still promotes the row.
+      // The gate confirms the row against the disk evidence.
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
     });
