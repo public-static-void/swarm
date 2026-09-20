@@ -3425,7 +3425,9 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
 
       // Inspector FAIL verdict citing M1 → the row re-opens and its prior
-      // completion evidence is superseded ON DISK (citation-driven reopen).
+      // completion evidence is superseded IN PLACE (citation-driven reopen):
+      // the canonical filename is kept and the frontmatter is stamped, so
+      // the evidence linkage never orphans.
       createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1-first has a defect"));
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c1" },
@@ -3434,8 +3436,11 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       let content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
       expect(content).toContain("  M1: in-progress");
-      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md`))).toBe(false);
-      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md.superseded.md`))).toBe(true);
+      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md`))).toBe(true);
+      expect(existsSync(join(knowledgeDir, `impl-M1-first-${s}.md.superseded.md`))).toBe(false);
+      const stale = readFileSync(join(knowledgeDir, `impl-M1-first-${s}.md`), "utf8");
+      expect(stale).toContain("status: superseded");
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M1")).toBeNull();
 
       // The stale evidence no longer re-checks-off the row — the gate stays closed.
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
@@ -3537,7 +3542,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
     });
 
-    it("the explicit remediation path advances a superseded-only row to checked-off and emits SUPERSEDED_RECONCILED", async () => {
+    it("the explicit remediation path restores the canonical filename and advances a superseded-only row, emitting SUPERSEDED_RECONCILED", async () => {
       const s = sid("m1-reconcile-ok");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3548,19 +3553,22 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
-        // The remediation path advances the row to checked-off.
+        // The remediation path restores the canonical filename once and
+        // advances the row to checked-off.
         const result = hooks.reconcileSupersededMilestone(s, hooks.sessionPhaseMap, "M2", "overseer");
         expect(result.ok).toBe(true);
         expect(result.milestoneId).toBe("M2");
-        expect(result.evidence).toContain(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+        expect(result.evidence).toContain(`impl-M2-stale-${s}-gen1.md`);
         expect(result.actor).toBe("overseer");
+        expect(existsSync(join(knowledgeDir, `impl-M2-stale-${s}-gen1.md`))).toBe(true);
+        expect(existsSync(join(knowledgeDir, `impl-M2-stale-${s}-gen1.md.superseded.md`))).toBe(false);
         const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
         expect(content).toContain("  M2: checked-off");
-        // The SUPERSEDED_RECONCILED diagnostic names milestone, evidence, and actor.
+        // The SUPERSEDED_RECONCILED diagnostic names milestone, restored evidence, and actor.
         const log = readLoudLog();
         expect(log).toContain("SUPERSEDED_RECONCILED");
         expect(log).toContain("milestone M2");
-        expect(log).toContain(`impl-M2-stale-${s}-gen1.md.superseded.md`);
+        expect(log).toContain(`impl-M2-stale-${s}-gen1.md`);
         expect(log).toContain("actor: overseer");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
@@ -3616,6 +3624,9 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(out.parts[0].text).toContain("SUPERSEDED_RECONCILED");
       expect(out.parts[0].text).toContain("milestone M2");
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M2: checked-off");
+      // The legacy file is restored to its canonical name once.
+      expect(existsSync(join(knowledgeDir, `impl-M2-stale-${s}-gen1.md`))).toBe(true);
+      expect(existsSync(join(knowledgeDir, `impl-M2-stale-${s}-gen1.md.superseded.md`))).toBe(false);
       // The phase is untouched — the remediation path never routes through
       // SAFETY_ESCAPE / the phase machine.
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
@@ -3678,10 +3689,11 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8")).toContain("  M1: checked-off");
     });
 
-    it("emits AUTO_CHECKOFF_UNMATCHED on a generation-mismatched write yet the gate still promotes the row", async () => {
+    it("checks off on a generation-mismatched same-session write with no unmatched diagnostic", async () => {
       // The lifecycle persists generation 1; the impl KD filename embeds gen 0.
-      // The write-path trigger's strict-generation match fails (AUTO_CHECKOFF_UNMATCHED),
-      // but the gate's any-generation reconciliation still promotes the row.
+      // The live hook matches session-id with generation wildcarded, so valid
+      // same-session evidence re-fires the check-off even when the persisted
+      // generation skewed after a backtrack — no gate round-trip required.
       const s = sid("m1-genmis-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3700,17 +3712,17 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
           { tool: "write", sessionID: writer, callID: "c1" },
           { args: { filePath: `knowledge/impl-M1-feat-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY" } }
         );
-        expect(readLoudLog()).toContain(`AUTO_CHECKOFF_UNMATCHED: knowledge/impl-M1-feat-${s}-gen0.md`);
+        expect(readLoudLog()).not.toContain("AUTO_CHECKOFF_UNMATCHED");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
-      // The registry row is untouched by the write-path miss (strict gen).
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: in-progress");
+      // The live hook checked the row off directly despite the generation skew.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
       // The write tool lands the impl KD on disk after the before-hook.
       createKD(`impl-M1-feat-${s}-gen0.md`);
 
-      // The gate's any-generation reconciliation still promotes the row.
+      // The gate confirms the row against the disk evidence.
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
     });
@@ -4323,9 +4335,9 @@ milestones:
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       const regressedAt = hooks.verdictRegressedKDs.get(s).regressedAt;
 
-      // A later re-advance to VERIFY re-evaluates the SAME filename — the
-      // fix-cycle guard suppresses a second regression when no new impl KD
-      // landed after regressedAt (no infinite FAIL→SWARM→VERIFY loop).
+      // A later re-advance to VERIFY re-evaluates the SAME unchanged filename —
+      // the consumed-verdict guard suppresses a second regression (a fix cycle
+      // is the recovery, not a re-trigger — no infinite FAIL→SWARM→VERIFY loop).
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c2" },
@@ -4671,7 +4683,7 @@ milestones:
   });
 
   describe("verdict freshness and fix-cycle regression", () => {
-    it("a: FAIL regresses after a prior same-KD regression when a fix cycle landed", async () => {
+    it("a: a consumed FAIL does not regress again on a fix cycle — only a re-emitted verdict regresses", async () => {
       const s = sid("i46a");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -4690,15 +4702,24 @@ milestones:
       const firstGuard = hooks.verdictRegressedKDs.get(s);
       expect(firstGuard.kdFilename).toBe(reviewName);
 
-      // Re-advance to VERIFY. A fix cycle lands AFTER regressedAt.
+      // Re-advance to VERIFY. A fix cycle lands AFTER regressedAt — the
+      // consumed verdict stays consumed: no second regression, no reopen.
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       createKD(`impl-M1-v2-${s}.md`);
       utimesSync(join(knowledgeDir, `impl-M1-v2-${s}.md`), new Date(), new Date(Date.now() + 5000));
 
-      // The same FAIL KD regresses again — the landed fix cycle makes the
-      // stale FAIL verdict current once more.
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c2" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      expect(hooks.verdictRegressedKDs.get(s).regressedAt).toBe(firstGuard.regressedAt);
+
+      // The Inspector re-emits the verdict (same filename, rewritten after
+      // the regression) — new information, so it regresses again.
+      utimesSync(join(knowledgeDir, reviewName), new Date(), new Date(Date.now() + 10000));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c3" },
         { args: { pattern: "knowledge/*.md" } }
       );
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
@@ -4953,8 +4974,9 @@ audited
       expect(rows.M1).toBe("in-progress");
       expect(rows.M2).toBe("checked-off");
 
-      // A fix cycle lands and the same FAIL KD re-evaluates (regresses again)
-      // — still only the cited row re-opens.
+      // A fix cycle lands and the same unchanged FAIL KD re-evaluates — the
+      // consumed verdict stays consumed, so still only the cited row is open
+      // and no second regression fires.
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       createKD(`impl-M1-fix-${s}.md`);
       utimesSync(join(knowledgeDir, `impl-M1-fix-${s}.md`), new Date(), new Date(Date.now() + 5000));
@@ -4962,7 +4984,7 @@ audited
         { tool: "glob", sessionID: s, callID: "c2" },
         { args: { pattern: "knowledge/*.md" } }
       );
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
       rows = regressedRegistryRows(s);
       expect(rows.M1).toBe("in-progress"); // still only the cited row
       expect(rows.M2).toBe("checked-off");
@@ -5273,9 +5295,10 @@ FAIL
         const rows = regressedRegistryRows(s);
         expect(rows.M1).toBe("in-progress");
         expect(rows.M2).toBe("checked-off");
-        // M1's stale impl KD is superseded on disk; M2's stays canonical.
-        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md`))).toBe(false);
-        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md.superseded.md`))).toBe(true);
+        // M1's stale impl KD is superseded in place; M2's stays live.
+        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md`))).toBe(true);
+        expect(existsSync(join(knowledgeDir, `impl-M1-feature-${s}.md.superseded.md`))).toBe(false);
+        expect(readFileSync(join(knowledgeDir, `impl-M1-feature-${s}.md`), "utf8")).toContain("status: superseded");
         expect(existsSync(join(knowledgeDir, `impl-M2-feature-${s}.md`))).toBe(true);
         expect(existsSync(join(knowledgeDir, `impl-M2-feature-${s}.md.superseded.md`))).toBe(false);
       });
@@ -6893,6 +6916,30 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
         process.env.PROTOCOL_GATE_DEBUG = "1";
         process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
         rmSync(quietDir, { recursive: true, force: true });
+        rmSync(probe, { recursive: true, force: true });
+      }
+    });
+
+    it("enables logging via the DEBUG_FILE sentinel when the env flag is unset", () => {
+      const sentinelDir = mkdtempSync(join(tmpdir(), "protocol-gate-sentinel-"));
+      const sentinel = join(sentinelDir, ".debug");
+      const altDir = mkdtempSync(join(tmpdir(), "protocol-gate-sentinel-log-"));
+      const probe = gitDir();
+      writeFileSync(sentinel, "");
+      try {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        process.env.PROTOCOL_GATE_DEBUG_FILE = sentinel;
+        process.env.PROTOCOL_GATE_LOG_DIR = altDir;
+        hooks.ensureGitRepo(probe);
+        const logFile = join(altDir, "protocol-gate.log");
+        expect(existsSync(logFile)).toBe(true);
+        expect(readFileSync(logFile, "utf8")).toContain("[protocol-gate]");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG_FILE;
+        process.env.PROTOCOL_GATE_DEBUG = "1";
+        process.env.PROTOCOL_GATE_LOG_DIR = protocolLogDir;
+        rmSync(sentinelDir, { recursive: true, force: true });
+        rmSync(altDir, { recursive: true, force: true });
         rmSync(probe, { recursive: true, force: true });
       }
     });

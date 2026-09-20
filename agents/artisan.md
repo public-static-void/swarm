@@ -62,6 +62,9 @@ permissions:
     resource: "*"
     effect: deny
   - action: shell
+    resource: "node --check*"
+    effect: allow
+  - action: shell
     resource: "mkdir*"
     effect: allow
   - action: shell

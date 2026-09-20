@@ -29,7 +29,3 @@ superseded_by: null
 - **Domain familiarity**: TBD — filled by Overseer at creation.
 - **Clarity**: TBD — filled by Overseer at creation.
 - **Estimated scope**: TBD — Explorer will assess after dispatch.
-
-## Next Steps
-
-- [ ] Dispatch Explorer to explore the codebase per the scope.
