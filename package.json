@@ -9,6 +9,7 @@
   },
   "scripts": {
     "audit": "npm audit --audit-level=high",
-    "prepare": "git config core.hooksPath .githooks"
+    "prepare": "git config core.hooksPath .githooks",
+    "test": "vitest run"
   }
 }
