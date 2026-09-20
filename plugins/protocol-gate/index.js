@@ -1619,23 +1619,36 @@ function readReviewKdContent(filename, sessionID = undefined) {
 
 // FAIL-verdict auto-regression. Regresses VERIFY→SWARM via the existing
 // backward-transition path — no `BACKWARD: true` flag and no explicit dispatch
-// — then re-opens the cited checked-off milestone rows. The fix-cycle-tied
-// guard records { kdFilename, regressedAt } per session: an absent guard or a
-// different kdFilename always regresses (a NEW FAIL KD); the same KD regresses
-// again only when a fix cycle landed after regressedAt (newest impl-* KD mtime
-// > regressedAt). The cycle cap in backwardTransition bounds repeated fix
-// cycles. Returns true when a regression fired, false when the same KD has no
-// new fix cycle.
+// — then re-opens the cited checked-off milestone rows. A verdict, once acted
+// on, is consumed: the consumption guard records { kdFilename, regressedAt }
+// per session, and an unchanged verdict never regresses twice. A fix cycle
+// landing after the regression is the recovery, not a new trigger —
+// re-regressing on it would reopen the just-fixed rows and invalidate the
+// fresh evidence in a VERIFY⇄SWARM ping-pong. Only a re-emitted verdict (a
+// NEW filename, or the same review KD rewritten after regressedAt) carries
+// new information and regresses again. The cycle cap in backwardTransition
+// bounds repeated genuine re-reviews. Returns true when a regression fired,
+// false when the verdict was already consumed.
 function regressVerifyOnFail(sessionID, kdFilename, sessionFiles, sessionPhaseMap, citedMilestoneIds, verdictRegressedKDs, backwardTransition) {
   const guard = verdictRegressedKDs.get(sessionID);
   // Monotonic regressedAt: two regressions may land in the same millisecond
-  // (fast local writes), but the fix-cycle guard needs the second regression's
-  // timestamp to be strictly greater — bump by 1ms when Date.now() ties.
+  // (fast local writes), but the consumption guard needs the second
+  // regression's timestamp to be strictly greater — bump by 1ms when
+  // Date.now() ties.
   const now = Math.max(Date.now(), (guard && typeof guard.regressedAt === "number" ? guard.regressedAt + 1 : 0));
   if (guard && guard.kdFilename === kdFilename) {
-    const newestImpl = newestImplMtimeMs(sessionFiles, sessionID);
-    if (!(newestImpl > guard.regressedAt)) {
-      debug(`FAIL current, no new fix cycle — same KD ${kdFilename} blocked (regressedAt=${guard.regressedAt}, newest impl mtime=${newestImpl})`);
+    // Consumed verdict: the review KD itself must be newer than the last
+    // regression to act again. Impl-KD mtimes are deliberately NOT consulted —
+    // a post-regression fix is the recovery the lifecycle is waiting for, and
+    // treating it as a re-trigger reopens the fixed rows and re-stamps the
+    // fresh evidence superseded on every VERIFY evaluation. The mtime is
+    // truncated to whole milliseconds: stat mtimeMs carries sub-ms precision
+    // while regressedAt is an integer Date.now(), so a review written in the
+    // same millisecond as the regression (which necessarily predates it —
+    // the file was read to evaluate it) must never count as re-emitted.
+    const reviewMtime = Math.floor(getFileMtimeMs(join(getKnowledgeDir(sessionID), kdFilename)));
+    if (!(reviewMtime > guard.regressedAt)) {
+      debug(`FAIL current, verdict consumed — same KD ${kdFilename} not re-emitted after regression (regressedAt=${guard.regressedAt}, review mtime=${reviewMtime})`);
       return false;
     }
   }
@@ -2133,10 +2146,10 @@ async function protocolGateServer(input, options) {
     const sessionAgentMap = new Map();
     // Fix-cycle-tied FAIL regression guard — per-session
     // { kdFilename, regressedAt } for the review KD that fired a FAIL
-    // auto-regression. Re-evaluating the same KD regresses again only when a
-    // new fix cycle landed after regressedAt (newest impl-* KD mtime >);
-    // without one it blocks (no infinite FAIL→SWARM→VERIFY loop); a NEW FAIL KD
-    // always regresses. In-memory only (like freshAdvancement) — the cap is
+    // auto-regression. A consumed verdict never regresses twice: re-evaluating
+    // the same KD regresses again only when the review KD itself was
+    // re-emitted after regressedAt (same filename, newer mtime); a NEW FAIL KD
+    // filename always regresses. In-memory only (like freshAdvancement) — the cap is
     // re-established from disk on restart via the cycle counter semantics.
     const verdictRegressedKDs = new Map(); // sessionID → { kdFilename, regressedAt }
     // One-shot phase-transition announcements — sessionID →
