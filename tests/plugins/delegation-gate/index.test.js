@@ -2054,6 +2054,55 @@ RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
       }
     });
 
+    it("enables logging via the DEBUG_FILE sentinel when the env flag is unset", async () => {
+      const sentinelDir = mkdtempSync(join(tmpdir(), "delegation-gate-sentinel-"));
+      const sentinel = join(sentinelDir, ".debug");
+      const flagDir = mkdtempSync(join(tmpdir(), "delegation-gate-flag-log-"));
+      writeFileSync(sentinel, "");
+      const priorDebug = process.env.DELEGATION_GATE_DEBUG;
+      const priorDebugFile = process.env.DELEGATION_GATE_DEBUG_FILE;
+      try {
+        delete process.env.DELEGATION_GATE_DEBUG;
+        process.env.DELEGATION_GATE_DEBUG_FILE = sentinel;
+        process.env.DELEGATION_GATE_LOG_DIR = flagDir;
+        const output = { args: { prompt: promptFor("explore") } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c-sentinel" }, output);
+
+        const logFile = join(flagDir, "delegation-gate.log");
+        expect(existsSync(logFile)).toBe(true);
+        expect(readFileSync(logFile, "utf8")).toContain("[delegation-gate]");
+      } finally {
+        if (priorDebug === undefined) delete process.env.DELEGATION_GATE_DEBUG;
+        else process.env.DELEGATION_GATE_DEBUG = priorDebug;
+        if (priorDebugFile === undefined) delete process.env.DELEGATION_GATE_DEBUG_FILE;
+        else process.env.DELEGATION_GATE_DEBUG_FILE = priorDebugFile;
+        process.env.DELEGATION_GATE_LOG_DIR = logDir;
+        rmSync(sentinelDir, { recursive: true, force: true });
+        rmSync(flagDir, { recursive: true, force: true });
+      }
+    });
+
+    it("stays silent with neither env flag nor sentinel file", async () => {
+      const quietDir = mkdtempSync(join(tmpdir(), "delegation-gate-quiet-"));
+      const priorDebug = process.env.DELEGATION_GATE_DEBUG;
+      const priorDebugFile = process.env.DELEGATION_GATE_DEBUG_FILE;
+      try {
+        delete process.env.DELEGATION_GATE_DEBUG;
+        delete process.env.DELEGATION_GATE_DEBUG_FILE;
+        process.env.DELEGATION_GATE_LOG_DIR = quietDir;
+        const output = { args: { prompt: promptFor("explore") } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c-quiet" }, output);
+        expect(existsSync(join(quietDir, "delegation-gate.log"))).toBe(false);
+      } finally {
+        if (priorDebug === undefined) delete process.env.DELEGATION_GATE_DEBUG;
+        else process.env.DELEGATION_GATE_DEBUG = priorDebug;
+        if (priorDebugFile === undefined) delete process.env.DELEGATION_GATE_DEBUG_FILE;
+        else process.env.DELEGATION_GATE_DEBUG_FILE = priorDebugFile;
+        process.env.DELEGATION_GATE_LOG_DIR = logDir;
+        rmSync(quietDir, { recursive: true, force: true });
+      }
+    });
+
     it("honors a runtime DELEGATION_GATE_LOG_DIR change with no stale-cache writes", async () => {
       const dirA = mkdtempSync(join(tmpdir(), "delegation-gate-a-"));
       const dirB = mkdtempSync(join(tmpdir(), "delegation-gate-b-"));
