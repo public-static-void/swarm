@@ -137,4 +137,47 @@ ${table}
     const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
     expect(content).toContain("  M5: planned");
   });
+
+  it("a rewrite after backtrack stays checked off while the same fail verdict is unchanged", async () => {
+    const s = "m5-rearm-4";
+    await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
+    hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    createKD(`milestones-feature-${s}.md`, registryContent([["M5", "checked-off"]]));
+    const draftImpl = `---\ntitle: "IMPLEMENTATION SUMMARY: test"\nversion: 3.0.0\nstatus: draft\ntype: impl\nsession_id: "ses_test"\nauthor: Artisan\nsuperseded_by: null\n---\n\n# IMPLEMENTATION SUMMARY: test\n`;
+    const reviewName = `review-fail-${s}.md`;
+    createKD(reviewName, `---\ntitle: "REVIEW: test"\nversion: 1.0.0\nstatus: draft\ntype: review\nsession_id: "ses_test"\nauthor: Inspector\nsuperseded_by: null\nverdict: FAIL\n---\n\n# REVIEW: test\n\n## Verdict\n\nFAIL\n\n## Review Findings\n\n### F001: defect\n\n- **Milestone citation**: impl-M5 defect\n- **Status**: FAIL\n`);
+    createKD(`impl-M5-fix-${s}-gen0.md`, draftImpl);
+
+    // The FAIL verdict regresses VERIFY→SWARM, reopens M5, and stamps the
+    // prior evidence superseded.
+    await hooks["tool.execute.before"](
+      { tool: "glob", sessionID: s, callID: "c1" },
+      { args: { pattern: "knowledge/*.md" } }
+    );
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: in-progress");
+
+    // The fix cycle rewrites canonical draft evidence — the live hook
+    // re-fires and checks the row off.
+    await hooks["chat.params"]({ sessionID: `${s}-art`, agent: "artisan" }, {});
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: `${s}-art`, callID: "c2" },
+      { args: { filePath: `knowledge/impl-M5-fix-${s}-gen0.md`, content: draftImpl } }
+    );
+    createKD(`impl-M5-fix-${s}-gen0.md`, draftImpl);
+    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: checked-off");
+
+    // Back in VERIFY with the SAME unchanged FAIL verdict: the consumed
+    // verdict must not regress again — no reopen, no re-stamp of the fresh
+    // evidence.
+    hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+    await hooks["tool.execute.before"](
+      { tool: "glob", sessionID: s, callID: "c3" },
+      { args: { pattern: "knowledge/*.md" } }
+    );
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: checked-off");
+    expect(readFileSync(join(knowledgeDir, `impl-M5-fix-${s}-gen0.md`), "utf8")).toContain("status: draft");
+  });
 });
