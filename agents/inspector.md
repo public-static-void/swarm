@@ -58,11 +58,20 @@ permissions:
   - action: memory_note_delete
     resource: "*"
     effect: allow
+  - action: memory_search
+    resource: "*"
+    effect: allow
   - action: shell
     resource: "*"
     effect: deny
   - action: shell
     resource: "node --check*"
+    effect: allow
+  - action: shell
+    resource: "node --version*"
+    effect: allow
+  - action: shell
+    resource: "node --test*"
     effect: allow
   - action: shell
     resource: "ls*"
