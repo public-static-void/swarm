@@ -743,6 +743,16 @@ RESULT KD: knowledge/cleanup-foo.md`;
         expect(line).not.toMatch(/Read the INTENT KD at/);
       }
     });
+
+    it("keeps the checkpoint fallback header free of the INTENT-KD line", async () => {
+      // fallbackHeader in index.js mirrors the disk checkpoint.json shape
+      // (no INTENT KD header) so the fallback path renders the same
+      // checkpoint-only field set the validation exemption assumes.
+      const src = readFileSync(new URL("../../../plugins/delegation-gate/index.js", import.meta.url), "utf8");
+      const m = src.match(/const intentKdLine = ([^;]+);/);
+      expect(m, "fallbackHeader intentKdLine line must exist").toBeTruthy();
+      expect(m[1]).toMatch(/checkpoint/);
+    });
   });
 
   describe("Cleanup Push Framing", () => {
