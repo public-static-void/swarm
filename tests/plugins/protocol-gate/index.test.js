@@ -6478,6 +6478,113 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     });
   });
 
+  describe("/phase generation suffix, explicit clear, and override record", () => {
+    it("strips a trailing generation suffix while leaving plain args untouched", () => {
+      expect(hooks.stripGenerationSuffix("align gen1")).toEqual({ rest: "align", generation: 1 });
+      expect(hooks.stripGenerationSuffix("5 gen 2")).toEqual({ rest: "5", generation: 2 });
+      expect(hooks.stripGenerationSuffix("{3,4,5} generation3")).toEqual({ rest: "{3,4,5}", generation: 3 });
+      expect(hooks.stripGenerationSuffix("CLEAR GEN12")).toEqual({ rest: "CLEAR", generation: 12 });
+      expect(hooks.stripGenerationSuffix("align")).toEqual({ rest: "align", generation: null });
+      expect(hooks.stripGenerationSuffix("3,4,5")).toEqual({ rest: "3,4,5", generation: null });
+      expect(hooks.stripGenerationSuffix("clear")).toEqual({ rest: "clear", generation: null });
+    });
+
+    it("accepts a generation-suffixed single phase and notes the suffix as ignored", async () => {
+      const s = sid("phase-gen-suffix");
+      await initOverseer(s);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "align gen1" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.ALIGN);
+      expect(out.parts[0].text).toContain("Phase set to ALIGN (5) for session");
+      expect(out.parts[0].text).toContain("gen1 ignored");
+    });
+
+    it("accepts a generation-suffixed multi-phase queue", async () => {
+      const s = sid("phase-gen-multi");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,4,5} gen1" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([3, 4, 5]);
+      expect(out.parts[0].text).toContain("override queue [3,4,5]");
+      expect(out.parts[0].text).toContain("gen1 ignored");
+    });
+
+    it("rejects a bare generation token with usage guidance", async () => {
+      const s = sid("phase-gen-bare");
+      await initOverseer(s);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "gen1" }, out);
+      expect(out.parts[0].text).toContain('invalid phase "gen1"');
+      expect(out.parts[0].text).toContain("gen<N>");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("clears an active override marker explicitly without moving the phase", async () => {
+      const s = sid("phase-clear");
+      await initOverseer(s);
+      let out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "ALIGN" }, out);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.ALIGN);
+
+      out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "clear" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(out.parts[0].text).toContain("cleared");
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
+    });
+
+    it("reports nothing to clear when no override is active", async () => {
+      const s = sid("phase-clear-empty");
+      await initOverseer(s);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "CLEAR" }, out);
+      expect(out.parts[0].text).toContain("nothing to clear");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+    });
+
+    it("records each override walk in lifecycle state and restores it after restart", async () => {
+      const s = sid("phase-history");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      let out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{5,4,3}" }, out);
+      out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "clear" }, out);
+      expect(out.parts[0].text).toContain("overrideHistory");
+
+      const history = hooks.sessionPhaseMap.get(`${s}:overrideHistory`);
+      expect(history).toHaveLength(2);
+      expect(history[0]).toMatchObject({ from: hooks.STATES.SWARM, to: hooks.STATES.ALIGN, queue: [5, 4, 3] });
+      expect(history[1]).toMatchObject({ cleared: true });
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideHistory).toHaveLength(2);
+
+      // Simulated restart: a fresh plugin instance restores the record.
+      hooks = await pluginModule.server({}, {});
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideHistory`)).toHaveLength(2);
+    });
+
+    it("drops the override record at lifecycle end", async () => {
+      const s = sid("phase-history-reset");
+      await initOverseer(s);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "REPORT" }, out);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideHistory`)).toHaveLength(1);
+
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: s, callID: "r1" },
+        { args: { filePath: `knowledge/report-history-${s}.md`, content: "report" } }
+      );
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideHistory`)).toBe(false);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideHistory).toBeUndefined();
+    });
+  });
+
   describe("/phase INTENT no longer traps the session", () => {
     // Ages a KD so its mtime predates the /phase marker — stale evidence under
     // the fresh-evidence rule. 60s of backdating dwarfs the millisecond
