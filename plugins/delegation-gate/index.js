@@ -184,13 +184,14 @@ function loadTemplates(config) {
     preflight: "Load the kd-system skill and the committer-preflight skill. Perform preflight checks per the scope above. Write a PREFLIGHT KD at {result_kd} using the template-preflight.md template to signal completion."
   };
 
-  // Preflight/cleanup fallback headers mirror the disk templates. Cleanup keeps
-  // its no-INTENT-KD header shape (matches templates/cleanup.json); all other
+  // Committer-owned fallback headers mirror the disk templates. Cleanup and
+  // checkpoint keep their no-INTENT-KD header shape (matching
+  // templates/cleanup.json and templates/checkpoint.json); all other
   // modes keep the shared header with INTENT KD. Both error
   // paths render the same header so the fallback can never drift from the
   // disk shape (the older fallback was also missing GENERATION entirely).
   const fallbackHeader = (mode) => {
-    const intentKdLine = mode === "cleanup" ? "" : "INTENT KD: {intent_kd}\n";
+    const intentKdLine = mode === "cleanup" || mode === "checkpoint" ? "" : "INTENT KD: {intent_kd}\n";
     return `DISPATCH TO: {agent}\nMODE: ${mode}\n${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nTASK ID: {task_id}\n\n---\n\n`;
   };
 
@@ -699,8 +700,7 @@ async function delegationGateServer(input, options) {
 
       // scope is optional — provides domain context but doesn't block delegation
       // intent_kd is not required for the committer-owned modes (checkpoint,
-      // cleanup) — their templates render no INTENT KD reference
-      // (the committer's read:allow denies knowledge/intent-*.md), so requiring
+      // cleanup) — their templates render no INTENT KD reference, so requiring
       // the field serves no purpose. Only non-committer modes need intent_kd
       // to identify the upstream KD.
       const requiredFields = ["agent", "mode", "session_date"];
