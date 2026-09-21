@@ -429,5 +429,17 @@ describe("agents delegation dispatch docs", () => {
       expect(output.args.prompt).toContain("RESULT KD: knowledge/checkpoint-");
       expect(output.args.prompt).not.toContain("INTENT KD:");
     });
+
+    it("states the artisan checkpoint dispatch as unconditional", async () => {
+      // The skipped-checkpoint defect came from artisans treating a scope
+      // without checkpoint fields as permission to skip the dispatch —
+      // artisan.md must state the dispatch happens after every plan step
+      // regardless of scope wording, with red gates delaying (fix, re-run,
+      // then dispatch) rather than cancelling it.
+      const artisan = readAgent("artisan.md");
+      expect(artisan).toMatch(/unconditional/);
+      expect(artisan).toMatch(/leaves the dispatch required/);
+      expect(artisan).toMatch(/the dispatch still happens/);
+    });
   });
 });
