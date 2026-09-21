@@ -547,6 +547,41 @@ function argsFromPrompt(invocation, name) {
   return stripped === text.trim() ? text.trim() : stripped;
 }
 
+// Retention cap for the per-session /phase override record. The state file
+// keeps only the latest OVERRIDE_HISTORY_MAX walks so a long-lived session
+// never grows its state file without bound. Named constant, exported as a
+// test-access property.
+const OVERRIDE_HISTORY_MAX = 20;
+
+// Strips a trailing lifecycle-generation token from a /phase argument.
+// Users reaching for `/phase align gen1` (observed in the trace session)
+// mean "phase ALIGN" — the lifecycle generation stays implicit (it comes
+// from the persisted `:gen` state, never from the command). Accepted suffix
+// forms, case-insensitive: `gen<N>`, `gen <N>`, `generation<N>`,
+// `generation <N>`. Returns { rest, generation } — generation is the parsed
+// number or null when no suffix is present. The rest is returned untouched
+// (still trimmed by the caller) so parsePhaseArg semantics stay strict.
+function stripGenerationSuffix(arg) {
+  if (typeof arg !== "string") return { rest: arg, generation: null };
+  const m = String(arg).match(/^(.*?)(?:\s+gen(?:eration)?\s*(\d+))\s*$/i);
+  if (!m) return { rest: arg, generation: null };
+  return { rest: m[1], generation: parseInt(m[2], 10) };
+}
+
+// Appends a /phase override walk to the session's in-memory record. Each
+// entry pins { at, from, to } plus the queue for multi-phase walks, the
+// cleared flag for explicit clears, or the ignored generation suffix — the
+// one-line record the confirmation text echoes so lifecycle KDs can cite the
+// walk without reading debug logs. saveState persists the tail; the REPORT
+// lifecycle-end reset drops it with the finished lifecycle.
+function recordPhaseOverride(sessionPhaseMap, sessionID, entry) {
+  const key = `${sessionID}:overrideHistory`;
+  const history = sessionPhaseMap.get(key) || [];
+  history.push(entry);
+  while (history.length > OVERRIDE_HISTORY_MAX) history.shift();
+  sessionPhaseMap.set(key, history);
+  return history;
+}
 // Validates a multi-phase override queue against lifecycle.json
 // backwardTransitions. The queue's phases must form a connected chain in the
 // backward-transition graph (each consecutive pair adjacent via a backward
@@ -2221,6 +2256,13 @@ async function protocolGateServer(input, options) {
             state.overrideUntil = { phases: overrideUntil.phases, since: overrideUntil.since };
           }
         }
+        // Serialize the /phase override record (bounded walk history) so the
+        // walk survives a mid-session restart and stays citable from lifecycle
+        // KDs. Omitted when empty — legacy state files load unchanged.
+        const overrideHistory = sessionPhaseMap.get(`${sessionID}:overrideHistory`);
+        if (Array.isArray(overrideHistory) && overrideHistory.length > 0) {
+          state.overrideHistory = overrideHistory.slice(-OVERRIDE_HISTORY_MAX);
+        }
         const stateDir = getStateDir();
         mkdirSync(stateDir, { recursive: true });
         // Atomic durable write — tmp file + fsync + rename. A
@@ -2407,6 +2449,17 @@ async function protocolGateServer(input, options) {
         } else if (Array.isArray(state.overrideUntil.phases) && state.overrideUntil.phases.length > 0) {
           sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: state.overrideUntil.phases, since: state.overrideUntil.since });
           debug(`reconcile: restored overrideUntil queue=${JSON.stringify(state.overrideUntil.phases)} since=${state.overrideUntil.since} for ${sessionID}`);
+        }
+      }
+      // Restore the /phase override record so the walk stays citable after a
+      // restart. Entries are trusted as written by recordPhaseOverride
+      // (bounded at write time); malformed shapes are dropped. Omitted when
+      // absent — legacy state files load unchanged.
+      if (Array.isArray(state.overrideHistory) && state.overrideHistory.length > 0) {
+        const restored = state.overrideHistory.filter(e => e && typeof e.at === "string" && typeof e.from === "number" && typeof e.to === "number").slice(-OVERRIDE_HISTORY_MAX);
+        if (restored.length > 0) {
+          sessionPhaseMap.set(`${sessionID}:overrideHistory`, restored);
+          debug(`reconcile: restored overrideHistory (${restored.length} entries) for ${sessionID}`);
         }
       }
       if (state.sid && state.sid !== sessionID) {
@@ -2762,12 +2815,40 @@ async function protocolGateServer(input, options) {
       const { sessionID, arguments: arg } = input;
       const trimmed = String(arg ?? "").trim();
       if (!trimmed) {
-        output.parts = [{ type: "text", text: "Error: /phase requires an argument. Usage: /phase <1-12|PHASE_NAME|{3,4,5}>" }];
+        output.parts = [{ type: "text", text: "Error: /phase requires an argument. Usage: /phase <1-12|PHASE_NAME|{3,4,5}|clear> (a trailing gen<N> generation suffix is accepted and ignored — generation stays implicit)." }];
         return;
       }
-      const parsed = parsePhaseArg(trimmed);
+      // A trailing lifecycle-generation token (`/phase align gen1`) is
+      // accepted and ignored — the lifecycle generation stays implicit in
+      // persisted state. The stripped rest drives parsing below.
+      const { rest: phaseArg, generation: generationSuffix } = stripGenerationSuffix(trimmed);
+      const genNote = generationSuffix !== null ? ` Generation suffix gen${generationSuffix} ignored — lifecycle generation stays implicit.` : "";
+      // Explicit clear: drop the override marker without moving the phase and
+      // resume normal advancement semantics. Not an escape — the phase never
+      // changes — so SAFETY_ESCAPE never fires here.
+      if (phaseArg.trim().toLowerCase() === "clear") {
+        const currentPhase = sessionPhaseMap.get(sessionID);
+        const at = new Date().toISOString();
+        if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
+          const marker = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
+          const was = getOverrideTargetPhase(marker);
+          sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+          recordPhaseOverride(sessionPhaseMap, sessionID, { at, from: currentPhase, to: currentPhase, cleared: true, ...(generationSuffix !== null ? { gen: generationSuffix } : {}) });
+          saveState(sessionID);
+          debug(`Override cleared: explicit /phase clear at ${getPhaseName(currentPhase)} for session ${sessionID}`);
+          output.parts = [{ type: "text", text: `Phase override cleared for session ${sessionID} (was ${getPhaseName(was)} (${was}) at ${getPhaseName(currentPhase)} (${currentPhase})).${genNote} Override record persisted in lifecycle state (overrideHistory).` }];
+        } else {
+          output.parts = [{ type: "text", text: `No phase override is active for session ${sessionID} — nothing to clear.${genNote}` }];
+        }
+        return;
+      }
+      if (!phaseArg.trim()) {
+        output.parts = [{ type: "text", text: "Error: /phase requires an argument. Usage: /phase <1-12|PHASE_NAME|{3,4,5}|clear> (a trailing gen<N> generation suffix is accepted and ignored — generation stays implicit)." }];
+        return;
+      }
+      const parsed = parsePhaseArg(phaseArg);
       if (parsed === null) {
-        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 1-12, a phase name, or an ordered list like {3,4,5}.` }];
+        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 1-12, a phase name, an ordered list like {3,4,5}, or "clear". A trailing gen<N> (e.g. /phase align gen1) is accepted and ignored.` }];
         return;
       }
       const isMulti = Array.isArray(parsed);
@@ -2809,6 +2890,17 @@ async function protocolGateServer(input, options) {
       } else {
         sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since: Date.now() });
       }
+      // The one-line override record: the walk lands in lifecycle state
+      // (overrideHistory, persisted by the saveState below) and is echoed in
+      // the confirmation so lifecycle KDs can cite it without reading logs.
+      const at = new Date().toISOString();
+      recordPhaseOverride(sessionPhaseMap, sessionID, {
+        at,
+        from: prevPhase,
+        to: n,
+        ...(isMulti ? { queue: [...phases] } : {}),
+        ...(generationSuffix !== null ? { gen: generationSuffix } : {})
+      });
       // A manual /phase override supersedes any pending auto-advance.
       // The one-shot announcement must not leak into the next systemTransform —
       // e.g. a stale "auto-advanced EXPLORE → INVESTIGATE" after a redispatch to
@@ -2833,9 +2925,10 @@ async function protocolGateServer(input, options) {
       }
       const marker = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
       debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — overrideUntil set (${isMulti ? `queue ${JSON.stringify(phases)}` : `phase ${n}`}, since ${marker.since})`);
+      const walk = isMulti ? `, queue ${JSON.stringify(phases)}` : "";
       output.parts = [{ type: "text", text: isMulti
-        ? `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID} — override queue ${JSON.stringify(phases)}.`
-        : `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.` }];
+        ? `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID} — override queue ${JSON.stringify(phases)}.${genNote} Override record: ${getPhaseName(prevPhase)} (${prevPhase}) → ${getPhaseName(n)} (${n})${walk} at ${at} — persisted in lifecycle state (overrideHistory).`
+        : `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID}.${genNote} Override record: ${getPhaseName(prevPhase)} (${prevPhase}) → ${getPhaseName(n)} (${n}) at ${at} — persisted in lifecycle state (overrideHistory).` }];
     }
 
     // --- Hook: permission.ask ---
@@ -3166,6 +3259,9 @@ async function protocolGateServer(input, options) {
             sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
             debug(`Override cleared: REPORT reset`);
           }
+          // Lifecycle end drops the override record with the finished
+          // lifecycle — the next lifecycle starts fresh.
+          sessionPhaseMap.delete(`${sessionID}:overrideHistory`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
           verdictRegressedKDs.delete(sessionID);
@@ -3327,6 +3423,8 @@ async function protocolGateServer(input, options) {
             sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
             debug(`Override cleared: REPORT reset via edit`);
           }
+          // Lifecycle end drops the override record (see write handler).
+          sessionPhaseMap.delete(`${sessionID}:overrideHistory`);
           swarmDispatchCount.delete(sessionID);
           cycleMap.delete(sessionID);
           verdictRegressedKDs.delete(sessionID);
@@ -3990,6 +4088,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
       parseSinglePhaseArg,
+      stripGenerationSuffix,
+      recordPhaseOverride,
+      OVERRIDE_HISTORY_MAX,
       getOverrideTargetPhase,
       findInvalidMultiPhaseHop,
       argsFromPrompt,
@@ -4130,7 +4231,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         });
       });
     };
-    try { await wireCommand("phase", "Set protocol-gate lifecycle phase (0-12, name, or {a,b,c})"); } catch {}
+    try { await wireCommand("phase", "Set protocol-gate lifecycle phase (1-12, name, {a,b,c} multi-phase walk, or clear; trailing gen<N> ignored)"); } catch {}
     try { await wireCommand("reconcile-superseded", "Reconcile a superseded-only milestone to checked-off"); } catch {}
   }
 
