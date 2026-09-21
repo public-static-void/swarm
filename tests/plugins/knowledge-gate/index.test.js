@@ -533,10 +533,10 @@ Body`;
     });
   });
 
-  describe("getNextIssueId", () => {
-    it("generates ISSUE-001 when no issues exist", () => {
-      const result = hooks.getNextIssueId();
-      expect(result).toBe("ISSUE-001");
+  describe("getNextIssueIdForStore", () => {
+    it("generates 1 when no issues exist", () => {
+      const result = hooks.getNextIssueIdForStore(ISSUES_DIR);
+      expect(result).toBe(1);
     });
 
     it("generates sequential IDs based on existing issue files", () => {
@@ -545,8 +545,8 @@ Body`;
         { fileName: "issue-005.md", content: "" }
       ]);
 
-      const result = hooks.getNextIssueId();
-      expect(result).toBe("ISSUE-006");
+      const result = hooks.getNextIssueIdForStore(ISSUES_DIR);
+      expect(result).toBe(6);
     });
   });
 
@@ -1455,9 +1455,9 @@ Body`;
     });
   });
 
-  describe("getNextMemoryId", () => {
+  describe("getNextMemoryIdForStore", () => {
     it("generates MEM-001 when no entries exist", () => {
-      const result = hooks.getNextMemoryId();
+      const result = hooks.getNextMemoryIdForStore(MEMORY_DIR);
       expect(result).toBe("MEM-001");
     });
 
@@ -1467,7 +1467,7 @@ Body`;
         { fileName: "entry-005.json", content: "{}" }
       ]);
 
-      const result = hooks.getNextMemoryId();
+      const result = hooks.getNextMemoryIdForStore(MEMORY_DIR);
       expect(result).toBe("MEM-006");
     });
   });
