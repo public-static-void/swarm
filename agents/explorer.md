@@ -58,6 +58,9 @@ permissions:
   - action: memory_note_delete
     resource: "*"
     effect: allow
+  - action: memory_search
+    resource: "*"
+    effect: allow
   - action: shell
     resource: "*"
     effect: deny
@@ -81,6 +84,9 @@ permissions:
     effect: allow
   - action: shell
     resource: "mkdir*"
+    effect: allow
+  - action: shell
+    resource: "node --version*"
     effect: allow
   - action: shell
     resource: "git status*"
