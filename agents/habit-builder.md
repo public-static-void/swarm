@@ -70,6 +70,9 @@ permissions:
   - action: memory_note_delete
     resource: "*"
     effect: allow
+  - action: memory_search
+    resource: "*"
+    effect: allow
   - action: issue_write
     resource: "*"
     effect: allow
