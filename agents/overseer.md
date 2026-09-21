@@ -85,6 +85,9 @@ permissions:
   - action: memory_note_delete
     resource: "*"
     effect: allow
+  - action: memory_search
+    resource: "*"
+    effect: allow
   - action: shell
     resource: "*"
     effect: deny
@@ -134,6 +137,8 @@ The Knowledge Gate plugin automatically injects open issues into your session co
 If an agent fails during any phase, re-dispatch with refined scope. If failure persists, document the gap in a PROCESS KD, then escalate to the user via a REPORT KD. Wait for user input before proceeding.
 
 **WRONG_AGENT rejection**: a WRONG_AGENT rejection means the dispatched agent does not match the current phase's expected agent (protocol-gate routing by `lifecycle.json`); it is a deliberate safety control, not a personal failure. To correct a phase artifact after its producing phase advanced, user intervention might be required with an explicit `/phase`-command backward override returning to the producing phase, or the sanctioned role-deviation route through the current phase's agent with an explicit role-deviation scope note.
+
+**/phase override**: the user-facing escape hatch for a stuck lifecycle. `/phase` accepts a single phase (`/phase 5`, `/phase align`) and ordered multi-phase walks (`/phase 1,2,3,4`, `/phase {3,4,5}` — each hop validated against the backward-transition chain with one end reachable from the current phase). A trailing generation suffix (`/phase align gen1`) is accepted and ignored — the lifecycle generation stays implicit in persisted state. `/phase clear` drops the override marker explicitly and resumes normal advancement semantics. Every invocation is recorded in lifecycle state (`overrideHistory`, bounded, restart-proof) and echoed as a one-line override record in the confirmation — quote that record in KDs so the walk stays visible without reading debug logs. Escapes out of a stuck SWARM additionally log `SAFETY_ESCAPE` in the protocol-gate log.
 
 ## Delegation Rules
 

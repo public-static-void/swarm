@@ -263,7 +263,7 @@ const SHORT_TERM_DIR = storeDirFor("short-term", CONFIG_STORE_ROOT);
 // Derived memory search index. The .jsonl filename is a naming constraint
 // in action: it must NOT match f.endsWith(".json") and must NOT start with
 // "entry-", so every existing .json/entry- filter in the plugin
-// (isCacheValid, loadEntriesFromDisk, getNextMemoryId) and the test suite
+// (isCacheValid, loadEntriesFromDisk, getNextMemoryIdForStore) and the test suite
 // stays intact. The index is a rebuildable projection — the entry files
 // remain the single source of truth.
 const MEMORY_INDEX_FILE = "memory-search-index.jsonl";
@@ -392,14 +392,6 @@ const NOISE_WORDS = new Set([
 ]);
 
 const VALID_TYPES = ["fact", "decision", "pattern", "warning", "context"];
-
-/**
- * Gets the next sequential memory ID by scanning existing entries.
- * Mirrors getNextIssueId() pattern.
- */
-function getNextMemoryId() {
-  return getNextMemoryIdForStore(MEMORY_DIR);
-}
 
 /**
  * Gets the next sequential memory ID within ONE store dir (per-store
@@ -691,32 +683,6 @@ function filterByAudience(issues, audienceEnv) {
     if (assigned === "") return true;
     return needles.some(n => assigned.includes(n));
   });
-}
-
-/**
- * Gets the next sequential issue ID by scanning existing issues.
- */
-function getNextIssueId() {
-  ensureIssuesDir();
-  if (!existsSync(ISSUES_DIR)) return "ISSUE-001";
-
-  let files;
-  try {
-    files = readdirSync(ISSUES_DIR).filter(f => f.startsWith("issue-") && f.endsWith(".md"));
-  } catch (_) {
-    return "ISSUE-001";
-  }
-
-  let maxNum = 0;
-  for (const file of files) {
-    const numMatch = file.match(/issue-(\d+)\.md/);
-    if (numMatch) {
-      const num = parseInt(numMatch[1], 10);
-      if (num > maxNum) maxNum = num;
-    }
-  }
-
-  return `ISSUE-${String(maxNum + 1).padStart(3, "0")}`;
 }
 
 /**
@@ -2731,9 +2697,7 @@ async function knowledgeGateServer(input, options) {
       scanOpenIssuesWorkspaceAware,
       scopesForInjection,
       parseIssueFile,
-      getNextIssueId,
       getNextIssueIdForStore,
-      getNextMemoryId,
       getNextMemoryIdForStore,
       validateMemoryEntry,
       validateIssue,
