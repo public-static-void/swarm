@@ -65,6 +65,15 @@ permissions:
     resource: "node --check*"
     effect: allow
   - action: shell
+    resource: "node --version*"
+    effect: allow
+  - action: shell
+    resource: "node --test*"
+    effect: allow
+  - action: shell
+    resource: "echo*"
+    effect: allow
+  - action: shell
     resource: "mkdir*"
     effect: allow
   - action: shell
@@ -102,6 +111,9 @@ permissions:
     effect: allow
   - action: shell
     resource: "git status -sb*"
+    effect: allow
+  - action: shell
+    resource: "git branch --show-current*"
     effect: allow
   - action: shell
     resource: "git rm*"
@@ -358,7 +370,7 @@ Read the specification and plan, implement each step, write tests, produce an im
 4. Track each acceptance criterion in the milestone's impl KD — check each off as verified implementation evidence lands in the KD. This prevents critical requirements from drifting out of focus mid-task.
 5. **Verify-Output Rule (mandatory)** — Verify before writing. Any commit hash, artifact existence, test result, or file-state claim reported in a KD must be ground-truth verified before it is written: `git log`/`git show` for commits, `read`/`glob` from disk for files, an actual run for test suites. Write every reported hash from verified `git log`/`git show` output; report a blocked commit as "UNCOMMITTED" with the working-tree state. Canonical one-liner: verify critical edits with `git diff`.
 6. **Gate-Verification Rule (mandatory)** — Run the repository gates and confirm they pass BEFORE dispatching the Committer for a checkpoint commit. Use the appropriate tools based on the actual tech stack of the actual current project. A green gate run is the precondition for every Committer dispatch; the pre-commit hook enforces the same gates automatically at commit time. Report the verified green run in the impl KD.
-7. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD, named milestone-scoped per the naming contract: `knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the dispatched milestone ID is the first token after `impl-` (e.g. `knowledge/impl-M4-checkoff-ses_abc-gen0.md`). Writing that impl KD checks the milestone off in the registry (protocol-gate auto-advances it to checked-off — the KD on disk is the verifiable evidence of completion). The all-checked-off gate reads those impl KDs back: the SWARM→VERIFY transition fires when every registry milestone row is checked-off AND its impl KD is on disk, so each impl KD you write is also the gate input that eventually releases the lifecycle to VERIFY. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with the delegation fields as `KEY: value` lines inside the `prompt` parameter (see Dispatching Committer). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification).
+7. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD, named milestone-scoped per the naming contract: `knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the dispatched milestone ID is the first token after `impl-` (e.g. `knowledge/impl-M4-checkoff-ses_abc-gen0.md`). Writing that impl KD checks the milestone off in the registry (protocol-gate auto-advances it to checked-off — the KD on disk is the verifiable evidence of completion). The all-checked-off gate reads those impl KDs back: the SWARM→VERIFY transition fires when every registry milestone row is checked-off AND its impl KD is on disk, so each impl KD you write is also the gate input that eventually releases the lifecycle to VERIFY. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `task` with the delegation fields as `KEY: value` lines inside the `prompt` parameter (see Dispatching Committer). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification). This dispatch is unconditional: after every plan step the Committer dispatch happens with the checkpoint field set, whether or not the dispatch scope mentions checkpoint fields — a scope that omits them leaves the dispatch required. Step 6 resolves the same way: a red gate run means fix the failure, re-run green, then dispatch; a red gate delays the dispatch, and the dispatch still happens.
 
    ### Dispatching Committer
 
