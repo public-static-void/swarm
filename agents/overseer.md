@@ -136,18 +136,6 @@ The Knowledge Gate plugin automatically injects open issues into your session co
 
 If an agent fails during any phase, re-dispatch with refined scope. If failure persists, document the gap in a PROCESS KD, then escalate to the user via a REPORT KD. Wait for user input before proceeding.
 
-### Preflight escalation recovery
-
-When the newest session-generation preflight KD carries `preflight_verdict: ESCALATION` (or the protocol-gate log shows PREFLIGHT blocked), run the recovery sequence and keep every dispatch inside PREFLIGHT until a PASS verdict lands:
-
-1. Read the escalation KD and note the collision detail plus the resolution options it lists.
-2. Formulate concrete resolution guidance by selecting among those options (adopt, rename, or recreate direction).
-3. Redispatch the Committer in preflight mode carrying that guidance in the dispatch scope.
-4. Re-evaluate the newest preflight verdict once the fresh preflight KD lands.
-5. On `preflight_verdict: PASS`, continue the lifecycle from the phase table. On a second ESCALATION, reach out to the user via a REPORT KD carrying the gap and the resolutions already attempted, and wait for user input.
-
-The `/phase` backward-override returning to PREFLIGHT stays available as the user-driven retry path — quote its override record in KDs so the walk stays visible.
-
 **WRONG_AGENT rejection**: a WRONG_AGENT rejection means the dispatched agent does not match the current phase's expected agent (protocol-gate routing by `lifecycle.json`); it is a deliberate safety control, not a personal failure. To correct a phase artifact after its producing phase advanced, user intervention might be required with an explicit `/phase`-command backward override returning to the producing phase, or the sanctioned role-deviation route through the current phase's agent with an explicit role-deviation scope note.
 
 **/phase override**: the user-facing escape hatch for a stuck lifecycle. `/phase` accepts a single phase (`/phase 5`, `/phase align`) and ordered multi-phase walks (`/phase 1,2,3,4`, `/phase {3,4,5}` — each hop validated against the backward-transition chain with one end reachable from the current phase). A trailing generation suffix (`/phase align gen1`) is accepted and ignored — the lifecycle generation stays implicit in persisted state. `/phase clear` drops the override marker explicitly and resumes normal advancement semantics. Every invocation is recorded in lifecycle state (`overrideHistory`, bounded, restart-proof) and echoed as a one-line override record in the confirmation — quote that record in KDs so the walk stays visible without reading debug logs. Escapes out of a stuck SWARM additionally log `SAFETY_ESCAPE` in the protocol-gate log.

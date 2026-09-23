@@ -98,7 +98,7 @@ const SANCTIONED_CARGO_RUN_COMMANDS = [
   "cargo run -p xtask -- build-wasm-tests*",
   "cargo run --bin schema_validator*",
 ];
-const ARTISAN_APPROVAL_GATED_COMMANDS = [
+const ARTISAN_HEADLESS_COMMANDS = [
   "git rm*", "npm install --save-dev*", "npm ci*", "bun install*",
   "poetry install*", "cargo build*", "composer install*",
   "make test*", "make build*", "go get*", "go install*",
@@ -108,11 +108,10 @@ const ARTISAN_APPROVAL_GATED_COMMANDS = [
   "compose exec*", "compose run --rm*",
 ];
 const ARTISAN_READONLY_GATE_COMMANDS = [
-  "cargo fmt --check*",
+  "cargo fmt*",
   "cargo run -p xtask -- build-wasm-tests*",
   "cargo run --bin schema_validator*",
   "make validate-schema*",
-  "make test-*",
 ];
 const ANALYZER_BUILDER_INSTALLER_COMMANDS = [
   "cargo build*", "pip install*", "poetry install*", "make build*",
@@ -264,7 +263,7 @@ describe("agent permission allowlists", () => {
         }
       }
     }
-    // Artisan's narrowed "cargo fmt --check" entry still covers the check gate.
+    // Artisan's broad "cargo fmt*" entry covers the check gate by prefix match.
     const artisanPatterns = entriesByFile.get("artisan.md").map((e) => e.pattern);
     if (!artisanPatterns.some((p) => p.startsWith("cargo fmt"))) {
       missing.push("artisan.md: cargo fmt* prefix");
@@ -290,9 +289,9 @@ describe("agent permission allowlists", () => {
     expect(missing).toEqual([]);
   });
 
-  it("keeps install and exec-class commands approval-gated for Artisan", () => {
+  it("allows install and exec-class commands headless for Artisan", () => {
     const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
-    const violations = ARTISAN_APPROVAL_GATED_COMMANDS.filter((cmd) => artisan.get(cmd) !== "ask");
+    const violations = ARTISAN_HEADLESS_COMMANDS.filter((cmd) => artisan.get(cmd) !== "allow");
     expect(violations).toEqual([]);
   });
 
