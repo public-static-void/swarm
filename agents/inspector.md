@@ -155,9 +155,6 @@ permissions:
     resource: "cargo clippy*"
     effect: allow
   - action: shell
-    resource: "cargo build*"
-    effect: allow
-  - action: shell
     resource: "cargo fmt --check*"
     effect: allow
   - action: shell
@@ -177,9 +174,6 @@ permissions:
     effect: allow
   - action: shell
     resource: "make test*"
-    effect: allow
-  - action: shell
-    resource: "make build*"
     effect: allow
   - action: shell
     resource: "docker compose ps*"
