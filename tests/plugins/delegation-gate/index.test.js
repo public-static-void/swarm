@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll, afterEach } from "vitest";
-import { readFileSync, mkdtempSync, rmSync, existsSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2207,6 +2207,61 @@ RESULT KD: knowledge/exploration-foo.md`;
 
       const log = readFileSync(join(logDir, "delegation-gate.log"), "utf8");
       expect(log).toContain(`WARNING: scope validation failed (len=${longScope.length}, content='${longScope}') — proceeding anyway`);
+    });
+  });
+
+  describe("Repetitive Log Collapse", () => {
+    it("logs the first 3 tool.definition annotations verbatim then one count summary", async () => {
+      // The annotation fires once per subagent tool surface — high-volume
+      // repeats collapse to first-N verbatim plus a single summary line.
+      hooks.resetLogCollapse();
+      const suiteLog = join(logDir, "delegation-gate.log");
+      const before = existsSync(suiteLog) ? readFileSync(suiteLog, "utf8").length : 0;
+      try {
+        for (let i = 0; i < 6; i++) {
+          await hooks["tool.definition"]({ toolID: "task" }, { description: "" });
+        }
+        const appended = readFileSync(suiteLog, "utf8").slice(before);
+        const verbatim = appended.split("\n").filter(l => l.includes("annotated subagent tool description"));
+        expect(verbatim).toHaveLength(3);
+        expect(appended).toContain("tool-definition-annotated: first 3 shown; further repeats collapsed");
+      } finally {
+        hooks.resetLogCollapse();
+      }
+    });
+  });
+
+  describe("Fallback-Template Drift Pinning", () => {
+    it("keeps every in-code fallback header identical to its disk template header", async () => {
+      // Disk templates are the source of truth — the fallback header must
+      // render the same field set so the disk-missing path stays converged.
+      const modes = Object.keys(hooks.defaultTemplates);
+      expect(modes).toHaveLength(11);
+      for (const mode of modes) {
+        const diskPath = join(PLUGIN_TEMPLATES_DIR, `${mode}.json`);
+        expect(existsSync(diskPath), `disk template for mode ${mode}`).toBe(true);
+        const disk = JSON.parse(readFileSync(diskPath, "utf8"));
+        const diskHeader = disk.template.split("\n---\n\n")[0] + "\n---\n\n";
+        expect(diskHeader, `fallback header drift for mode ${mode}`).toBe(hooks.fallbackHeader(mode));
+      }
+    });
+
+    it("covers every disk template file with a fallback entry (no orphans either way)", async () => {
+      const diskModes = readdirSync(PLUGIN_TEMPLATES_DIR)
+        .filter(f => f.endsWith(".json"))
+        .map(f => f.replace(/\.json$/, ""))
+        .sort();
+      expect(diskModes.sort()).toEqual(Object.keys(hooks.defaultTemplates).sort());
+    });
+
+    it("reports divergence when a header drifts (deliberate divergence fixture)", async () => {
+      // Proves the comparator above can fail — a one-token header drift on
+      // either side breaks equality.
+      const disk = JSON.parse(readFileSync(join(PLUGIN_TEMPLATES_DIR, "explore.json"), "utf8"));
+      const driftedHeader = disk.template
+        .replace("TASK ID: {task_id}", "TASK ID: {task}")
+        .split("\n---\n\n")[0] + "\n---\n\n";
+      expect(driftedHeader).not.toBe(hooks.fallbackHeader("explore"));
     });
   });
 });
