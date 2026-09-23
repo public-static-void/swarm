@@ -1750,6 +1750,67 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
   return result;
 }
 
+// Reads the machine-readable preflight signal from a PREFLIGHT KD's leading
+// frontmatter block. Returns "PASS" or "ESCALATION", or null when the field
+// is absent or carries any other value — a missing signal blocks advancement
+// and is not counted as success.
+function readPreflightVerdictFrontmatter(filePath) {
+  try {
+    const content = readFileSync(filePath, "utf8");
+    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!frontmatter) return null;
+    const verdictMatch = frontmatter[1].match(/^preflight_verdict\s*:\s*([A-Za-z]+)\s*$/m);
+    if (!verdictMatch) return null;
+    const verdict = verdictMatch[1].toUpperCase();
+    return ["PASS", "ESCALATION"].includes(verdict) ? verdict : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Finds the newest preflight KD among the session's KDs. "Newest" mirrors the
+// review-KD rule: greatest file mtime, tie-break by greatest filename.
+// Returns { filename, verdict } or null when no preflight KD exists.
+function findNewestPreflightKD(sessionFiles, sessionID = undefined) {
+  const preflightFiles = sessionFiles.filter(f => /^preflight-/i.test(f));
+  if (preflightFiles.length === 0) return null;
+  const knowledgeDir = getKnowledgeDir(sessionID);
+  preflightFiles.sort((a, b) => {
+    let mtimeDiff = 0;
+    try { mtimeDiff = statSync(join(knowledgeDir, b)).mtimeMs - statSync(join(knowledgeDir, a)).mtimeMs; } catch (_) {}
+    if (mtimeDiff !== 0) return mtimeDiff;
+    return b > a ? 1 : b < a ? -1 : 0;
+  });
+  const filename = preflightFiles[0];
+  return { filename, verdict: readPreflightVerdictFrontmatter(join(knowledgeDir, filename)) };
+}
+
+// Verdict-aware PREFLIGHT gate body. checkDiskAdvancement delegates PREFLIGHT
+// advancement here in the override and non-override paths alike. Advancement
+// needs the newest session-generation preflight KD to carry PASS; an
+// escalation verdict, a missing field, or an unreadable value blocks the
+// phase (fail closed). Under an active override at PREFLIGHT the newest KD
+// carries fresh evidence as well (mtime >= since) — stale KDs leave the
+// manual override in place. Emits one debug line per evaluation naming the
+// newest KD, its parsed verdict, and the advance/block decision.
+function evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap) {
+  const info = findNewestPreflightKD(sessionFiles, sessionID);
+  const newest = info ? info.filename : "(none)";
+  const verdictLabel = info ? (info.verdict ?? "MISSING") : "MISSING";
+  const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
+  const overrideActive = overrideUntil && getOverrideTargetPhase(overrideUntil) === STATES.PREFLIGHT;
+  if (overrideActive && info) {
+    const mtime = getFileMtimeMs(join(getKnowledgeDir(sessionID), info.filename));
+    if (mtime < overrideUntil.since) {
+      debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → false (stale under override since=${overrideUntil.since})`);
+      return false;
+    }
+  }
+  const result = !!info && info.verdict === "PASS";
+  debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → ${result}`);
+  return result;
+}
+
 // Reads the active override marker for a session — null when absent or
 // malformed. The marker is authoritative only while the current phase equals
 // its target. Accepts both the single-phase shape `{ phase, since }` and the
@@ -1924,6 +1985,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     }
     debug(`Disk check SWARM: all-checked-off gate → ${gate.ok} (${gate.checkedOff}/${gate.total})${overrideNote}`);
     return result;
+  }
+
+  // The verdict-aware PREFLIGHT gate — see evaluatePreflightVerdict.
+  // The newest preflight KD's frontmatter verdict decides advancement; an
+  // escalation, missing, or unreadable signal blocks the phase. Override
+  // freshness is evaluated inside the helper, so the override and
+  // non-override paths route through it alike.
+  if (phase === STATES.PREFLIGHT) {
+    return evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap);
   }
 
   let result;
@@ -4079,6 +4149,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       markStuckMilestonesFailed,
       readVerdictFrontmatter,
       findNewestVerdictKD,
+      readPreflightVerdictFrontmatter,
+      findNewestPreflightKD,
+      evaluatePreflightVerdict,
       reopenCheckedOffMilestones,
       regressVerifyOnFail,
       extractMilestoneCitationsFromReviewKD,
