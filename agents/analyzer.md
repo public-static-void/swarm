@@ -89,19 +89,10 @@ permissions:
     resource: "cargo clippy*"
     effect: allow
   - action: shell
-    resource: "cargo build*"
-    effect: allow
-  - action: shell
     resource: "cargo fmt --all --check*"
     effect: allow
   - action: shell
-    resource: "pip install*"
-    effect: allow
-  - action: shell
     resource: "poetry run*"
-    effect: allow
-  - action: shell
-    resource: "poetry install*"
     effect: allow
   - action: shell
     resource: "mvn test*"
@@ -110,16 +101,7 @@ permissions:
     resource: "mvn verify*"
     effect: allow
   - action: shell
-    resource: "gradle build*"
-    effect: allow
-  - action: shell
     resource: "gradle test*"
-    effect: allow
-  - action: shell
-    resource: "cmake --build*"
-    effect: allow
-  - action: shell
-    resource: "composer install*"
     effect: allow
   - action: shell
     resource: "rustc --version*"
@@ -135,9 +117,6 @@ permissions:
     effect: allow
   - action: shell
     resource: "uv run*"
-    effect: allow
-  - action: shell
-    resource: "uv sync*"
     effect: allow
   - action: shell
     resource: "php -l *"
@@ -240,9 +219,6 @@ permissions:
     effect: allow
   - action: shell
     resource: "make test*"
-    effect: allow
-  - action: shell
-    resource: "make build*"
     effect: allow
   - action: shell
     resource: "docker compose logs*"
