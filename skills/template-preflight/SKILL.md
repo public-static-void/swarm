@@ -12,6 +12,7 @@ type: preflight
 session_id: "{{session_id}}"
 author: Committer
 superseded_by: null
+preflight_verdict: PASS | ESCALATION
 ---
 
 <!-- Filename: knowledge/preflight-{{feature}}-{{session_id}}-gen{{generation}}.md -->
@@ -36,6 +37,8 @@ superseded_by: null
 
 ## Verification
 
-- [ ] Branch is clean and ready for development
+- [ ] Branch is clean and ready for development (branch name from `git branch --show-current`, clean/dirty state from `git status`)
 - [ ] `knowledge/` is in `.gitignore`
 - [ ] `!knowledge/` is in `.ignore`
+
+<!-- preflight_verdict: PASS when the workspace is ready (branch created or same-branch adopted); ESCALATION when a branch collision awaits direction. Values are case-sensitive; anything else parses as missing and blocks advancement. -->
