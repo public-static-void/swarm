@@ -7162,5 +7162,23 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
         rmSync(probe, { recursive: true, force: true });
       }
     });
+
+    it("collapses repeat passing-through lines to first-3 verbatim plus one count summary", async () => {
+      // Non-overseer pass-through fires on every subagent message — sustained
+      // swarm traffic collapses to the first 3 lines plus a single summary.
+      hooks.resetLogCollapse();
+      const before = existsSync(logPath) ? readFileSync(logPath, "utf8").length : 0;
+      try {
+        for (let i = 0; i < 6; i++) {
+          await hooks["chat.params"]({ sessionID: `s-collapse-${i}`, agent: "artisan" }, {});
+        }
+        const appended = readFileSync(logPath, "utf8").slice(before);
+        const verbatim = appended.split("\n").filter(l => l.includes("passing through"));
+        expect(verbatim).toHaveLength(3);
+        expect(appended).toContain("passing-through: first 3 shown; further repeats collapsed");
+      } finally {
+        hooks.resetLogCollapse();
+      }
+    });
   });
 });
