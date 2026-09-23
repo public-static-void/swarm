@@ -639,6 +639,13 @@ function atomicWriteFileSync(targetPath, data) {
 
 let _logFile = null;
 
+// Log/debug seam ownership: this gate keeps its own getLogFile /
+// isDebugEnabled / debug / loud / warn seam instead of importing a shared
+// plugins/lib helper. Each gate runs as an independent plugin host entry
+// and stays independently deactivatable — a shared import would turn one
+// helper regression into a three-gate outage and couple release cadence.
+// The collapse counter below is per-gate for the same reason: process-local
+// counts mean no gate's log volume can starve another gate's visibility.
 function getLogFile() {
   const logDir = process.env.PROTOCOL_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
   // Re-bind the cached path when the env seam moves the log directory — a
@@ -680,6 +687,23 @@ function debug(msg) {
 // launch do not reach an already-running background service, in which case
 // the sentinel file above is the reliable switch.
 debug("gate loaded (plugin dir: " + PLUGIN_DIR + ")");
+
+// Log-collapse budget (first-N-plus-count): repetitive per-call debug lines
+// log the first LOG_COLLAPSE_N verbatim; the (N+1)th call logs one summary
+// line carrying the running total and further calls stay silent. N is fixed
+// for this gate (3). Verdict, block, and error lines never route through
+// here — only the high-volume non-overseer "passing through" repeats.
+const LOG_COLLAPSE_N = 3;
+const _collapseCounts = {};
+function debugCollapsed(key, line) {
+  _collapseCounts[key] = (_collapseCounts[key] || 0) + 1;
+  const n = _collapseCounts[key];
+  if (n <= LOG_COLLAPSE_N) { debug(line); return; }
+  if (n === LOG_COLLAPSE_N + 1) debug(`${key}: first ${LOG_COLLAPSE_N} shown; further repeats collapsed (total ${n})`);
+}
+function resetLogCollapse() {
+  for (const k of Object.keys(_collapseCounts)) delete _collapseCounts[k];
+}
 
 // Loud channel — file-only logging gated behind PROTOCOL_GATE_DEBUG.
 // Previously wrote to stderr which bled into user prompts; moved to file
@@ -2817,7 +2841,7 @@ async function protocolGateServer(input, options) {
       } else {
         // Non-overseer sessions pass through unaffected — don't touch the maps.
         // Protocol-gate is Overseer-only; subagent tool calls must not be blocked.
-        debug(`chat.params: non-overseer session ${sessionID} (agent=${agent}) — passing through`);
+        debugCollapsed("passing-through", `chat.params: non-overseer session ${sessionID} (agent=${agent}) — passing through`);
         return;
       }
     }
@@ -3244,7 +3268,7 @@ async function protocolGateServer(input, options) {
         }
         // Session never identified as overseer via chat.params — pass through.
         // Subagent sessions are never in overseerSessions.
-        debug(`tool.execute.before: non-overseer session ${sessionID} tool=${tool} — passing through`);
+        debugCollapsed("passing-through", `tool.execute.before: non-overseer session ${sessionID} tool=${tool} — passing through`);
         return;
       }
 
@@ -4122,6 +4146,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       KD_TYPE_PREFIXES,
       checkPhaseStateConsistency,
       checkDiskAdvancement,
+      // Log-collapse counter reset: test seam so collapse tests start from
+      // a zero count regardless of prior hook calls in the same process.
+      resetLogCollapse,
       cleanupLifecycleKDs,
       preCleanupHook,
       extractCorrectionSections,
