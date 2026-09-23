@@ -118,9 +118,10 @@ permissions:
   - action: shell
     resource: "git branch --show-current*"
     effect: allow
+  # Approval-gated to match mv/rm: run removals after explicit approval.
   - action: shell
     resource: "git rm*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "npm test*"
     effect: allow
@@ -130,21 +131,24 @@ permissions:
   - action: shell
     resource: "npm run audit*"
     effect: allow
+  # Approval-gated: run scoped installs after explicit approval.
   - action: shell
     resource: "npm install --save-dev*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "npm run build*"
     effect: allow
   - action: shell
     resource: "npm run lint*"
     effect: allow
+  # Approval-gated: run clean installs after explicit approval.
   - action: shell
     resource: "npm ci*"
-    effect: allow
+    effect: ask
+  # Approval-gated: run package installs after explicit approval.
   - action: shell
     resource: "bun install*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "bun test*"
     effect: allow
@@ -163,9 +167,10 @@ permissions:
   - action: shell
     resource: "poetry run*"
     effect: allow
+  # Approval-gated: run environment installs after explicit approval.
   - action: shell
     resource: "poetry install*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "pytest tests*"
     effect: allow
@@ -178,23 +183,44 @@ permissions:
   - action: shell
     resource: "cargo clippy*"
     effect: allow
+  # Approval-gated: prefer the check-only gates below; run builds after explicit approval.
   - action: shell
     resource: "cargo build*"
-    effect: allow
+    effect: ask
+  # Check-only format gate: run format verification through this exact entry.
   - action: shell
-    resource: "cargo fmt*"
+    resource: "cargo fmt --check*"
+    effect: allow
+  # Read-only workspace gate: run the wasm-test build through this exact entry.
+  - action: shell
+    resource: "cargo run -p xtask -- build-wasm-tests*"
+    effect: allow
+  # Read-only workspace gate: run schema validation through this exact entry.
+  - action: shell
+    resource: "cargo run --bin schema_validator*"
     effect: allow
   - action: shell
     resource: "cmake --build*"
     effect: allow
+  # Approval-gated: run PHP dependency installs after explicit approval.
   - action: shell
     resource: "composer install*"
-    effect: allow
+    effect: ask
+  # Approval-gated: run make targets after explicit approval; run the named
+  # read-only gates below through their exact entries.
   - action: shell
     resource: "make test*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "make build*"
+    effect: ask
+  # Read-only workspace gate: run the dashed test targets through this exact entry.
+  - action: shell
+    resource: "make test-*"
+    effect: allow
+  # Read-only workspace gate: run schema validation through this exact entry.
+  - action: shell
+    resource: "make validate-schema*"
     effect: allow
   - action: shell
     resource: "mvn test*"
@@ -208,12 +234,13 @@ permissions:
   - action: shell
     resource: "go fmt*"
     effect: allow
+  # Approval-gated: run module fetches and installs after explicit approval.
   - action: shell
     resource: "go get*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "go install*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "go mod*"
     effect: allow
@@ -241,15 +268,17 @@ permissions:
   - action: shell
     resource: "rustup toolchain*"
     effect: allow
+  # Approval-gated: run script and environment syncs after explicit approval.
   - action: shell
     resource: "uv run*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "uv sync*"
-    effect: allow
+    effect: ask
+  # Approval-gated: run package installs after explicit approval.
   - action: shell
     resource: "pip install*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "php -l *"
     effect: allow
@@ -277,12 +306,13 @@ permissions:
   - action: shell
     resource: "docker compose ps*"
     effect: allow
+  # Approval-gated: run container exec sessions after explicit approval.
   - action: shell
     resource: "docker compose exec*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "docker compose run --rm*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "podman compose up -d"
     effect: allow
@@ -295,12 +325,13 @@ permissions:
   - action: shell
     resource: "podman compose ps*"
     effect: allow
+  # Approval-gated: run container exec sessions after explicit approval.
   - action: shell
     resource: "podman compose exec*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "podman compose run --rm*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "compose up -d"
     effect: allow
@@ -313,12 +344,13 @@ permissions:
   - action: shell
     resource: "compose ps*"
     effect: allow
+  # Approval-gated: run container exec sessions after explicit approval.
   - action: shell
     resource: "compose exec*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "compose run --rm*"
-    effect: allow
+    effect: ask
   - action: shell
     resource: "docker ps"
     effect: allow
@@ -364,6 +396,14 @@ Read the specification and plan, implement each step, write tests, produce an im
 - You transform designs into working code, document every change in an implementation summary KD, and checkpoint progress through the Committer
 - You load the right domain skill before starting (testing, frontend, backend, etc.)
 - You produce code changes, implementation summary KDs, and checkpoint commits. You consume SPEC KDs, PLAN KDs, and REVIEW KDs via the KD PATHS field.
+
+## Command Execution
+
+Run implementation work through the allowed command set in the frontmatter above: read-only inspection, scoped test runners, check-only gates (`cargo fmt --check`, `cargo clippy`, `cargo check`, `cargo test`), and the named workspace gates (`cargo run -p xtask -- build-wasm-tests`, `cargo run --bin schema_validator`, `make validate-schema`, `make test-*`).
+
+Run install and exec-class commands (package installs, `npm ci`, `go get`/`go install`, container exec/run sessions, broad `make`/`cargo build` targets, `git rm`) through the approval gate: each carries `ask` and runs after explicit approval.
+
+Run mutating gates — commands that publish, deploy, or write release artifacts — through the Committer delegation path: carry an explicit gate-run plus fix-before-commit instruction in the checkpoint dispatch, paste the gate log excerpt into the implementation evidence, and record a suite as green with checkpoint gate evidence on disk backing the claim (see Gate Execution via Committer Delegation in AGENTS.md).
 
 ## Protocol
 
