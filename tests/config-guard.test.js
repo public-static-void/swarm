@@ -94,10 +94,9 @@ const SCAN_COMMANDS = ["npm audit*", "npm run audit*"];
 const INSTALL_AGENTS = ["artisan.md"];
 const INSTALL_COMMANDS = ["npm install --save-dev*"];
 const RUST_BUILD_AGENTS = ["artisan.md"];
-const SANCTIONED_CARGO_RUN_COMMANDS = [
-  "cargo run -p xtask -- build-wasm-tests*",
-  "cargo run --bin schema_validator*",
-];
+// Intentionally empty: no cargo run invocation is project-agnostic, so any
+// cargo run allow in any agent file is an offender by design.
+const SANCTIONED_CARGO_RUN_COMMANDS = [];
 const ARTISAN_HEADLESS_COMMANDS = [
   "git rm*", "npm install --save-dev*", "npm ci*", "bun install*",
   "poetry install*", "cargo build*", "composer install*",
@@ -107,12 +106,7 @@ const ARTISAN_HEADLESS_COMMANDS = [
   "podman compose exec*", "podman compose run --rm*",
   "compose exec*", "compose run --rm*",
 ];
-const ARTISAN_READONLY_GATE_COMMANDS = [
-  "cargo fmt*",
-  "cargo run -p xtask -- build-wasm-tests*",
-  "cargo run --bin schema_validator*",
-  "make validate-schema*",
-];
+const ARTISAN_READONLY_GATE_COMMANDS = ["cargo fmt*"];
 const ANALYZER_BUILDER_INSTALLER_COMMANDS = [
   "cargo build*", "pip install*", "poetry install*", "make build*",
   "composer install*", "cmake --build*", "gradle build*", "uv sync*",
