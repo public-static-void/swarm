@@ -281,6 +281,13 @@ function resolveMemoryScope(explicitScope) {
 
 // --- Debug logging ---
 
+// Log/debug seam ownership: this gate keeps its own getLogFile /
+// isDebugEnabled / debug / warn seam instead of importing a shared
+// plugins/lib helper. Each gate runs as an independent plugin host entry
+// and stays independently deactivatable — a shared import would turn one
+// helper regression into a three-gate outage and couple release cadence.
+// The collapse counter below is per-gate for the same reason: process-local
+// counts mean no gate's log volume can starve another gate's visibility.
 let _logFile = null;
 
 function getLogFile() {
@@ -316,6 +323,23 @@ function debug(msg) {
       // File write failed — silently drop rather than bleed to stderr
     }
   }
+}
+
+// Log-collapse budget (first-N-plus-count): repetitive per-call debug lines
+// log the first LOG_COLLAPSE_N verbatim; the (N+1)th call logs one summary
+// line carrying the running total and further calls stay silent. N is fixed
+// for this gate (3). Verdict, error, and rejection lines never route through
+// here — only high-volume per-call repeats (memory_search call/result pair).
+const LOG_COLLAPSE_N = 3;
+const _collapseCounts = {};
+function debugCollapsed(key, line) {
+  _collapseCounts[key] = (_collapseCounts[key] || 0) + 1;
+  const n = _collapseCounts[key];
+  if (n <= LOG_COLLAPSE_N) { debug(line); return; }
+  if (n === LOG_COLLAPSE_N + 1) debug(`${key}: first ${LOG_COLLAPSE_N} shown; further repeats collapsed (total ${n})`);
+}
+function resetLogCollapse() {
+  for (const k of Object.keys(_collapseCounts)) delete _collapseCounts[k];
 }
 
 // Startup load-signal: written whenever logging is enabled, so a
@@ -1477,9 +1501,9 @@ async function knowledgeGateServer(input, options) {
             limit: args.limit || 5,
             store: args.store
           };
-          debug(`memory_search: called by agent="${agent}" session="${context?.sessionID || "unknown"}" tags=${JSON.stringify(query.tags)} topic="${query.topic}" limit=${query.limit} store=${query.store || "all"}`);
+          debugCollapsed("memory_search", `memory_search: called by agent="${agent}" session="${context?.sessionID || "unknown"}" tags=${JSON.stringify(query.tags)} topic="${query.topic}" limit=${query.limit} store=${query.store || "all"}`);
           const results = searchMemory(query);
-          debug(`memory_search: ${results.length} result(s) returned for agent="${agent}"`);
+          debugCollapsed("memory_search", `memory_search: ${results.length} result(s) returned for agent="${agent}"`);
           return JSON.stringify(results, null, 2);
         }
       },
@@ -2725,7 +2749,10 @@ async function knowledgeGateServer(input, options) {
       memoryIndexPathForScope,
       resolveMemoryScope,
       // Issue move tool: exposed for testing
-      issueMove: pluginTools.issue_move.execute
+      issueMove: pluginTools.issue_move.execute,
+      // Log-collapse counter reset: test seam so collapse tests start from
+      // a zero count regardless of prior tool calls in the same process.
+      resetLogCollapse
     };
   }
 

@@ -75,6 +75,16 @@ Ground rules live in `AGENTS.md`; agent-specific knowledge lives in the agent fi
 
 The suite runs via `npx vitest run` from the repository root — the canonical invocation. package.json ships with an `audit` script only; the vitest config pins collection to `tests/**` and excludes the vendored `references/` tree, so a root-level run collects exactly the swarm suite and reports its true signal.
 
+## Running the Security Gate
+
+Run the SAST gate from the repository root with this invocation:
+
+```sh
+npx eslint -c eslint.security.config.mjs
+```
+
+Run it before committing, and whenever the pre-commit hook reports a lint finding: the flat config lives at `eslint.security.config.mjs` instead of the default `eslint.config.*` filename, so a bare `npx eslint` finds no config and the `-c` flag points ESLint at the security baseline. The `security` ruleset reports warn-level findings and error-level blocks.
+
 ## Debug Logging
 
 Plugin diagnostics are file-only by design: nothing a plugin writes reaches stdout or stderr, so debug output stays out of the user prompt. Logging stays off unless explicitly enabled per plugin.

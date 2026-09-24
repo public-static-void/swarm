@@ -140,6 +140,17 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 **/phase override**: the user-facing escape hatch for a stuck lifecycle. `/phase` accepts a single phase (`/phase 5`, `/phase align`) and ordered multi-phase walks (`/phase 1,2,3,4`, `/phase {3,4,5}` — each hop validated against the backward-transition chain with one end reachable from the current phase). A trailing generation suffix (`/phase align gen1`) is accepted and ignored — the lifecycle generation stays implicit in persisted state. `/phase clear` drops the override marker explicitly and resumes normal advancement semantics. Every invocation is recorded in lifecycle state (`overrideHistory`, bounded, restart-proof) and echoed as a one-line override record in the confirmation — quote that record in KDs so the walk stays visible without reading debug logs. Escapes out of a stuck SWARM additionally log `SAFETY_ESCAPE` in the protocol-gate log.
 
+## Baseline-Sync Authorization Procedure
+
+When a SPEC mandates changes that redden config-guard baselines (guard pins block an intent-aligned reversal), intent-aligned reversals proceed through explicit authorization when guards go stale, and baselines change through the authorized path described below. Follow this six-element baseline-sync authorization sequence:
+
+1. **Plan the authorization up front** — whenever the SPEC mandates changes that redden guard baselines, the PLAN records the baseline-sync authorization path before SWARM begins: which milestone carries the sync, under whose SCOPE authorization, documented as a deviation.
+2. **Leave `tests/` untouched in early milestones** — Artisan milestones before the authorized sync milestone make no baseline or expectation edits to `tests/config-guard.test.js`; the reddened suite stays red and visible rather than being masked by an early silent edit.
+3. **Record Process Friction** — every blocked checkpoint or declined edit proposal is recorded as Process Friction in the milestone's impl KD, so the lived block (which milestone stalled, on which guard pin, under which hook) is traceable.
+4. **Decline out-of-scope edit proposals** — proposals to edit guard baselines outside the authorized milestone are declined; the milestone carrying explicit SCOPE authorization carries the baseline edit.
+5. **Escalate to Overseer** — when a checkpoint commit is blocked by a stale config-guard pin, the Artisan escalates to the Overseer (via the escalation protocol) instead of editing the baseline unilaterally; the Overseer authorizes the sync in the dispatch SCOPE against the landed INTENT verdicts.
+6. **Sync baselines under explicit SCOPE authorization in the final milestone, documented as a deviation** — the Artisan syncs the baselines to the landed INTENT verdicts when the dispatch SCOPE explicitly authorizes it, retries the blocked checkpoint, and records the sync as a deviation in the impl KD.
+
 ## Delegation Rules
 
 ### Agent Dispatch Table

@@ -93,7 +93,31 @@ const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
 const SCAN_COMMANDS = ["npm audit*", "npm run audit*"];
 const INSTALL_AGENTS = ["artisan.md"];
 const INSTALL_COMMANDS = ["npm install --save-dev*"];
-const RUST_BUILD_AGENTS = ["artisan.md", "inspector.md", "analyzer.md"];
+const RUST_BUILD_AGENTS = ["artisan.md"];
+const SANCTIONED_CARGO_RUN_COMMANDS = [
+  "cargo run -p xtask -- build-wasm-tests*",
+  "cargo run --bin schema_validator*",
+];
+const ARTISAN_HEADLESS_COMMANDS = [
+  "git rm*", "npm install --save-dev*", "npm ci*", "bun install*",
+  "poetry install*", "cargo build*", "composer install*",
+  "make test*", "make build*", "go get*", "go install*",
+  "uv run*", "uv sync*", "pip install*",
+  "docker compose exec*", "docker compose run --rm*",
+  "podman compose exec*", "podman compose run --rm*",
+  "compose exec*", "compose run --rm*",
+];
+const ARTISAN_READONLY_GATE_COMMANDS = [
+  "cargo fmt*",
+  "cargo run -p xtask -- build-wasm-tests*",
+  "cargo run --bin schema_validator*",
+  "make validate-schema*",
+];
+const ANALYZER_BUILDER_INSTALLER_COMMANDS = [
+  "cargo build*", "pip install*", "poetry install*", "make build*",
+  "composer install*", "cmake --build*", "gradle build*", "uv sync*",
+];
+const INSPECTOR_BUILD_COMMANDS = ["cargo build*", "make build*"];
 const RUST_BUILD_COMMANDS = ["cargo build*"];
 const RUST_FMT_CHECK_AGENTS = ["inspector.md", "analyzer.md"];
 const RUST_FMT_CHECK_COMMANDS = ["cargo fmt --all --check*"];
@@ -239,7 +263,7 @@ describe("agent permission allowlists", () => {
         }
       }
     }
-    // Artisan's "cargo fmt*" prefix glob already covers `cargo fmt --all --check`.
+    // Artisan's broad "cargo fmt*" entry covers the check gate by prefix match.
     const artisanPatterns = entriesByFile.get("artisan.md").map((e) => e.pattern);
     if (!artisanPatterns.some((p) => p.startsWith("cargo fmt"))) {
       missing.push("artisan.md: cargo fmt* prefix");
@@ -247,16 +271,40 @@ describe("agent permission allowlists", () => {
     expect(missing).toEqual([]);
   });
 
-  it("keeps cargo run out of every agent allowlist", () => {
+  it("restricts cargo run to the sanctioned read-only workspace gates", () => {
     const offenders = [];
     for (const f of files) {
       for (const { pattern } of entriesByFile.get(f)) {
-        if (pattern.startsWith("cargo run")) {
+        if (pattern.startsWith("cargo run") && !SANCTIONED_CARGO_RUN_COMMANDS.includes(pattern)) {
           offenders.push(`${f}: ${pattern}`);
         }
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("holds the sanctioned read-only gate commands for Artisan", () => {
+    const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
+    const missing = ARTISAN_READONLY_GATE_COMMANDS.filter((cmd) => artisan.get(cmd) !== "allow");
+    expect(missing).toEqual([]);
+  });
+
+  it("allows install and exec-class commands headless for Artisan", () => {
+    const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
+    const violations = ARTISAN_HEADLESS_COMMANDS.filter((cmd) => artisan.get(cmd) !== "allow");
+    expect(violations).toEqual([]);
+  });
+
+  it("keeps builder and installer grants out of the read-only analyzer role", () => {
+    const patterns = new Map(entriesByFile.get("analyzer.md").map((e) => [e.pattern, e.mode]));
+    const granted = ANALYZER_BUILDER_INSTALLER_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
+    expect(granted).toEqual([]);
+  });
+
+  it("keeps build grants out of the verifier inspector role", () => {
+    const patterns = new Map(entriesByFile.get("inspector.md").map((e) => [e.pattern, e.mode]));
+    const granted = INSPECTOR_BUILD_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
+    expect(granted).toEqual([]);
   });
 });
 

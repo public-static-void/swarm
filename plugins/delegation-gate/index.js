@@ -101,12 +101,19 @@ const MODE_TO_KD_PREFIXES = {
   cleanup:     ["cleanup"]
 };
 
+// Log/debug seam ownership: this gate keeps its own getLogFile /
+// isDebugEnabled / debug / warn seam instead of importing a shared
+// plugins/lib helper. Each gate runs as an independent plugin host entry
+// and stays independently deactivatable — a shared import would turn one
+// helper regression into a three-gate outage and couple release cadence.
+// The collapse counter below is per-gate for the same reason: process-local
+// counts mean no gate's log volume can starve another gate's visibility.
 let _logFile = null;
 
 function getLogFile() {
   const logDir = process.env.DELEGATION_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
   // Re-bind the cached path when the env seam moves the log directory — a
-  // A stale cache would keep appending to the previously resolved path.
+  // stale cache would keep appending to the previously resolved path.
   if (!_logFile || dirname(_logFile) !== logDir) {
     try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
     _logFile = join(logDir, "delegation-gate.log");
@@ -144,6 +151,23 @@ function debug(msg) {
 // launch do not reach an already-running background service, in which case
 // the sentinel file above is the reliable switch.
 debug("gate loaded (plugin dir: " + PLUGIN_DIR + ")");
+
+// Log-collapse budget (first-N-plus-count): repetitive per-call debug lines
+// log the first LOG_COLLAPSE_N verbatim; the (N+1)th call logs one summary
+// line carrying the running total and further calls stay silent. N is fixed
+// for this gate (3). Validation-failure and error lines never route through
+// here — only the high-volume tool.definition annotation repeat.
+const LOG_COLLAPSE_N = 3;
+const _collapseCounts = {};
+function debugCollapsed(key, line) {
+  _collapseCounts[key] = (_collapseCounts[key] || 0) + 1;
+  const n = _collapseCounts[key];
+  if (n <= LOG_COLLAPSE_N) { debug(line); return; }
+  if (n === LOG_COLLAPSE_N + 1) debug(`${key}: first ${LOG_COLLAPSE_N} shown; further repeats collapsed (total ${n})`);
+}
+function resetLogCollapse() {
+  for (const k of Object.keys(_collapseCounts)) delete _collapseCounts[k];
+}
 
 // File-only logging gated behind DELEGATION_GATE_DEBUG.
 // Previously wrote to stderr which bled into user prompts; moved to file.
@@ -187,12 +211,19 @@ function loadTemplates(config) {
   // Committer-owned fallback headers mirror the disk templates. Cleanup and
   // checkpoint keep their no-INTENT-KD header shape (matching
   // templates/cleanup.json and templates/checkpoint.json); all other
-  // modes keep the shared header with INTENT KD. Both error
+  // modes keep the shared header with INTENT KD. Swarm carries its
+  // MILESTONE ID line (matching templates/swarm.json); every mode except
+  // explore carries the KD PATHS line (matching its disk template — only
+  // templates/explore.json omits it). The drift-pinning test fails the suite
+  // when this header diverges from any disk template header, so the fallback
+  // stays single-sourced from disk. Both error
   // paths render the same header so the fallback can never drift from the
   // disk shape (the older fallback was also missing GENERATION entirely).
   const fallbackHeader = (mode) => {
     const intentKdLine = mode === "cleanup" || mode === "checkpoint" ? "" : "INTENT KD: {intent_kd}\n";
-    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\nTASK ID: {task_id}\n\n---\n\n`;
+    const milestoneLine = mode === "swarm" ? "MILESTONE ID: {milestone_id}\n" : "";
+    const kdPathsLine = mode === "explore" ? "" : "KD PATHS: {kd_paths}\n";
+    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${milestoneLine}${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n${kdPathsLine}TASK ID: {task_id}\n\n---\n\n`;
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
@@ -212,7 +243,7 @@ function loadTemplates(config) {
     }
   }
 
-  return templates;
+  return { templates, defaultTemplates, fallbackHeader };
 }
 
 // Scan a text block for structured delegation fields. Returns fields found.
@@ -624,7 +655,7 @@ RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
 
 async function delegationGateServer(input, options) {
     const config = loadConfig();
-    const templates = loadTemplates(config);
+    const { templates, defaultTemplates, fallbackHeader } = loadTemplates(config);
 
     debug(`Loaded config: templatesDir=${config.templatesDir || "templates"}`);
     debug(`Loaded ${Object.keys(templates).length} templates: ${Object.keys(templates).join(", ")}`);
@@ -851,7 +882,7 @@ async function delegationGateServer(input, options) {
       if (!isSubagentTool(toolID)) return;
       if (output.description?.includes("Delegation Prompt Format:")) return;
       output.description = (output.description || "") + dispatcherFormatHint();
-      debug(`tool.definition: annotated subagent tool description with delegation format hint`);
+      debugCollapsed("tool-definition-annotated", `tool.definition: annotated subagent tool description with delegation format hint`);
     }
 
     return {
@@ -860,7 +891,13 @@ async function delegationGateServer(input, options) {
       // Test-access properties
       DelegationGateError,
       ERRORS,
-      templates
+      templates,
+      // Fallback-template single-source seam: the in-code fallbacks pinned
+      // against the disk templates by the drift-pinning test, plus the
+      // log-collapse counter reset so collapse tests start from zero.
+      defaultTemplates,
+      fallbackHeader,
+      resetLogCollapse
     };
   }
 

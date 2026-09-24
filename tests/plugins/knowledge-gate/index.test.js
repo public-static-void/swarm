@@ -4419,5 +4419,27 @@ Body`;
         rmSync(quietDir, { recursive: true, force: true });
       }
     });
+
+    it("collapses repeat memory_search call lines to first-3 verbatim plus one count summary", async () => {
+      // memory_search fires two debug lines per call — sustained agent
+      // traffic collapses to the first 3 lines plus a single summary.
+      hooks.resetLogCollapse();
+      const priorDebug = process.env.KNOWLEDGE_GATE_DEBUG;
+      process.env.KNOWLEDGE_GATE_DEBUG = "1";
+      const before = existsSync(KG_TEMP_LOG_FILE) ? readFileSync(KG_TEMP_LOG_FILE, "utf8").length : 0;
+      try {
+        for (let i = 0; i < 5; i++) {
+          await hooks.tool.memory_search.execute({ tags: [] }, { agent: "artisan", sessionID: "s-collapse" });
+        }
+        const appended = readFileSync(KG_TEMP_LOG_FILE, "utf8").slice(before);
+        const detail = appended.split("\n").filter(l => /memory_search: (called by|.*result\(s\) returned)/.test(l));
+        expect(detail).toHaveLength(3);
+        expect(appended).toContain("memory_search: first 3 shown; further repeats collapsed");
+      } finally {
+        if (priorDebug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+        else process.env.KNOWLEDGE_GATE_DEBUG = priorDebug;
+        hooks.resetLogCollapse();
+      }
+    });
   });
 });

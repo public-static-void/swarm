@@ -42,6 +42,10 @@ Covers systematic code review processes including review criteria evaluation, V-
 - [ ] Code formatting matches project linter/formatter configuration
 - [ ] Test names and comments describe behavior — requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) live in the traceability matrix
 
+### Permission Coherence
+
+- [ ] Ask-vs-question cross-check — verify each proposed `ask` effect against that agent's `question` grant; an `ask` on Artisan SWARM-path install/exec entries pairs with an open `question` channel, and a proposal pairing `ask` with `question: deny` goes back for an `allow` revision or user-requested human-in-loop approval; the pre-existing destructive `mv*`/`rm*` `ask` boundary stands as the guarded-destructive carve-out outside this check
+
 ### Testing and Traceability
 
 - [ ] New code has corresponding tests at the appropriate level (unit for logic, integration for boundaries)

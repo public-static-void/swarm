@@ -164,6 +164,30 @@ ${body}
     try { rmSync(join(knowledgeDir, filename)); } catch (_) {}
   }
 
+  // Builds a PREFLIGHT KD carrying the machine-readable verdict frontmatter
+  // field the PREFLIGHT gate reads. Fixtures that must advance the phase
+  // carry PASS; an escalation fixture carries ESCALATION. Content beyond the
+  // frontmatter and Verification section is irrelevant to the gate.
+  function preflightKD(verdict) {
+    return `---
+title: "PREFLIGHT: test"
+version: 1.0.0
+status: draft
+type: preflight
+session_id: "ses_test"
+author: Committer
+superseded_by: null
+preflight_verdict: ${verdict}
+---
+
+# PREFLIGHT: test
+
+## Verification
+
+- [x] Branch is clean and ready for development
+`;
+  }
+
   function statePath(s) {
     return join(stateDir, `.protocol-state-${s}.json`);
   }
@@ -215,7 +239,7 @@ ${body}
     createKD(`intent-a${suffix}`);
     await tick(s, "c2");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
-    createKD(`preflight-a${suffix}`);
+    createKD(`preflight-a${suffix}`, preflightKD("PASS"));
     await tick(s, "c3"); // PREFLIGHT skip consumed
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
     await tick(s, "c4");
@@ -548,7 +572,7 @@ ${body}
     // catch up over — written BEFORE the simulated restart so they read as
     // pre-existing disk evidence.
     writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.PREFLIGHT, generation: 0, sid: s, timestamp: Date.now() }));
-    createKD(`preflight-a-${s}.md`);
+    createKD(`preflight-a-${s}.md`, preflightKD("PASS"));
     createKD(`exploration-a-${s}.md`);
     // Simulated restart: fresh plugin instance restores the state file.
     hooks = await pluginModule.server({}, {});
@@ -610,7 +634,7 @@ ${body}
     try {
       const s = sid("ac016-catchup");
       writeFileSync(statePath(s), JSON.stringify({ phase: hooks.STATES.PREFLIGHT, generation: 0, sid: s, timestamp: Date.now() }));
-      createKD(`preflight-a-${s}.md`);
+      createKD(`preflight-a-${s}.md`, preflightKD("PASS"));
       createKD(`exploration-a-${s}.md`);
       // Deterministic "pre-existing" fixture: backdate both KDs so their mtime
       // provably predates the restore timestamp recorded at reconcile.
@@ -4503,6 +4527,105 @@ milestones:
     });
   });
 
+  describe("verdict-aware PREFLIGHT gate", () => {
+    it("an escalation preflight KD blocks advancement past PREFLIGHT", async () => {
+      const s = sid("preflight-escalation");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`preflight-collision-${s}.md`, preflightKD("ESCALATION"));
+      try { rmSync(logPath); } catch (_) {}
+      await tick(s, "c1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.PREFLIGHT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toContain(`Disk check PREFLIGHT: newest=preflight-collision-${s}.md verdict=ESCALATION → false`);
+    });
+
+    it("a preflight KD without a verdict field blocks advancement", async () => {
+      const s = sid("preflight-legacy");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`preflight-legacy-${s}.md`, "test content");
+      try { rmSync(logPath); } catch (_) {}
+      await tick(s, "c1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.PREFLIGHT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toContain(`Disk check PREFLIGHT: newest=preflight-legacy-${s}.md verdict=MISSING → false`);
+    });
+
+    it("an unreadable verdict value blocks advancement", async () => {
+      const s = sid("preflight-garbled");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`preflight-garbled-${s}.md`, preflightKD("MAYBE"));
+      await tick(s, "c1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.PREFLIGHT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+    });
+
+    it("a lowercase verdict value blocks advancement", async () => {
+      const s = sid("preflight-lowercase");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`preflight-lowercase-${s}.md`, preflightKD("pass"));
+      await tick(s, "c1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.PREFLIGHT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+    });
+
+    it("a PASS preflight KD advances PREFLIGHT to EXPLORE", async () => {
+      const s = sid("preflight-pass");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`preflight-ready-${s}.md`, preflightKD("PASS"));
+      try { rmSync(logPath); } catch (_) {}
+      await tick(s, "c1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toContain(`Disk check PREFLIGHT: newest=preflight-ready-${s}.md verdict=PASS → true`);
+    });
+
+    it("the newest preflight KD wins over an older one", async () => {
+      const s = sid("preflight-newest");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`preflight-older-${s}.md`, preflightKD("ESCALATION"));
+      createKD(`preflight-newer-${s}.md`, preflightKD("PASS"));
+      utimesSync(join(knowledgeDir, `preflight-newer-${s}.md`), new Date(), new Date(Date.now() + 5000));
+      await tick(s, "c1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+    });
+
+    it("a stale PASS KD does not advance under override while a fresh PASS does", async () => {
+      const s = sid("preflight-override");
+      await initOverseer(s);
+      createKD(`preflight-old-${s}.md`, preflightKD("PASS"));
+      const aged = new Date(Date.now() - 10000);
+      utimesSync(join(knowledgeDir, `preflight-old-${s}.md`), aged, aged);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "PREFLIGHT" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+
+      try { rmSync(logPath); } catch (_) {}
+      await tick(s, "o1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(readFileSync(logPath, "utf8")).toContain(`newest=preflight-old-${s}.md verdict=PASS → false (stale under override`);
+
+      createKD(`preflight-fresh-${s}.md`, preflightKD("PASS"));
+      await tick(s, "o2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+  });
+
   describe("M2 protocol-gate fixes (cycle reset / superseded evidence / SWARM watchdog)", () => {
     // Captures the loud channel (file-based, gated behind PROTOCOL_GATE_DEBUG).
     function readLoudLog() {
@@ -5962,7 +6085,7 @@ impl-M2-resume-hint regressed during the audit re-run.
       createKD(`intent-a-${s}.md`);
       await tick(s, "c2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
-      createKD(`preflight-a-${s}.md`);
+      createKD(`preflight-a-${s}.md`, preflightKD("PASS"));
       await tick(s, "c3"); // PREFLIGHT skip consumed
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
       await tick(s, "c4");
@@ -6079,7 +6202,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await initOverseer(s);
       // Pre-existing preflight + exploration KDs (same session, gen 0) — the
       // exact stale-evidence scenario that used to undo the override.
-      createKD(`preflight-old-${s}.md`);
+      createKD(`preflight-old-${s}.md`, preflightKD("PASS"));
       createKD(`exploration-old-${s}.md`);
       ageKD(`preflight-old-${s}.md`);
       ageKD(`exploration-old-${s}.md`);
@@ -6104,7 +6227,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     it("a fresh post-override KD advances and clears the marker; pre-existing later-phase KDs then advance normally", async () => {
       const s = sid("ac007-override");
       await initOverseer(s);
-      createKD(`preflight-old-${s}.md`);
+      createKD(`preflight-old-${s}.md`, preflightKD("PASS"));
       createKD(`exploration-old-${s}.md`);
       ageKD(`preflight-old-${s}.md`);
       ageKD(`exploration-old-${s}.md`);
@@ -6117,7 +6240,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
 
       // A NEW preflight KD (mtime >= since) advances PREFLIGHT → EXPLORE and
       // clears the override marker (advance-away).
-      createKD(`preflight-fresh-${s}.md`);
+      createKD(`preflight-fresh-${s}.md`, preflightKD("PASS"));
       await tick(s, "o2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -7048,6 +7171,24 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
         rmSync(sentinelDir, { recursive: true, force: true });
         rmSync(altDir, { recursive: true, force: true });
         rmSync(probe, { recursive: true, force: true });
+      }
+    });
+
+    it("collapses repeat passing-through lines to first-3 verbatim plus one count summary", async () => {
+      // Non-overseer pass-through fires on every subagent message — sustained
+      // swarm traffic collapses to the first 3 lines plus a single summary.
+      hooks.resetLogCollapse();
+      const before = existsSync(logPath) ? readFileSync(logPath, "utf8").length : 0;
+      try {
+        for (let i = 0; i < 6; i++) {
+          await hooks["chat.params"]({ sessionID: `s-collapse-${i}`, agent: "artisan" }, {});
+        }
+        const appended = readFileSync(logPath, "utf8").slice(before);
+        const verbatim = appended.split("\n").filter(l => l.includes("passing through"));
+        expect(verbatim).toHaveLength(3);
+        expect(appended).toContain("passing-through: first 3 shown; further repeats collapsed");
+      } finally {
+        hooks.resetLogCollapse();
       }
     });
   });

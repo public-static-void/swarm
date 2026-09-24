@@ -639,6 +639,13 @@ function atomicWriteFileSync(targetPath, data) {
 
 let _logFile = null;
 
+// Log/debug seam ownership: this gate keeps its own getLogFile /
+// isDebugEnabled / debug / loud / warn seam instead of importing a shared
+// plugins/lib helper. Each gate runs as an independent plugin host entry
+// and stays independently deactivatable — a shared import would turn one
+// helper regression into a three-gate outage and couple release cadence.
+// The collapse counter below is per-gate for the same reason: process-local
+// counts mean no gate's log volume can starve another gate's visibility.
 function getLogFile() {
   const logDir = process.env.PROTOCOL_GATE_LOG_DIR || join(PLUGIN_DIR, "..", "logs");
   // Re-bind the cached path when the env seam moves the log directory — a
@@ -680,6 +687,23 @@ function debug(msg) {
 // launch do not reach an already-running background service, in which case
 // the sentinel file above is the reliable switch.
 debug("gate loaded (plugin dir: " + PLUGIN_DIR + ")");
+
+// Log-collapse budget (first-N-plus-count): repetitive per-call debug lines
+// log the first LOG_COLLAPSE_N verbatim; the (N+1)th call logs one summary
+// line carrying the running total and further calls stay silent. N is fixed
+// for this gate (3). Verdict, block, and error lines never route through
+// here — only the high-volume non-overseer "passing through" repeats.
+const LOG_COLLAPSE_N = 3;
+const _collapseCounts = {};
+function debugCollapsed(key, line) {
+  _collapseCounts[key] = (_collapseCounts[key] || 0) + 1;
+  const n = _collapseCounts[key];
+  if (n <= LOG_COLLAPSE_N) { debug(line); return; }
+  if (n === LOG_COLLAPSE_N + 1) debug(`${key}: first ${LOG_COLLAPSE_N} shown; further repeats collapsed (total ${n})`);
+}
+function resetLogCollapse() {
+  for (const k of Object.keys(_collapseCounts)) delete _collapseCounts[k];
+}
 
 // Loud channel — file-only logging gated behind PROTOCOL_GATE_DEBUG.
 // Previously wrote to stderr which bled into user prompts; moved to file
@@ -1750,6 +1774,67 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
   return result;
 }
 
+// Reads the machine-readable preflight signal from a PREFLIGHT KD's leading
+// frontmatter block. Returns "PASS" or "ESCALATION", or null when the field
+// is absent or carries any other value — a missing signal blocks advancement
+// and is not counted as success.
+function readPreflightVerdictFrontmatter(filePath) {
+  try {
+    const content = readFileSync(filePath, "utf8");
+    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!frontmatter) return null;
+    const verdictMatch = frontmatter[1].match(/^preflight_verdict\s*:\s*([A-Za-z]+)\s*$/m);
+    if (!verdictMatch) return null;
+    const verdict = verdictMatch[1];
+    return verdict === "PASS" || verdict === "ESCALATION" ? verdict : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Finds the newest preflight KD among the session's KDs. "Newest" mirrors the
+// review-KD rule: greatest file mtime, tie-break by greatest filename.
+// Returns { filename, verdict } or null when no preflight KD exists.
+function findNewestPreflightKD(sessionFiles, sessionID = undefined) {
+  const preflightFiles = sessionFiles.filter(f => /^preflight-/i.test(f));
+  if (preflightFiles.length === 0) return null;
+  const knowledgeDir = getKnowledgeDir(sessionID);
+  preflightFiles.sort((a, b) => {
+    let mtimeDiff = 0;
+    try { mtimeDiff = statSync(join(knowledgeDir, b)).mtimeMs - statSync(join(knowledgeDir, a)).mtimeMs; } catch (_) {}
+    if (mtimeDiff !== 0) return mtimeDiff;
+    return b > a ? 1 : b < a ? -1 : 0;
+  });
+  const filename = preflightFiles[0];
+  return { filename, verdict: readPreflightVerdictFrontmatter(join(knowledgeDir, filename)) };
+}
+
+// Verdict-aware PREFLIGHT gate body. checkDiskAdvancement delegates PREFLIGHT
+// advancement here in the override and non-override paths alike. Advancement
+// needs the newest session-generation preflight KD to carry PASS; an
+// escalation verdict, a missing field, or an unreadable value blocks the
+// phase (fail closed). Under an active override at PREFLIGHT the newest KD
+// carries fresh evidence as well (mtime >= since) — stale KDs leave the
+// manual override in place. Emits one debug line per evaluation naming the
+// newest KD, its parsed verdict, and the advance/block decision.
+function evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap) {
+  const info = findNewestPreflightKD(sessionFiles, sessionID);
+  const newest = info ? info.filename : "(none)";
+  const verdictLabel = info ? (info.verdict ?? "MISSING") : "MISSING";
+  const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
+  const overrideActive = overrideUntil && getOverrideTargetPhase(overrideUntil) === STATES.PREFLIGHT;
+  if (overrideActive && info) {
+    const mtime = getFileMtimeMs(join(getKnowledgeDir(sessionID), info.filename));
+    if (mtime < overrideUntil.since) {
+      debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → false (stale under override since=${overrideUntil.since})`);
+      return false;
+    }
+  }
+  const result = !!info && info.verdict === "PASS";
+  debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → ${result}`);
+  return result;
+}
+
 // Reads the active override marker for a session — null when absent or
 // malformed. The marker is authoritative only while the current phase equals
 // its target. Accepts both the single-phase shape `{ phase, since }` and the
@@ -1924,6 +2009,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     }
     debug(`Disk check SWARM: all-checked-off gate → ${gate.ok} (${gate.checkedOff}/${gate.total})${overrideNote}`);
     return result;
+  }
+
+  // The verdict-aware PREFLIGHT gate — see evaluatePreflightVerdict.
+  // The newest preflight KD's frontmatter verdict decides advancement; an
+  // escalation, missing, or unreadable signal blocks the phase. Override
+  // freshness is evaluated inside the helper, so the override and
+  // non-override paths route through it alike.
+  if (phase === STATES.PREFLIGHT) {
+    return evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap);
   }
 
   let result;
@@ -2747,7 +2841,7 @@ async function protocolGateServer(input, options) {
       } else {
         // Non-overseer sessions pass through unaffected — don't touch the maps.
         // Protocol-gate is Overseer-only; subagent tool calls must not be blocked.
-        debug(`chat.params: non-overseer session ${sessionID} (agent=${agent}) — passing through`);
+        debugCollapsed("passing-through", `chat.params: non-overseer session ${sessionID} (agent=${agent}) — passing through`);
         return;
       }
     }
@@ -3174,7 +3268,7 @@ async function protocolGateServer(input, options) {
         }
         // Session never identified as overseer via chat.params — pass through.
         // Subagent sessions are never in overseerSessions.
-        debug(`tool.execute.before: non-overseer session ${sessionID} tool=${tool} — passing through`);
+        debugCollapsed("passing-through", `tool.execute.before: non-overseer session ${sessionID} tool=${tool} — passing through`);
         return;
       }
 
@@ -4052,6 +4146,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       KD_TYPE_PREFIXES,
       checkPhaseStateConsistency,
       checkDiskAdvancement,
+      // Log-collapse counter reset: test seam so collapse tests start from
+      // a zero count regardless of prior hook calls in the same process.
+      resetLogCollapse,
       cleanupLifecycleKDs,
       preCleanupHook,
       extractCorrectionSections,
@@ -4079,6 +4176,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       markStuckMilestonesFailed,
       readVerdictFrontmatter,
       findNewestVerdictKD,
+      readPreflightVerdictFrontmatter,
+      findNewestPreflightKD,
+      evaluatePreflightVerdict,
       reopenCheckedOffMilestones,
       regressVerifyOnFail,
       extractMilestoneCitationsFromReviewKD,

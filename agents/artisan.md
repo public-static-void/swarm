@@ -185,6 +185,12 @@ permissions:
     resource: "cargo fmt*"
     effect: allow
   - action: shell
+    resource: "cargo run -p xtask -- build-wasm-tests*"
+    effect: allow
+  - action: shell
+    resource: "cargo run --bin schema_validator*"
+    effect: allow
+  - action: shell
     resource: "cmake --build*"
     effect: allow
   - action: shell
@@ -195,6 +201,9 @@ permissions:
     effect: allow
   - action: shell
     resource: "make build*"
+    effect: allow
+  - action: shell
+    resource: "make validate-schema*"
     effect: allow
   - action: shell
     resource: "mvn test*"

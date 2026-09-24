@@ -5,7 +5,7 @@
   },
   "devDependencies": {
     "eslint-plugin-security": "^4.0.1",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "scripts": {
     "audit": "npm audit --audit-level=high",
