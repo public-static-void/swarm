@@ -4567,6 +4567,17 @@ milestones:
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.PREFLIGHT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
     });
 
+    it("a lowercase verdict value blocks advancement", async () => {
+      const s = sid("preflight-lowercase");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`preflight-lowercase-${s}.md`, preflightKD("pass"));
+      await tick(s, "c1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.PREFLIGHT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+    });
+
     it("a PASS preflight KD advances PREFLIGHT to EXPLORE", async () => {
       const s = sid("preflight-pass");
       await initOverseer(s);
