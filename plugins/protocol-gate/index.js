@@ -1785,8 +1785,8 @@ function readPreflightVerdictFrontmatter(filePath) {
     if (!frontmatter) return null;
     const verdictMatch = frontmatter[1].match(/^preflight_verdict\s*:\s*([A-Za-z]+)\s*$/m);
     if (!verdictMatch) return null;
-    const verdict = verdictMatch[1].toUpperCase();
-    return ["PASS", "ESCALATION"].includes(verdict) ? verdict : null;
+    const verdict = verdictMatch[1];
+    return verdict === "PASS" || verdict === "ESCALATION" ? verdict : null;
   } catch (_) {
     return null;
   }
