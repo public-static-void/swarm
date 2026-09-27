@@ -38,11 +38,11 @@ Tests ──► Implementation ──► Plan step ──► Requirement (SPEC K
 
 Every REVIEW KD must include a traceability matrix like this:
 
-| Req ID | Plan Step | Artifact          | Test/Check       | Status      |
-| ------ | --------- | ----------------- | ---------------- | ----------- |
-| R001   | P001      | `src/auth.ts`     | `npm test auth`  | PASS / FAIL |
-| R002   | P002      | `src/login.tsx`   | `npm test login` | PASS / FAIL |
-| R003   | P003      | `config/auth.yml` | Lint passes      | PASS / FAIL |
+| Req ID | Plan Step | Artifact          | Declared Gate   | Actually-Run Gate | Test/Check       | Status      |
+| ------ | --------- | ----------------- | --------------- | ----------------- | ---------------- | ----------- |
+| R001   | P001      | `src/auth.ts`     | `npm test auth` | `npm test auth`   | `npm test auth`  | PASS / FAIL |
+| R002   | P002      | `src/login.tsx`   | `npm test`      | `npm test`        | `npm test login` | PASS / FAIL |
+| R003   | P003      | `config/auth.yml` | `npm test`      | `npm test`        | Lint passes      | PASS / FAIL |
 
 ### Enforcement Rules
 
@@ -136,6 +136,10 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 6. Produce ONE REVIEW KD containing the Review Findings (with traceability matrix) and the Audit section (Scope, Risk Summary, Security Findings)
 7. On FAIL, protocol-gate machine-regresses VERIFY→SWARM automatically (no `BACKWARD: true` flag, no explicit dispatch): the producer fixes the findings, re-submits, and the Inspector re-reviews — repeat until PASS or diminishing returns
 8. On stalled progress (2-3 cycles without improvement), the Inspector issues a FUNDAMENTAL verdict, which blocks VERIFY advancement and escalates to the user (Happy to Delete)
+
+### VERIFY Acceptance Proof
+
+VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the full suite re-run, dependency and SAST scans, and the traceability matrix above carrying declared gate → actually-run gate → Test/Check → PASS/FAIL per row. The frontmatter verdict field carries the single lifecycle acceptance verdict under the FAIL citation mandate (every FAIL finding cites at least one milestone token) and the fresh PASS contract (a PASS advances when the review KD is newer than the newest impl KD; a stale PASS blocks pending re-review).
 
 ## Verdicts
 
