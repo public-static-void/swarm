@@ -571,3 +571,35 @@ describe("impl KD handoff contract", () => {
     expect(inspector).toContain("actually-run gate");
   });
 });
+
+describe("planning shape and scribe composition discipline", () => {
+  const pathfinder = readAgent("pathfinder.md");
+  const planTemplate = readRoot(join("skills", "template-plan", "SKILL.md"));
+  const scribe = readAgent("scribe.md");
+
+  it("plans each behavior-changing milestone with same-milestone suite extension", () => {
+    for (const content of [pathfinder, planTemplate]) {
+      expect(content).toContain("same milestone");
+      expect(content).toContain("standing suite");
+      expect(content).toContain("tests touched:");
+    }
+    expect(pathfinder).toContain("failing test first");
+    expect(planTemplate).toContain("failing test first");
+  });
+
+  it("shapes SWARM milestones as implementation plus handoff with skeleton-first planning", () => {
+    for (const content of [pathfinder, planTemplate]) {
+      expect(content).toContain("implementation plus handoff");
+      expect(content).toContain("skeleton");
+    }
+    expect(planTemplate).toContain("final implementation milestone");
+    expect(pathfinder).toContain("final implementation milestone");
+  });
+
+  it("carries permanent suite changes in the composed body and ephemeral scratch in Excluded", () => {
+    expect(scribe).toContain("permanent");
+    expect(scribe).toContain("ephemeral");
+    expect(scribe).toContain("Excluded");
+    expect(scribe).toContain("disposition");
+  });
+});
