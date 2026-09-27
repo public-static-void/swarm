@@ -116,6 +116,18 @@ const RUST_BUILD_COMMANDS = ["cargo build*"];
 const RUST_FMT_CHECK_AGENTS = ["inspector.md", "analyzer.md"];
 const RUST_FMT_CHECK_COMMANDS = ["cargo fmt --all --check*"];
 const COMMITTER_PLAN_SPEC_READ = ["knowledge/plan-*.md", "knowledge/spec-*.md"];
+const CURATED_ALLOWLIST_AGENTS = ["artisan.md", "inspector.md"];
+// Curated test/build verbs with scoped targets: each entry carries a
+// verb-first shape (tool verb, test subcommand, scoped target family) so
+// project-declared gates run directly through the role capability.
+const CURATED_TEST_BUILD_COMMANDS = [
+  "npm test*",
+  "npm run test*",
+  "npx vitest*",
+  "cargo test*",
+  "pytest tests*",
+  "go test*",
+];
 
 describe("SPEC-template git hygiene", () => {
   const skill = readRoot(join("skills", "template-spec", "SKILL.md"));
@@ -299,6 +311,48 @@ describe("agent permission allowlists", () => {
     const patterns = new Map(entriesByFile.get("inspector.md").map((e) => [e.pattern, e.mode]));
     const granted = INSPECTOR_BUILD_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
     expect(granted).toEqual([]);
+  });
+
+  it("carries the curated test and build verbs with scoped targets for the gate-running roles", () => {
+    const missing = [];
+    for (const f of CURATED_ALLOWLIST_AGENTS) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of CURATED_TEST_BUILD_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("shapes every curated entry verb-first with a scoped target", () => {
+    const verbs = ["npm", "npx", "cargo", "pytest", "go"];
+    const misshapen = [];
+    for (const f of CURATED_ALLOWLIST_AGENTS) {
+      for (const { pattern } of entriesByFile.get(f)) {
+        if (!CURATED_TEST_BUILD_COMMANDS.includes(pattern)) continue;
+        const [verb, ...rest] = pattern.split(" ");
+        if (!verbs.includes(verb) || rest.length === 0 || !rest.join(" ").endsWith("*")) {
+          misshapen.push(`${f}: ${pattern}`);
+        }
+      }
+    }
+    expect(misshapen).toEqual([]);
+  });
+
+  it("keeps bare tool invocations out of the curated entries", () => {
+    const offenders = [];
+    for (const f of CURATED_ALLOWLIST_AGENTS) {
+      for (const { pattern } of entriesByFile.get(f)) {
+        if (!CURATED_TEST_BUILD_COMMANDS.includes(pattern)) continue;
+        if (FORBIDDEN_BARE.includes(pattern.replace(/\*+$/, ""))) {
+          offenders.push(`${f}: ${pattern}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(CURATED_TEST_BUILD_COMMANDS).not.toContain("pytest*");
   });
 });
 
