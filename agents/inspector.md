@@ -232,7 +232,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 ### Standard Protocol
 
 1. Read the SPEC KD (requirements), PLAN KD (steps), and the artifact to review
-2. Build a traceability matrix: map every acceptance criterion to verification evidence
+2. Build a traceability matrix: map every acceptance criterion to verification evidence. At VERIFY, consume the impl KD handoff block into the REVIEW KD traceability matrix (declared gate → actually-run gate → run status → PASS/FAIL)
 3. For each criterion, record PASS or FAIL with specific evidence (file:line)
 4. **Scan modified files for code quality issues**: Check for meta comments (patterns like "here is the fix", "changed from X to Y", "this function was added to"), requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) in comments or test labels, references to internal project documentation, and commented-out code blocks. Flag commented-out code blocks and require written justification. Record any findings as failures.
 5. Categorize failures by severity: Critical, Major, Minor
