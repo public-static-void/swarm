@@ -125,6 +125,9 @@ permissions:
     resource: "npm test*"
     effect: allow
   - action: shell
+    resource: "npm run test*"
+    effect: allow
+  - action: shell
     resource: "npm audit*"
     effect: allow
   - action: shell
