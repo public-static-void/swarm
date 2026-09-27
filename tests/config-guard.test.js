@@ -539,3 +539,35 @@ describe("agents delegation dispatch docs", () => {
     });
   });
 });
+
+describe("impl KD handoff contract", () => {
+  const implTemplate = readRoot(join("skills", "template-impl", "SKILL.md"));
+  const artisan = readAgent("artisan.md");
+  const inspector = readAgent("inspector.md");
+
+  it("carries the tests-touched line and handoff block in the impl template", () => {
+    expect(implTemplate).toContain("tests touched:");
+    expect(implTemplate).toContain("handoff:");
+    expect(implTemplate).toContain("touched surface:");
+    expect(implTemplate).toContain("compile-level status:");
+    expect(implTemplate).toContain("declared gate:");
+    expect(implTemplate).toContain("actually-run gate:");
+    expect(implTemplate).toContain("full-gate status:");
+  });
+
+  it("carries the docs-only variant with zero new tests in the impl template", () => {
+    expect(implTemplate).toContain("no behavior change, suite untouched");
+  });
+
+  it("records the declared gate versus the actually-run gate in the artisan handoff", () => {
+    expect(artisan).toContain("declared gate");
+    expect(artisan).toContain("actually-run gate");
+    expect(artisan).toContain("handoff block");
+  });
+
+  it("consumes the handoff block into the inspector traceability matrix", () => {
+    expect(inspector).toContain("handoff block");
+    expect(inspector).toContain("traceability matrix");
+    expect(inspector).toContain("actually-run gate");
+  });
+});
