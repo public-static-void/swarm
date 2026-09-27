@@ -603,3 +603,38 @@ describe("planning shape and scribe composition discipline", () => {
     expect(scribe).toContain("disposition");
   });
 });
+
+describe("VERIFY acceptance-proof shape", () => {
+  const inspector = readAgent("inspector.md");
+  const gates = readRoot(join("skills", "verification-gates", "SKILL.md"));
+  const reviewTemplate = readRoot(join("skills", "template-review", "SKILL.md"));
+  const milestonesTemplate = readRoot(join("skills", "template-milestones", "SKILL.md"));
+
+  it("frames VERIFY as acceptance proof carrying the verdict field once", () => {
+    for (const content of [inspector, gates, reviewTemplate]) {
+      expect(content).toContain("acceptance proof");
+    }
+    expect(reviewTemplate).toContain("verdict: {{PASS | FAIL | FUNDAMENTAL}}");
+    expect(inspector).toContain("single machine source");
+  });
+
+  it("carries declared-gate and actually-run-gate columns in the VERIFY traceability matrices", () => {
+    for (const content of [gates, reviewTemplate]) {
+      expect(content).toContain("Declared Gate");
+      expect(content).toContain("Actually-Run Gate");
+    }
+  });
+
+  it("carries the FAIL citation mandate with the fresh PASS contract", () => {
+    for (const content of [inspector, gates, reviewTemplate]) {
+      expect(content).toMatch(/citation mandate/);
+      expect(content).toMatch(/fresh PASS|Fresh PASS/);
+    }
+  });
+
+  it("keeps the SWARM→VERIFY gate on checked-off rows with impl KD disk evidence, fail-closed", () => {
+    expect(milestonesTemplate).toContain("checked-off");
+    expect(milestonesTemplate).toContain("on disk");
+    expect(milestonesTemplate).toContain("fails closed");
+  });
+});
