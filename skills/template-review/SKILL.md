@@ -25,7 +25,7 @@ verdict: {{PASS | FAIL | FUNDAMENTAL}}
 {{PASS / FAIL / FUNDAMENTAL}}
 
 The `verdict` frontmatter field above is the single machine source — protocol-gate
-reads it during VERIFY. `MISSING` (absent or invalid) blocks VERIFY with a
+reads it during VERIFY, and the REVIEW KD carries the lifecycle acceptance proof (full suite re-run, dependency and SAST scans, traceability matrix). `MISSING` (absent or invalid) blocks VERIFY with a
 diagnostic and is not treated as PASS; `PASS` advances when this review KD is
 newer than the newest `impl-*` KD (fresh PASS after the last fix — a stale PASS
 blocks); `FAIL` auto-regresses VERIFY→SWARM and reopens exactly the milestone
@@ -57,10 +57,10 @@ row(s) its findings cite; `FUNDAMENTAL` blocks advancement and escalates.
 
 ### Traceability Matrix
 
-| Req ID | Plan Step | Artifact  | Test/Check     | Status      |
-| ------ | --------- | --------- | -------------- | ----------- |
-| R001   | P001      | `src/...` | `npm test ...` | PASS / FAIL |
-| R002   | P002      | `src/...` | `npm test ...` | PASS / FAIL |
+| Req ID | Plan Step | Artifact  | Declared Gate | Actually-Run Gate | Test/Check     | Status      |
+| ------ | --------- | --------- | ------------- | ----------------- | -------------- | ----------- |
+| R001   | P001      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
+| R002   | P002      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
 
 ## Audit
 

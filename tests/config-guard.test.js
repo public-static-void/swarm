@@ -116,6 +116,18 @@ const RUST_BUILD_COMMANDS = ["cargo build*"];
 const RUST_FMT_CHECK_AGENTS = ["inspector.md", "analyzer.md"];
 const RUST_FMT_CHECK_COMMANDS = ["cargo fmt --all --check*"];
 const COMMITTER_PLAN_SPEC_READ = ["knowledge/plan-*.md", "knowledge/spec-*.md"];
+const CURATED_ALLOWLIST_AGENTS = ["artisan.md", "inspector.md"];
+// Curated test/build verbs with scoped targets: each entry carries a
+// verb-first shape (tool verb, test subcommand, scoped target family) so
+// project-declared gates run directly through the role capability.
+const CURATED_TEST_BUILD_COMMANDS = [
+  "npm test*",
+  "npm run test*",
+  "npx vitest*",
+  "cargo test*",
+  "pytest tests*",
+  "go test*",
+];
 
 describe("SPEC-template git hygiene", () => {
   const skill = readRoot(join("skills", "template-spec", "SKILL.md"));
@@ -300,6 +312,48 @@ describe("agent permission allowlists", () => {
     const granted = INSPECTOR_BUILD_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
     expect(granted).toEqual([]);
   });
+
+  it("carries the curated test and build verbs with scoped targets for the gate-running roles", () => {
+    const missing = [];
+    for (const f of CURATED_ALLOWLIST_AGENTS) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of CURATED_TEST_BUILD_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("shapes every curated entry verb-first with a scoped target", () => {
+    const verbs = ["npm", "npx", "cargo", "pytest", "go"];
+    const misshapen = [];
+    for (const f of CURATED_ALLOWLIST_AGENTS) {
+      for (const { pattern } of entriesByFile.get(f)) {
+        if (!CURATED_TEST_BUILD_COMMANDS.includes(pattern)) continue;
+        const [verb, ...rest] = pattern.split(" ");
+        if (!verbs.includes(verb) || rest.length === 0 || !rest.join(" ").endsWith("*")) {
+          misshapen.push(`${f}: ${pattern}`);
+        }
+      }
+    }
+    expect(misshapen).toEqual([]);
+  });
+
+  it("keeps bare tool invocations out of the curated entries", () => {
+    const offenders = [];
+    for (const f of CURATED_ALLOWLIST_AGENTS) {
+      for (const { pattern } of entriesByFile.get(f)) {
+        if (!CURATED_TEST_BUILD_COMMANDS.includes(pattern)) continue;
+        if (FORBIDDEN_BARE.includes(pattern.replace(/\*+$/, ""))) {
+          offenders.push(`${f}: ${pattern}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(CURATED_TEST_BUILD_COMMANDS).not.toContain("pytest*");
+  });
 });
 
 describe("git force-add staging guard", () => {
@@ -483,5 +537,104 @@ describe("agents delegation dispatch docs", () => {
       expect(artisan).toMatch(/leaves the dispatch required/);
       expect(artisan).toMatch(/the dispatch still happens/);
     });
+  });
+});
+
+describe("impl KD handoff contract", () => {
+  const implTemplate = readRoot(join("skills", "template-impl", "SKILL.md"));
+  const artisan = readAgent("artisan.md");
+  const inspector = readAgent("inspector.md");
+
+  it("carries the tests-touched line and handoff block in the impl template", () => {
+    expect(implTemplate).toContain("tests touched:");
+    expect(implTemplate).toContain("handoff:");
+    expect(implTemplate).toContain("touched surface:");
+    expect(implTemplate).toContain("compile-level status:");
+    expect(implTemplate).toContain("declared gate:");
+    expect(implTemplate).toContain("actually-run gate:");
+    expect(implTemplate).toContain("full-gate status:");
+  });
+
+  it("carries the docs-only variant with zero new tests in the impl template", () => {
+    expect(implTemplate).toContain("no behavior change, suite untouched");
+  });
+
+  it("records the declared gate versus the actually-run gate in the artisan handoff", () => {
+    expect(artisan).toContain("declared gate");
+    expect(artisan).toContain("actually-run gate");
+    expect(artisan).toContain("handoff block");
+  });
+
+  it("consumes the handoff block into the inspector traceability matrix", () => {
+    expect(inspector).toContain("handoff block");
+    expect(inspector).toContain("traceability matrix");
+    expect(inspector).toContain("actually-run gate");
+  });
+});
+
+describe("planning shape and scribe composition discipline", () => {
+  const pathfinder = readAgent("pathfinder.md");
+  const planTemplate = readRoot(join("skills", "template-plan", "SKILL.md"));
+  const scribe = readAgent("scribe.md");
+
+  it("plans each behavior-changing milestone with same-milestone suite extension", () => {
+    for (const content of [pathfinder, planTemplate]) {
+      expect(content).toContain("same milestone");
+      expect(content).toContain("standing suite");
+      expect(content).toContain("tests touched:");
+    }
+    expect(pathfinder).toContain("failing test first");
+    expect(planTemplate).toContain("failing test first");
+  });
+
+  it("shapes SWARM milestones as implementation plus handoff with skeleton-first planning", () => {
+    for (const content of [pathfinder, planTemplate]) {
+      expect(content).toContain("implementation plus handoff");
+      expect(content).toContain("skeleton");
+    }
+    expect(planTemplate).toContain("final implementation milestone");
+    expect(pathfinder).toContain("final implementation milestone");
+  });
+
+  it("carries permanent suite changes in the composed body and ephemeral scratch in Excluded", () => {
+    expect(scribe).toContain("permanent");
+    expect(scribe).toContain("ephemeral");
+    expect(scribe).toContain("Excluded");
+    expect(scribe).toContain("disposition");
+  });
+});
+
+describe("VERIFY acceptance-proof shape", () => {
+  const inspector = readAgent("inspector.md");
+  const gates = readRoot(join("skills", "verification-gates", "SKILL.md"));
+  const reviewTemplate = readRoot(join("skills", "template-review", "SKILL.md"));
+  const milestonesTemplate = readRoot(join("skills", "template-milestones", "SKILL.md"));
+
+  it("frames VERIFY as acceptance proof carrying the verdict field once", () => {
+    for (const content of [inspector, gates, reviewTemplate]) {
+      expect(content).toContain("acceptance proof");
+    }
+    expect(reviewTemplate).toContain("verdict: {{PASS | FAIL | FUNDAMENTAL}}");
+    expect(inspector).toContain("single machine source");
+  });
+
+  it("carries declared-gate and actually-run-gate columns in the VERIFY traceability matrices", () => {
+    for (const content of [gates, reviewTemplate]) {
+      expect(content).toContain("Declared Gate");
+      expect(content).toContain("Actually-Run Gate");
+    }
+  });
+
+  it("carries the FAIL citation mandate with the fresh PASS contract", () => {
+    for (const content of [inspector, gates, reviewTemplate]) {
+      expect(content).toMatch(/citation mandate/);
+      expect(content).toMatch(/fresh PASS|Fresh PASS/);
+    }
+  });
+
+  it("keeps the SWARM→VERIFY gate on checked-off rows with impl KD disk evidence, fail-closed", () => {
+    expect(milestonesTemplate).toContain("checked-off");
+    expect(milestonesTemplate).toContain("on disk");
+    expect(milestonesTemplate).toContain("fails closed");
   });
 });

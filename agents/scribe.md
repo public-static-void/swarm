@@ -144,7 +144,7 @@ After verification passes, read all knowledge documents produced during the life
 4. Identify knowledge gaps or stale documentation
 5. Compose COMPOSED KDs: for each downstream agent, assemble the minimal set of KDs needed for its task (reference KDs using their file paths exclusively)
 6. Mark stale or superseded KDs via frontmatter (`status: superseded`, `superseded_by` pointing to replacement)
-7. Create or update COMPOSED KDs with composed patterns
+7. Create or update COMPOSED KDs with composed patterns — carry permanent suite changes (created or extended suite files with behavior references and impl KD pointers) in the COMPOSED KD body, and carry ephemeral verification scratch (transient probes, logs, one-off scripts) in the Excluded section, grouped by milestone with a one-line disposition per grouped item
 8. Update cross-references between related documents
 9. Compress verbose documentation to essential content
 10. Update `AGENTS.md` and `README.md` if warranted

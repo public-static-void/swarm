@@ -33,7 +33,24 @@ superseded_by: null
 
 ## Verification Notes
 
-{{How to verify this works — test commands, manual steps}}
+tests touched: {{suite files created or extended for this milestone behavior}}
+handoff:
+  touched surface: {{files and behaviors this milestone changed}}
+  compile-level status: {{targeted check run and status for that surface}}
+  declared gate: {{project-declared command plus manifest source path}}
+  actually-run gate: {{executed command plus green run status}}
+  full-gate status: {{green run precondition for Committer dispatch}}
+
+Docs-only milestones (zero behavior files changed) write zero tests and carry both lines:
+
+tests touched: {{unchanged}}
+no behavior change, suite untouched
+handoff:
+  touched surface: {{docs files this milestone changed}}
+  compile-level status: {{targeted check run and status for that surface}}
+  declared gate: {{project-declared command plus manifest source path}}
+  actually-run gate: {{executed command plus green run status}}
+  full-gate status: {{green run precondition for Committer dispatch}}
 
 ## Process Friction
 
