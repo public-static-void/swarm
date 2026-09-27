@@ -1042,15 +1042,46 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
-  const prefix = `impl-${milestoneId}-`;
   // Impl-KD evidence is scoped to the current session only — a prior
   // lifecycle's impl KDs (under another session id) never check off a fresh
   // session's milestone rows. Files whose frontmatter carries a superseded
   // status are stale evidence from an earlier pass (stamped in place on
   // reopen) and never count, so a reopened row cannot re-complete on the
-  // work the review just invalidated.
-  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID) && !isSupersededByFrontmatter(knowledgeDir, f));
+  // work the review just invalidated. Shared predicate below, so the
+  // cross-check and the write-hook check-off agree on stamped rows.
+  const found = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, milestoneId));
   return found || null;
+}
+
+// Reads a frontmatter status from KD text and reports whether it marks the
+// KD superseded. Pure over the string — the disk-reading wrapper below and
+// the write-hook check-off (which fires before the runtime materializes the
+// file, so only the incoming content is available) share this one parse, so
+// registry promotion and the cross-check agree on what counts as stale.
+// Fail-open: text without a parsable status counts as live, preserving the
+// behavior for KDs written without frontmatter.
+function isStaleImplKDContent(content) {
+  if (typeof content !== "string" || content.length === 0) return false;
+  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
+  if (!fence) return false;
+  const status = fence[1].match(/^\s*status\s*:\s*("([^"]*)"|'([^']*)'|([^\s#\r\n]+))/im);
+  if (!status) return false;
+  const value = (status[2] ?? status[3] ?? status[4] ?? "").trim().toLowerCase();
+  return value === "superseded";
+}
+
+// Shared staleness predicate for milestone completion evidence: a
+// same-session impl KD filename counts as live evidence only when its
+// frontmatter does NOT carry a superseded status. Consulted by the
+// cross-check path (findMilestoneImplKD), the write-hook check-off path
+// (autoCheckOffMilestone, via the incoming-content variant above), and the
+// stuck-row reconciliation path (reconcileStuckRowsFromDiskEvidence) alike,
+// so registry promotion and checkMilestoneCheckedOff agree on stamped rows.
+function isLiveMilestoneEvidence(knowledgeDir, filename, sessionID, milestoneId) {
+  const prefix = `impl-${milestoneId}-`;
+  if (!filename.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+  if (!matchesSessionKDAnyGeneration(filename, sessionID)) return false;
+  return !isSupersededByFrontmatter(knowledgeDir, filename);
 }
 
 // Reads the leading frontmatter block of a knowledge KD and reports whether
@@ -1066,12 +1097,7 @@ function isSupersededByFrontmatter(knowledgeDir, filename) {
   } catch (_) {
     return false;
   }
-  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
-  if (!fence) return false;
-  const status = fence[1].match(/^\s*status\s*:\s*("([^"]*)"|'([^']*)'|([^\s#\r\n]+))/im);
-  if (!status) return false;
-  const value = (status[2] ?? status[3] ?? status[4] ?? "").trim().toLowerCase();
-  return value === "superseded";
+  return isStaleImplKDContent(content);
 }
 
 // Stamps a canonical impl KD as superseded in place. The filename never
@@ -1210,7 +1236,10 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   let promoted = 0;
   for (const row of stuck) {
     const prefix = `impl-${row.id}-`;
-    const evidence = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID) && !isSupersededByFrontmatter(knowledgeDir, f));
+    // Shared staleness predicate: only live (non-frontmatter-superseded)
+    // same-session evidence promotes — the write-hook check-off consults the
+    // same parse over the incoming content, so both agree on stamped rows.
+    const evidence = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, row.id));
     if (!evidence) {
       // Superseded-only evidence probe (Issue 69): a reopened row's stale impl
       // KDs survive on disk as `*.superseded.md` — invisible to the predicate
@@ -1465,6 +1494,20 @@ function extractToolPath(a) {
     if (typeof v === "string" && v.length > 0) return v;
   }
   return "";
+}
+
+// Reads the incoming file text from tool args across write/edit arg shapes.
+// Write tools carry the full text under `content`; edit-shaped calls vary
+// (`content`, `newText`, `newString`, `text`, `data`). Returns the string or
+// undefined when no text is present — callers fail open on undefined (live),
+// so an edit patch without full frontmatter never counts as stale.
+function extractToolContent(a) {
+  if (!a || typeof a !== "object") return undefined;
+  for (const k of ["content", "newContent", "newText", "newString", "text", "data"]) {
+    const v = a[k];
+    if (typeof v === "string") return v;
+  }
+  return undefined;
 }
 
 // Canonical tool identity: runtimes namespace built-ins (e.g.
@@ -2714,9 +2757,21 @@ async function protocolGateServer(input, options) {
     // RESTART REQUIRED (MEM-059): plugins load once per opencode process —
     // changes to this check-off path and its loud diagnostics take effect
     // only after opencode restarts.
-    function autoCheckOffMilestone(relPath) {
+    function autoCheckOffMilestone(relPath, incomingContent) {
       const milestoneId = extractMilestoneIdFromImplKD(relPath);
       if (!milestoneId) return;
+      // Shared staleness predicate (incoming-content variant): the
+      // before-hook fires before the runtime materializes the file, so the
+      // incoming text is the only content available — the disk-reading
+      // cross-check consults the same parse via isSupersededByFrontmatter, so
+      // registry promotion and checkMilestoneCheckedOff agree on stamped rows.
+      // A fix-up write that carries the reopen stamp forward declines loudly
+      // and leaves the reopened row open; only live evidence promotes.
+      // Fail-open: a call without full incoming text proceeds as before.
+      if (typeof incomingContent === "string" && isStaleImplKDContent(incomingContent)) {
+        loud(`STALE_CHECKOFF_DECLINED: milestone ${milestoneId} keeps its registry state — incoming impl KD carries a superseded status (stale fix-up write at ${relPath}). Write fresh fix evidence with a live status to re-complete.`);
+        return;
+      }
       for (const candidate of collectParentSessionCandidates()) {
         // Disk generation is the SSOT (restart-proof); the map is a fallback.
         // Seeded into the map so the generation-scoped registry lookup
@@ -3259,7 +3314,7 @@ async function protocolGateServer(input, options) {
               // wrote it so a future silent-skip class is visible.
               warn(`AUTO_CHECKOFF_NON_ARTISAN: agent=${writingAgent} path=${relPath}`);
             }
-            autoCheckOffMilestone(relPath);
+            autoCheckOffMilestone(relPath, extractToolContent(args));
             // Record the write for the after-hook's post-write SWARM→VERIFY
             // auto-advance — the before-hook has the args (relPath), the
             // after-hook needs it but cannot see them.
