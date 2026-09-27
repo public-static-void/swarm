@@ -229,6 +229,8 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 2. **One pass, two sections**: perform the standard review (below) AND the security audit (below) in the same read of the codebase, then produce a single REVIEW KD with `## Review Findings` and `## Audit` sections.
 3. **Record an explicit verdict entry per gate item** in the REVIEW KD findings — prevents skipping checks mid-review.
 
+At VERIFY, the REVIEW KD is the lifecycle acceptance proof: full suite re-run, dependency and SAST scans, a traceability matrix carrying declared gate → actually-run gate → run status → PASS/FAIL per row, and the frontmatter verdict field carrying the single lifecycle acceptance verdict.
+
 ### Standard Protocol
 
 1. Read the SPEC KD (requirements), PLAN KD (steps), and the artifact to review
