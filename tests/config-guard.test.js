@@ -638,3 +638,19 @@ describe("VERIFY acceptance-proof shape", () => {
     expect(milestonesTemplate).toContain("fails closed");
   });
 });
+
+describe("harmless version-probe class", () => {
+  it("carries the toolchain version probes together for the implementation role", () => {
+    const patterns = bashEntries(readAgent("artisan.md")).map((e) => e.pattern);
+    for (const cmd of ["cargo --version*", "rustc --version*", "node --version*"]) {
+      expect(patterns).toContain(cmd);
+    }
+  });
+
+  it("states the single-segment retry with idiomatic-target fallback in the implementation prompt", () => {
+    const artisan = readAgent("artisan.md");
+    expect(artisan).toContain("re-run each compound segment alone");
+    expect(artisan).toContain("make build-*");
+    expect(artisan).toContain("observed allow/deny outcome");
+  });
+});
