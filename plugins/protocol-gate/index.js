@@ -1042,15 +1042,46 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
-  const prefix = `impl-${milestoneId}-`;
   // Impl-KD evidence is scoped to the current session only — a prior
   // lifecycle's impl KDs (under another session id) never check off a fresh
   // session's milestone rows. Files whose frontmatter carries a superseded
   // status are stale evidence from an earlier pass (stamped in place on
   // reopen) and never count, so a reopened row cannot re-complete on the
-  // work the review just invalidated.
-  const found = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID) && !isSupersededByFrontmatter(knowledgeDir, f));
+  // work the review just invalidated. Shared predicate below, so the
+  // cross-check and the write-hook check-off agree on stamped rows.
+  const found = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, milestoneId));
   return found || null;
+}
+
+// Reads a frontmatter status from KD text and reports whether it marks the
+// KD superseded. Pure over the string — the disk-reading wrapper below and
+// the write-hook check-off (which fires before the runtime materializes the
+// file, so only the incoming content is available) share this one parse, so
+// registry promotion and the cross-check agree on what counts as stale.
+// Fail-open: text without a parsable status counts as live, preserving the
+// behavior for KDs written without frontmatter.
+function isStaleImplKDContent(content) {
+  if (typeof content !== "string" || content.length === 0) return false;
+  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
+  if (!fence) return false;
+  const status = fence[1].match(/^\s*status\s*:\s*("([^"]*)"|'([^']*)'|([^\s#\r\n]+))/im);
+  if (!status) return false;
+  const value = (status[2] ?? status[3] ?? status[4] ?? "").trim().toLowerCase();
+  return value === "superseded";
+}
+
+// Shared staleness predicate for milestone completion evidence: a
+// same-session impl KD filename counts as live evidence only when its
+// frontmatter does NOT carry a superseded status. Consulted by the
+// cross-check path (findMilestoneImplKD), the write-hook check-off path
+// (autoCheckOffMilestone, via the incoming-content variant above), and the
+// stuck-row reconciliation path (reconcileStuckRowsFromDiskEvidence) alike,
+// so registry promotion and checkMilestoneCheckedOff agree on stamped rows.
+function isLiveMilestoneEvidence(knowledgeDir, filename, sessionID, milestoneId) {
+  const prefix = `impl-${milestoneId}-`;
+  if (!filename.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+  if (!matchesSessionKDAnyGeneration(filename, sessionID)) return false;
+  return !isSupersededByFrontmatter(knowledgeDir, filename);
 }
 
 // Reads the leading frontmatter block of a knowledge KD and reports whether
@@ -1066,12 +1097,27 @@ function isSupersededByFrontmatter(knowledgeDir, filename) {
   } catch (_) {
     return false;
   }
-  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
-  if (!fence) return false;
-  const status = fence[1].match(/^\s*status\s*:\s*("([^"]*)"|'([^']*)'|([^\s#\r\n]+))/im);
-  if (!status) return false;
-  const value = (status[2] ?? status[3] ?? status[4] ?? "").trim().toLowerCase();
-  return value === "superseded";
+  return isStaleImplKDContent(content);
+}
+
+// Snapshots the on-disk impl KD behind an incoming write, so the write-hook
+// can tell a genuine post-stamp rewrite (new bytes over a stamped file —
+// mtime newer than the stamp by construction) from a byte-identical re-write
+// (no new work). Returns { dir, base, content, stale } or null when the path
+// is not an impl KD or no file is on disk yet (fresh canonical write).
+// Fail-open null keeps the promotion path unchanged for fresh files.
+function readImplKDSnapshot(relPath, writerSessionID) {
+  if (typeof relPath !== "string" || relPath.length === 0) return null;
+  const base = relPath.replace(/\\/g, "/").split("/").pop();
+  if (!/^impl-/i.test(base)) return null;
+  const dir = getKnowledgeDir(writerSessionID ?? undefined);
+  let content;
+  try {
+    content = readFileSync(join(dir, base), "utf8");
+  } catch (_) {
+    return null;
+  }
+  return { dir, base, content, stale: isStaleImplKDContent(content) };
 }
 
 // Stamps a canonical impl KD as superseded in place. The filename never
@@ -1100,6 +1146,40 @@ function stampImplKDSuperseded(knowledgeDir, filename, milestoneId) {
   }
   atomicWriteFileSync(target, next);
   debug(`supersede: stale impl KD ${filename} stamped superseded in place (milestone ${milestoneId} re-opened)`);
+}
+
+// Clears a frontmatter superseded stamp in KD text, restoring the KD to a
+// live draft that supersedes the invalidated pass. Pure over the string so
+// both the post-write hook (landed bytes on disk) and the explicit
+// remediation path (stamped files already on disk) share one rewrite: only
+// the `status` line flips to draft and `superseded_by` records the pointer to
+// the invalidated pass — every other frontmatter line and the body survive
+// byte-identical, so the fix-up content the artisan just landed is preserved.
+// Returns { content, cleared, lineageSet }: cleared is true only when a
+// superseded status was present; lineageSet reports whether superseded_by
+// carries a non-null pointer afterwards. Fail-closed: text without a
+// superseded frontmatter status returns unchanged with cleared=false.
+function clearSupersededStampContent(content, pointer) {
+  if (typeof content !== "string" || content.length === 0) return { content, cleared: false, lineageSet: false };
+  if (!isStaleImplKDContent(content)) {
+    const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(\s*\r?\n|$)/);
+    if (!fence) return { content, cleared: false, lineageSet: false };
+    const hasPointer = /^\s*superseded_by\s*:.*$/im.test(fence[1]) && !/^\s*superseded_by\s*:\s*(null|~)?\s*$/im.test(fence[1]);
+    if (hasPointer) return { content, cleared: false, lineageSet: true };
+    const body = /^\s*superseded_by\s*:.*$/im.test(fence[1])
+      ? fence[1].replace(/^\s*superseded_by\s*:.*$/im, `superseded_by: ${pointer}`)
+      : `${fence[1]}\nsuperseded_by: ${pointer}`;
+    return { content: `---\n${body}\n---${fence[2]}${content.slice(fence[0].length)}`, cleared: false, lineageSet: true };
+  }
+  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(\s*\r?\n|$)/);
+  if (!fence) return { content, cleared: false, lineageSet: false };
+  let body = fence[1].replace(/^\s*status\s*:.*$/im, "status: draft");
+  if (/^\s*superseded_by\s*:.*$/im.test(body)) {
+    body = body.replace(/^\s*superseded_by\s*:.*$/im, `superseded_by: ${pointer}`);
+  } else {
+    body = `${body}\nsuperseded_by: ${pointer}`;
+  }
+  return { content: `---\n${body}\n---${fence[2]}${content.slice(fence[0].length)}`, cleared: true, lineageSet: true };
 }
 
 // Re-opening a checked-off milestone invalidates its prior completion
@@ -1210,7 +1290,10 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   let promoted = 0;
   for (const row of stuck) {
     const prefix = `impl-${row.id}-`;
-    const evidence = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID) && !isSupersededByFrontmatter(knowledgeDir, f));
+    // Shared staleness predicate: only live (non-frontmatter-superseded)
+    // same-session evidence promotes — the write-hook check-off consults the
+    // same parse over the incoming content, so both agree on stamped rows.
+    const evidence = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, row.id));
     if (!evidence) {
       // Superseded-only evidence probe (Issue 69): a reopened row's stale impl
       // KDs survive on disk as `*.superseded.md` — invisible to the predicate
@@ -1268,7 +1351,9 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
 // (non-superseded) impl evidence, is left untouched — the remediation is
 // scoped to the superseded-only case. Frontmatter-stamped stale evidence is
 // never restored: a stamp records work the review invalidated, and only a
-// fresh canonical write re-completes such a row.
+// genuine fix-up rewrite re-completes such a row — a stamped-only row is
+// named distinctly (frontmatter-stamped-evidence) with recovery guidance
+// instead of the generic no-superseded-evidence.
 // Returns { ok, reason?, milestoneId, evidence, actor } — evidence names the
 // restored canonical file(s).
 function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, actor) {
@@ -1299,6 +1384,21 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
     return matchesSessionKDAnyGeneration(f.slice(0, -".superseded.md".length), sessionID);
   });
   if (superseded.length === 0) {
+    // Frontmatter-stamped stale evidence: canonical files whose frontmatter
+    // carries a superseded status record work the review invalidated, so only
+    // a genuine fix-up rewrite re-completes the row — the remediation never
+    // restores them. Name them distinctly (instead of the generic
+    // no-superseded-evidence) with the recovery guidance, so a row awaiting
+    // fresh fix evidence is explainable and the row stays open.
+    const stamped = files.filter(f => {
+      if (!f.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+      if (!matchesSessionKDAnyGeneration(f, sessionID)) return false;
+      return isSupersededByFrontmatter(knowledgeDir, f);
+    });
+    if (stamped.length > 0) {
+      loud(`STAMPED_EVIDENCE: milestone ${milestoneId} stays ${current} — same-session impl evidence is frontmatter-superseded (stale, canonical names kept): ${stamped.join(", ")}. Only a genuine fix-up rewrite re-completes this row: write new fix evidence over the stamped file (the gate clears the stamp on landing) or at a fresh canonical impl path for milestone ${milestoneId}.`);
+      return { ok: false, reason: "frontmatter-stamped-evidence", milestoneId, evidence: stamped };
+    }
     return { ok: false, reason: "no-superseded-evidence", milestoneId };
   }
   // Restore each legacy file to its canonical name once, so the normal
@@ -1465,6 +1565,20 @@ function extractToolPath(a) {
     if (typeof v === "string" && v.length > 0) return v;
   }
   return "";
+}
+
+// Reads the incoming file text from tool args across write/edit arg shapes.
+// Write tools carry the full text under `content`; edit-shaped calls vary
+// (`content`, `newText`, `newString`, `text`, `data`). Returns the string or
+// undefined when no text is present — callers fail open on undefined (live),
+// so an edit patch without full frontmatter never counts as stale.
+function extractToolContent(a) {
+  if (!a || typeof a !== "object") return undefined;
+  for (const k of ["content", "newContent", "newText", "newString", "text", "data"]) {
+    const v = a[k];
+    if (typeof v === "string") return v;
+  }
+  return undefined;
 }
 
 // Canonical tool identity: runtimes namespace built-ins (e.g.
@@ -2249,6 +2363,16 @@ async function protocolGateServer(input, options) {
     // after-hook cannot see the tool args, so the before-hook records the path
     // for the post-write SWARM→VERIFY auto-advance evaluation.
     const pendingImplKDWrites = new Map();
+    // Pending frontmatter stamp clears by subagent sessions — sessionID →
+    // { relPath, base, dir, snapshot }. Recorded in tool.execute.before when an
+    // impl-KD write lands over a stamped file with new bytes (a genuine
+    // post-stamp rewrite), consumed in tool.execute.after where the landed
+    // bytes are on disk: the after-hook re-verifies genuineness against the
+    // pre-write snapshot, clears the stamp in place (draft + superseded_by),
+    // and promotes through the check-off path when the before-hook deferred
+    // it — so a row never completes on stale evidence. One entry per
+    // session, deleted after consumption.
+    const pendingStampClear = new Map();
     // Tracks active subagent dispatches per session.
     // When a task call dispatches the current phase's expected agent, the
     // expected KD prefix is stored here. checkPhaseStateConsistency skips
@@ -2714,9 +2838,49 @@ async function protocolGateServer(input, options) {
     // RESTART REQUIRED (MEM-059): plugins load once per opencode process —
     // changes to this check-off path and its loud diagnostics take effect
     // only after opencode restarts.
-    function autoCheckOffMilestone(relPath) {
+    function autoCheckOffMilestone(relPath, incomingContent, writerSessionID) {
       const milestoneId = extractMilestoneIdFromImplKD(relPath);
       if (!milestoneId) return;
+      // Shared staleness predicate (incoming-content variant): the
+      // before-hook fires before the runtime materializes the file, so the
+      // incoming text is the only content available — the disk-reading
+      // cross-check consults the same parse via isSupersededByFrontmatter, so
+      // registry promotion and checkMilestoneCheckedOff agree on stamped rows.
+      // Fail-open: a call without full incoming text proceeds as before.
+      //
+      // Genuine-rewrite clearing (gate-owned): a write that lands over a
+      // frontmatter-stamped file with bytes that differ from the stamped
+      // snapshot is post-stamp fix-up work — its mtime is newer than the
+      // stamp by construction — so the gate clears the stamp itself instead
+      // of declining. This stays robust across dispatch wording variants
+      // (in-place RESULT KD update versus fresh canonical file): the in-place
+      // fix-up that preserved the reopen stamp is exactly what the incident
+      // produced. Promotion is deferred to the after-hook, which re-verifies
+      // the landed bytes against the snapshot, clears the stamp in place
+      // (draft + superseded_by), and only then promotes — promotion never
+      // precedes live evidence. A byte-identical re-write carries no new work
+      // and still declines loudly, leaving the reopened row open.
+      const diskSnapshot = readImplKDSnapshot(relPath, writerSessionID);
+      if (typeof incomingContent === "string" && isStaleImplKDContent(incomingContent)) {
+        if (diskSnapshot !== null && diskSnapshot.stale && diskSnapshot.content !== incomingContent) {
+          pendingStampClear.set(writerSessionID, { relPath, base: diskSnapshot.base, dir: diskSnapshot.dir, snapshot: diskSnapshot.content });
+          loud(`STAMP_CLEAR_PENDING: milestone ${milestoneId} genuine fix-up rewrite detected at ${relPath} — incoming bytes differ from the frontmatter-stamped snapshot, so the stamp clears on landing (draft + superseded_by) and the row promotes then.`);
+          return;
+        }
+        loud(`STALE_CHECKOFF_DECLINED: milestone ${milestoneId} keeps its registry state — incoming impl KD carries a superseded status (stale fix-up write at ${relPath}). Write fresh fix evidence with a live status to re-complete.`);
+        return;
+      }
+      // A live write over a stamped file with new bytes is genuine post-stamp
+      // work through the other frontmatter shape: the landed bytes are live
+      // evidence, so the normal promotion below proceeds immediately
+      // (pre-existing behavior — the live hook re-fires on live content).
+      // Only the superseded_by lineage is deferred: the after-hook records it
+      // on the landed file, so the fix-up keeps its link to the invalidated
+      // pass.
+      if (typeof incomingContent === "string" && diskSnapshot !== null && diskSnapshot.stale && diskSnapshot.content !== incomingContent) {
+        pendingStampClear.set(writerSessionID, { relPath, base: diskSnapshot.base, dir: diskSnapshot.dir, snapshot: diskSnapshot.content });
+        loud(`STAMP_LINEAGE_PENDING: milestone ${milestoneId} genuine fix-up rewrite detected at ${relPath} — live incoming bytes over a frontmatter-stamped snapshot, so the row promotes now and the superseded_by lineage records on landing.`);
+      }
       for (const candidate of collectParentSessionCandidates()) {
         // Disk generation is the SSOT (restart-proof); the map is a fallback.
         // Seeded into the map so the generation-scoped registry lookup
@@ -2768,6 +2932,45 @@ async function protocolGateServer(input, options) {
       // nothing was checked off. Loud no-op diagnostic so the miss is
       // observable instead of silent.
       warn(`AUTO_CHECKOFF_UNMATCHED: ${relPath}`);
+    }
+
+    // Settles a deferred genuine-rewrite stamp clear once the file has landed
+    // on disk. Re-verifies genuineness against the pre-write snapshot (the
+    // landed bytes must differ from the stamped snapshot — otherwise no new
+    // work arrived and the row stays open), clears the frontmatter stamp in
+    // place (status: draft, superseded_by naming the invalidated pass at its
+    // canonical path), then promotes through the normal check-off path so
+    // promotion never precedes live evidence. Loud at every outcome,
+    // following the audited diagnostic pattern used across this gate.
+    function settleStampClear(pending, writerSessionID) {
+      const milestoneId = extractMilestoneIdFromImplKD(pending.relPath);
+      if (!milestoneId) return;
+      let landed = null;
+      try {
+        landed = readFileSync(join(pending.dir, pending.base), "utf8");
+      } catch (_) {
+        landed = null;
+      }
+      if (typeof landed !== "string" || landed === pending.snapshot) {
+        loud(`STAMP_CLEAR_ABORTED: milestone ${milestoneId} keeps its registry state — post-write bytes at ${pending.relPath} carry no new work past the frontmatter-stamped snapshot. Write genuine fix evidence to re-complete.`);
+        return;
+      }
+      const pointer = pending.base;
+      const rewrite = clearSupersededStampContent(landed, pointer);
+      try {
+        atomicWriteFileSync(join(pending.dir, pending.base), rewrite.content);
+      } catch (e) {
+        warn(`STAMP_CLEAR_FAILED: milestone ${milestoneId} stamp clear at ${pending.relPath} failed (${e.message}) — row stays open.`);
+        return;
+      }
+      if (rewrite.cleared) {
+        loud(`STAMP_CLEARED: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — frontmatter stamp cleared in place (status: draft, superseded_by: ${pointer}); the row re-completes on the landed evidence.`);
+      } else if (rewrite.lineageSet) {
+        loud(`STAMP_LINEAGE_RECORDED: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — landed frontmatter already live, superseded_by lineage recorded (${pointer}); the row re-completes on the landed evidence.`);
+      } else {
+        loud(`STAMP_CLEAR_NO_FRONTMATTER: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — landed bytes carry no frontmatter stamp, promoting on the landed evidence as a fresh write.`);
+      }
+      autoCheckOffMilestone(pending.relPath, rewrite.content, writerSessionID);
     }
 
     // Post-write SWARM→VERIFY auto-advance: after a subagent's impl KD write
@@ -3259,7 +3462,7 @@ async function protocolGateServer(input, options) {
               // wrote it so a future silent-skip class is visible.
               warn(`AUTO_CHECKOFF_NON_ARTISAN: agent=${writingAgent} path=${relPath}`);
             }
-            autoCheckOffMilestone(relPath);
+            autoCheckOffMilestone(relPath, extractToolContent(args), sessionID);
             // Record the write for the after-hook's post-write SWARM→VERIFY
             // auto-advance — the before-hook has the args (relPath), the
             // after-hook needs it but cannot see them.
@@ -3964,6 +4167,15 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       if ((tool === "write" || tool === "edit") && !isOverseerSession(sessionID)) {
         const relPath = pendingImplKDWrites.get(sessionID);
         pendingImplKDWrites.delete(sessionID);
+        // Settle a deferred genuine-rewrite stamp clear BEFORE the advance
+        // evaluation below: the stamp clears (draft + superseded_by) and the
+        // row promotes first, so disk-advancement observes live evidence and
+        // SWARM→VERIFY advances through the evidence path.
+        const pending = pendingStampClear.get(sessionID);
+        pendingStampClear.delete(sessionID);
+        if (pending && (/^knowledge\/impl-/i.test(pending.relPath) || /\/knowledge\/impl-/i.test(pending.relPath))) {
+          settleStampClear(pending, sessionID);
+        }
         if (relPath && (/^knowledge\/impl-/i.test(relPath) || /\/knowledge\/impl-/i.test(relPath))) {
           for (const candidate of collectParentSessionCandidates()) {
             advanceParentSessionFromSwarm(candidate);

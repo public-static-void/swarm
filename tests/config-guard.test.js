@@ -111,7 +111,6 @@ const ANALYZER_BUILDER_INSTALLER_COMMANDS = [
   "cargo build*", "pip install*", "poetry install*", "make build*",
   "composer install*", "cmake --build*", "gradle build*", "uv sync*",
 ];
-const INSPECTOR_BUILD_COMMANDS = ["cargo build*", "make build*"];
 const RUST_BUILD_COMMANDS = ["cargo build*"];
 const RUST_FMT_CHECK_AGENTS = ["inspector.md", "analyzer.md"];
 const RUST_FMT_CHECK_COMMANDS = ["cargo fmt --all --check*"];
@@ -304,12 +303,6 @@ describe("agent permission allowlists", () => {
   it("keeps builder and installer grants out of the read-only analyzer role", () => {
     const patterns = new Map(entriesByFile.get("analyzer.md").map((e) => [e.pattern, e.mode]));
     const granted = ANALYZER_BUILDER_INSTALLER_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
-    expect(granted).toEqual([]);
-  });
-
-  it("keeps build grants out of the verifier inspector role", () => {
-    const patterns = new Map(entriesByFile.get("inspector.md").map((e) => [e.pattern, e.mode]));
-    const granted = INSPECTOR_BUILD_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
     expect(granted).toEqual([]);
   });
 
@@ -636,5 +629,60 @@ describe("VERIFY acceptance-proof shape", () => {
     expect(milestonesTemplate).toContain("checked-off");
     expect(milestonesTemplate).toContain("on disk");
     expect(milestonesTemplate).toContain("fails closed");
+  });
+});
+
+describe("inspector rebuild parity and overseer disk-check scope", () => {
+  it("carries rebuild-class shell grants for the verifier role", () => {
+    const patterns = new Map(bashEntries(readAgent("inspector.md")).map((e) => [e.pattern, e.mode]));
+    expect(patterns.get("make build*")).toBe("allow");
+    expect(patterns.get("cargo --version*")).toBe("allow");
+  });
+
+  it("covers impl and checkpoint KD reads in the overseer glob scope", () => {
+    const allows = actionEntries(readAgent("overseer.md"), "glob")
+      .filter((e) => e.mode === "allow")
+      .map((e) => e.pattern);
+    expect(allows).toContain("knowledge/*.md");
+    expect(allows).toContain("knowledge/impl-*.md");
+    expect(allows).toContain("knowledge/checkpoint-*.md");
+  });
+
+  it("holds the overseer read, edit, and shell scope to the current allowances", () => {
+    const overseer = readAgent("overseer.md");
+    const readAllows = actionEntries(overseer, "read")
+      .filter((e) => e.mode === "allow")
+      .map((e) => e.pattern)
+      .sort();
+    expect(readAllows).toEqual(
+      ["knowledge/intent-*.md", "knowledge/milestones-*.md", "knowledge/report-*.md"].sort()
+    );
+    const editAllows = actionEntries(overseer, "edit")
+      .filter((e) => e.mode === "allow")
+      .map((e) => e.pattern)
+      .sort();
+    expect(editAllows).toEqual(
+      ["knowledge/intent-*.md", "knowledge/report-*.md"].sort()
+    );
+    const shellAllows = actionEntries(overseer, "shell")
+      .filter((e) => e.mode === "allow")
+      .map((e) => e.pattern);
+    expect(shellAllows).toEqual(["mkdir*"]);
+  });
+});
+
+describe("harmless version-probe class", () => {
+  it("carries the toolchain version probes together for the implementation role", () => {
+    const patterns = bashEntries(readAgent("artisan.md")).map((e) => e.pattern);
+    for (const cmd of ["cargo --version*", "rustc --version*", "node --version*"]) {
+      expect(patterns).toContain(cmd);
+    }
+  });
+
+  it("states the single-segment retry with idiomatic-target fallback in the implementation prompt", () => {
+    const artisan = readAgent("artisan.md");
+    expect(artisan).toContain("re-run each compound segment alone");
+    expect(artisan).toContain("make build-*");
+    expect(artisan).toContain("observed allow/deny outcome");
   });
 });

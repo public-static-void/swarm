@@ -37,6 +37,12 @@ permissions:
   - action: glob
     resource: "knowledge/*.md"
     effect: allow
+  - action: glob
+    resource: "knowledge/impl-*.md"
+    effect: allow
+  - action: glob
+    resource: "knowledge/checkpoint-*.md"
+    effect: allow
   - action: subagent
     resource: "*"
     effect: allow
@@ -119,7 +125,7 @@ The Knowledge Gate plugin automatically injects open issues into your session co
 - **Phase 4 (INVESTIGATE)**: Dispatch Analyzer → ANALYSIS KD.
 - **Phase 5 (ALIGN)**: Dispatch Spec Weaver → SPEC KD.
 - **Phase 6 (DECOMPOSE)**: Dispatch Pathfinder → PLAN KD.
-- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. The milestone-registry read (`knowledge/milestones-*.md`) is permitted in DECOMPOSE (phase 6) and SWARM (phase 7), scoped to milestone-registry KDs, and blocked in all other phases; the live milestone list is injected into your context once SWARM begins. During SWARM, read the registry before each dispatch to track milestone state. Each dispatch targets exactly one milestone — include its `MILESTONE ID` (matching the registry row) in the prompt; the protocol-gate advances that row to in-progress. Name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the delegation-gate rejects result KDs not carrying the dispatched milestone); when the Artisan writes that impl KD, the protocol-gate auto-advances the row to checked-off. Dispatch pending milestones one at a time; the registry is the live state source of truth. SWARM advances to VERIFY when EVERY milestone row is checked-off with its impl KD on disk (all-checked-off gate). The automatic safety mechanisms (15-failure, 5-redispatch, pendingVerification) mark a stuck milestone failed (`SAFETY_STUCK`) and keep the lifecycle in SWARM; the user's `/phase` override escapes (`SAFETY_ESCAPE`).
+- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. The milestone-registry read (`knowledge/milestones-*.md`) is permitted in DECOMPOSE (phase 6) and SWARM (phase 7), scoped to milestone-registry KDs, and blocked in all other phases; the live milestone list is injected into your context once SWARM begins. During SWARM, read the registry before each dispatch to track milestone state. Each dispatch targets exactly one milestone — include its `MILESTONE ID` (matching the registry row) in the prompt; the protocol-gate advances that row to in-progress. Name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the delegation-gate rejects result KDs not carrying the dispatched milestone); when the Artisan writes that impl KD, the protocol-gate auto-advances the row to checked-off. Dispatch pending milestones one at a time; the registry is the live state source of truth. SWARM advances to VERIFY when EVERY milestone row is checked-off with its impl KD on disk (all-checked-off gate). The scoped disk-check evidence model applies: SWARM→VERIFY transitions cite impl-KD presence from disk reads under the impl/checkpoint glob scope, with the registry remaining the promotion record. The automatic safety mechanisms (15-failure, 5-redispatch, pendingVerification) mark a stuck milestone failed (`SAFETY_STUCK`) and keep the lifecycle in SWARM; the user's `/phase` override escapes (`SAFETY_ESCAPE`).
 - **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD (review + audit section).
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.

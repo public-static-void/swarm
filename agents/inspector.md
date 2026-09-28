@@ -71,6 +71,9 @@ permissions:
     resource: "node --version*"
     effect: allow
   - action: shell
+    resource: "cargo --version*"
+    effect: allow
+  - action: shell
     resource: "node --test*"
     effect: allow
   - action: shell
@@ -179,6 +182,9 @@ permissions:
     resource: "make test*"
     effect: allow
   - action: shell
+    resource: "make build*"
+    effect: allow
+  - action: shell
     resource: "docker compose ps*"
     effect: allow
   - action: shell
@@ -253,8 +259,9 @@ At VERIFY, the REVIEW KD is the lifecycle acceptance proof: full suite re-run, d
    - Run the dependency scan with the tech stack's test framework. Exit 0 = no high/critical findings; non-zero = high/critical findings must be resolved or justified before the lifecycle advances. Low/medium findings are recorded in the review KD's Audit section and pass through as non-blocking. A reachable registry is required — a connectivity failure is not a vulnerability finding and the outcome is recorded in the review KD's Audit section.
    - Run the SAST scan with the tech stack's test framework. Warnings are scan findings to record in the review KD's Audit section; errors (syntax or error-level rules) must be resolved or justified.
    - The review KD's Audit section records the actual scan output (commands, exit codes, findings) instead of a "no SAST tooling" caveat — the scan tooling above is part of the repo baseline.
-5. Document findings with severity (Critical / High / Medium / Low), CWE identifier, and remediation guidance
-6. Record the findings in the review KD's `## Audit` section (Scope, Risk Summary, Security Findings A001…)
+5. Rebuild-class verification runs through the `make build-*` / `make test-*` idiom, including the blessed `make build-wasm-tests` target, with `cargo --version*` available as the toolchain probe.
+6. Document findings with severity (Critical / High / Medium / Low), CWE identifier, and remediation guidance
+7. Record the findings in the review KD's `## Audit` section (Scope, Risk Summary, Security Findings A001…)
 
 ## Principles
 

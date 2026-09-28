@@ -233,6 +233,9 @@ permissions:
     resource: "gradle test*"
     effect: allow
   - action: shell
+    resource: "cargo --version*"
+    effect: allow
+  - action: shell
     resource: "rustc --version*"
     effect: allow
   - action: shell
@@ -466,6 +469,10 @@ Proposed resolution: Review Committer logs, fix workspace state, or adjust permi
 - Detect tools and conventions dynamically from the project context
 - Every file you write must be complete and functional
 - Prefer `edit` and `read` tools over bash for file operations
+
+## Shell Denial Follow-Through
+
+Upon `Permission denied: shell`, re-run each compound segment alone to isolate the scoped segment, fall back to the idiomatic role target (`make build-*` / `make test-*` family, including the blessed `make build-wasm-tests` target), route through the Read/Grep/Glob tools where applicable, and report each attempted command with its observed allow/deny outcome.
 
 ## Context Marker
 
