@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, writeFileSync, mkdtempSync, rmSync, statSync } from "fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, statSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "node:child_process";
@@ -19,36 +19,74 @@ describe("pre-commit hook", () => {
     expect(stat.mode & 0o111).not.toBe(0);
   });
 
-  it("invokes the repository gates", () => {
+  // Gate identity is run-verified, never string-pinned: every declared gate
+  // line is stubbed to announce itself, and the stub must print the mark.
+  function gateLines() {
     const hook = readFileSync(HOOK_PATH, "utf8");
-    expect(hook).toContain("npx vitest run");
-    expect(hook).toContain("npx eslint -c eslint.security.config.mjs");
+    return hook
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#") && !l.startsWith("set "));
+  }
+
+  function runStub(stubbed) {
+    const dir = mkdtempSync(join(tmpdir(), "precommit-"));
+    const stubPath = join(dir, "pre-commit");
+    writeFileSync(stubPath, stubbed, { mode: 0o755 });
+    try {
+      return execFileSync(stubPath, { encoding: "utf8" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  function runStubExpectThrow(stubbed) {
+    const dir = mkdtempSync(join(tmpdir(), "precommit-"));
+    const stubPath = join(dir, "pre-commit");
+    writeFileSync(stubPath, stubbed, { mode: 0o755 });
+    try {
+      expect(() => execFileSync(stubPath, { stdio: "pipe" })).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("executes every repository gate it declares", () => {
+    const hook = readFileSync(HOOK_PATH, "utf8");
+    const lines = gateLines();
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    lines.forEach((line, i) => {
+      const stubbed = hook
+        .split("\n")
+        .map((l) => {
+          const t = l.trim();
+          if (t === line) return `echo GATE_${i}_RAN`;
+          if (t && !t.startsWith("#") && !t.startsWith("set ")) return "true";
+          return l;
+        })
+        .join("\n");
+      expect(runStub(stubbed)).toContain(`GATE_${i}_RAN`);
+    });
   });
 
-  it("exits non-zero when a gate fails", () => {
+  it("exits non-zero when any gate slot fails", () => {
     const hook = readFileSync(HOOK_PATH, "utf8");
-    const failingStubs = [
-      hook
-        .replace("npx vitest run", "false")
-        .replace("npx eslint -c eslint.security.config.mjs", "true"),
-      hook
-        .replace("npx vitest run", "true")
-        .replace("npx eslint -c eslint.security.config.mjs", "false"),
-    ];
-    for (const stubbed of failingStubs) {
-      const dir = mkdtempSync(join(tmpdir(), "precommit-"));
-      const stubPath = join(dir, "pre-commit");
-      writeFileSync(stubPath, stubbed, { mode: 0o755 });
-      try {
-        expect(() => execFileSync(stubPath, { stdio: "pipe" })).toThrow();
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
+    const lines = gateLines();
+    expect(lines.length).toBeGreaterThanOrEqual(2);
+    for (const failing of lines) {
+      const stubbed = hook
+        .split("\n")
+        .map((l) => (l.trim() === failing ? "false" : l.trim() === "" || l.trim().startsWith("#") || l.trim().startsWith("set ") ? l : "true"))
+        .join("\n");
+      runStubExpectThrow(stubbed);
     }
   });
 
-  it("wires the hook through the prepare script", () => {
+  it("wires the version-controlled hook dir through the prepare script", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
-    expect(pkg.scripts.prepare).toContain("core.hooksPath");
+    const prepare = pkg.scripts.prepare;
+    expect(prepare).toContain("hooksPath");
+    const dirToken = prepare.split("hooksPath")[1].trim().split(/\s+/)[0];
+    expect(existsSync(join(ROOT, dirToken, "pre-commit"))).toBe(true);
   });
 });
