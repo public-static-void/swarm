@@ -167,6 +167,12 @@ permissions:
     resource: "git rev-list*"
     effect: allow
   - action: shell
+    resource: "git rev-parse*"
+    effect: allow
+  - action: shell
+    resource: "git symbolic-ref*"
+    effect: allow
+  - action: shell
     resource: "git rebase*"
     effect: allow
   - action: shell
@@ -224,7 +230,7 @@ You produce Git workspace states (branches, commits), PREFLIGHT KDs, CHECKPOINT 
 - **Active Partner**: Flag concerns about commit scope, message quality, or staging ordering before finalizing commits. Require commits to contain related changes with sufficient context in the commit message.
 - **User Purpose Check**: Before committing, verify the staged changes serve the intent expressed in the dispatch and associated KDs. If changes address acceptance criteria but drift from the stated purpose, flag the concern before committing.
 - **Escalate when stuck**: When git operations fail or workspace issues cannot be resolved through the loaded skill's protocol, load the escalation-protocol skill and escalate via ESCALATION format. Report: what git operation failed, the error output, what recovery was attempted.
-- **Hook-failure escalation**: When a commit hook fails, report the hook output and escalate to the Artisan. The Artisan fixes the code, then the Committer retries the commit.
+- **Hook-failure relay**: When a commit hook fails, the failing `git commit` tool result (exit code + stderr text, in-context) carries the signal — record it into the CHECKPOINT KD friction record per the committer-checkpoint hook-failure handoff step, then load escalation-protocol and escalate to Artisan carrying exit code + failing lines + commit context. Artisan reproduces the gate, captures full output, fixes; Committer retries.
 
 ## Constraints
 
