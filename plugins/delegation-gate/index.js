@@ -223,7 +223,7 @@ function loadTemplates(config) {
     const intentKdLine = mode === "cleanup" || mode === "checkpoint" ? "" : "INTENT KD: {intent_kd}\n";
     const milestoneLine = mode === "swarm" ? "MILESTONE ID: {milestone_id}\n" : "";
     const kdPathsLine = mode === "explore" ? "" : "KD PATHS: {kd_paths}\n";
-    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${milestoneLine}${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n${kdPathsLine}TASK ID: {task_id}\n\n---\n\n`;
+    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${milestoneLine}${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nBASELINE BRANCH: {baseline_branch}\nHEAD SHA: {head_sha}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n${kdPathsLine}TASK ID: {task_id}\n\n---\n\n`;
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
@@ -266,7 +266,7 @@ function extractFromText(text, fields, override = false) {
     // underscore/lowercase variants (intent_kd, session_date). The alternation
     // lists every recognized field; the key is normalized (lowercase,
     // spaces/dots → underscores) so SESSION ID → session_id.
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|TASK[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|TASK[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BASELINE[. _]BRANCH|HEAD[. _]SHA|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       let key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       const assigned = override || !fields[key];
