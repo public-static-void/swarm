@@ -190,10 +190,14 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    SESSION DATE: <YYYY-MM-DD>
    SESSION ID: <session id>
    GENERATION: <lifecycle generation number>
+    BASELINE BRANCH: <base branch recorded by preflight>
+    HEAD SHA: <head commit recorded by preflight>
    SCOPE: <optional context>
    ```
 
    Required: `mode`, `intent_kd` (except checkpoint/cleanup modes), `result_kd` (for KD-producing modes), `session_date`. `SESSION ID` and `GENERATION` fall back to the session and protocol-gate state when omitted, but pass them explicitly. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The plugin generates `prompt` and `description` from the template and keeps your `agent` selection.
+
+    Provenance travels stamped: the Committer's preflight recording sets `BASELINE BRANCH` and `HEAD SHA`, and each dispatch carries those values forward as given. Branch discovery rests with the preflight recording, so a dispatch leaving the provenance fields empty is a dispatch defect.
 
 3. **The plugin generates the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 
@@ -206,7 +210,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 6. **Point the Target** — frame each dispatch positively: say what should happen so the instruction is unambiguous and directly executable.
 
 7. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
-8. **Branch management** — The Committer self-manages branching during PREFLIGHT: derives a feature branch name from INTENT KD context and detects the base branch from git history.
+8. **Branch management** — The Committer self-manages branching during PREFLIGHT: derives a feature branch name from INTENT KD context and detects the base branch from workspace docs or git history, then branches off the base unless the INTENT context states the work stays on the current branch.
 
 ### Redispatch Preference Rules
 

@@ -38,7 +38,9 @@ handoff:
   touched surface: {{files and behaviors this milestone changed}}
   compile-level status: {{targeted check run and status for that surface}}
   declared gate: {{project-declared command plus manifest source path}}
+  attempted alternatives: {{what was tried when the declared gate could not run, or n/a — gate ran as declared}}
   actually-run gate: {{executed command plus green run status}}
+  run status: {{PASS | FAIL | NOT-RUN}}
   full-gate status: {{green run precondition for Committer dispatch}}
 
 Docs-only milestones (zero behavior files changed) write zero tests and carry both lines:
@@ -49,7 +51,9 @@ handoff:
   touched surface: {{docs files this milestone changed}}
   compile-level status: {{targeted check run and status for that surface}}
   declared gate: {{project-declared command plus manifest source path}}
+  attempted alternatives: {{what was tried when the declared gate could not run, or n/a — gate ran as declared}}
   actually-run gate: {{executed command plus green run status}}
+  run status: {{PASS | FAIL | NOT-RUN}}
   full-gate status: {{green run precondition for Committer dispatch}}
 
 ## Process Friction

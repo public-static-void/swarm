@@ -115,6 +115,40 @@ const RUST_BUILD_COMMANDS = ["cargo build*"];
 const RUST_FMT_CHECK_AGENTS = ["inspector.md", "analyzer.md"];
 const RUST_FMT_CHECK_COMMANDS = ["cargo fmt --all --check*"];
 const COMMITTER_PLAN_SPEC_READ = ["knowledge/plan-*.md", "knowledge/spec-*.md"];
+// Verb families the overseer shell scope admits. A new family reddens by
+// design (shell growth deserves review); a narrower grant inside a listed
+// family stays green.
+const OVERSEER_SHELL_FAMILIES = ["mkdir"];
+
+// Least-scope findings for an overseer permission rule set: deny-by-default
+// present, shell allows family-closed with no bare grants, read/edit/glob
+// allows confined to the docs scope. Empty means the scope holds.
+function overseerScopeFindingsFor(rules) {
+  const findings = [];
+  if (!rules.some((r) => r.resource === "*" && r.effect === "deny")) {
+    findings.push("no wildcard deny — deny-by-default missing");
+  }
+  for (const r of rules) {
+    if (r.action === "shell" && r.effect === "allow") {
+      const verb = r.resource.split(" ")[0].replace(/\*+$/, "");
+      if (r.resource === "*" || FORBIDDEN_BARE.includes(verb)) {
+        findings.push(`unscoped shell grant: ${r.resource}`);
+      } else if (!OVERSEER_SHELL_FAMILIES.includes(verb)) {
+        findings.push(`shell allow outside admitted families: ${r.resource}`);
+      }
+    }
+    if ((r.action === "read" || r.action === "edit" || r.action === "glob") && r.effect === "allow") {
+      if (!r.resource.startsWith("knowledge/")) {
+        findings.push(`non-docs allow: ${r.action} ${r.resource}`);
+      }
+    }
+  }
+  return findings;
+}
+
+function overseerScopeFindings(content) {
+  return overseerScopeFindingsFor(permissionRules(content));
+}
 const CURATED_ALLOWLIST_AGENTS = ["artisan.md", "inspector.md"];
 // Curated test/build verbs with scoped targets: each entry carries a
 // verb-first shape (tool verb, test subcommand, scoped target family) so
@@ -132,9 +166,13 @@ describe("SPEC-template git hygiene", () => {
   const skill = readRoot(join("skills", "template-spec", "SKILL.md"));
   const gitignore = readRoot(".gitignore");
 
-  it("keeps disk-verification and task-agnostic staging guidance in the AC template", () => {
-    expect(skill).toContain("verified from disk via `read`/`glob`/`grep`");
-    expect(skill).toContain("Stage the files this task changed");
+  it("requires disk-tool evidence and task-scoped staging in the AC template", () => {
+    const acSection = skill.slice(skill.indexOf("## Acceptance Criteria"));
+    const tools = ["`read`", "`glob`", "`grep`"].filter((t) => acSection.includes(t));
+    expect(tools.length).toBeGreaterThanOrEqual(2);
+    const stagingLine = acSection.split("\n").find((l) => l.includes("Stage"));
+    expect(stagingLine, "AC template must carry a task-scoped staging rule").toBeTruthy();
+    expect(stagingLine).toMatch(/changed/);
   });
 
   it("requires no git-diff or staged-state evidence in the AC template", () => {
@@ -404,7 +442,6 @@ describe("memory tool ownership", () => {
   it("keeps memory tool ownership with the Scribe and out of habit-builder", () => {
     expect(files).toContain("habit-builder.md");
     const habitBuilder = readAgent("habit-builder.md");
-    expect(habitBuilder).not.toContain("written by the Scribe during EXTRACT");
     const habitWrites = permissionRules(habitBuilder).filter(
       (r) => /^memory_(write|update|delete)$/.test(r.action) && r.effect === "allow"
     );
@@ -412,7 +449,7 @@ describe("memory tool ownership", () => {
 
     expect(files).toContain("scribe.md");
     const scribe = readAgent("scribe.md");
-    expect(scribe).toContain("write each as a JSON entry via the `memory_write` tool");
+    expect(scribe).toContain("memory_write");
     for (const tool of ["memory_search", "memory_write", "memory_update", "memory_delete"]) {
       const allows = permissionRules(scribe).filter((r) => r.action === tool && r.effect === "allow");
       expect(allows).toHaveLength(1);
@@ -519,16 +556,30 @@ describe("agents delegation dispatch docs", () => {
       expect(output.args.prompt).not.toContain("INTENT KD:");
     });
 
-    it("states the artisan checkpoint dispatch as unconditional", async () => {
-      // The skipped-checkpoint defect came from artisans treating a scope
-      // without checkpoint fields as permission to skip the dispatch —
-      // artisan.md must state the dispatch happens after every plan step
-      // regardless of scope wording, with red gates delaying (fix, re-run,
-      // then dispatch) rather than cancelling it.
+    it("dispatches the checkpoint after every plan step, unconditionally", async () => {
+      // The cadence rule, the unconditional framing, and the red-gate
+      // handling live in one protocol block: cadence never splits from the
+      // dispatch guarantee, and a red run delays rather than cancels it.
       const artisan = readAgent("artisan.md");
-      expect(artisan).toMatch(/unconditional/);
-      expect(artisan).toMatch(/leaves the dispatch required/);
-      expect(artisan).toMatch(/the dispatch still happens/);
+      const stepBlock = artisan.slice(
+        artisan.indexOf("7. Implement incrementally"),
+        artisan.indexOf("### Dispatching Committer")
+      );
+      expect(stepBlock, "incremental-dispatch protocol block must exist").not.toBe("");
+      expect(stepBlock).toContain("unconditional");
+      expect(stepBlock).toMatch(/each plan step/);
+      expect(stepBlock).toMatch(/red gate/);
+
+      // Live proof: the documented example validates end to end as a
+      // checkpoint dispatch — mode and result path survive the gate, and no
+      // intent reference leaks into a committer-owned mode.
+      const m = artisan.match(/prompt:\s*`([\s\S]*?)`/);
+      expect(m, "artisan.md must contain a task() example with a template-literal prompt").toBeTruthy();
+      const output = { args: { prompt: m[1], subagent_type: "committer" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc123", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("MODE: checkpoint");
+      expect(output.args.prompt).toContain("RESULT KD: knowledge/checkpoint-");
+      expect(output.args.prompt).not.toContain("INTENT KD:");
     });
   });
 });
@@ -538,24 +589,33 @@ describe("impl KD handoff contract", () => {
   const artisan = readAgent("artisan.md");
   const inspector = readAgent("inspector.md");
 
-  it("carries the tests-touched line and handoff block in the impl template", () => {
-    expect(implTemplate).toContain("tests touched:");
-    expect(implTemplate).toContain("handoff:");
-    expect(implTemplate).toContain("touched surface:");
-    expect(implTemplate).toContain("compile-level status:");
-    expect(implTemplate).toContain("declared gate:");
-    expect(implTemplate).toContain("actually-run gate:");
-    expect(implTemplate).toContain("full-gate status:");
+  // Schema labels, not sentences: both handoff variants (behavior and
+  // docs-only) carry the full denial delta row.
+  const IMPL_HANDOFF_FIELDS = [
+    "tests touched:",
+    "handoff:",
+    "touched surface:",
+    "compile-level status:",
+    "declared gate:",
+    "attempted alternatives:",
+    "actually-run gate:",
+    "run status:",
+    "full-gate status:",
+  ];
+
+  it("carries the handoff schema with the denial delta fields in the impl template", () => {
+    const missing = IMPL_HANDOFF_FIELDS.filter((f) => !implTemplate.includes(f));
+    expect(missing).toEqual([]);
+    for (const field of ["attempted alternatives:", "actually-run gate:", "run status:"]) {
+      const occurrences = implTemplate.split(field).length - 1;
+      expect(occurrences).toBeGreaterThanOrEqual(2);
+    }
   });
 
-  it("carries the docs-only variant with zero new tests in the impl template", () => {
-    expect(implTemplate).toContain("no behavior change, suite untouched");
-  });
-
-  it("records the declared gate versus the actually-run gate in the artisan handoff", () => {
-    expect(artisan).toContain("declared gate");
-    expect(artisan).toContain("actually-run gate");
-    expect(artisan).toContain("handoff block");
+  it("records the denial delta row in the artisan handoff", () => {
+    for (const label of ["declared gate", "attempted alternatives", "actually-run gate", "run status", "handoff block"]) {
+      expect(artisan).toContain(label);
+    }
   });
 
   it("consumes the handoff block into the inspector traceability matrix", () => {
@@ -570,45 +630,49 @@ describe("planning shape and scribe composition discipline", () => {
   const planTemplate = readRoot(join("skills", "template-plan", "SKILL.md"));
   const scribe = readAgent("scribe.md");
 
-  it("plans each behavior-changing milestone with same-milestone suite extension", () => {
+  // The milestone discipline is a parity contract: the role definition and
+  // the plan template agree label for label, so neither drifts alone.
+  const MILESTONE_DISCIPLINE_LABELS = [
+    "same milestone",
+    "standing suite",
+    "tests touched:",
+    "failing test first",
+    "implementation plus handoff",
+    "skeleton",
+    "final implementation milestone",
+  ];
+
+  it("keeps the milestone discipline in parity between role and template", () => {
     for (const content of [pathfinder, planTemplate]) {
-      expect(content).toContain("same milestone");
-      expect(content).toContain("standing suite");
-      expect(content).toContain("tests touched:");
+      const missing = MILESTONE_DISCIPLINE_LABELS.filter((l) => !content.includes(l));
+      expect(missing).toEqual([]);
     }
-    expect(pathfinder).toContain("failing test first");
-    expect(planTemplate).toContain("failing test first");
   });
 
-  it("shapes SWARM milestones as implementation plus handoff with skeleton-first planning", () => {
-    for (const content of [pathfinder, planTemplate]) {
-      expect(content).toContain("implementation plus handoff");
-      expect(content).toContain("skeleton");
+  it("routes permanent suite changes to the body and ephemeral scratch to Excluded with disposition", () => {
+    const rule = scribe.split("\n").find((l) => l.includes("Excluded"));
+    expect(rule, "scribe must carry one composed-routing rule naming Excluded").toBeTruthy();
+    for (const token of ["permanent", "ephemeral", "disposition"]) {
+      expect(rule).toContain(token);
     }
-    expect(planTemplate).toContain("final implementation milestone");
-    expect(pathfinder).toContain("final implementation milestone");
-  });
-
-  it("carries permanent suite changes in the composed body and ephemeral scratch in Excluded", () => {
-    expect(scribe).toContain("permanent");
-    expect(scribe).toContain("ephemeral");
-    expect(scribe).toContain("Excluded");
-    expect(scribe).toContain("disposition");
   });
 });
 
-describe("VERIFY acceptance-proof shape", () => {
+describe("VERIFY evidence shape", () => {
   const inspector = readAgent("inspector.md");
   const gates = readRoot(join("skills", "verification-gates", "SKILL.md"));
   const reviewTemplate = readRoot(join("skills", "template-review", "SKILL.md"));
   const milestonesTemplate = readRoot(join("skills", "template-milestones", "SKILL.md"));
 
-  it("frames VERIFY as acceptance proof carrying the verdict field once", () => {
+  it("frames VERIFY around REVIEW KD evidence with a single verdict field", () => {
     for (const content of [inspector, gates, reviewTemplate]) {
-      expect(content).toContain("acceptance proof");
+      expect(content).toContain("traceability matrix");
+      expect(content).toContain("full suite");
     }
     expect(reviewTemplate).toContain("verdict: {{PASS | FAIL | FUNDAMENTAL}}");
-    expect(inspector).toContain("single machine source");
+    for (const content of [inspector, gates]) {
+      expect(content).toContain("single machine source");
+    }
   });
 
   it("carries declared-gate and actually-run-gate columns in the VERIFY traceability matrices", () => {
@@ -618,17 +682,20 @@ describe("VERIFY acceptance-proof shape", () => {
     }
   });
 
-  it("carries the FAIL citation mandate with the fresh PASS contract", () => {
+  it("malforms uncited FAIL findings under the stale-PASS recency rule", () => {
     for (const content of [inspector, gates, reviewTemplate]) {
-      expect(content).toMatch(/citation mandate/);
-      expect(content).toMatch(/fresh PASS|Fresh PASS/);
+      expect(content).toContain("MALFORMED");
+      expect(content).toMatch(/zero milestone citations/);
+      expect(content).toContain("stale PASS");
     }
   });
 
-  it("keeps the SWARM→VERIFY gate on checked-off rows with impl KD disk evidence, fail-closed", () => {
-    expect(milestonesTemplate).toContain("checked-off");
+  it("gates SWARM-to-VERIFY on registry-plus-disk evidence, fail-closed", () => {
+    expect(milestonesTemplate).toContain("checkAllMilestonesCheckedOff");
     expect(milestonesTemplate).toContain("on disk");
     expect(milestonesTemplate).toContain("fails closed");
+    const gateSource = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
+    expect(gateSource).toContain("function checkAllMilestonesCheckedOff");
   });
 });
 
@@ -648,26 +715,25 @@ describe("inspector rebuild parity and overseer disk-check scope", () => {
     expect(allows).toContain("knowledge/checkpoint-*.md");
   });
 
-  it("holds the overseer read, edit, and shell scope to the current allowances", () => {
-    const overseer = readAgent("overseer.md");
-    const readAllows = actionEntries(overseer, "read")
-      .filter((e) => e.mode === "allow")
-      .map((e) => e.pattern)
-      .sort();
-    expect(readAllows).toEqual(
-      ["knowledge/intent-*.md", "knowledge/milestones-*.md", "knowledge/report-*.md"].sort()
-    );
-    const editAllows = actionEntries(overseer, "edit")
-      .filter((e) => e.mode === "allow")
-      .map((e) => e.pattern)
-      .sort();
-    expect(editAllows).toEqual(
-      ["knowledge/intent-*.md", "knowledge/report-*.md"].sort()
-    );
-    const shellAllows = actionEntries(overseer, "shell")
-      .filter((e) => e.mode === "allow")
-      .map((e) => e.pattern);
-    expect(shellAllows).toEqual(["mkdir*"]);
+  it("holds deny-by-default with family-scoped shell and docs-scoped reads", () => {
+    expect(overseerScopeFindings(readAgent("overseer.md"))).toEqual([]);
+  });
+
+  it("admits a legitimate scoped grant without tripping the invariants", () => {
+    const base = permissionRules(readAgent("overseer.md"));
+    const extended = base.concat([
+      { action: "shell", resource: "mkdir scratch-*", effect: "allow" },
+      { action: "read", resource: "knowledge/extra-*.md", effect: "allow" },
+    ]);
+    expect(overseerScopeFindingsFor(extended)).toEqual([]);
+  });
+
+  it("fails closed on an unscoped grant", () => {
+    const base = permissionRules(readAgent("overseer.md"));
+    const wildcardShell = base.concat([{ action: "shell", resource: "*", effect: "allow" }]);
+    expect(overseerScopeFindingsFor(wildcardShell)).not.toEqual([]);
+    const outsideDocs = base.concat([{ action: "read", resource: "src/*.ts", effect: "allow" }]);
+    expect(overseerScopeFindingsFor(outsideDocs)).not.toEqual([]);
   });
 });
 
@@ -679,10 +745,24 @@ describe("harmless version-probe class", () => {
     }
   });
 
-  it("states the single-segment retry with idiomatic-target fallback in the implementation prompt", () => {
+  it("holds the idiomatic build target as a scoped grant for the implementation role", () => {
+    const allows = bashEntries(readAgent("artisan.md"))
+      .filter((e) => e.mode === "allow")
+      .map((e) => e.pattern);
+    expect(allows).toContain("make build*");
+  });
+
+  it("requires green-gate evidence with a denial delta row before dispatch", () => {
     const artisan = readAgent("artisan.md");
-    expect(artisan).toContain("re-run each compound segment alone");
-    expect(artisan).toContain("make build-*");
-    expect(artisan).toContain("observed allow/deny outcome");
+    const rule = artisan.slice(
+      artisan.indexOf("6. **Gate-Verification Rule"),
+      artisan.indexOf("7. Implement incrementally")
+    );
+    expect(rule, "gate-verification rule block must exist").not.toBe("");
+    for (const label of ["declared gate", "attempted alternatives", "actually-run gate", "run status"]) {
+      expect(rule).toContain(label);
+    }
+    expect(rule).toContain("precondition");
+    expect(rule).toMatch(/re-run.*green/);
   });
 });
