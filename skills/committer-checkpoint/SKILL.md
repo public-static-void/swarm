@@ -58,6 +58,11 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
 
 12. **Error handling** — On failure, `git reset --mixed` to recover.
 
+13. **Hook-failure handoff (blocked checkpoint)** — When `git commit` exits with the hook fail-closed (non-zero exit), the failure signal is the tool result itself (exit code + stderr text, in-context, no file read needed):
+    - Record the exit code plus the verbatim failing lines from the tool result into the CHECKPOINT KD friction record, together with the commit context (branch + staged scope) and the relay state (`escalated to Artisan` / `fixed` / `retry PASS`).
+    - Load the escalation-protocol skill and escalate to Artisan carrying the exit code, the failing lines, and the commit context. Artisan reproduces the failing gate, captures full output, fixes, and the Committer retries the commit.
+    - Record + escalate on every non-zero hook exit, including terse output — a blocked checkpoint with no CHECKPOINT friction entry and no Artisan escalation is a procedure defect. Partial tool-result text is expected (truncation); the Artisan reproduction closes it, so the relay needs no persisted log file.
+
 ## Semantic Commit Convention
 
 | Type     | Usage                  |
