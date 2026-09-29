@@ -43,6 +43,10 @@ An agent MUST escalate when any of these conditions apply:
 | #   | Condition                | Description                                          | Example                                                       |
 | --- | ------------------------ | ---------------------------------------------------- | ------------------------------------------------------------- |
 | 1   | Missing permission       | A required action is denied by the permission system | Edit path denied, bash command denied                         |
+
+### Trigger #1 precondition — shell-denial follow-through
+
+The canonical rule lives in `AGENTS.md` (Compound Commands) and is normative here, not restated: a shell-denial escalation under trigger #1 is well-formed when it carries the multi-alternative attempt log the rule mandates — each compound segment retried singly, idiomatic fallback attempted, Read/Grep/Glob routing considered, per-command observed allow/deny outcomes with exact-failure feedback recorded. Hold the per-command mental model: judge each command on its own evidence — one denied command says nothing about the next. Escalation after a single or small number of denied attempts carrying no such log is malformed. Fallback guardrail: reaching an allowed outcome through a dedicated tool instead of shell is legitimate; evading a by-design wall is bypass — e.g. the Overseer routing read/write work through subagents to evade its own scope limits — and fails review.
 | 2   | Missing tool             | The agent lacks a tool required for the task         | `webfetch`, `websearch`, `lsp`, etc.                          |
 | 3   | Inaccessible information | The task requires data inaccessible to the agent     | External API, user credentials, offline resource              |
 | 4   | Outside skillset         | The task falls outside the agent's defined role      | Scribe asked to write code, Overseer asked to edit files      |
