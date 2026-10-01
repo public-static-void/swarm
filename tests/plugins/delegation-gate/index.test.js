@@ -2333,6 +2333,21 @@ RESULT KD: knowledge/exploration-foo.md`;
       const log = readFileSync(join(logDir, "delegation-gate.log"), "utf8");
       expect(log).toContain(`WARNING: scope validation failed (len=${longScope.length}, content='${longScope}') — proceeding anyway`);
     });
+
+    it("counts a log-directory mkdir failure in the dropped-write counter", async () => {
+      const blockFile = mkdtempSync(join(tmpdir(), "delegation-gate-block-")) + "-file";
+      writeFileSync(blockFile, "x");
+      try {
+        hooks.resetDroppedLogCount();
+        process.env.DELEGATION_GATE_LOG_DIR = join(blockFile, "logs");
+        hooks.getEnablementState();
+        expect(hooks.getDroppedLogCount()).toBeGreaterThan(0);
+      } finally {
+        process.env.DELEGATION_GATE_LOG_DIR = logDir;
+        hooks.resetDroppedLogCount();
+        rmSync(blockFile, { force: true });
+      }
+    });
   });
 
   describe("Repetitive Log Collapse", () => {
