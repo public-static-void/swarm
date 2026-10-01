@@ -33,6 +33,7 @@ import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, 
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { Plugin } from "@opencode/plugin";
+import { parseSegments } from "./segments.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -3519,8 +3520,10 @@ async function protocolGateServer(input, options) {
       // ignore rules and explicit knowledge/ paths are the gitignored workflow
       // set. Runs before the overseer/non-overseer split so every session is
       // covered; the positive guidance points to the allowed staging forms.
+      // Covered by the quote-aware splitter below so piped chains also
+      // attribute per segment; quoted separators never split.
       if (tool === "shell" && typeof args.command === "string") {
-        const addSegments = args.command.split(/\s*(?:&&|\|\||;)\s*/).filter(seg => /\bgit add\b/.test(seg));
+        const addSegments = parseSegments(args.command).filter(seg => /\bgit add\b/.test(seg));
         if (addSegments.length > 0) {
           const forceFlag = addSegments.some(seg => /(^|\s)(-f|--force)(\s|$)/.test(seg));
           const knowledgePath = addSegments.some(seg => /\bknowledge\//.test(seg));
@@ -4559,7 +4562,10 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       getStatusFile,
       probeLogDirWritable,
       getDroppedLogCount,
-      resetDroppedLogCount
+      resetDroppedLogCount,
+      // Quote-aware shell splitter for denial attribution: exposed
+      // here so the standing suite reads it off the public surface.
+      parseSegments
     };
   }
 
