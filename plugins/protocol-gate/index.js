@@ -250,7 +250,7 @@ class ProtocolGateError extends Error {
 const ERROR_TEMPLATES = {
   BLOCKED_WRONG_PHASE: { code: "BLOCKED_WRONG_PHASE", message: "❌ BLOCKED: Wrong phase. Use [tools] in [phases]", guidance: "Wait for the phase to advance" },
   BLOCKED_UNINITIALIZED: { code: "BLOCKED_UNINITIALIZED", message: "⏳ WAIT: Awaiting chat.params initialization", guidance: "Wait for chat.params to initialize" },
-  WRONG_AGENT: (agent) => ({ code: "WRONG_AGENT", message: `❌ WRONG AGENT: Incorrect agent dispatched. Expected: ${agent}`, guidance: `Dispatch to ${agent}` }),
+  WRONG_AGENT: (agent, phaseName, phase) => ({ code: "WRONG_AGENT", message: `❌ WRONG AGENT: Incorrect agent dispatched. Expected: ${agent}`, guidance: phaseName ? `Dispatch to ${agent} (actual phase: ${phaseName} (${phase}) per lifecycle state)` : `Dispatch to ${agent}` }),
   CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "❌ ERROR: Backward transition cycle limit exceeded. Escalate to user", guidance: "Escalate to user" },
   FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
@@ -612,22 +612,49 @@ function recordPhaseOverride(sessionPhaseMap, sessionID, entry) {
 // the current phase. This accepts both the forward redo walk ({3,4,5} from 7:
 // the chain 7→5→4→3 traversed from 3) and the backward walk ({5,4,3} from 7:
 // the same chain traversed from 5), while rejecting forward walks from phases
-// that cannot reach the queue ({3,4,5} from 2). Returns null when the queue is
-// a valid backward chain, or { from, to } describing the first invalid hop.
+// that cannot reach the queue ({3,4,5} from 2). An INTENT-anchored restart
+// queue ({1,3,4,5} — re-triage and redo, skipping satisfied phases) skips
+// chain-connectivity for the opening INTENT hop only: INTENT holds no backward
+// edges by construction, so the remainder validates as a backward chain and
+// anchors against the current phase. Returns null when the queue is valid, or
+// { from, to, index } describing the first invalid hop — index is the position
+// of the failing pair in the original queue, or -1 when the current phase
+// cannot anchor either end of an otherwise connected chain.
 function findInvalidMultiPhaseHop(phases, currentPhase, backwardTransitions) {
-  if (!Array.isArray(phases) || phases.length < 2) return { from: currentPhase, to: phases?.[0] };
+  if (!Array.isArray(phases) || phases.length < 2) return { from: currentPhase, to: phases?.[0], index: 0 };
   const bt = backwardTransitions || {};
   const connectsTo = (a, b) => (bt[a] || []).includes(b);
-  for (let i = 0; i < phases.length - 1; i++) {
+  const restart = phases[0] === STATES.INTENT;
+  const start = restart ? 1 : 0;
+  for (let i = start; i < phases.length - 1; i++) {
     if (!connectsTo(phases[i], phases[i + 1]) && !connectsTo(phases[i + 1], phases[i])) {
-      return { from: phases[i], to: phases[i + 1] };
+      return { from: phases[i], to: phases[i + 1], index: i };
     }
   }
   const currentTargets = bt[currentPhase] || [];
-  if (!currentTargets.includes(phases[0]) && !currentTargets.includes(phases[phases.length - 1])) {
-    return { from: currentPhase, to: phases[0] };
+  const head = phases[start];
+  const tail = phases[phases.length - 1];
+  if (!currentTargets.includes(head) && !currentTargets.includes(tail)) {
+    return { from: currentPhase, to: head, index: -1 };
   }
   return null;
+}
+
+// Queue-context rejection text for a failed multi-phase walk. A queue failure
+// reads as a queue verdict rather than a single-hop verdict: the text carries
+// the queue, the failing hop index, and the missing adjacency. Hops touching
+// the edgeless INTENT phase point at the restart primitive; other hops name
+// the phases the target is reachable from; an unanchorable queue names both
+// ends the current phase cannot reach.
+function formatInvalidHop(phases, currentPhase, invalidHop, backwardTransitions) {
+  const queue = `[${phases.join(",")}]`;
+  if (invalidHop.index >= 0) {
+    const remedy = (invalidHop.from === STATES.INTENT || invalidHop.to === STATES.INTENT)
+      ? `restart walks start at INTENT with an INTENT-anchored queue (e.g. {1,3,4,5}) — re-triage and redo, skipping satisfied phases`
+      : `${getPhaseName(invalidHop.to)} (${invalidHop.to}) is reachable from ${(backwardTransitions?.[invalidHop.to] || []).map(getPhaseName).join(", ") || "no earlier phase"}`;
+    return `Error: hop ${invalidHop.index} of queue ${queue}: phase ${getPhaseName(invalidHop.to)} (${invalidHop.to}) is not a legal backward transition from ${getPhaseName(invalidHop.from)} (${invalidHop.from}) — ${remedy}.`;
+  }
+  return `Error: queue ${queue} from ${getPhaseName(currentPhase)} (${currentPhase}) is not a legal backward transition anchor — reaches neither ${getPhaseName(invalidHop.to)} (${invalidHop.to}) nor ${getPhaseName(phases[phases.length - 1])} (${phases[phases.length - 1]}). Restart walks start at INTENT with an INTENT-anchored queue (e.g. {1,3,4,5}); the remainder must chain back to the current phase.`;
 }
 
 // Session IDs reach file paths and can be attacker-influenced. Reject path
@@ -3287,7 +3314,7 @@ async function protocolGateServer(input, options) {
       }
       const parsed = parsePhaseArg(phaseArg);
       if (parsed === null) {
-        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 1-12, a phase name, an ordered list like {3,4,5}, or "clear". A trailing gen<N> (e.g. /phase align gen1) is accepted and ignored.` }];
+        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 1-12, a phase name, an ordered list like {3,4,5}, or "clear". Restart walks start at INTENT with an INTENT-anchored queue like {1,3,4,5} (re-triage and redo, skipping satisfied phases). A trailing gen<N> (e.g. /phase align gen1) is accepted and ignored.` }];
         return;
       }
       const isMulti = Array.isArray(parsed);
@@ -3303,14 +3330,17 @@ async function protocolGateServer(input, options) {
       // with one end reachable from the current phase. This accepts both the
       // forward redo walk ({3,4,5} from 7 — the chain 7→5→4→3 traversed from
       // 3) and the backward walk ({5,4,3} from 7 — the same chain traversed
-      // from 5), while rejecting queues that no phase can reach ({3,4,5} from
-      // 2). Single-phase overrides keep their existing behavior — any phase
-      // 1-12 is accepted without validation.
+      // from 5), plus INTENT-anchored restart walks ({1,3,4,5} from any phase
+      // the remainder chains back to — re-triage and redo, skipping satisfied
+      // phases; the opening INTENT hop skips chain-connectivity since INTENT
+      // holds no backward edges), while rejecting queues that no phase can
+      // reach ({3,4,5} from 2). Single-phase overrides keep their existing
+      // behavior — any phase 1-12 is accepted without validation.
       if (isMulti) {
         const currentPhase = sessionPhaseMap.get(sessionID);
         const invalidHop = findInvalidMultiPhaseHop(phases, currentPhase, BACKWARD_TRANSITIONS);
         if (invalidHop) {
-          output.parts = [{ type: "text", text: `Error: phase ${getPhaseName(invalidHop.to)} (${invalidHop.to}) is not a legal backward transition from ${getPhaseName(invalidHop.from)} (${invalidHop.from}).` }];
+          output.parts = [{ type: "text", text: formatInvalidHop(phases, currentPhase, invalidHop, BACKWARD_TRANSITIONS) }];
           return;
         }
       }
@@ -4275,7 +4305,8 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                 const expectedAgent = currentPhaseAgent || phaseName;
                 debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent}) — BACKWARD: true required for backward transition`);
                 watchBlockedSwarmDispatch(sessionID, phase);
-                throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+                const wrongAgent = ERROR_TEMPLATES.WRONG_AGENT(expectedAgent, phaseName, phase);
+                throw new ProtocolGateError(wrongAgent.code, wrongAgent.message, wrongAgent.guidance);
               }
             } else {
               // Wrong agent — not current phase, not a valid backward target
@@ -4288,7 +4319,8 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
               const expectedAgent = currentPhaseAgent || phaseName;
               debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
               watchBlockedSwarmDispatch(sessionID, phase);
-              throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+              const wrongAgent = ERROR_TEMPLATES.WRONG_AGENT(expectedAgent, phaseName, phase);
+              throw new ProtocolGateError(wrongAgent.code, wrongAgent.message, wrongAgent.guidance);
             }
           }
         }
@@ -4580,6 +4612,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       OVERRIDE_HISTORY_MAX,
       getOverrideTargetPhase,
       findInvalidMultiPhaseHop,
+      formatInvalidHop,
       argsFromPrompt,
       saveState,
       loadState,
