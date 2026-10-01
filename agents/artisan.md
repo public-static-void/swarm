@@ -404,7 +404,7 @@ The delegation-gate plugin extracts these fields from the prompt text and render
 
 ### Same-Instance Redispatch
 
-When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt so the task tool resumes the same instance via its `task_id` parameter. Reusing the same `TASK ID` preserves the agent's in-flight context and partial work.
+When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt so the task tool resumes the same instance via its `task_id` parameter. Reusing the same `TASK ID` preserves the agent's in-flight context and partial work. `TASK ID` is the same-agent resume handle: fresh dispatch omits `TASK ID`, and resuming dispatch supplies the `TASK ID` of the same agent session that produced it.
 
 **Reuse the same `TASK ID`** when the prior dispatch:
 - returned an empty result;
@@ -412,7 +412,7 @@ When re-dispatching a subagent for the same task, include the `TASK ID` delegati
 - exhausted its token budget;
 - worked on a milestone that a VERIFY FAIL verdict reopened — continue with the same artisan who worked on the reopened milestone.
 
-**Start a fresh instance** (omit `TASK ID` or use a new one) when the prior dispatch:
+**Start a fresh instance** (omit `TASK ID`) when the prior dispatch:
 - is looping or repeating the same action without progress;
 - is misbehaving or producing unreliable output;
 - has a prior session that is stale or evicted.
