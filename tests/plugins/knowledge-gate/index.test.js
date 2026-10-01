@@ -1082,7 +1082,7 @@ Body`;
         expect(lines[0]).toBe("[Knowledge Gate] Open issues from all stores detected:");
         // Workspace-aware: config dir scans swarm+generic only (2 stores),
         // so 3 issue files × 2 = 6
-        expect(lines[1]).toBe("<!-- issues-snapshot v1: 6 open, stable order -->");
+        expect(lines[1]).toBe("<!-- issues-snapshot v1: 6 open, gen=0 -->");
         expect(issueLines(hint)).toHaveLength(6);
       });
 
@@ -1112,7 +1112,7 @@ Body`;
 
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
-        expect(hint).toContain("<!-- issues-snapshot v1: 10 open, stable order -->");
+        expect(hint).toContain("<!-- issues-snapshot v1: 10 open, gen=0 -->");
         expect(issueLines(hint)).toHaveLength(10);
       });
 
@@ -1134,7 +1134,7 @@ Body`;
         expect(hint).toBeTruthy();
         // Workspace-aware: config dir scans swarm+generic (2 stores),
         // 2 audience-matched issues × 2 = 4
-        expect(hint).toContain("<!-- issues-snapshot v1: 4 open, stable order -->");
+        expect(hint).toContain("<!-- issues-snapshot v1: 4 open, gen=0 -->");
         expect(issueLines(hint)).toHaveLength(4);
         expect(hint).not.toContain("Permission item");
       });
@@ -1159,6 +1159,160 @@ Body`;
         expect(closeHint).not.toContain("Closed issue B");
         // The marker line is overseer-only — never in the EVOLVE block
         expect(closeHint).not.toContain("issues-snapshot");
+      });
+
+      it("stamps the snapshot marker with the lifecycle generation", async () => {
+        const stateDir = mkdtempSync(join(tmpdir(), "kg-gen-"));
+        const prior = process.env.PROTOCOL_GATE_STATE_DIR;
+        try {
+          process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+          writeFileSync(
+            join(stateDir, ".protocol-state-gen-session.json"),
+            JSON.stringify({ generation: 2 })
+          );
+          writeEntries(ISSUES_DIR, [
+            addIssueFile(1, { severity: "high", title: "High A" }),
+            addIssueFile(2, { severity: "medium", title: "Medium B" }),
+            addIssueFile(3, { severity: "low", title: "Low C" })
+          ]);
+
+          const output = { system: [] };
+          await hooks["experimental.chat.system.transform"](
+            { sessionID: "gen-session", agent: "overseer" },
+            output
+          );
+
+          const hint = intentHint(output);
+          expect(hint).toBeTruthy();
+          expect(hint).toContain("<!-- issues-snapshot v1: 6 open, gen=2 -->");
+        } finally {
+          if (prior === undefined) delete process.env.PROTOCOL_GATE_STATE_DIR;
+          else process.env.PROTOCOL_GATE_STATE_DIR = prior;
+          rmSync(stateDir, { recursive: true, force: true });
+        }
+      });
+
+      it("falls back to generation zero with a debug note when protocol state is unreadable", async () => {
+        const stateDir = mkdtempSync(join(tmpdir(), "kg-gen-missing-"));
+        const priorState = process.env.PROTOCOL_GATE_STATE_DIR;
+        const priorDebug = process.env.KNOWLEDGE_GATE_DEBUG;
+        try {
+          process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+          process.env.KNOWLEDGE_GATE_DEBUG = "1";
+          process.env.KNOWLEDGE_GATE_LOG_DIR = kgLogDir;
+          writeEntries(ISSUES_DIR, [
+            addIssueFile(1, { severity: "high", title: "High A" })
+          ]);
+
+          const output = { system: [] };
+          await hooks["experimental.chat.system.transform"](
+            { sessionID: "fallback-session", agent: "overseer" },
+            output
+          );
+
+          const hint = intentHint(output);
+          expect(hint).toBeTruthy();
+          expect(hint).toContain("gen=0");
+          expect(readFileSync(KG_TEMP_LOG_FILE, "utf8")).toContain(
+            'generation fallback to 0 for session="fallback-session"'
+          );
+        } finally {
+          if (priorState === undefined) delete process.env.PROTOCOL_GATE_STATE_DIR;
+          else process.env.PROTOCOL_GATE_STATE_DIR = priorState;
+          if (priorDebug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+          else process.env.KNOWLEDGE_GATE_DEBUG = priorDebug;
+          rmSync(stateDir, { recursive: true, force: true });
+        }
+      });
+
+      it("forces a full uncapped snapshot when the generation bumps mid-session", async () => {
+        const stateDir = mkdtempSync(join(tmpdir(), "kg-gen-bump-"));
+        const prior = process.env.PROTOCOL_GATE_STATE_DIR;
+        const stateFile = join(stateDir, ".protocol-state-bump-session.json");
+        try {
+          process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+          writeEntries(ISSUES_DIR, [
+            addIssueFile(1, { severity: "high", title: "High A" }),
+            addIssueFile(2, { severity: "medium", title: "Medium B" }),
+            addIssueFile(3, { severity: "low", title: "Low C" })
+          ]);
+          process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES = "1";
+          writeFileSync(stateFile, JSON.stringify({ generation: 1 }));
+
+          const first = { system: [] };
+          await hooks["experimental.chat.system.transform"](
+            { sessionID: "bump-session", agent: "overseer" },
+            first
+          );
+          expect(issueLines(intentHint(first))).toHaveLength(1);
+
+          // A bumped generation reads as a new injection context: the cap
+          // and audience filter no longer apply, even when the audience
+          // filter alone would exclude every open issue.
+          process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE = "inspector";
+          writeFileSync(stateFile, JSON.stringify({ generation: 2 }));
+
+          const second = { system: [] };
+          await hooks["experimental.chat.system.transform"](
+            { sessionID: "bump-session", agent: "overseer" },
+            second
+          );
+          const hint = intentHint(second);
+          expect(hint).toBeTruthy();
+          expect(hint).toContain("<!-- issues-snapshot v1: 6 open, gen=2 -->");
+          expect(issueLines(hint)).toHaveLength(6);
+        } finally {
+          if (prior === undefined) delete process.env.PROTOCOL_GATE_STATE_DIR;
+          else process.env.PROTOCOL_GATE_STATE_DIR = prior;
+          rmSync(stateDir, { recursive: true, force: true });
+        }
+      });
+
+      it("still emits the stamped marker when a generation bump lands on zero open issues", async () => {
+        const stateDir = mkdtempSync(join(tmpdir(), "kg-gen-empty-"));
+        const prior = process.env.PROTOCOL_GATE_STATE_DIR;
+        const stateFile = join(stateDir, ".protocol-state-empty-bump.json");
+        try {
+          process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+          writeFileSync(stateFile, JSON.stringify({ generation: 1 }));
+
+          const first = { system: [] };
+          await hooks["experimental.chat.system.transform"](
+            { sessionID: "empty-bump", agent: "overseer" },
+            first
+          );
+          expect(intentHint(first)).toBeUndefined();
+
+          writeFileSync(stateFile, JSON.stringify({ generation: 2 }));
+
+          const second = { system: [] };
+          await hooks["experimental.chat.system.transform"](
+            { sessionID: "empty-bump", agent: "overseer" },
+            second
+          );
+          const hint = intentHint(second);
+          expect(hint).toBeTruthy();
+          expect(hint).toContain("<!-- issues-snapshot v1: 0 open, gen=2 -->");
+        } finally {
+          if (prior === undefined) delete process.env.PROTOCOL_GATE_STATE_DIR;
+          else process.env.PROTOCOL_GATE_STATE_DIR = prior;
+          rmSync(stateDir, { recursive: true, force: true });
+        }
+      });
+
+      it("counts a log-directory mkdir failure in the dropped-write counter", async () => {
+        const blockFile = join(tempRoot, "not-a-dir");
+        writeFileSync(blockFile, "x");
+        const prior = process.env.KNOWLEDGE_GATE_LOG_DIR;
+        try {
+          hooks.resetDroppedLogCount();
+          process.env.KNOWLEDGE_GATE_LOG_DIR = join(blockFile, "logs");
+          hooks.getEnablementState();
+          expect(hooks.getDroppedLogCount()).toBeGreaterThan(0);
+        } finally {
+          process.env.KNOWLEDGE_GATE_LOG_DIR = prior;
+          hooks.resetDroppedLogCount();
+        }
       });
     });
   });
