@@ -6601,6 +6601,90 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     });
   });
 
+  describe("INTENT-anchored restart walks, queue-context rejections, and dispatch-time phase visibility", () => {
+    // Numeric backward-transition fixture mirroring lifecycle.json: INTENT (1)
+    // holds no backward edges and PREFLIGHT (2) is the universal re-entry target.
+    function btFixture() {
+      const S = hooks.STATES;
+      return {
+        [S.EXPLORE]: [S.PREFLIGHT],
+        [S.INVESTIGATE]: [S.PREFLIGHT, S.EXPLORE],
+        [S.ALIGN]: [S.PREFLIGHT, S.EXPLORE, S.INVESTIGATE],
+        [S.DECOMPOSE]: [S.PREFLIGHT, S.EXPLORE, S.INVESTIGATE, S.ALIGN],
+        [S.SWARM]: [S.PREFLIGHT, S.EXPLORE, S.INVESTIGATE, S.ALIGN, S.DECOMPOSE],
+      };
+    }
+
+    it("accepts an INTENT-anchored restart queue and lands on the re-entry phase", async () => {
+      const s = sid("restart-accept");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.ALIGN);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{1,3,4,5}" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([1, 3, 4, 5]);
+      expect(out.parts[0].text).toContain("override queue [1,3,4,5]");
+    });
+
+    it("leaves single-phase acceptance unvalidated", async () => {
+      const s = sid("restart-single");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "1" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+    });
+
+    it("rejects a restart queue whose remainder breaks the backward chain with queue context", async () => {
+      const s = sid("restart-broken");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,1,4}" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(out.parts[0].text).toContain("queue [3,1,4]");
+      expect(out.parts[0].text).toContain("hop 0");
+      expect(out.parts[0].text).toContain("INTENT");
+    });
+
+    it("names the queue and the missing anchor when a restart walk cannot reach the current phase", async () => {
+      const s = sid("restart-anchor");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{1,3,4,5}" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(out.parts[0].text).toContain("queue [1,3,4,5]");
+      expect(out.parts[0].text).toContain("PREFLIGHT");
+    });
+
+    it("formats a failing hop with the queue, hop index, and missing adjacency", () => {
+      const bt = btFixture();
+      const invalidHop = hooks.findInvalidMultiPhaseHop([5, 4, 1], hooks.STATES.SWARM, bt);
+      expect(invalidHop).toEqual({ from: 4, to: 1, index: 1 });
+      const text = hooks.formatInvalidHop([5, 4, 1], hooks.STATES.SWARM, invalidHop, bt);
+      expect(text).toContain("queue [5,4,1]");
+      expect(text).toContain("hop 1");
+      expect(text).toContain("INTENT");
+    });
+
+    it("wrong-agent dispatch guidance names the actual phase", async () => {
+      const s = sid("wrong-agent-phase");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.EXPLORE);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      const err = await hooks["tool.execute.before"](
+        { tool: "task", sessionID: s, callID: "c1" },
+        { args: { subagent_type: "artisan" } }
+      ).then(() => null, e => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.code).toBe("WRONG_AGENT");
+      expect(err.guidance).toContain("EXPLORE");
+      expect(err.guidance).toContain("(3)");
+    });
+  });
+
   describe("/phase generation suffix, explicit clear, and override record", () => {
     it("strips a trailing generation suffix while leaving plain args untouched", () => {
       expect(hooks.stripGenerationSuffix("align gen1")).toEqual({ rest: "align", generation: 1 });
