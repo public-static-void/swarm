@@ -172,14 +172,14 @@ GENERATION: (the lifecycle generation number)
 SCOPE: (optional context)
 RESULT KD: knowledge/exploration-<name>-<session_id>.md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
-TASK ID: task id (optional — same-instance redispatch identifier)`;
+TASK ID: task id (optional — resumes a prior instance of the same agent; fresh dispatch omits TASK ID)`;
       const output = { args: { prompt: "", description, subagent_type: "explorer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       // The hint's instructional lines must not leak into the rendered prompt.
       expect(output.args.prompt).not.toContain("upstream KD paths");
       expect(output.args.prompt).not.toContain("(optional context)");
       expect(output.args.prompt).not.toContain("(when subagent produces a KD)");
-      expect(output.args.prompt).not.toContain("same-instance redispatch");
+      expect(output.args.prompt).not.toContain("resumes a prior instance");
       // The legitimate description fields are still extracted.
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
       expect(output.args.prompt).toContain("2026-08-27");
@@ -1555,7 +1555,143 @@ RESULT KD: knowledge/exploration-foo.md`;
       expect(output.args.prompt).not.toMatch(/^TASK ID:/m);
     });
 
-    it("injects the TASK ID hint into the swarm tool doc only", async () => {
+    it("rejects a TASK ID that matches the dispatching session with fresh-dispatch guidance", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_abc
+GENERATION: 1
+MILESTONE ID: M1
+TASK ID: ses_abc
+SCOPE: Execute milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
+
+      const output = { args: { prompt } };
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output)
+      ).rejects.toMatchObject({ code: "INVALID_TASK_ID" });
+      expect(output.args.task_id).toBeUndefined();
+    });
+
+    it("rejects a self-referencing TASK ID resolved through the SESSION ID fallback", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+GENERATION: 1
+MILESTONE ID: M1
+TASK ID: ses_fallback
+SCOPE: Execute milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_fallback-gen1.md`;
+
+      const output = { args: { prompt } };
+      await expect(
+        hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_fallback", callID: "c1" }, output)
+      ).rejects.toMatchObject({
+        code: "INVALID_TASK_ID",
+        guidance: expect.stringMatching(/fresh instance/i),
+      });
+    });
+
+    it("lets a genuine same-agent resume TASK ID pass through untouched", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_abc
+GENERATION: 1
+MILESTONE ID: M1
+TASK ID: ses_prior_task_7
+SCOPE: Execute milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output);
+      expect(output.args.task_id).toBe("ses_prior_task_7");
+      expect(output.args.prompt).toContain("TASK ID: ses_prior_task_7");
+    });
+
+    it("carries the TASK ID ownership sentence in the dispatcher format hint", async () => {
+      const output = { description: "Delegate work to another agent." };
+      await hooks["tool.definition"]({ toolID: "task" }, output);
+      expect(output.description).toContain("resumes a prior instance of the same agent");
+      expect(output.description).toContain("fresh dispatch omits TASK ID");
+    });
+
+    it("injects the TASK ID ownership hint into tool docs for every KD-producing mode", async () => {
+      const modes = [
+        { agent: "artisan", mode: "swarm", extra: "MILESTONE ID: M1\n", result: "knowledge/impl-M1-foo.md" },
+        { agent: "committer", mode: "checkpoint", extra: "", result: "knowledge/checkpoint-foo.md" },
+        { agent: "explorer", mode: "explore", extra: "", result: "knowledge/exploration-foo.md" },
+      ];
+      for (const m of modes) {
+        const prompt = `AGENT: ${m.agent}
+MODE: ${m.mode}
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+${m.extra}SCOPE: Do work
+RESULT KD: ${m.result}`;
+        const out = { args: { prompt } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, out);
+        expect(out.args.description).toContain("resumes a prior instance of the same agent");
+        expect(out.args.description).toContain("fresh dispatch omits TASK ID");
+      }
+    });
+
+    it("emits a debug line when the SESSION ID fallback fills alongside an explicit TASK ID", async () => {
+      process.env.DELEGATION_GATE_DEBUG = "1";
+      const logPath = join(logDir, "delegation-gate.log");
+      try { rmSync(logPath); } catch (_) {}
+      const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+TASK ID: ses_prior_task_9
+SCOPE: Explore
+RESULT KD: knowledge/exploration-foo.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_hook", callID: "c1" }, output);
+      expect(output.args.task_id).toBe("ses_prior_task_9");
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toMatch(/SESSION ID fallback.*explicit TASK ID/i);
+    });
+
+    it("emits a debug line when the GENERATION fallback fills alongside an explicit TASK ID", async () => {
+      const priorStateDir = process.env.PROTOCOL_GATE_STATE_DIR;
+      const priorDebug = process.env.DELEGATION_GATE_DEBUG;
+      process.env.DELEGATION_GATE_DEBUG = "1";
+      const stateDir = mkdtempSync(join(tmpdir(), "delegation-gate-gen-fallback-"));
+      process.env.PROTOCOL_GATE_STATE_DIR = stateDir;
+      try {
+        writeFileSync(join(stateDir, ".protocol-state-ses_genfb.json"), JSON.stringify({ generation: 3 }));
+        const logPath = join(logDir, "delegation-gate.log");
+        try { rmSync(logPath); } catch (_) {}
+        const prompt = `AGENT: explorer
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_genfb
+TASK ID: ses_prior_task_11
+SCOPE: Explore
+RESULT KD: knowledge/exploration-foo.md`;
+
+        const output = { args: { prompt } };
+        await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_genfb", callID: "c1" }, output);
+        expect(output.args.prompt).toContain("ses_genfb");
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toMatch(/GENERATION fallback.*explicit TASK ID/i);
+      } finally {
+        if (priorStateDir === undefined) delete process.env.PROTOCOL_GATE_STATE_DIR;
+        else process.env.PROTOCOL_GATE_STATE_DIR = priorStateDir;
+        if (priorDebug === undefined) delete process.env.DELEGATION_GATE_DEBUG;
+        else process.env.DELEGATION_GATE_DEBUG = priorDebug;
+        rmSync(stateDir, { recursive: true, force: true });
+      }
+    });
+
+    it("injects the TASK ID ownership hint into the swarm tool doc", async () => {
       const swarmPrompt = `AGENT: artisan
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
@@ -1566,24 +1702,13 @@ RESULT KD: knowledge/impl-M1-foo.md`;
 
       const swarmOutput = { args: { prompt: swarmPrompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, swarmOutput);
-      expect(swarmOutput.args.description).toContain("TASK ID: (optional — same-instance redispatch identifier)");
-
-      const ckptPrompt = `AGENT: committer
-MODE: checkpoint
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-09-08
-SCOPE: Commit X
-RESULT KD: knowledge/checkpoint-foo.md`;
-
-      const ckptOutput = { args: { prompt: ckptPrompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c2" }, ckptOutput);
-      expect(ckptOutput.args.description).not.toContain("TASK ID:");
+      expect(swarmOutput.args.description).toContain("TASK ID: (optional — resumes a prior instance of the same agent; fresh dispatch omits TASK ID)");
     });
 
     it("annotates the task tool definition with the TASK ID convention", async () => {
       const output = { description: "Delegate work to another agent." };
       await hooks["tool.definition"]({ toolID: "task" }, output);
-      expect(output.description).toContain("TASK ID: task id (optional — same-instance redispatch identifier)");
+      expect(output.description).toContain("TASK ID: task id (optional — resumes a prior instance of the same agent; fresh dispatch omits TASK ID)");
     });
   });
 
