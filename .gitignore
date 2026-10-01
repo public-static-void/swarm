@@ -12,6 +12,9 @@ knowledge/
 # Log files
 *.log
 
+# Gate load-signal status files (tiny JSON written on every plugin load)
+plugins/logs/*.status
+
 # Build artifacts / dependencies
 node_modules/
 
