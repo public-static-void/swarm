@@ -307,7 +307,7 @@ function getLogFile() {
   // Re-bind the cached path when the env seam moves the log directory — a
   // stale cache would keep appending to the previously resolved path.
   if (!_logFile || dirname(_logFile) !== logDir) {
-    try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
+    try { mkdirSync(logDir, { recursive: true }); } catch (_) { _droppedLogCount++; }
     _logFile = join(logDir, "knowledge-gate.log");
   }
   return _logFile;
@@ -832,6 +832,20 @@ function filterByAudience(issues, audienceEnv) {
   });
 }
 
+// Current lifecycle generation for a session — direct read of protocol-gate
+// state (same file and seam the delegation-gate generation helper uses).
+// Returns the generation as a string, or null when unresolvable; callers
+// fall back to the "0" stamp with a debug line noting the fallback.
+function resolveLifecycleGeneration(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const stateDir = process.env.PROTOCOL_GATE_STATE_DIR || join(PLUGIN_DIR, "..", "protocol-gate", ".state");
+    const stateData = JSON.parse(readFileSync(join(stateDir, `.protocol-state-${sessionId}.json`), "utf8"));
+    if (stateData.generation !== undefined) return String(stateData.generation);
+  } catch (_) {}
+  return null;
+}
+
 /**
  * Gets the next numeric issue ID within ONE store dir (per-store
  * assignment): `max(numeric id)+1`, tolerating legacy padded ids. The
@@ -1151,6 +1165,10 @@ async function knowledgeGateServer(input, options) {
     // Overwrites the same status file with freshly resolved paths.
     emitLoadSignal(getEnablementState());
     const sessionAgentMap = new Map(); // sessionID → agent name
+    // Last generation stamp injected per session — a bumped generation for
+    // a known session reads as a new injection context and forces a full
+    // uncapped snapshot, independent of the cap/audience filters.
+    const sessionGenerationMap = new Map(); // sessionID → gen stamp string
 
     // Project store root: captured once per server instance at init.
     // Precedence: env KNOWLEDGE_GATE_PROJECT_ROOT ?? input.directory ??
@@ -2811,25 +2829,43 @@ async function knowledgeGateServer(input, options) {
       // The habit-builder EVOLVE branch above stays unfiltered and uncapped.
       if (agent === "overseer") {
         const scanned = scanOpenIssuesWorkspaceAware();
-        const filtered = filterByAudience(scanned, process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
-        const capped = applyCap(filtered, envOpenIssueCap());
+        // Generation-stamped re-injection: one protocol-gate state read per
+        // transform. An unreadable state falls back to the "0" stamp with a
+        // debug line; injection proceeds on the existing capped path.
+        const resolvedGen = resolveLifecycleGeneration(sessionID);
+        let genStamp = resolvedGen;
+        if (genStamp === null) {
+          genStamp = "0";
+          debug(`systemTransform: generation fallback to 0 for session="${sessionID}" (protocol-gate state unreadable)`);
+        }
+        const prevGen = sessionGenerationMap.get(sessionID);
+        const genChanged = prevGen !== undefined && prevGen !== genStamp;
+        sessionGenerationMap.set(sessionID, genStamp);
+        // A generation change forces the full uncapped set, independent of
+        // the cap/audience filters; otherwise the bounded path applies.
+        const filtered = genChanged ? scanned : filterByAudience(scanned, process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
+        const capped = genChanged ? scanned : applyCap(filtered, envOpenIssueCap());
+        if (genChanged) {
+          debug(`systemTransform: generation change ${prevGen} → ${genStamp} for session="${sessionID}" — forcing full uncapped snapshot (${scanned.length} open)`);
+        }
         const injected = capped.length;
-        debug(`systemTransform: Overseer issue scan — scanned=${scanned.length} filtered=${filtered.length} capped=${capped.length} injected=${injected}`);
-        if (injected > 0) {
+        debug(`systemTransform: Overseer issue scan — scanned=${scanned.length} filtered=${filtered.length} capped=${capped.length} injected=${injected} gen=${genStamp}`);
+        if (injected > 0 || genChanged) {
           const issueSummary = capped.map(i =>
             `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
           ).join("\n");
           // The machine-checkable marker line starts the injected block.
           // {count} equals the number of lines actually injected (post
-          // audience-filter/cap) so an INTENT KD transcription can be verified
-          // against the issue registry.
+          // audience-filter/cap, or the full set on a generation change)
+          // and {gen} is the lifecycle generation, so an INTENT KD
+          // transcription can be verified against the issue registry.
           output.system.push(
             `[Knowledge Gate] Open issues from all stores detected:\n` +
-            `<!-- issues-snapshot v1: ${injected} open, stable order -->\n${issueSummary}\n` +
+            `<!-- issues-snapshot v1: ${injected} open, gen=${genStamp} -->\n${issueSummary}\n` +
             `Include these in the Triage Notes section of your intent KD. ` +
             `Reference the issue IDs and recommend which ones to address in this session.`
           );
-          debug(`INTENT: surfaced ${injected} open issues to Overseer`);
+          debug(`INTENT: surfaced ${injected} open issues to Overseer (gen=${genStamp})`);
         }
       }
     }
