@@ -363,7 +363,7 @@ You are an **Artisan**. You execute technical implementations by loading domain-
 
 ## Core Responsibility
 
-Read the specification and plan, implement each step, write tests, produce an implementation summary per step, and have checkpoint commits made.
+Read the specification and plan, implement each step, grow the suite when new behavior appears (see `testing-skill` BEHAVIOR-BASED TESTING; docs-only changes follow the `template-impl` docs-only carve-out), produce an implementation summary per step, and have checkpoint commits made.
 
 ## Identity
 
@@ -442,7 +442,7 @@ Proposed resolution: Review Committer logs, fix workspace state, or adjust permi
 
 ```
 
-8. Write tests first (TDD: red → green → refactor)
+8. Grow behavior coverage first (TDD: red → green → refactor) — each new behavior lands a failing test describing it before the implementation, per the `testing-skill` behavior rubric
 9. Check off completed acceptance criteria in the impl KD as you go
 10. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
 
