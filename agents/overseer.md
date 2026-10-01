@@ -214,7 +214,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 
 ### Redispatch Preference Rules
 
-When re-dispatching an agent for the same task, choose the target instance deliberately. The `TASK ID` delegation field (passed through to the subagent tool's `task_id`) resumes the same subagent session, preserving its in-flight context and partial work.
+When re-dispatching an agent for the same task, choose the target instance deliberately. The `TASK ID` delegation field (passed through to the subagent tool's `task_id`) resumes the same subagent session, preserving its in-flight context and partial work. `TASK ID` is the same-agent resume handle: fresh dispatch omits `TASK ID`, and resuming dispatch supplies the `TASK ID` of the same agent session that produced it.
 
 **Prefer the same instance** (reuse the prior `TASK ID`) when the agent:
 - returned an empty result;
@@ -222,7 +222,7 @@ When re-dispatching an agent for the same task, choose the target instance delib
 - exhausted its token budget;
 - worked on a milestone that a VERIFY FAIL verdict reopened — reuse the same artisans who worked on the reopened milestones so they continue from their existing context.
 
-**Prefer a fresh instance** (omit `TASK ID` or use a new one) when the agent:
+**Prefer a fresh instance** (omit `TASK ID`) when the agent:
 - is looping or repeating the same action without progress;
 - is misbehaving or producing unreliable output;
 - has a prior session that is stale or evicted.
