@@ -208,4 +208,53 @@ describe("suggestion traceability", () => {
       }
     }
   });
+
+  describe("zero-variant echo denial", () => {
+    it("carries no availability claim and names the restructure path", () => {
+      const advice = adviseDenial({
+        agent: "pathfinder",
+        rawCommand: "echo ----",
+        patterns: realPatterns("pathfinder"),
+      });
+      expect(advice.allowed).toBe(false);
+      expect(advice.result.deniedSegments).toEqual(["echo ----"]);
+      expect(advice.message).not.toContain("stays available");
+      expect(advice.message).toContain("drop the segment");
+      expect(nonEmptyLineCount(advice.message)).toBeLessThanOrEqual(5);
+    });
+
+    it("routes to dedicated tools instead of another role", () => {
+      const advice = adviseDenial({
+        agent: "pathfinder",
+        rawCommand: "echo ----",
+        patterns: realPatterns("pathfinder"),
+      });
+      expect(advice.allowed).toBe(false);
+      expect(advice.message).not.toContain(
+        "route the task to a role granting it"
+      );
+      expect(advice.message).toContain("routed tools");
+    });
+
+    it("points Try-next at the restructure action", () => {
+      const advice = adviseDenial({
+        agent: "pathfinder",
+        rawCommand: "echo ----",
+        patterns: realPatterns("pathfinder"),
+      });
+      expect(advice.allowed).toBe(false);
+      expect(advice.message).toContain("Try next: drop `echo ----`");
+    });
+
+    it("keeps the availability clause when variants exist", () => {
+      const advice = adviseDenial({
+        agent: "artisan",
+        rawCommand: "make lint",
+        patterns: realPatterns("artisan"),
+      });
+      expect(advice.allowed).toBe(false);
+      expect(advice.message).toContain("this target only");
+      expect(advice.message).toContain("stays available");
+    });
+  });
 });
