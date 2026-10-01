@@ -34,6 +34,14 @@ import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { Plugin } from "@opencode/plugin";
 import { parseSegments } from "./segments.js";
+import {
+  adviseDenial,
+  adviseDenialFromAttemptLog,
+  clearAttributionCache,
+  getAttributionAgentsDir,
+  loadAgentShellAllowlist,
+  parseAgentShellAllowlist,
+} from "./attribution.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -246,7 +254,8 @@ const ERROR_TEMPLATES = {
   CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "❌ ERROR: Backward transition cycle limit exceeded. Escalate to user", guidance: "Escalate to user" },
   FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
-  GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json) or `git add .` to stage all non-ignored changes" }
+  GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json) or `git add .` to stage all non-ignored changes" },
+  SHELL_DENIED_ATTRIBUTED: { code: "SHELL_DENIED_ATTRIBUTED", message: "SHELL DENIED (attributed — see message)", guidance: "Follow the Try next line in the message" }
 };
 
 function getPhaseName(phaseId) {
@@ -3538,6 +3547,37 @@ async function protocolGateServer(input, options) {
         }
       }
 
+      // Shell denial attribution. Names the exact denied segment and the
+      // allowlisted variants sharing its prefix so the calling agent retries
+      // a concrete alternative instead of concluding a whole tool family is
+      // denied. Subagent sessions only; unknown agents and unreadable
+      // allowlists pass through untouched — uncertainty never blocks.
+      if (tool === "shell" && typeof args.command === "string" && !isOverseerSession(sessionID)) {
+        const callingAgent = sessionAgentMap.get(sessionID);
+        if (callingAgent) {
+          const loaded = loadAgentShellAllowlist(callingAgent);
+          if (loaded.patterns) {
+            const advice = adviseDenial({
+              agent: callingAgent,
+              rawCommand: args.command,
+              patterns: loaded.patterns,
+            });
+            if (!advice.allowed) {
+              debug(`SHELL ATTRIBUTION: agent=${callingAgent} denied=${advice.result.deniedSegments.join(" | ")} (command=${args.command})`);
+              throw new ProtocolGateError(
+                ERROR_TEMPLATES.SHELL_DENIED_ATTRIBUTED.code,
+                advice.message,
+                advice.result.suggestedRetry
+                  ? `Run \`${advice.result.suggestedRetry}\` next, then log each segment result`
+                  : "Route the task to a role granting it, then log each segment result"
+              );
+            }
+          } else {
+            debug(`SHELL ATTRIBUTION: allowlist unreadable for agent=${callingAgent} (${loaded.reason}) — passing through`);
+          }
+        }
+      }
+
       if (!isOverseerSession(sessionID)) {
         // Checkpoint KD enforcement for subagent writes/edits.
         // Only the committer should write checkpoint KDs during SWARM phase.
@@ -4565,7 +4605,15 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       resetDroppedLogCount,
       // Quote-aware shell splitter for denial attribution: exposed
       // here so the standing suite reads it off the public surface.
-      parseSegments
+      parseSegments,
+      // Denial attribution hook plus the post-denial bisect advisor,
+      // with the agent-definition allowlist loader behind both.
+      adviseDenial,
+      adviseDenialFromAttemptLog,
+      loadAgentShellAllowlist,
+      parseAgentShellAllowlist,
+      clearAttributionCache,
+      getAttributionAgentsDir
     };
   }
 
