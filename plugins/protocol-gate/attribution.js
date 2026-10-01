@@ -103,6 +103,11 @@ export function suggestedRetryFor(variants) {
   return retry.length > 0 ? retry : undefined;
 }
 
+// Output-stitching builtins with no dedicated-tool counterpart: echo (and
+// printf) only shape text between real stages, so sending the whole task to
+// another role turns a subagent into a text tool. Restructure instead.
+const RESTRUCTURE_BUILTINS = new Set(["echo", "printf"]);
+
 function routingFor(prefix) {
   if (prefix === "make") return "route make work to artisan or analyzer";
   if (["cat", "head", "tail", "wc"].includes(prefix)) {
@@ -113,6 +118,9 @@ function routingFor(prefix) {
   }
   if (prefix === "find") {
     return "use the Glob tool or route file discovery to explorer";
+  }
+  if (RESTRUCTURE_BUILTINS.has(prefix)) {
+    return "drop the segment or run the parts through their routed tools (Read/Grep/Glob); no dedicated tool covers it";
   }
   return "route the task to a role granting it";
 }
@@ -129,9 +137,14 @@ export function buildAttributionMessage({ agent, denied, fallbackUsed }) {
   if (denied.length === 1) {
     const only = denied[0];
     deniedLine =
-      `DENIED segment: \`${only.segment}\` ` +
-      `(prefix \`${only.prefix}\` is unlisted for ${agent} — ` +
-      `this target only, \`${only.prefix}\` itself stays available)`;
+      only.variants.length > 0
+        ? `DENIED segment: \`${only.segment}\` ` +
+          `(prefix \`${only.prefix}\` is unlisted for ${agent} — ` +
+          `this target only, \`${only.prefix}\` itself stays available)`
+        : `DENIED segment: \`${only.segment}\` ` +
+          `(prefix \`${only.prefix}\` is unlisted for ${agent} — ` +
+          `no \`${only.prefix}*\` target is granted to this role, ` +
+          `drop the segment or run the parts through their routed tools)`;
   } else {
     const parts = denied
       .map((detail) => `\`${detail.segment}\` (prefix \`${detail.prefix}\`)`)
@@ -149,10 +162,15 @@ export function buildAttributionMessage({ agent, denied, fallbackUsed }) {
     .map((detail) => detail.retry)
     .filter(Boolean)
     .map((retry) => `\`${retry}\``);
+  const restructured = denied.filter((detail) =>
+    RESTRUCTURE_BUILTINS.has(detail.prefix)
+  );
   const tryLine =
     retries.length > 0
       ? `Try next: ${retries.join(", ")}, then log each segment result.`
-      : `Try next: retry each segment alone through its routed tool, then log each segment result.`;
+      : restructured.length > 0
+        ? `Try next: drop ${restructured.map((detail) => `\`${detail.segment}\``).join(", ")} or run the parts through their routed tools, then log each segment result.`
+        : `Try next: retry each segment alone through its routed tool, then log each segment result.`;
   const lines = [deniedLine, ...allowedLines, tryLine];
   if (fallbackUsed) {
     lines.push(
