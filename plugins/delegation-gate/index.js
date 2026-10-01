@@ -77,6 +77,7 @@ const ERRORS = {
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },
   MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
+  INVALID_TASK_ID: { code: "INVALID_TASK_ID", message: "TASK ID resumes a prior instance of the same agent; fresh dispatch omits TASK ID.", guidance: "Omit TASK ID for a fresh instance. Supply TASK ID when resuming the same agent session that produced it.", retryable: false },
   INVALID_MILESTONE_ID: { code: "INVALID_MILESTONE_ID", message: "Invalid MILESTONE ID format", guidance: "MILESTONE ID must match /^[A-Za-z0-9][A-Za-z0-9_-]*$/" },
 
   RESULT_KD_MILESTONE_MISMATCH: { code: "RESULT_KD_MILESTONE_MISMATCH", message: "Swarm result KD does not match the MILESTONE ID", guidance: "Name the impl KD knowledge/impl-<milestone-id>-<name>-<session-id>[-gen{N}].md with the dispatched MILESTONE ID as the first token after impl-" }
@@ -723,7 +724,7 @@ GENERATION: the lifecycle generation number
 SCOPE: optional context
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
-TASK ID: task id (optional — same-instance redispatch identifier)
+TASK ID: task id (optional — resumes a prior instance of the same agent; fresh dispatch omits TASK ID)
 `;
 }
 
@@ -754,10 +755,10 @@ function injectToolDocs(output, agentName, mode, generation) {
   // protocol-gate registry transition keys on. Only injected for swarm
   // so other modes don't see a field they must not include.
   const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: (exactly one, required for swarm)\n" : "";
-  // TASK ID resumes the same subagent session (task tool task_id). Swarm-only
-  // like MILESTONE ID — the same-instance redispatch preference is exercised
-  // on reopened milestone rows, so other modes don't see the field.
-  const taskIdLine = displayMode === "swarm" ? "TASK ID: (optional — same-instance redispatch identifier)\n" : "";
+  // TASK ID resumes a prior instance of the same agent — fresh dispatch
+  // omits it. Shown for every KD-producing mode so the ownership contract
+  // reads the same wherever the field renders.
+  const taskIdLine = KD_PRODUCING_MODES.includes(displayMode) ? "TASK ID: (optional — resumes a prior instance of the same agent; fresh dispatch omits TASK ID)\n" : "";
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
@@ -830,14 +831,25 @@ async function delegationGateServer(input, options) {
 
       const fields = extractFieldsFromPrompt(prompt, subagentType, description);
 
-      // TASK ID passthrough — the task tool's task_id resumes the same
-      // subagent session. Extracted from the prompt (or description fallback)
-      // and forwarded untouched; absent field means no passthrough.
-      if (fields.task_id) output.args.task_id = fields.task_id;
+      // TASK ID passthrough — the task tool's task_id resumes a prior
+      // instance of the same agent. Extracted from the prompt (or
+      // description fallback) and forwarded untouched; absent field means no
+      // passthrough. A TASK ID equal to the dispatching session's own ID is a
+      // fresh-dispatch misuse (fresh dispatch omits TASK ID), so it is
+      // rejected with guidance before reaching the resolver.
+      if (fields.task_id) {
+        const dispatchingSession = sessionID || fields.session_id;
+        if (dispatchingSession && fields.task_id === String(dispatchingSession)) {
+          debug(`VALIDATION FAILED: TASK ID matches the dispatching session — fresh dispatch omits TASK ID`);
+          throw new DelegationGateError(ERRORS.INVALID_TASK_ID.code, ERRORS.INVALID_TASK_ID.message, ERRORS.INVALID_TASK_ID.guidance);
+        }
+        output.args.task_id = fields.task_id;
+      }
 
       // session_id from opencode hook input — fills {session_id} when prompt omits SESSION ID:
       if (!fields["session_id"] && sessionID) {
         fields["session_id"] = sessionID;
+        if (fields.task_id) debug(`SESSION ID fallback: filled from the dispatching session alongside explicit TASK ID`);
       }
 
       // generation from protocol-gate state file — fills {generation} when the
@@ -853,6 +865,7 @@ async function delegationGateServer(input, options) {
           if (stateData.generation !== undefined) {
             fields["generation"] = String(stateData.generation);
             debug(`GENERATION fallback: read generation=${stateData.generation} from protocol-gate state`);
+            if (fields.task_id) debug(`GENERATION fallback: filled from protocol-gate state alongside explicit TASK ID`);
           }
         } catch (_) {
           debug(`GENERATION fallback: no protocol-gate state file for ${sessionID}`);
