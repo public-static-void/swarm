@@ -12,13 +12,25 @@
 // 3. INTENT phase issue surfacing — scans knowledge/issues/ for open items
 //    and injects them into the Overseer's system prompt for Triage Notes
 //
-// Debug logging: set KNOWLEDGE_GATE_DEBUG=1 in environment to enable, or
-// create a `.debug` sentinel file next to the plugin. The env var only
+// Debug enablement (sentinel-first): set KNOWLEDGE_GATE_DEBUG=1 in the
+// environment to enable, or create the `.debug` sentinel file next to the
+// plugin at plugins/knowledge-gate/.debug (absolute: join(PLUGIN_DIR,
+// ".debug") derived from this file's own directory, so it works from any
+// startup cwd — logs always land INSIDE the config dir). The env var only
 // reaches the plugin host when the background service itself starts with
 // it — a later client launch cannot inject it into a running service — so
-// the sentinel file is the reliable switch across workspaces.
+// the sentinel file is the reliable switch across workspaces. Precedence:
+// env >= sentinel (either one enables; see getEnablementState()).
 // Writes to plugins/logs/knowledge-gate.log; set KNOWLEDGE_GATE_LOG_DIR to
 // override the directory — the seam the test suite uses to isolate writes.
+// Always-on load-signal: every load overwrites the tiny status file
+// <resolved-log-dir>/knowledge-gate.status (default
+// plugins/logs/knowledge-gate.status) with { gate, ts, seq, pid, enabled,
+// via, sentinelPath, logFile, logWritable } — readable even when logging is
+// so "loaded, logging off" is distinguishable from "not loaded". When
+// enabled, a timestamped pid-attributed `gate loaded` line is appended to
+// the log. Write/mkdir failures are counted via getDroppedLogCount() and
+// surfaced in the enablement state — never silently dropped, never stderr.
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { join, dirname, basename, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -305,22 +317,48 @@ function debugFlagFile() {
   return process.env.KNOWLEDGE_GATE_DEBUG_FILE || join(PLUGIN_DIR, ".debug");
 }
 
+function isEnvDebugEnabled() {
+  const raw = (process.env.KNOWLEDGE_GATE_DEBUG || "").trim().toLowerCase();
+  return raw === "1" || raw === "true";
+}
+
 // Logging enablement: the per-gate DEBUG env var or the sentinel file
 // above. A single `VAR=1 opencode` launch cannot enable logging when the
 // TUI attaches to an already-running background service started without
 // the var, so the on-disk sentinel — visible to every host process — is
 // checked as well. DEBUG_FILE is the test seam (mirrors LOG_DIR).
+// Only the values 1/true (case-insensitive) switch on via env; anything
+// else (including 0/false) leaves the env signal off so the sentinel stays
+// the unambiguous switch.
 function isDebugEnabled() {
-  if (process.env.KNOWLEDGE_GATE_DEBUG) return true;
+  if (isEnvDebugEnabled()) return true;
   try { return existsSync(debugFlagFile()); } catch (_) { return false; }
 }
+
+// Dropped-log counter: every log-seam write/mkdir failure lands here, so a
+// failure is countable from the enablement state instead of vanishing.
+// Never stderr — stderr bleeds into model prompt context.
+let _droppedLogCount = 0;
+
+function getDroppedLogCount() {
+  return _droppedLogCount;
+}
+
+function resetDroppedLogCount() {
+  _droppedLogCount = 0;
+}
+
+// Per-process load-signal sequence: every emit in this host process takes
+// the next number, so two starts in the same millisecond still leave two
+// distinguishable loaded lines for incident attribution.
+let _loadSignalSeq = 0;
 
 function debug(msg) {
   if (isDebugEnabled()) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [knowledge-gate] ${msg}\n`);
     } catch (_) {
-      // File write failed — silently drop rather than bleed to stderr
+      _droppedLogCount++;
     }
   }
 }
@@ -342,12 +380,97 @@ function resetLogCollapse() {
   for (const k of Object.keys(_collapseCounts)) delete _collapseCounts[k];
 }
 
-// Startup load-signal: written whenever logging is enabled, so a
-// present-but-quiet log proves the gate loaded. No log file at all means
-// logging was never enabled in that host process — env vars set on a client
-// launch do not reach an already-running background service, in which case
-// the sentinel file above is the reliable switch.
-debug("gate loaded (plugin dir: " + PLUGIN_DIR + ")");
+// Structured enablement snapshot: one object carrying every input the
+// load-signal reports, so tests and operators read a single source instead
+// of re-deriving precedence. Either signal switches on; env is reported
+// first when both are present. The log-dir probe result rides along so an
+// unwritable directory shows up as data, not as a missing file.
+function probeLogDirWritable(logFile) {
+  const dir = dirname(logFile);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    return { writable: false, reason: `log dir mkdir failed (${dir}): ${e.message}` };
+  }
+  const probe = join(dir, `.writability-probe-${process.pid}`);
+  try {
+    writeFileSync(probe, "");
+    unlinkSync(probe);
+  } catch (e) {
+    return { writable: false, reason: `log dir not writable (${dir}): ${e.message}` };
+  }
+  return { writable: true };
+}
+
+function getEnablementState() {
+  const sentinelPath = debugFlagFile();
+  const logFile = getLogFile();
+  let enabled = false;
+  let via = "none";
+  if (isEnvDebugEnabled()) {
+    enabled = true;
+    via = "env";
+  } else {
+    try {
+      if (existsSync(sentinelPath)) {
+        enabled = true;
+        via = "sentinel";
+      }
+    } catch (_) {}
+  }
+  const probe = probeLogDirWritable(logFile);
+  const state = { enabled, via, sentinelPath, logFile, logWritable: probe.writable };
+  if (!probe.writable) state.reason = probe.reason;
+  if (_droppedLogCount > 0) state.droppedLogs = _droppedLogCount;
+  return state;
+}
+
+function getStatusFile(state) {
+  return join(dirname(state.logFile), "knowledge-gate.status");
+}
+
+// Always-on load-signal: overwrites the tiny status file on every load —
+// even with logging off — so "loaded, logging off" reads differently from
+// "not loaded". When logging is on, a timestamped pid-attributed loaded
+// line is appended to the gate log, one per process start, so incident
+// windows stay attributable. Write failures bump the dropped counter and
+// surface on the next state read; nothing here touches stderr.
+function emitLoadSignal(state) {
+  const statusFile = getStatusFile(state);
+  _loadSignalSeq++;
+  const payload = {
+    gate: "knowledge-gate",
+    ts: new Date().toISOString(),
+    seq: _loadSignalSeq,
+    pid: process.pid,
+    enabled: state.enabled,
+    via: state.via,
+    sentinelPath: state.sentinelPath,
+    logFile: state.logFile,
+    logWritable: state.logWritable
+  };
+  if (state.reason) payload.reason = state.reason;
+  if (state.droppedLogs) payload.droppedLogs = state.droppedLogs;
+  try {
+    writeFileSync(statusFile, JSON.stringify(payload) + "\n");
+  } catch (_) {
+    _droppedLogCount++;
+  }
+  if (state.enabled) {
+    try {
+      appendFileSync(state.logFile, `[${payload.ts}] [knowledge-gate] gate loaded #${payload.seq} (pid ${process.pid}, via ${state.via}, status ${statusFile})\n`);
+    } catch (_) {
+      _droppedLogCount++;
+    }
+  }
+}
+
+// Startup load-signal: unconditional — a present status file proves the
+// gate loaded in this host process, and the loaded line in the log (when
+// enabled) pins the incident window. The sentinel file above is the
+// reliable switch when client-launch env vars cannot reach an
+// already-running background service.
+emitLoadSignal(getEnablementState());
 
 // --- Memory validation ---
 
@@ -1023,6 +1146,10 @@ function evictOldestIfAtCap(session, agent, scope) {
 // --- Main plugin export ---
 
 async function knowledgeGateServer(input, options) {
+    // Re-emit the load-signal per server instance: the module-level emit ran
+    // with import-time env, while test seams (and host restarts) bind later.
+    // Overwrites the same status file with freshly resolved paths.
+    emitLoadSignal(getEnablementState());
     const sessionAgentMap = new Map(); // sessionID → agent name
 
     // Project store root: captured once per server instance at init.
@@ -2752,7 +2879,16 @@ async function knowledgeGateServer(input, options) {
       issueMove: pluginTools.issue_move.execute,
       // Log-collapse counter reset: test seam so collapse tests start from
       // a zero count regardless of prior tool calls in the same process.
-      resetLogCollapse
+      resetLogCollapse,
+      // Enablement introspection: structured state, load-signal trigger,
+      // status-file path, writability probe, and the dropped-write counter
+      // so the standing suite reads behavior off the public surface.
+      getEnablementState,
+      emitLoadSignal,
+      getStatusFile,
+      probeLogDirWritable,
+      getDroppedLogCount,
+      resetDroppedLogCount
     };
   }
 
