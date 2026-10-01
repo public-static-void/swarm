@@ -8,18 +8,40 @@
 // in that state. It does NOT handle delegation prompt formatting — that
 // responsibility belongs to delegation-gate (HOW).
 //
-// Debug logging: set PROTOCOL_GATE_DEBUG=1 in environment to enable, or
-// create a `.debug` sentinel file next to the plugin. The env var only
+// Debug enablement (sentinel-first): set PROTOCOL_GATE_DEBUG=1 in the
+// environment to enable, or create the `.debug` sentinel file next to the
+// plugin at plugins/protocol-gate/.debug (absolute: join(PLUGIN_DIR,
+// ".debug") derived from this file's own directory, so it works from any
+// startup cwd — logs always land INSIDE the config dir). The env var only
 // reaches the plugin host when the background service itself starts with
 // it — a later client launch cannot inject it into a running service — so
-// the sentinel file is the reliable switch across workspaces.
+// the sentinel file is the reliable switch across workspaces. Precedence:
+// env >= sentinel (either one enables; see getEnablementState()).
 // Writes to plugins/logs/protocol-gate.log; set PROTOCOL_GATE_LOG_DIR to
 // override the directory — the seam the test suite uses to isolate writes.
+// Set PROTOCOL_GATE_DEBUG_FILE to redirect the sentinel path in tests.
+// Always-on load-signal: every load overwrites the tiny status file
+// <resolved-log-dir>/protocol-gate.status (default
+// plugins/logs/protocol-gate.status) with { gate, ts, seq, pid, enabled,
+// via, sentinelPath, logFile, logWritable } — readable even when logging is
+// so "loaded, logging off" is distinguishable from "not loaded". When
+// enabled, a timestamped pid-attributed `gate loaded` line is appended to
+// the log. Write/mkdir failures are counted via getDroppedLogCount() and
+// surfaced in the enablement state — never silently dropped, never stderr.
 import { execFileSync } from "child_process";
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "fs";
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { Plugin } from "@opencode/plugin";
+import { parseSegments } from "./segments.js";
+import {
+  adviseDenial,
+  adviseDenialFromAttemptLog,
+  clearAttributionCache,
+  getAttributionAgentsDir,
+  loadAgentShellAllowlist,
+  parseAgentShellAllowlist,
+} from "./attribution.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -232,7 +254,8 @@ const ERROR_TEMPLATES = {
   CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "❌ ERROR: Backward transition cycle limit exceeded. Escalate to user", guidance: "Escalate to user" },
   FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
-  GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json) or `git add .` to stage all non-ignored changes" }
+  GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json) or `git add .` to stage all non-ignored changes" },
+  SHELL_DENIED_ATTRIBUTED: { code: "SHELL_DENIED_ATTRIBUTED", message: "SHELL DENIED (attributed — see message)", guidance: "Follow the Try next line in the message" }
 };
 
 function getPhaseName(phaseId) {
@@ -661,32 +684,143 @@ function debugFlagFile() {
   return process.env.PROTOCOL_GATE_DEBUG_FILE || join(PLUGIN_DIR, ".debug");
 }
 
+function isEnvDebugEnabled() {
+  const raw = (process.env.PROTOCOL_GATE_DEBUG || "").trim().toLowerCase();
+  return raw === "1" || raw === "true";
+}
+
 // Logging enablement: the per-gate DEBUG env var or the sentinel file
 // above. A single `VAR=1 opencode` launch cannot enable logging when the
 // TUI attaches to an already-running background service started without
 // the var, so the on-disk sentinel — visible to every host process — is
 // checked as well. DEBUG_FILE is the test seam (mirrors LOG_DIR).
+// Only the values 1/true (case-insensitive) switch on via env; anything
+// else (including 0/false) leaves the env signal off so the sentinel stays
+// the unambiguous switch.
 function isDebugEnabled() {
-  if (process.env.PROTOCOL_GATE_DEBUG) return true;
+  if (isEnvDebugEnabled()) return true;
   try { return existsSync(debugFlagFile()); } catch (_) { return false; }
 }
+
+// Dropped-log counter: every log-seam write/mkdir failure lands here, so a
+// failure is countable from the enablement state instead of vanishing.
+// Never stderr — stderr bleeds into model prompt context.
+let _droppedLogCount = 0;
+
+function getDroppedLogCount() {
+  return _droppedLogCount;
+}
+
+function resetDroppedLogCount() {
+  _droppedLogCount = 0;
+}
+
+// Per-process load-signal sequence: every emit in this host process takes
+// the next number, so two starts in the same millisecond still leave two
+// distinguishable loaded lines for incident attribution.
+let _loadSignalSeq = 0;
 
 function debug(msg) {
   if (isDebugEnabled()) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
     } catch (_) {
-      // File write failed — silently drop rather than bleed to stderr
+      _droppedLogCount++;
     }
   }
 }
 
-// Startup load-signal: written whenever logging is enabled, so a
-// present-but-quiet log proves the gate loaded. No log file at all means
-// logging was never enabled in that host process — env vars set on a client
-// launch do not reach an already-running background service, in which case
-// the sentinel file above is the reliable switch.
-debug("gate loaded (plugin dir: " + PLUGIN_DIR + ")");
+// Structured enablement snapshot: one object carrying every input the
+// load-signal reports, so tests and operators read a single source instead
+// of re-deriving precedence. Either signal switches on; env is reported
+// first when both are present. The log-dir probe result rides along so an
+// unwritable directory shows up as data, not as a missing file.
+function probeLogDirWritable(logFile) {
+  const dir = dirname(logFile);
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (e) {
+    return { writable: false, reason: `log dir mkdir failed (${dir}): ${e.message}` };
+  }
+  const probe = join(dir, `.writability-probe-${process.pid}`);
+  try {
+    writeFileSync(probe, "");
+    unlinkSync(probe);
+  } catch (e) {
+    return { writable: false, reason: `log dir not writable (${dir}): ${e.message}` };
+  }
+  return { writable: true };
+}
+
+function getEnablementState() {
+  const sentinelPath = debugFlagFile();
+  const logFile = getLogFile();
+  let enabled = false;
+  let via = "none";
+  if (isEnvDebugEnabled()) {
+    enabled = true;
+    via = "env";
+  } else {
+    try {
+      if (existsSync(sentinelPath)) {
+        enabled = true;
+        via = "sentinel";
+      }
+    } catch (_) {}
+  }
+  const probe = probeLogDirWritable(logFile);
+  const state = { enabled, via, sentinelPath, logFile, logWritable: probe.writable };
+  if (!probe.writable) state.reason = probe.reason;
+  if (_droppedLogCount > 0) state.droppedLogs = _droppedLogCount;
+  return state;
+}
+
+function getStatusFile(state) {
+  return join(dirname(state.logFile), "protocol-gate.status");
+}
+
+// Always-on load-signal: overwrites the tiny status file on every load —
+// even with logging off — so "loaded, logging off" reads differently from
+// "not loaded". When logging is on, a timestamped pid-attributed loaded
+// line is appended to the gate log, one per process start, so incident
+// windows stay attributable. Write failures bump the dropped counter and
+// surface on the next state read; nothing here touches stderr.
+function emitLoadSignal(state) {
+  const statusFile = getStatusFile(state);
+  _loadSignalSeq++;
+  const payload = {
+    gate: "protocol-gate",
+    ts: new Date().toISOString(),
+    seq: _loadSignalSeq,
+    pid: process.pid,
+    enabled: state.enabled,
+    via: state.via,
+    sentinelPath: state.sentinelPath,
+    logFile: state.logFile,
+    logWritable: state.logWritable
+  };
+  if (state.reason) payload.reason = state.reason;
+  if (state.droppedLogs) payload.droppedLogs = state.droppedLogs;
+  try {
+    writeFileSync(statusFile, JSON.stringify(payload) + "\n");
+  } catch (_) {
+    _droppedLogCount++;
+  }
+  if (state.enabled) {
+    try {
+      appendFileSync(state.logFile, `[${payload.ts}] [protocol-gate] gate loaded #${payload.seq} (pid ${process.pid}, via ${state.via}, status ${statusFile})\n`);
+    } catch (_) {
+      _droppedLogCount++;
+    }
+  }
+}
+
+// Startup load-signal: unconditional — a present status file proves the
+// gate loaded in this host process, and the loaded line in the log (when
+// enabled) pins the incident window. The sentinel file above is the
+// reliable switch when client-launch env vars cannot reach an
+// already-running background service.
+emitLoadSignal(getEnablementState());
 
 // Log-collapse budget (first-N-plus-count): repetitive per-call debug lines
 // log the first LOG_COLLAPSE_N verbatim; the (N+1)th call logs one summary
@@ -712,7 +846,9 @@ function loud(msg) {
   if (isDebugEnabled()) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
-    } catch (_) {}
+    } catch (_) {
+      _droppedLogCount++;
+    }
   }
 }
 
@@ -728,7 +864,9 @@ function warn(msg) {
   if (isDebugEnabled()) {
     try {
       appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] WARN: ${msg}\n`);
-    } catch (_) {}
+    } catch (_) {
+      _droppedLogCount++;
+    }
   }
 }
 
@@ -2311,6 +2449,10 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
 }
 
 async function protocolGateServer(input, options) {
+    // Re-emit the load-signal per server instance: the module-level emit ran
+    // with import-time env, while test seams (and host restarts) bind later.
+    // Overwrites the same status file with freshly resolved paths.
+    emitLoadSignal(getEnablementState());
     // Git-repo bootstrap guard — runs before any lifecycle state is touched so
     // the lifecycle's first git-dependent operation (PREFLIGHT branch
     // creation) always has a repo to work in. Uses the plugin's full Node.js
@@ -3387,8 +3529,10 @@ async function protocolGateServer(input, options) {
       // ignore rules and explicit knowledge/ paths are the gitignored workflow
       // set. Runs before the overseer/non-overseer split so every session is
       // covered; the positive guidance points to the allowed staging forms.
+      // Covered by the quote-aware splitter below so piped chains also
+      // attribute per segment; quoted separators never split.
       if (tool === "shell" && typeof args.command === "string") {
-        const addSegments = args.command.split(/\s*(?:&&|\|\||;)\s*/).filter(seg => /\bgit add\b/.test(seg));
+        const addSegments = parseSegments(args.command).filter(seg => /\bgit add\b/.test(seg));
         if (addSegments.length > 0) {
           const forceFlag = addSegments.some(seg => /(^|\s)(-f|--force)(\s|$)/.test(seg));
           const knowledgePath = addSegments.some(seg => /\bknowledge\//.test(seg));
@@ -3399,6 +3543,37 @@ async function protocolGateServer(input, options) {
               ERROR_TEMPLATES.GITIGNORED_STAGE_REJECTED.message,
               ERROR_TEMPLATES.GITIGNORED_STAGE_REJECTED.guidance
             );
+          }
+        }
+      }
+
+      // Shell denial attribution. Names the exact denied segment and the
+      // allowlisted variants sharing its prefix so the calling agent retries
+      // a concrete alternative instead of concluding a whole tool family is
+      // denied. Subagent sessions only; unknown agents and unreadable
+      // allowlists pass through untouched — uncertainty never blocks.
+      if (tool === "shell" && typeof args.command === "string" && !isOverseerSession(sessionID)) {
+        const callingAgent = sessionAgentMap.get(sessionID);
+        if (callingAgent) {
+          const loaded = loadAgentShellAllowlist(callingAgent);
+          if (loaded.patterns) {
+            const advice = adviseDenial({
+              agent: callingAgent,
+              rawCommand: args.command,
+              patterns: loaded.patterns,
+            });
+            if (!advice.allowed) {
+              debug(`SHELL ATTRIBUTION: agent=${callingAgent} denied=${advice.result.deniedSegments.join(" | ")} (command=${args.command})`);
+              throw new ProtocolGateError(
+                ERROR_TEMPLATES.SHELL_DENIED_ATTRIBUTED.code,
+                advice.message,
+                advice.result.suggestedRetry
+                  ? `Run \`${advice.result.suggestedRetry}\` next, then log each segment result`
+                  : "Route the task to a role granting it, then log each segment result"
+              );
+            }
+          } else {
+            debug(`SHELL ATTRIBUTION: allowlist unreadable for agent=${callingAgent} (${loaded.reason}) — passing through`);
           }
         }
       }
@@ -4418,7 +4593,27 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       getKDLookupSIDs,
       ProtocolGateError,
       ERRORS: ERROR_TEMPLATES,
-      get lastSeenSession() { return lastSeenSession; }
+      get lastSeenSession() { return lastSeenSession; },
+      // Enablement introspection: structured state, load-signal trigger,
+      // status-file path, writability probe, and the dropped-write counter
+      // so the standing suite reads behavior off the public surface.
+      getEnablementState,
+      emitLoadSignal,
+      getStatusFile,
+      probeLogDirWritable,
+      getDroppedLogCount,
+      resetDroppedLogCount,
+      // Quote-aware shell splitter for denial attribution: exposed
+      // here so the standing suite reads it off the public surface.
+      parseSegments,
+      // Denial attribution hook plus the post-denial bisect advisor,
+      // with the agent-definition allowlist loader behind both.
+      adviseDenial,
+      adviseDenialFromAttemptLog,
+      loadAgentShellAllowlist,
+      parseAgentShellAllowlist,
+      clearAttributionCache,
+      getAttributionAgentsDir
     };
   }
 
