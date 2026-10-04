@@ -195,7 +195,7 @@ const PHASE_INSTRUCTIONS = {
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
   CLEANUP: "Dispatch the Committer agent.",
-  REPORT: "Write a report KD summarizing lifecycle results. Include any corrections and amendments from the lifecycle (e.g., Issue-75 Correction sections) in the report content."
+  REPORT: "Write a report KD summarizing lifecycle results. Include any corrections and amendments from the lifecycle (e.g., Correction sections) in the report content."
 };
 
 const TOOL_ALLOWLIST = {
@@ -315,7 +315,7 @@ function matchesSessionKDForSession(filename, sessionPhaseMap, sessionID, genera
 // Session match independent of the persisted lifecycle generation — used by
 // disk-evidence reconciliation, where the FILENAME's own embedded `-gen{N}`
 // (any N, including one that differs from the persisted generation — the
-// observed gen0/gen1 divergence behind Issue 64) or the legacy
+// observed gen0/gen1 divergence) or the legacy
 // `-{sessionID}.md` suffix is the evidence. The session-id match remains
 // mandatory: a foreign lifecycle's impl KD never promotes a row.
 function matchesSessionKDAnyGeneration(filename, sessionID) {
@@ -333,7 +333,7 @@ function matchesSessionKDAnyGeneration(filename, sessionID) {
 // that SWARM is not missing its KD — after a reopen the only impl evidence
 // may be superseded files, and falsely regressing SWARM→DECOMPOSE would
 // jump the phase machine backward. The shared predicate
-// matchesSessionKD/matchesSessionKDAnyGeneration is UNCHANGED (MEM-212) —
+// matchesSessionKD/matchesSessionKDAnyGeneration is UNCHANGED —
 // this probe is scoped to the consistency check only, never to the shared
 // evidence predicate.
 function hasSupersededImplEvidence(files, sessionID) {
@@ -854,7 +854,7 @@ function loud(msg) {
 
 // Warn channel — file-only diagnostics for gate-blocking failures.
 // opencode surfaces ALL process.stderr.write() output into the user prompt,
-// so stderr is a prompt-corruption vector (MEM-213). The only safe diagnostic
+// so stderr is a prompt-corruption vector. The only safe diagnostic
 // channel is fs.appendFileSync() to the effective log file
 // (plugins/logs/protocol-gate.log by default), gated
 // behind PROTOCOL_GATE_DEBUG like loud(). Called for failures that block gate
@@ -1070,7 +1070,7 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
     // the Inspector just found deficient.
     if (opts.reopen && current === "checked-off") {
       supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId);
-      // Attributable reopen (Issue 69): every genuine checked-off → in-progress
+      // Attributable reopen: every genuine checked-off → in-progress
       // reopen is announced loudly with its trigger — the citing review KD for
       // citation-driven reopens, the dispatch event for SWARM re-dispatches —
       // so mid-cycle registry changes are explainable in the transcript.
@@ -1165,14 +1165,14 @@ function readMilestoneState(sessionID, sessionPhaseMap, milestoneId) {
 }
 
 // Finds the milestone-scoped impl KD on disk for a milestone. Evidence
-// predicate (Issue 64): the FILENAME's own embedded `-gen{N}` (any N,
+// predicate: the FILENAME's own embedded `-gen{N}` (any N,
 // including one that differs from the persisted lifecycle generation — the
 // observed gen0/gen1 divergence) or the legacy `-<session>.md` suffix counts;
 // the session-id match stays mandatory, so a foreign session's impl KD is
 // never evidence. Staleness within the session is handled by
 // supersedeMilestoneImplKDs (re-open) and cleanupLifecycleKDs (REPORT), not by
 // generation-scoping here — a strict persisted-generation match would reconcile
-// the registry yet still block the gate on exactly the divergence Issue 64
+// the registry yet still block the gate on exactly the divergence this check
 // must recover from. The milestone prefix match is case-insensitive. Returns
 // the filename or null.
 function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
@@ -1400,14 +1400,14 @@ function resolveMilestoneRowId(registry, relPath, milestoneId) {
   return prefix ? prefix.id : milestoneId;
 }
 
-// Disk-evidence reconciliation (Issue 64): before the all-checked-off
+// Disk-evidence reconciliation: before the all-checked-off
 // verdict is computed, every non-checked-off row (`in-progress`, `assigned`,
 // `pending`, `failed`) whose milestone-scoped impl KD exists on disk under the
 // SAME session id is promoted to checked-off. Evidence matching takes the
 // generation from the FILENAME (any N, including ≠ persisted generation);
 // rows without evidence are never promoted and keep blocking the gate.
 //
-// RESTART REQUIRED (MEM-059): plugins load once per opencode process, so this
+// RESTART REQUIRED: plugins load once per opencode process, so this
 // gate-logic change — reconciliation and the loud auto-checkoff diagnostics —
 // takes effect only after opencode restarts. Live behavior lags disk until
 // then; operators should restart after pulling gate-logic fixes.
@@ -1433,7 +1433,7 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
     // same parse over the incoming content, so both agree on stamped rows.
     const evidence = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, row.id));
     if (!evidence) {
-      // Superseded-only evidence probe (Issue 69): a reopened row's stale impl
+      // Superseded-only evidence probe: a reopened row's stale impl
       // KDs survive on disk as `*.superseded.md` — invisible to the predicate
       // above by design, since widening it would double-suffix the files on
       // every subsequent reopen. When those renamed files are the row's ONLY
@@ -1849,7 +1849,7 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 // Parses milestone tokens from a review KD — the provenance for scoped reopen:
 // `impl-<milestone-id>-` path tokens and bare `M\d+` milestone ids.
 // Tokens are deduplicated and case-preserved. The scan is FAIL-context-only
-// (swarm/99): FAIL citations live in FAIL-status findings and explicit Verdict
+// FAIL citations live in FAIL-status findings and explicit Verdict
 // citation lines, so prose tokens elsewhere are provenance, not citations.
 // Scanned locations: (a) `### F\d+` finding subsections whose `Status`
 // is `FAIL`; (b) `### A\d+` audit-finding subsections whose `Status` is `FAIL`;
@@ -1859,9 +1859,9 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 // `## Audit` prose, `## References`, `### Traceability Matrix`, and any other
 // section that is not a FAIL-status finding or the `## Verdict` section — the
 // review template's own Verdict Rules prose carries literal example tokens
-// (F7), and scanning prose leaked sibling milestones into the reopen set (the
-// live swarm/99 anomaly: a FAIL citing only M3 reopened M1/M2). PASS findings'
-// `File`-field path tokens stay excluded (swarm/96 behavior retained). A KD
+// (F7), and scanning prose leaked sibling milestones into the reopen set (a
+// live anomaly: a FAIL citing only M3 reopened M1/M2). PASS findings'
+// `File`-field path tokens stay excluded. A KD
 // with zero FAIL-context tokens yields zero citations (fail-closed for the
 // malformed-FAIL rule).
 function extractMilestoneCitationsFromReviewKD(content) {
@@ -2977,7 +2977,7 @@ async function protocolGateServer(input, options) {
     // in-progress in the registry can complete; the parent session and
     // generation come from the filename + on-disk state, never from in-memory
     // session state alone.
-    // RESTART REQUIRED (MEM-059): plugins load once per opencode process —
+    // RESTART REQUIRED: plugins load once per opencode process —
     // changes to this check-off path and its loud diagnostics take effect
     // only after opencode restarts.
     function autoCheckOffMilestone(relPath, incomingContent, writerSessionID) {
@@ -3062,7 +3062,7 @@ async function protocolGateServer(input, options) {
             debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${resolvedId} (session ${candidate})`);
           } else {
             // Loud, non-blocking diagnostic: silent failures here left
-            // registries stuck in SWARM (Issue 64). Visible without
+            // registries stuck in SWARM. Visible without
             // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
             // (no-registry / milestone-not-found / invalid-transition / write-failed).
             warn(`AUTO_CHECKOFF_FAILED: milestone ${resolvedId} (parent ${candidate}) — ${result.reason}`);
