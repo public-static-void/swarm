@@ -492,7 +492,7 @@ function validateScope(scope) {
   return true;
 }
 
-// Reserved KD PATHS token (Issue 67): expands at render time to every on-disk
+// Reserved KD PATHS token: expands at render time to every on-disk
 // KD of the dispatching session's CURRENT lifecycle generation, so all-upstream
 // dispatches are complete by construction instead of hand-enumerated (11–17 of
 // 22 lifecycle KDs were routinely omitted). Exact uppercase match only.
@@ -977,7 +977,7 @@ async function delegationGateServer(input, options) {
 
       debug(`Rendering template for mode='${fields.mode}', agent='${fields.agent}'`);
 
-      // Issue 67: expand the reserved SESSION_KDS token at render time and
+      // Expand the reserved SESSION_KDS token at render time and
       // advise on under-enumerated all-upstream dispatches. Runs after
       // validation so literal-path strictness is unchanged; the advisory is
       // non-blocking. SESSION_KDS lists are exempt from the advisory —
