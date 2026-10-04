@@ -40,9 +40,9 @@ Every REVIEW KD must include a traceability matrix like this:
 
 | Req ID | Plan Step | Artifact          | Declared Gate   | Actually-Run Gate | Test/Check       | Status      |
 | ------ | --------- | ----------------- | --------------- | ----------------- | ---------------- | ----------- |
-| R001   | P001      | `src/auth.ts`     | `npm test auth` | `npm test auth`   | `npm test auth`  | PASS / FAIL |
-| R002   | P002      | `src/login.tsx`   | `npm test`      | `npm test`        | `npm test login` | PASS / FAIL |
-| R003   | P003      | `config/auth.yml` | `npm test`      | `npm test`        | Lint passes      | PASS / FAIL |
+| R###   | P###      | `src/auth.ts`     | `npm test auth` | `npm test auth`   | `npm test auth`  | PASS / FAIL |
+| R###   | P###      | `src/login.tsx`   | `npm test`      | `npm test`        | `npm test login` | PASS / FAIL |
+| R###   | P###      | `config/auth.yml` | `npm test`      | `npm test`        | Lint passes      | PASS / FAIL |
 
 ### Enforcement Rules
 
@@ -83,7 +83,7 @@ Phase Output ──► Gate ──► Next Phase
 
 ### SPEC Gate (after ALIGN)
 
-- [ ] All requirements numbered (R001, R002, ...)
+- [ ] All requirements numbered with requirement codes
 - [ ] Acceptance criteria are checkboxes, independently verifiable
 - [ ] No ambiguous language
 - [ ] Active Partner was exercised (pushback on contradictions)
@@ -115,7 +115,7 @@ Phase Output ──► Gate ──► Next Phase
 
 1. Inspector reads SPEC (requirements) + PLAN (steps) + artifact
 2. Build a **traceability matrix** mapping every acceptance criterion to plan steps and implementation artifacts
-3. Each finding traces to a specific requirement (R001, R002, ...) and plan step (P001, P002, ...)
+3. Each finding traces to a specific requirement code and plan-step code
 4. Each acceptance criterion receives a binary PASS/FAIL verdict
 5. Check for orphan code: every artifact must trace to at least one requirement
 6. Check for uncovered requirements: every requirement must have a verification entry
@@ -131,7 +131,7 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 1. Inspector receives the artifact and the relevant SPEC + PLAN KDs
 2. Inspector iterates through each acceptance criterion
 3. For each criterion, record PASS or FAIL with evidence
-4. If FAIL, trace to specific requirement (R001, P001, file:line)
+4. If FAIL, trace to the specific requirement code and plan-step code (code plus file:line)
 5. Write the verdict into the REVIEW KD frontmatter (`verdict: PASS | FAIL | FUNDAMENTAL`) — the single machine source for the VERIFY gate
 6. Produce ONE REVIEW KD containing the Review Findings (with traceability matrix) and the Audit section (Scope, Risk Summary, Security Findings)
 7. On FAIL, protocol-gate machine-regresses VERIFY→SWARM automatically (no `BACKWARD: true` flag, no explicit dispatch): the producer fixes the findings, re-submits, and the Inspector re-reviews — repeat until PASS or diminishing returns
@@ -151,7 +151,7 @@ VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the ful
 
 A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). Every FAIL finding MUST cite at least one milestone token (`M\d+` or `impl-<id>-`); a FAIL verdict with zero milestone citations is MALFORMED — the gate blocks, regresses nothing, and reopens nothing (re-dispatch the review with citations). A `FUNDAMENTAL` verdict blocks advancement and escalates; the phase stays at VERIFY.
 
-During protocol-gate vitest runs, `FUNDAMENTAL_ESCALATION` lines are asserted test output from the F1 AC104 fixture (`tests/plugins/protocol-gate/index.test.js`). Verify the line against the test source before treating it as a lifecycle anomaly.
+During protocol-gate vitest runs, `FUNDAMENTAL_ESCALATION` lines are asserted test output from the named protocol-gate fixture (`tests/plugins/protocol-gate/index.test.js`). Verify the line against the test source before treating it as a lifecycle anomaly.
 
 ## Feedback Loop
 
@@ -165,7 +165,7 @@ On FAIL with clear cause:
 
 ## /phase SAFETY_ESCAPE Counter Semantics
 
-The user's `/phase` slash-command override is the escape hatch from a stuck SWARM phase — the automatic safety mechanisms keep the phase at SWARM (protocol-gate logs `SAFETY_ESCAPE` on the escape). Its effect on the redispatch counters (issue-18, R007):
+The user's `/phase` slash-command override is the escape hatch from a stuck SWARM phase — the automatic safety mechanisms keep the phase at SWARM (protocol-gate logs `SAFETY_ESCAPE` on the escape). Its effect on the redispatch counters (see the linked swarm issue and requirement code):
 
 - **Resets per-milestone redispatch budgets.** Escaping SWARM → non-SWARM deletes every non-numeric `{sessionID}:{milestone}` key (e.g. `sid:M1`) in `phaseRedispatchCount`, so an escaped-and-continued lifecycle restarts each milestone with a fresh budget instead of inheriting stale pre-escape caps.
 - **Preserves phase counters.** Numeric `{sessionID}:{phase-constant}` keys (e.g. `sid:7` for SWARM) are untouched — the phase's own dispatch count is not reset by the escape.
