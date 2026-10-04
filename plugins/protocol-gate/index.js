@@ -29,7 +29,7 @@
 // the log. Write/mkdir failures are counted via getDroppedLogCount() and
 // surfaced in the enablement state — never silently dropped, never stderr.
 import { execFileSync } from "child_process";
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { Plugin } from "@opencode/plugin";
@@ -42,6 +42,16 @@ import {
   loadAgentShellAllowlist,
   parseAgentShellAllowlist,
 } from "./attribution.js";
+import {
+  escapeRegExp,
+  getKDLookupSIDs,
+  matchesSessionKDAnyGeneration,
+  matchesSessionKD,
+  matchesSessionKDForSession,
+  sanitizeSessionID,
+} from "./kd-match.js";
+import { atomicWriteFileSync } from "./fs-atomic.js";
+import { PHASE_INSTRUCTIONS, STATES, TOOL_ALLOWLIST, TOOL_RESTRICTIONS } from "./phases.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -126,20 +136,9 @@ function learnKnowledgeDirFromArgs(sessionID, args) {
   }
 }
 
-const STATES = {
-  INTENT: 1,
-  PREFLIGHT: 2,
-  EXPLORE: 3,
-  INVESTIGATE: 4,
-  ALIGN: 5,
-  DECOMPOSE: 6,
-  SWARM: 7,
-  VERIFY: 8,
-  EXTRACT: 9,
-  EVOLVE: 10,
-  CLEANUP: 11,
-  REPORT: 12
-};
+// Phase tables (STATES, PHASE_INSTRUCTIONS, TOOL_ALLOWLIST, TOOL_RESTRICTIONS)
+// live in ./phases.js — gate-local, imported above and re-exported by
+// reference in the test-access block below.
 
 // Retention cap for the per-session verbatim raw-intent capture. The
 // chat.message hook keeps only the latest RAW_INTENT_MAX_MESSAGES overseer
@@ -179,40 +178,6 @@ function getPrefixes(phase) {
   return Array.isArray(val) ? val : [val];
 }
 
-// Behavioral constraints injected into the system prompt per phase.
-// The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
-const PHASE_INSTRUCTIONS = {
-  // Absolute single-action directive: names the tool and content, no reasoning gap.
-  // Positive framing per AGENTS.md — no negative "do NOT" instructions.
-  INTENT: "Call write to create an intent KD with the user's exact words as the Raw Request. The Explorer handles all codebase details after dispatch.",
-  PREFLIGHT: "Dispatch the Committer agent.",
-  EXPLORE: "Dispatch the Explorer agent.",
-  INVESTIGATE: "Dispatch the Analyzer agent.",
-  ALIGN: "Dispatch the Spec Weaver agent.",
-  DECOMPOSE: "Dispatch the Pathfinder agent.",
-  SWARM: "Dispatch the Artisan agent. Read the milestone registry KD to track milestone state before each dispatch. Include exactly one MILESTONE ID: matching the registry row you are dispatching. Name the dispatch's RESULT KD milestone-scoped — knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md — so the impl KD checks that milestone off on write.",
-  VERIFY: "Dispatch the Inspector agent.",
-  EXTRACT: "Dispatch the Scribe agent.",
-  EVOLVE: "Dispatch the Habit Builder agent.",
-  CLEANUP: "Dispatch the Committer agent.",
-  REPORT: "Write a report KD summarizing lifecycle results. Include any corrections and amendments from the lifecycle (e.g., Issue-75 Correction sections) in the report content."
-};
-
-const TOOL_ALLOWLIST = {
-  INTENT: ["write", "edit", "read", "skill", "shell", "memory_search"],
-  PREFLIGHT: ["subagent", "glob", "shell", "memory_search", "skill"],
-  EXPLORE: ["subagent", "glob", "memory_search", "skill"],
-  INVESTIGATE: ["subagent", "glob", "memory_search", "skill"],
-  ALIGN: ["subagent", "glob", "memory_search", "skill"],
-  DECOMPOSE: ["subagent", "glob", "read", "memory_search", "skill"],
-  SWARM: ["subagent", "glob", "read", "skill", "memory_search"],
-  VERIFY: ["subagent", "glob", "read", "memory_search", "skill"],
-  EXTRACT: ["subagent", "glob", "memory_search", "skill"],
-  EVOLVE: ["subagent", "glob", "memory_search", "skill"],
-  CLEANUP: ["subagent", "glob", "shell", "memory_search", "skill"],
-  REPORT: ["edit", "read", "write", "skill", "memory_search"]
-};
-
 // Tools whose calls trigger the disk-evidence advancement check
 // (checkDiskAdvancement). read/shell widen the gate's disk-check surface so the
 // reconciliation backstop (reconcileStuckRowsFromDiskEvidence) runs on the
@@ -222,21 +187,6 @@ const TOOL_ALLOWLIST = {
 // with no handler side effects, so its calls purely re-evaluate
 // lifecycle state against KD evidence on disk.
 const DISK_CHECK_TOOLS = ["write", "glob", "skill", "subagent", "read", "shell"];
-
-// Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
-// tool.definition appends these to the description so the LLM sees the restriction
-// instead of treating the tool as fully available.
-// Delegation templates are JSON files auto-injected by delegation-gate at
-// dispatch — never read by the Overseer. KD-format templates are auto-loaded
-// skills loaded via the skill tool. The read restrictions below scope the read
-// tool to phase KDs; neither string instructs reading templates.
-const TOOL_RESTRICTIONS = {
-  INTENT: { read: "ONLY intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", shell: "ONLY mkdir for knowledge directory creation" },
-  DECOMPOSE: { read: "ONLY milestone registry KDs" },
-  SWARM: { read: "ONLY milestone registry KDs" },
-  VERIFY: { read: "ONLY milestone registry KDs" },
-  REPORT: { read: "ONLY knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
-};
 
 class ProtocolGateError extends Error {
   constructor(code, message, guidance) {
@@ -271,69 +221,16 @@ function getCurrentGeneration(sessionPhaseMap, sessionID) {
   return sessionPhaseMap.get(`${sessionID}:gen`) || 0;
 }
 
-// Generation-aware session KD matcher. Accepts both naming variants:
-//   - `...-${sessionID}.md`         (generation 0, legacy naming)
-//   - `...-${sessionID}-gen${N}.md` (generation N naming)
-// A file matches only when its generation equals the current state generation.
-// Gen-less files are treated as generation 0 and are NOT matched when the
-// current generation is > 0 — they belong to a prior lifecycle and must not
-// advance or suppress the new one.
-function matchesSessionKD(filename, sessionID, generation) {
-  if (typeof filename !== "string" || !sessionID) return false;
-  // Generation N variant: `...-${sessionID}-gen${N}.md`
-  const genMarker = `-${sessionID}-gen`;
-  const genIdx = filename.lastIndexOf(genMarker);
-  if (genIdx !== -1) {
-    const tail = filename.slice(genIdx + genMarker.length);
-    const genMatch = tail.match(/^(\d+)\.md$/);
-    if (genMatch) {
-      return parseInt(genMatch[1], 10) === generation;
-    }
-  }
-  // Legacy variant: `...-${sessionID}.md`
-  if (generation > 0) return false;
-  return filename.endsWith(`-${sessionID}.md`);
-}
-
-// Resolves the session IDs whose KDs belong to the current lifecycle for
-// READ/scan purposes. Cross-session adoption was removed — a session never
-// inherits another lifecycle's phase or `:sid` — and stale `:sid` entries are
-// healed at reconcile, so the lookup set is exactly [current sessionID]. No
-// read path can ever scan a prior lifecycle's KDs.
-function getKDLookupSIDs(sessionPhaseMap, sessionID) {
-  return [sessionID];
-}
-
-// Generation-scoped KD matcher against the session's single-session lookup set
-// ([current sessionID] only — cross-session adoption removed). True when the
-// file belongs to the lifecycle at the given generation under the current
-// session id.
-function matchesSessionKDForSession(filename, sessionPhaseMap, sessionID, generation) {
-  return getKDLookupSIDs(sessionPhaseMap, sessionID).some(sid => matchesSessionKD(filename, sid, generation));
-}
-
-// Session match independent of the persisted lifecycle generation — used by
-// disk-evidence reconciliation, where the FILENAME's own embedded `-gen{N}`
-// (any N, including one that differs from the persisted generation — the
-// observed gen0/gen1 divergence behind Issue 64) or the legacy
-// `-{sessionID}.md` suffix is the evidence. The session-id match remains
-// mandatory: a foreign lifecycle's impl KD never promotes a row.
-function matchesSessionKDAnyGeneration(filename, sessionID) {
-  if (typeof filename !== "string" || !sessionID) return false;
-  const genMarker = `-${sessionID}-gen`;
-  const genIdx = filename.lastIndexOf(genMarker);
-  if (genIdx !== -1 && /^(\d+)\.md$/.test(filename.slice(genIdx + genMarker.length))) {
-    return true;
-  }
-  return filename.endsWith(`-${sessionID}.md`);
-}
+// KD session matchers (matchesSessionKD*, getKDLookupSIDs) live in
+// ./kd-match.js — gate-local, imported above and re-exported by reference in
+// the test-access block below.
 
 // Superseded-impl evidence probe for the consistency check: a
 // `*.superseded.md` impl file for the current session counts as evidence
 // that SWARM is not missing its KD — after a reopen the only impl evidence
 // may be superseded files, and falsely regressing SWARM→DECOMPOSE would
 // jump the phase machine backward. The shared predicate
-// matchesSessionKD/matchesSessionKDAnyGeneration is UNCHANGED (MEM-212) —
+// matchesSessionKD/matchesSessionKDAnyGeneration is UNCHANGED —
 // this probe is scoped to the consistency check only, never to the shared
 // evidence predicate.
 function hasSupersededImplEvidence(files, sessionID) {
@@ -630,35 +527,8 @@ function findInvalidMultiPhaseHop(phases, currentPhase, backwardTransitions) {
   return null;
 }
 
-// Session IDs reach file paths and can be attacker-influenced. Reject path
-// separators, NUL, and the traversal entries so a crafted ID can never escape
-// the plugin's .state directory. opencode session IDs (ses_...) pass.
-function sanitizeSessionID(sessionID) {
-  if (typeof sessionID !== "string" || sessionID.length === 0) return null;
-  if (sessionID === "." || sessionID === "..") return null;
-  if (/[\\/\0]/.test(sessionID)) return null;
-  return sessionID;
-}
-
-// Atomic durable write — tmp file + fsync + rename. The rename is atomic on
-// the same filesystem, so a crash mid-write can never leave a torn file at the
-// target path. Throws on failure; callers surface the error.
-function atomicWriteFileSync(targetPath, data) {
-  const tmpPath = `${targetPath}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    const fd = openSync(tmpPath, "w");
-    try {
-      writeSync(fd, data);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(tmpPath, targetPath);
-  } catch (e) {
-    try { rmSync(tmpPath, { force: true }); } catch (_) {}
-    throw e;
-  }
-}
+// sanitizeSessionID lives in ./kd-match.js and atomicWriteFileSync in
+// ./fs-atomic.js — gate-local, imported above.
 
 let _logFile = null;
 
@@ -674,7 +544,7 @@ function getLogFile() {
   // Re-bind the cached path when the env seam moves the log directory — a
   // stale cache would keep appending to the previously resolved path.
   if (!_logFile || dirname(_logFile) !== logDir) {
-    try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
+    try { mkdirSync(logDir, { recursive: true }); } catch (_) { _droppedLogCount++; }
     _logFile = join(logDir, "protocol-gate.log");
   }
   return _logFile;
@@ -854,7 +724,7 @@ function loud(msg) {
 
 // Warn channel — file-only diagnostics for gate-blocking failures.
 // opencode surfaces ALL process.stderr.write() output into the user prompt,
-// so stderr is a prompt-corruption vector (MEM-213). The only safe diagnostic
+// so stderr is a prompt-corruption vector. The only safe diagnostic
 // channel is fs.appendFileSync() to the effective log file
 // (plugins/logs/protocol-gate.log by default), gated
 // behind PROTOCOL_GATE_DEBUG like loud(). Called for failures that block gate
@@ -1070,7 +940,7 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
     // the Inspector just found deficient.
     if (opts.reopen && current === "checked-off") {
       supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId);
-      // Attributable reopen (Issue 69): every genuine checked-off → in-progress
+      // Attributable reopen: every genuine checked-off → in-progress
       // reopen is announced loudly with its trigger — the citing review KD for
       // citation-driven reopens, the dispatch event for SWARM re-dispatches —
       // so mid-cycle registry changes are explainable in the transcript.
@@ -1165,14 +1035,14 @@ function readMilestoneState(sessionID, sessionPhaseMap, milestoneId) {
 }
 
 // Finds the milestone-scoped impl KD on disk for a milestone. Evidence
-// predicate (Issue 64): the FILENAME's own embedded `-gen{N}` (any N,
+// predicate: the FILENAME's own embedded `-gen{N}` (any N,
 // including one that differs from the persisted lifecycle generation — the
 // observed gen0/gen1 divergence) or the legacy `-<session>.md` suffix counts;
 // the session-id match stays mandatory, so a foreign session's impl KD is
 // never evidence. Staleness within the session is handled by
 // supersedeMilestoneImplKDs (re-open) and cleanupLifecycleKDs (REPORT), not by
 // generation-scoping here — a strict persisted-generation match would reconcile
-// the registry yet still block the gate on exactly the divergence Issue 64
+// the registry yet still block the gate on exactly the divergence this check
 // must recover from. The milestone prefix match is case-insensitive. Returns
 // the filename or null.
 function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
@@ -1400,14 +1270,14 @@ function resolveMilestoneRowId(registry, relPath, milestoneId) {
   return prefix ? prefix.id : milestoneId;
 }
 
-// Disk-evidence reconciliation (Issue 64): before the all-checked-off
+// Disk-evidence reconciliation: before the all-checked-off
 // verdict is computed, every non-checked-off row (`in-progress`, `assigned`,
 // `pending`, `failed`) whose milestone-scoped impl KD exists on disk under the
 // SAME session id is promoted to checked-off. Evidence matching takes the
 // generation from the FILENAME (any N, including ≠ persisted generation);
 // rows without evidence are never promoted and keep blocking the gate.
 //
-// RESTART REQUIRED (MEM-059): plugins load once per opencode process, so this
+// RESTART REQUIRED: plugins load once per opencode process, so this
 // gate-logic change — reconciliation and the loud auto-checkoff diagnostics —
 // takes effect only after opencode restarts. Live behavior lags disk until
 // then; operators should restart after pulling gate-logic fixes.
@@ -1433,7 +1303,7 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
     // same parse over the incoming content, so both agree on stamped rows.
     const evidence = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, row.id));
     if (!evidence) {
-      // Superseded-only evidence probe (Issue 69): a reopened row's stale impl
+      // Superseded-only evidence probe: a reopened row's stale impl
       // KDs survive on disk as `*.superseded.md` — invisible to the predicate
       // above by design, since widening it would double-suffix the files on
       // every subsequent reopen. When those renamed files are the row's ONLY
@@ -1675,9 +1545,7 @@ function extractMilestoneIdFromImplKD(filename, knownMilestoneId) {
   return token || null;
 }
 
-function escapeRegExp(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+// escapeRegExp lives in ./kd-match.js — gate-local, imported above.
 
 // Normalize absolute paths to project-relative for prefix matching.
 // opencode passes absolute paths (e.g. /home/user/project/knowledge/intent-foo.md)
@@ -1849,7 +1717,7 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 // Parses milestone tokens from a review KD — the provenance for scoped reopen:
 // `impl-<milestone-id>-` path tokens and bare `M\d+` milestone ids.
 // Tokens are deduplicated and case-preserved. The scan is FAIL-context-only
-// (swarm/99): FAIL citations live in FAIL-status findings and explicit Verdict
+// FAIL citations live in FAIL-status findings and explicit Verdict
 // citation lines, so prose tokens elsewhere are provenance, not citations.
 // Scanned locations: (a) `### F\d+` finding subsections whose `Status`
 // is `FAIL`; (b) `### A\d+` audit-finding subsections whose `Status` is `FAIL`;
@@ -1859,9 +1727,9 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 // `## Audit` prose, `## References`, `### Traceability Matrix`, and any other
 // section that is not a FAIL-status finding or the `## Verdict` section — the
 // review template's own Verdict Rules prose carries literal example tokens
-// (F7), and scanning prose leaked sibling milestones into the reopen set (the
-// live swarm/99 anomaly: a FAIL citing only M3 reopened M1/M2). PASS findings'
-// `File`-field path tokens stay excluded (swarm/96 behavior retained). A KD
+// (F7), and scanning prose leaked sibling milestones into the reopen set (a
+// live anomaly: a FAIL citing only M3 reopened M1/M2). PASS findings'
+// `File`-field path tokens stay excluded. A KD
 // with zero FAIL-context tokens yields zero citations (fail-closed for the
 // malformed-FAIL rule).
 function extractMilestoneCitationsFromReviewKD(content) {
@@ -2977,7 +2845,7 @@ async function protocolGateServer(input, options) {
     // in-progress in the registry can complete; the parent session and
     // generation come from the filename + on-disk state, never from in-memory
     // session state alone.
-    // RESTART REQUIRED (MEM-059): plugins load once per opencode process —
+    // RESTART REQUIRED: plugins load once per opencode process —
     // changes to this check-off path and its loud diagnostics take effect
     // only after opencode restarts.
     function autoCheckOffMilestone(relPath, incomingContent, writerSessionID) {
@@ -3062,7 +2930,7 @@ async function protocolGateServer(input, options) {
             debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${resolvedId} (session ${candidate})`);
           } else {
             // Loud, non-blocking diagnostic: silent failures here left
-            // registries stuck in SWARM (Issue 64). Visible without
+            // registries stuck in SWARM. Visible without
             // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
             // (no-registry / milestone-not-found / invalid-transition / write-failed).
             warn(`AUTO_CHECKOFF_FAILED: milestone ${resolvedId} (parent ${candidate}) — ${result.reason}`);
@@ -4511,6 +4379,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       "experimental.chat.system.transform": systemTransform,
       // Test-access properties
       STATES,
+      PHASE_INSTRUCTIONS,
+      TOOL_ALLOWLIST,
+      TOOL_RESTRICTIONS,
       DISK_CHECK_TOOLS,
       ensureGitRepo,
       sessionPhaseMap,
@@ -4555,6 +4426,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       supersedeMilestoneImplKDs,
       matchesSessionKDAnyGeneration,
       matchesSessionKD,
+      matchesSessionKDForSession,
+      escapeRegExp,
+      atomicWriteFileSync,
       extractToolPath,
       canonicalToolName,
       getKnowledgeDir,
