@@ -101,7 +101,7 @@ Example:
 PROTOCOL_GATE_DEBUG=1 opencode
 ```
 
-Point a `*_LOG_DIR` variable at any directory to redirect that plugin's log there (the directory is created as needed). A failed write is silently dropped so logging never blocks a hook. Log files (`*.log`) stay gitignored.
+Point a `*_LOG_DIR` variable at any directory to redirect that plugin's log there (the directory is created as needed). A failed write is counted via `getDroppedLogCount()` and surfaced in the enablement state / status file, so logging never blocks a hook and never fails silently. Log files (`*.log`) stay gitignored.
 
 ## The Git Contract
 
