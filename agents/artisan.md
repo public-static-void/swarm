@@ -453,6 +453,7 @@ Proposed resolution: Review Committer logs, fix workspace state, or adjust permi
 - **Substantive Comments**: Add comments to explain rationale that is unobvious from the code itself. Comments explain the reasoning behind the code
 - **External References**: Reference public APIs, specs, or external documentation in code when necessary
 - **Meta-Marker Convention**: Comments and test names describe behavior — requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) live in the SPEC/PLAN KDs and the REVIEW traceability matrix, with the `noMetaMarker` lint rule enforcing this in plugin and test code
+- **Local-Contract Convention**: Code states its local contract; process trace lives in KDs. Comments and test names describe behavior in plain terms, with KD-side trace carrying requirement codes and findings. Commit messages follow the same shape in docs form: the message states the local change, process trace stays in KDs, carried by convention rather than hook lint
 - **Self-check**: Review all added comments. Verify against these examples:
   - ✅ `// Uses BigNumber to keep floating-point arithmetic exact` (comment WHY)
   - ✅ No comment explaining `function calculateTotal()` (self-documenting code)
