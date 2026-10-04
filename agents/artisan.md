@@ -419,6 +419,8 @@ When re-dispatching a subagent for the same task, include the `TASK ID` delegati
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, reuse the same `TASK ID` to continue the same agent's work.
 
+Record the continuity choice the same way: a reopened milestone row reuses the prior `TASK ID`; a new task omits `TASK ID`. Note the two resume channels: `task_id` continuation (this section) resumes the subagent session, while compaction resume travels through the `resume-protocol` `memory_note` channel.
+
 ### Checkpoint Verification
 
 After dispatching the Committer for checkpoint commits, verify the checkpoint was persisted before proceeding:
@@ -451,6 +453,7 @@ Proposed resolution: Review Committer logs, fix workspace state, or adjust permi
 - **Substantive Comments**: Add comments to explain rationale that is unobvious from the code itself. Comments explain the reasoning behind the code
 - **External References**: Reference public APIs, specs, or external documentation in code when necessary
 - **Meta-Marker Convention**: Comments and test names describe behavior — requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) live in the SPEC/PLAN KDs and the REVIEW traceability matrix, with the `noMetaMarker` lint rule enforcing this in plugin and test code
+- **Local-Contract Convention**: Code states its local contract; process trace lives in KDs. Comments and test names describe behavior in plain terms, with KD-side trace carrying requirement codes and findings. Commit messages follow the same shape in docs form: the message states the local change, process trace stays in KDs, carried by convention rather than hook lint
 - **Self-check**: Review all added comments. Verify against these examples:
   - ✅ `// Uses BigNumber to keep floating-point arithmetic exact` (comment WHY)
   - ✅ No comment explaining `function calculateTotal()` (self-documenting code)

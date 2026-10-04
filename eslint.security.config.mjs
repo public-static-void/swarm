@@ -6,7 +6,7 @@
 import security from 'eslint-plugin-security'
 
 // ── prohibition-lexicon over the rules layer ──────────────────────────────────
-// Scans AGENTS.md, agents/, commands/, and skills instruction sections for limiter
+// Scans AGENTS.md, agents/, and skills instruction sections for limiter
 // words that contradict "Point the Target". Limiters in structural layers
 // (permission-deny rules, plugin guard text) stay outside this scan's scope.
 const LEXICON = [
@@ -100,7 +100,7 @@ const textParser = {
 }
 
 const rulesLayerConfig = {
-  files: ['AGENTS.md', 'agents/**/*.md', 'commands/**/*.md', 'skills/**/*.md'],
+  files: ['AGENTS.md', 'agents/**/*.md', 'skills/**/*.md'],
   languageOptions: { parser: textParser },
   plugins: { 'rules-layer': { rules: { 'prohibition-lexicon': prohibitionLexicon } } },
   rules: { 'rules-layer/prohibition-lexicon': 'error' },
@@ -136,6 +136,15 @@ const LABEL_MILESTONE_PREFIX = /\bM[1-5]:/
 // the uppercase ID form is legitimate fixture/contract data everywhere.
 const MARKER_ALLOWLIST = [/\bISSUE-\d{3}\b/]
 
+function firstMarkerText(text) {
+  if (MARKER_ALLOWLIST.some((pattern) => pattern.test(text))) return null
+  for (const pattern of META_MARKERS) {
+    const match = pattern.exec(text)
+    if (match) return match[0]
+  }
+  return null
+}
+
 const noMetaMarker = {
   meta: {
     type: 'problem',
@@ -145,20 +154,12 @@ const noMetaMarker = {
     },
   },
   create(context) {
-    function firstMarker(text) {
-      if (MARKER_ALLOWLIST.some((pattern) => pattern.test(text))) return null
-      for (const pattern of META_MARKERS) {
-        const match = pattern.exec(text)
-        if (match) return match[0]
-      }
-      return null
-    }
     return {
       Program() {
         for (const comment of context.sourceCode.getAllComments()) {
           const lines = comment.value.split('\n')
           lines.forEach((line, i) => {
-            const hit = firstMarker(line)
+            const hit = firstMarkerText(line)
             if (hit) {
               context.report({
                 loc: { line: comment.loc.start.line + i, column: 0 },
@@ -173,7 +174,7 @@ const noMetaMarker = {
           const start = line.indexOf("'") >= 0 ? line.indexOf("'") : line.indexOf('"')
           const quote = line[start]
           const label = line.slice(start + 1, line.lastIndexOf(quote))
-          const hit = firstMarker(label)
+          const hit = firstMarkerText(label)
           const prefix = LABEL_MILESTONE_PREFIX.exec(label)
           if (hit) {
             context.report({
@@ -200,4 +201,69 @@ const sourceMetaMarkerConfig = {
   rules: { 'meta-marker/no-meta-marker': 'error' },
 }
 
-export default [security.configs.recommended, rulesLayerConfig, sourceMetaMarkerConfig]
+// ── no-meta-marker-prose: docs-surface extension ─────────────────────────────
+// Same token list over agent and skill prose. Three exclusions keep template
+// and example content scannable: fenced blocks hold example data (mirroring
+// the string-literal exclusion in code), {{ }} lines are template syntax for
+// KD shapes rather than live trace, and convention lines stating the local
+// contract may name token shapes while teaching the rule itself.
+const PROSE_CONVENTION_ALLOWLIST = [/local contract/i]
+const TEMPLATE_PLACEHOLDER_LINE = /{{|}}/
+
+const noMetaMarkerProse = {
+  meta: {
+    type: 'problem',
+    docs: { description: 'Reject process-workflow meta markers in agent and skill prose' },
+    messages: {
+      marker:
+        'Meta marker "{{marker}}" in docs prose — state the local contract and keep process trace in KDs.',
+    },
+  },
+  create(context) {
+    const lines = context.sourceCode.lines
+    return {
+      Program() {
+        // Skip leading YAML frontmatter (--- ... ---).
+        let start = 0
+        if (lines.length > 0 && lines[0].trim() === '---') {
+          for (let i = 1; i < lines.length; i++) {
+            if (lines[i].trim() === '---') {
+              start = i + 1
+              break
+            }
+          }
+        }
+        let inFence = false
+        for (let lineIndex = start; lineIndex < lines.length; lineIndex++) {
+          const line = lines[lineIndex]
+          if (line.trimStart().startsWith('```')) {
+            inFence = !inFence
+            continue
+          }
+          if (inFence) continue
+          if (TEMPLATE_PLACEHOLDER_LINE.test(line)) continue
+          if (PROSE_CONVENTION_ALLOWLIST.some((pattern) => pattern.test(line))) continue
+          const hit = firstMarkerText(line)
+          if (hit) {
+            context.report({
+              loc: { line: lineIndex + 1, column: 0 },
+              messageId: 'marker',
+              data: { marker: hit },
+            })
+          }
+        }
+      },
+    }
+  },
+}
+
+const proseMetaMarkerConfig = {
+  files: ['AGENTS.md', 'agents/**/*.md', 'skills/**/*.md'],
+  languageOptions: { parser: textParser },
+  plugins: { 'meta-marker': { rules: { 'no-meta-marker-prose': noMetaMarkerProse } } },
+  rules: { 'meta-marker/no-meta-marker-prose': 'error' },
+}
+
+export default [security.configs.recommended, rulesLayerConfig, sourceMetaMarkerConfig, proseMetaMarkerConfig]
+
+export { noMetaMarker, noMetaMarkerProse }

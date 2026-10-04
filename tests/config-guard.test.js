@@ -766,3 +766,30 @@ describe("harmless version-probe class", () => {
     expect(rule).toMatch(/re-run.*green/);
   });
 });
+
+describe("local-contract guardrail", () => {
+  it("states the local contract in the implementation and testing docs", () => {
+    const artisan = readAgent("artisan.md");
+    const testing = readFileSync(join(ROOT, "skills", "testing-skill", "SKILL.md"), "utf8");
+    for (const content of [artisan, testing]) {
+      expect(content).toContain("local contract");
+    }
+  });
+
+  it("keeps the commit convention docs-only with an unchanged hook", () => {
+    expect(readAgent("artisan.md")).toContain("Commit messages");
+    const hook = readRoot(".githooks/pre-commit");
+    expect(hook).toContain("npx vitest run");
+    expect(hook).toContain("npx eslint -c eslint.security.config.mjs");
+    expect(hook).not.toContain("commit-msg");
+    expect(hook).not.toContain("commitlint");
+  });
+
+  it("holds the prose scope without the dead commands glob", () => {
+    const config = readRoot("eslint.security.config.mjs");
+    for (const surface of ["agents/**/*.md", "skills/**/*.md", "AGENTS.md"]) {
+      expect(config).toContain(surface);
+    }
+    expect(config).not.toContain("commands/");
+  });
+});

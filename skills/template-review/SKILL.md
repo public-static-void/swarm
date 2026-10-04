@@ -53,14 +53,14 @@ row(s) its findings cite; `FUNDAMENTAL` blocks advancement and escalates.
 - **Detail**: {{what's wrong and why}}
 - **Milestone citation** (FAIL findings): {{M\d+ or impl-<id>- token}}
 
-### F002: ...
+### F002: {{finding title}}
 
 ### Traceability Matrix
 
 | Req ID | Plan Step | Artifact  | Declared Gate | Actually-Run Gate | Test/Check     | Status      |
 | ------ | --------- | --------- | ------------- | ----------------- | -------------- | ----------- |
-| R001   | P001      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
-| R002   | P002      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
+| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
+| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
 
 ## Audit
 
