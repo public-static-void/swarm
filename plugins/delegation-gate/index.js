@@ -128,7 +128,7 @@ function getLogFile() {
   // Re-bind the cached path when the env seam moves the log directory — a
   // stale cache would keep appending to the previously resolved path.
   if (!_logFile || dirname(_logFile) !== logDir) {
-    try { mkdirSync(logDir, { recursive: true }); } catch (_) {}
+    try { mkdirSync(logDir, { recursive: true }); } catch (_) { _droppedLogCount++; }
     _logFile = join(logDir, "delegation-gate.log");
   }
   return _logFile;

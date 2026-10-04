@@ -171,6 +171,25 @@ describe("gate debug enablement", () => {
 
         expect(hooks.getEnablementState().enabled).toBe(false);
       });
+
+      it("counts a log-dir mkdir failure in the dropped counter instead of losing it", async () => {
+        const logDir = makeTemp();
+        process.env[def.logDirEnv] = logDir;
+        process.env[def.debugFileEnv] = join(makeTemp(), ".debug-missing");
+        delete process.env[def.debugEnv];
+
+        const { hooks } = await loadGate(def);
+        hooks.resetDroppedLogCount();
+
+        const blocker = join(makeTemp(), "blocker-file");
+        writeFileSync(blocker, "not a directory");
+        process.env[def.logDirEnv] = join(blocker, "logs");
+
+        const state = hooks.getEnablementState();
+
+        expect(state.logWritable).toBe(false);
+        expect(hooks.getDroppedLogCount()).toBe(1);
+      });
     });
   }
 });
