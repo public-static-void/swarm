@@ -3804,7 +3804,8 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
     it("PREFLIGHT allowlist does not include edit — the intent KD is corrected in INTENT, not PREFLIGHT", async () => {
       // Static assertion — the PREFLIGHT allowlist must not gain edit; the
       // in-place intent-correction path is scoped to INTENT's edit allowlist.
-      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      // The allowlist tables live in ./phases.js (gate-local split).
+      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "phases.js"), "utf8");
       const allowlistLine = pluginSrc.split("\n").find(line => line.includes('PREFLIGHT: ["subagent"'));
       expect(allowlistLine).not.toContain('"edit"');
       expect(allowlistLine).toContain('"subagent"');
@@ -6798,7 +6799,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       const s = sid("f2-ac008");
       await initOverseer(s);
 
-      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      const pluginSrc = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "phases.js"), "utf8");
       const allowlistLine = pluginSrc.split("\n").find(line => line.includes('INTENT: ["write"'));
       expect(allowlistLine).toContain('"edit"');
 
