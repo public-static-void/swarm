@@ -105,8 +105,8 @@ Analyze the intent document, exercise Active Partner to resolve ambiguity, and p
 2. Read the INTENT KD and any ANALYSIS KD (from Analyzer) or exploration KD (from Explorer) thoroughly
 3. **Check Alignment**: Before writing, summarize your understanding in the SPEC KD's "Check Alignment" section. Document assumptions and proceed with best interpretation based on the INTENT KD and any available exploration/analysis KDs.
 4. **Active Partner**
-5. Define functional requirements (R001, R002, ...) — numbered, independently verifiable
-6. Define non-functional requirements (NFR001, ...) — performance, security, UX
+5. Define functional requirements — numbered requirement codes, independently verifiable
+6. Define non-functional requirements — performance, security, UX, carrying requirement codes
 7. Specify interface contracts — inputs, outputs, API signatures, data models
 8. Define acceptance criteria — checkbox items, independently testable
 9. Identify edge cases and failure modes
