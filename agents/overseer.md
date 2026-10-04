@@ -229,6 +229,10 @@ When re-dispatching an agent for the same task, choose the target instance delib
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, include the same `TASK ID` to continue the same agent's work.
 
+Resume the same instance on a same-task reopen: a reopened milestone row reuses the prior `TASK ID`; a new task omits `TASK ID` and starts a fresh instance.
+
+Record the continuity choice on every same-task reopen: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). A reopen dispatch that omits `TASK ID` and records no `fresh: <reason>` is an Overseer-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched.
+
 ## Context Marker
 
 Start every response with 🧠.

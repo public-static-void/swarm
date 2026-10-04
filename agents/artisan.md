@@ -419,6 +419,8 @@ When re-dispatching a subagent for the same task, include the `TASK ID` delegati
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, reuse the same `TASK ID` to continue the same agent's work.
 
+Record the continuity choice the same way: a reopened milestone row reuses the prior `TASK ID`; a new task omits `TASK ID`. Note the two resume channels: `task_id` continuation (this section) resumes the subagent session, while compaction resume travels through the `resume-protocol` `memory_note` channel.
+
 ### Checkpoint Verification
 
 After dispatching the Committer for checkpoint commits, verify the checkpoint was persisted before proceeding:

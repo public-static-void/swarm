@@ -78,6 +78,7 @@ const ERRORS = {
   MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
   INVALID_MILESTONE_ID: { code: "INVALID_MILESTONE_ID", message: "Invalid MILESTONE ID format", guidance: "MILESTONE ID must match /^[A-Za-z0-9][A-Za-z0-9_-]*$/" },
+  INVALID_TASK_ID: { code: "INVALID_TASK_ID", message: "TASK ID equals the dispatching SESSION ID", guidance: "TASK ID is a subagent resume handle and SESSION ID is the lifecycle session — reuse the prior artisan handle or omit TASK ID for a fresh instance" },
 
   RESULT_KD_MILESTONE_MISMATCH: { code: "RESULT_KD_MILESTONE_MISMATCH", message: "Swarm result KD does not match the MILESTONE ID", guidance: "Name the impl KD knowledge/impl-<milestone-id>-<name>-<session-id>[-gen{N}].md with the dispatched MILESTONE ID as the first token after impl-" }
 };
@@ -687,6 +688,12 @@ function renderTemplate(template, fields) {
   }
   // TASK ID is optional — when task_id is falsy, drop the `TASK ID:` header
   // line so dispatches without a redispatch identifier render no empty header.
+  // Render-path note: every mode template carries a TASK ID line so a reopened
+  // row in any mode renders the resume handle the same way, and the drop above
+  // keeps the line out when the field is empty. The tool-doc TASK ID hint stays
+  // swarm-scoped because the same-instance resume preference applies to reopened
+  // milestone rows, while other modes discover the field through the
+  // mode-agnostic dispatcher hint.
   if (!fields.task_id) {
     result = result.replace(/^TASK ID:.*$/m, "");
   }
@@ -724,6 +731,7 @@ SCOPE: optional context
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
 TASK ID: task id (optional — same-instance redispatch identifier)
+SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance).
 `;
 }
 
@@ -768,6 +776,7 @@ SESSION ID: (your session id)
 GENERATION: (the lifecycle generation number)
 SCOPE: (optional context)
 RESULT KD: ${resultKdExamples} (when subagent produces a KD)
+SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance).
 
 RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
 - ${displayMode}: ${resultKdExamples}
@@ -833,6 +842,16 @@ async function delegationGateServer(input, options) {
       // TASK ID passthrough — the task tool's task_id resumes the same
       // subagent session. Extracted from the prompt (or description fallback)
       // and forwarded untouched; absent field means no passthrough.
+      // Resume-handle guard: a TASK ID equal to the dispatching SESSION ID is
+      // the lifecycle session standing where the subagent resume handle
+      // belongs. Reject with reuse guidance and forward nothing — unknown
+      // handles still pass through verbatim; the self-session mixup stops here.
+      // The hook sessionID covers prompts that omit the SESSION ID line (the
+      // same fallback applied below), so the mixup stops in both spellings.
+      if (fields.task_id && (fields.session_id || sessionID) && fields.task_id === (fields.session_id || sessionID)) {
+        debug(`VALIDATION FAILED: TASK ID equals dispatching SESSION ID`);
+        throw new DelegationGateError(ERRORS.INVALID_TASK_ID.code, `${ERRORS.INVALID_TASK_ID.message} (SESSION ID ${fields.session_id || sessionID}) — ${ERRORS.INVALID_TASK_ID.guidance}`, ERRORS.INVALID_TASK_ID.guidance);
+      }
       if (fields.task_id) output.args.task_id = fields.task_id;
 
       // session_id from opencode hook input — fills {session_id} when prompt omits SESSION ID:

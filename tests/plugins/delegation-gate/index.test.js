@@ -1587,6 +1587,89 @@ RESULT KD: knowledge/checkpoint-foo.md`;
     });
   });
 
+  describe("Resume-handle guard", () => {
+    it("rejects a resume handle equal to the dispatching session id with reuse guidance", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_same_task
+GENERATION: 1
+MILESTONE ID: M1
+TASK ID: ses_same_task
+SCOPE: Continue milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_same_task-gen1.md`;
+
+      const output = { args: { prompt } };
+      const err = await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "ses_same_task", callID: "c1" },
+        output
+      ).catch((e) => e);
+      expect(err.code).toBe("INVALID_TASK_ID");
+      expect(err.message).toMatch(/SESSION ID/);
+      expect(err.message).toMatch(/TASK ID/);
+      expect(output.args.task_id).toBeUndefined();
+    });
+
+    it("forwards an unknown resume handle verbatim without validating it", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_abc
+GENERATION: 1
+MILESTONE ID: M1
+TASK ID: ses_unknown_handle_zzz
+SCOPE: Continue milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output);
+      expect(output.args.task_id).toBe("ses_unknown_handle_zzz");
+      expect(output.args.prompt).toContain("TASK ID: ses_unknown_handle_zzz");
+    });
+
+    it("drops an empty resume-handle line and forwards nothing", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_abc
+GENERATION: 1
+MILESTONE ID: M1
+TASK ID:
+SCOPE: Fresh milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
+
+      const output = { args: { prompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output);
+      expect(output.args.task_id).toBeUndefined();
+      expect(output.args.prompt).not.toMatch(/^TASK ID:/m);
+    });
+
+    it("states the session-vs-resume-handle distinction in the swarm tool doc", async () => {
+      const swarmPrompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+MILESTONE ID: M1
+SCOPE: Execute milestone M1
+RESULT KD: knowledge/impl-M1-foo.md`;
+
+      const swarmOutput = { args: { prompt: swarmPrompt } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, swarmOutput);
+      expect(swarmOutput.args.description).toContain("SESSION ID is the lifecycle session");
+      expect(swarmOutput.args.description).toContain("TASK ID is the subagent resume handle");
+    });
+
+    it("states the session-vs-resume-handle distinction in the mode-agnostic dispatcher hint", async () => {
+      const output = { description: "Delegate work to another agent." };
+      await hooks["tool.definition"]({ toolID: "task" }, output);
+      expect(output.description).toContain("SESSION ID is the lifecycle session");
+      expect(output.description).toContain("TASK ID is the subagent resume handle");
+    });
+  });
+
   describe("Mode Inference", () => {
     it("infers the mode from natural language when no MODE: field is present", async () => {
       const cases = [
