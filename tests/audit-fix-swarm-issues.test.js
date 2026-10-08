@@ -283,3 +283,38 @@ describe("verification verb routing posture", () => {
     expect(holders.sort()).toEqual(READ_ROLE_FILES);
   });
 });
+
+// The scribe gate keeps composed prose durable: lasting decisions and suite
+// changes live in the body while transient scratch lands in the Excluded
+// section, downstream trace stops at its source, and the commit hook stays
+// scoped to the suite plus security lint.
+describe("scribe timeless-docs checklist", () => {
+  function readScribe() {
+    return readFileSync(join(ROOT, "agents", "scribe.md"), "utf8");
+  }
+
+  function readPrecommitHook() {
+    return readFileSync(join(ROOT, ".githooks", "pre-commit"), "utf8");
+  }
+
+  it("states that durable content lives in the composed body", () => {
+    expect(readScribe()).toContain("Durable content lives in the body");
+  });
+
+  it("routes ephemeral trace to the excluded section with a disposition", () => {
+    const scribe = readScribe();
+    expect(scribe).toContain("Ephemeral trace lands in the Excluded section");
+    expect(scribe).toContain("one-line disposition per grouped item");
+  });
+
+  it("honors the source stop-line when composing downstream", () => {
+    expect(readScribe()).toContain("Downstream trace stops at the source");
+  });
+
+  it("keeps the commit hook to the suite plus security lint", () => {
+    const hook = readPrecommitHook();
+    expect(hook).toContain("npx vitest run");
+    expect(hook).toContain("npx eslint -c eslint.security.config.mjs");
+    expect(hook).not.toContain("knowledge");
+  });
+});
