@@ -413,6 +413,26 @@ describe("git force-add staging guard", () => {
   });
 });
 
+describe("temp-scoped removal grant", () => {
+  it("holds exactly the temp-scoped removal allow for the implementation role", () => {
+    const artisan = new Map(bashEntries(readAgent("artisan.md")).map((e) => [e.pattern, e.mode]));
+    expect(artisan.get("rm /tmp/opencode/*")).toBe("allow");
+    expect(artisan.get("rm*")).toBe("ask");
+  });
+
+  it("holds no unscoped removal allow in any agent file", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      for (const e of bashEntries(readAgent(f))) {
+        if (e.pattern === "rm*" && e.mode === "allow") {
+          offenders.push(`${f}: rm* allow`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe("committer plan/spec read contract", () => {
   const committer = readAgent("committer.md");
 
