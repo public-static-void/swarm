@@ -20,6 +20,7 @@ Context compaction truncates the active conversation; agents resume with the anc
 
 - Every agent persists its per-session scratch via `memory_note` at natural checkpoints: the current phase, the pending step, the open TODO list, and the paths of the KDs anchoring the work.
 - Notes live in `knowledge/short-term/{sessionID}/{agent}/` and are read back with `memory_note_read`.
+- Invoke the write channel as `memory_note` (Code Mode `tools.memory_note`); read back with `memory_note_read` and list with `memory_notes_list`.
 - The knowledge-gate resume hint (regenerated on every LLM call) reminds any agent with notes to read them, so the re-read instruction survives compaction.
 
 ### On Resume
