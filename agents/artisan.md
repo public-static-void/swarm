@@ -89,6 +89,9 @@ permissions:
     resource: "mv*"
     effect: ask
   - action: shell
+    resource: "rm /tmp/opencode/*"
+    effect: allow
+  - action: shell
     resource: "rm*"
     effect: ask
   - action: shell
