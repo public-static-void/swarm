@@ -132,3 +132,87 @@ describe("bare channel round trip from the artisan surface", () => {
     expect(note.content).toBe("bare channel reachable");
   });
 });
+
+function permissionRules(content) {
+  const lines = content.split("\n");
+  const start = lines.findIndex((l) => l.trim() === "permissions:");
+  if (start === -1) return [];
+  const rules = [];
+  let current = null;
+  const flush = () => {
+    if (current && current.action && current.resource && current.effect) rules.push(current);
+    current = null;
+  };
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^---\s*$/.test(line)) break;
+    let m;
+    if ((m = line.match(/^\s*-\s*action:\s*(\S+)\s*$/))) {
+      flush();
+      current = { action: m[1] };
+    } else if (current && (m = line.match(/^\s*resource:\s*"?([^"]*)"?\s*$/))) {
+      current.resource = m[1];
+    } else if (current && (m = line.match(/^\s*effect:\s*(allow|deny|ask)\s*$/))) {
+      current.effect = m[1];
+      flush();
+    } else if (/^\S/.test(line)) {
+      break;
+    }
+  }
+  flush();
+  return rules;
+}
+
+function agentFiles() {
+  return readdirSync(join(ROOT, "agents")).filter((f) => f.endsWith(".md")).sort();
+}
+
+const TEMP_SCOPED_RM_PATTERN = "rm /tmp/opencode/*";
+
+describe("temp-scoped removal grant", () => {
+  it("holds the temp-scoped removal allow for the implementation role", () => {
+    const artisan = readFileSync(join(ROOT, "agents", "artisan.md"), "utf8");
+    const shellRules = permissionRules(artisan).filter((r) => r.action === "shell");
+    expect(shellRules).toContainEqual({
+      action: "shell",
+      resource: TEMP_SCOPED_RM_PATTERN,
+      effect: "allow",
+    });
+  });
+
+  it("keeps the general removal rule gated for all other paths", () => {
+    const artisan = readFileSync(join(ROOT, "agents", "artisan.md"), "utf8");
+    const shellRules = permissionRules(artisan).filter((r) => r.action === "shell");
+    expect(shellRules).toContainEqual({ action: "shell", resource: "rm*", effect: "ask" });
+  });
+
+  it("holds no unscoped removal allow in any agent file", () => {
+    const offenders = [];
+    for (const file of agentFiles()) {
+      const content = readFileSync(join(ROOT, "agents", file), "utf8");
+      for (const rule of permissionRules(content)) {
+        if (rule.action === "shell" && rule.resource === "rm*" && rule.effect === "allow") {
+          offenders.push(`${file}: rm* allow`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps the force-add deny pairing in the committer", () => {
+    const committer = readFileSync(join(ROOT, "agents", "committer.md"), "utf8");
+    const shellRules = permissionRules(committer).filter((r) => r.action === "shell");
+    const allowIdx = shellRules.findIndex((r) => r.resource === "git add*" && r.effect === "allow");
+    const denyIdx = shellRules.findIndex((r) => r.resource === "git add -f*" && r.effect === "deny");
+    expect(allowIdx).toBeGreaterThanOrEqual(0);
+    expect(denyIdx).toBeGreaterThan(allowIdx);
+  });
+
+  it("bounds the note-delete channel to short-term notes", () => {
+    const source = readPluginSource();
+    const deleteSection = source.slice(source.indexOf('if (toolID === "memory_note_delete")'));
+    expect(deleteSection).toContain("short-term");
+    expect(deleteSection).not.toContain("byproduct");
+    expect(deleteSection).not.toContain("/tmp/opencode");
+  });
+});
