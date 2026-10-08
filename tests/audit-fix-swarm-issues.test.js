@@ -216,3 +216,70 @@ describe("temp-scoped removal grant", () => {
     expect(deleteSection).not.toContain("/tmp/opencode");
   });
 });
+
+const DOC_LINT_PATTERN = "make lint-docs*";
+const FORMAT_CHECK_PATTERN = "make fmt-check*";
+const REVIEW_SCAN_PATTERN = "cargo audit*";
+const SUPPLY_MUTATION_PATTERN = "cargo update*";
+const IGNORE_PROBE_PATTERN = "git check-ignore*";
+const READ_ROLE_FILES = ["analyzer.md", "explorer.md", "inspector.md"];
+
+function shellAllows(content) {
+  return permissionRules(content).filter((r) => r.action === "shell" && r.effect === "allow");
+}
+
+describe("verification verb routing posture", () => {
+  it("leaves doc-lint and format-check verbs ungranted so verification legs route to the reviewer", () => {
+    const offenders = [];
+    for (const file of agentFiles()) {
+      const content = readFileSync(join(ROOT, "agents", file), "utf8");
+      for (const rule of shellAllows(content)) {
+        if (rule.resource === DOC_LINT_PATTERN || rule.resource === FORMAT_CHECK_PATTERN) {
+          offenders.push(`${file}: ${rule.resource}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps the dependency scan with the reviewer role", () => {
+    const artisan = readFileSync(join(ROOT, "agents", "artisan.md"), "utf8");
+    expect(shellAllows(artisan).some((r) => r.resource === REVIEW_SCAN_PATTERN)).toBe(false);
+    const inspector = readFileSync(join(ROOT, "agents", "inspector.md"), "utf8");
+    expect(shellAllows(inspector).some((r) => r.resource === REVIEW_SCAN_PATTERN)).toBe(true);
+  });
+
+  it("leaves supply-chain mutation denied everywhere", () => {
+    const offenders = [];
+    for (const file of agentFiles()) {
+      const content = readFileSync(join(ROOT, "agents", file), "utf8");
+      for (const rule of shellAllows(content)) {
+        if (rule.resource === SUPPLY_MUTATION_PATTERN || rule.resource.startsWith("cargo update")) {
+          offenders.push(`${file}: ${rule.resource}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps bare tool invocations scoped rather than bare-granted", () => {
+    const offenders = [];
+    for (const file of agentFiles()) {
+      const content = readFileSync(join(ROOT, "agents", file), "utf8");
+      for (const rule of shellAllows(content)) {
+        if (rule.resource === "make" || rule.resource === "cargo") {
+          offenders.push(`${file}: bare ${rule.resource} allow`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps the ignore-probe allow set with the read roles", () => {
+    const holders = agentFiles().filter((file) => {
+      const content = readFileSync(join(ROOT, "agents", file), "utf8");
+      return shellAllows(content).some((r) => r.resource === IGNORE_PROBE_PATTERN);
+    });
+    expect(holders.sort()).toEqual(READ_ROLE_FILES);
+  });
+});
