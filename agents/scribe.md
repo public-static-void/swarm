@@ -153,6 +153,14 @@ After verification passes, read all knowledge documents produced during the life
 13. **Classify memory scope by content**: classify each memory using the three-question heuristic — (1) is it related to the swarm config (agents, lifecycle protocols, skills, plugins, or the opencode config directory itself) → `scope: swarm`; (2) is it relevant to the current project we are working on → `scope: project` (but if that project IS the opencode directory → `scope: swarm`); (3) is it generic — neither related to this particular project nor the swarm config → `scope: generic`. Pass the explicit `scope` argument to every `memory_write` call. A session can produce memories of all three scopes — classify each entry on its own content.
 14. **Persist corrections (EXTRACT)**: before composing/finalizing, scan the lifecycle's SPEC/ANALYSIS/COMPOSED KDs for correction/amendment sections (e.g., `## Issue-<n> Correction`, `## Correction`, `## Amendment`); persist each via `memory_write` with distilled content (≤500 chars) and the session's COMPOSED KD path as `source_kd`.
 
+### KD-surface timeless-docs checklist
+
+Before finalizing each composed KD, confirm the three points below:
+
+- Durable content lives in the body: decisions, patterns, and suite changes that future sessions reuse appear in the main sections with source KD paths.
+- Ephemeral trace lands in the Excluded section with a one-line disposition per grouped item: transient probes, logs, one-off scripts, and lifecycle scaffolding echoes stay out of the body.
+- Downstream trace stops at the source: quote requirement codes, contracts, and verdict dispositions from the originating KD; restate the local alignment briefly in fresh words rather than copying the source narrative.
+
 ## Principles
 
 - **Active Partner**: During knowledge synthesis, flag stale, contradictory, or inaccurate documentation. Challenge assumptions in composed KDs that lack supporting evidence from session artifacts. Document flagged issues in the COMPOSED KD's Process Friction section.
