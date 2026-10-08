@@ -2223,7 +2223,7 @@ async function knowledgeGateServer(input, options) {
         }
       },
       memory_note: {
-        description: "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings), scope (optional project|generic|swarm). Returns { message, id } or { error }.",
+        description: "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings), scope (optional project|generic|swarm). Returns { message, id } or { error }. Call as `memory_note` (Code Mode `tools.memory_note`).",
         args: V2_SCHEMAS.memory_note,
         async execute(args, context) {
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
@@ -2652,7 +2652,7 @@ async function knowledgeGateServer(input, options) {
       }
 
       if (toolID === "memory_note") {
-        output.description = "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings), scope (optional project|generic|swarm). Returns { message, id } or { error }.";
+        output.description = "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string ≤100 chars), content (string ≤2000 chars), tags (optional, 0-5 strings), scope (optional project|generic|swarm). Returns { message, id } or { error }. Call as `memory_note` (Code Mode `tools.memory_note`).";
         debug(`toolDefinition: provided description for memory_note`);
       }
 
