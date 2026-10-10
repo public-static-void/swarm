@@ -75,20 +75,19 @@ describe("calling-agent allowlist loading", () => {
 });
 
 describe("make-target denial feedback", () => {
-  it("names the denied builder target with both variants and a concrete retry", () => {
+  it("names the denied code-execution probe with its version variant and a concrete retry", () => {
     const advice = adviseDenial({
       agent: "artisan",
-      rawCommand: "make lint",
+      rawCommand: "python -c 'print(1)'",
       patterns: realPatterns("artisan"),
     });
     expect(advice.allowed).toBe(false);
-    expect(advice.result.deniedSegments).toEqual(["make lint"]);
-    expect(advice.result.deniedPrefix).toBe("make");
+    expect(advice.result.deniedSegments).toEqual(["python -c 'print(1)'"]);
+    expect(advice.result.deniedPrefix).toBe("python");
     expect(advice.result.fallbackUsed).toBe(false);
-    expect(advice.message).toContain("`make lint`");
-    expect(advice.message).toContain("make test*");
-    expect(advice.message).toContain("make build*");
-    expect(advice.message).toContain("`make test`");
+    expect(advice.message).toContain("`python -c 'print(1)'`");
+    expect(advice.message).toContain("python --version*");
+    expect(advice.message).toContain("`python --version`");
     expect(advice.message).toContain("this target only");
     expect(nonEmptyLineCount(advice.message)).toBeLessThanOrEqual(5);
   });
@@ -199,7 +198,7 @@ describe("suggestion traceability", () => {
       const fileText = await readFile(join(agentsDir, `${agent}.md`), "utf8");
       const advice = adviseDenial({
         agent,
-        rawCommand: "make lint",
+        rawCommand: "python -c 'print(1)'",
         patterns: realPatterns(agent),
       });
       expect(advice.allowed).toBe(false);

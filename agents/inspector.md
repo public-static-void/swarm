@@ -122,6 +122,21 @@ permissions:
     resource: "git log --oneline*"
     effect: allow
   - action: shell
+    resource: "gh issue view*"
+    effect: allow
+  - action: shell
+    resource: "gh pr view*"
+    effect: allow
+  - action: shell
+    resource: "gh search*"
+    effect: allow
+  - action: shell
+    resource: "gh release view*"
+    effect: allow
+  - action: shell
+    resource: "gh repo view*"
+    effect: allow
+  - action: shell
     resource: "npm test*"
     effect: allow
   - action: shell
@@ -170,6 +185,27 @@ permissions:
     resource: "cargo audit*"
     effect: allow
   - action: shell
+    resource: "poetry check*"
+    effect: allow
+  - action: shell
+    resource: "poetry show*"
+    effect: allow
+  - action: shell
+    resource: "pip check*"
+    effect: allow
+  - action: shell
+    resource: "pip list*"
+    effect: allow
+  - action: shell
+    resource: "pip show*"
+    effect: allow
+  - action: shell
+    resource: "pip freeze*"
+    effect: allow
+  - action: shell
+    resource: "pip audit*"
+    effect: allow
+  - action: shell
     resource: "pytest tests*"
     effect: allow
   - action: shell
@@ -183,6 +219,18 @@ permissions:
     effect: allow
   - action: shell
     resource: "make build*"
+    effect: allow
+  - action: shell
+    resource: "make lint*"
+    effect: allow
+  - action: shell
+    resource: "make check*"
+    effect: allow
+  - action: shell
+    resource: "make vet*"
+    effect: allow
+  - action: shell
+    resource: "make audit*"
     effect: allow
   - action: shell
     resource: "docker compose ps*"
