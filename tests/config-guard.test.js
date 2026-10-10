@@ -90,7 +90,15 @@ const ANALYZER_READ_BASELINE_COMMANDS = [
 ];
 const COMMITTER_LIST_COMMANDS = ["ls*"];
 const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
-const SCAN_COMMANDS = ["npm audit*", "npm run audit*"];
+const SCAN_COMMANDS = ["npm audit*", "npm run audit*", "pip audit*"];
+// Per-command owners: the python scan probe is a scanner-role grant (the
+// builder holds it for dependency work, the verifier for scan parity) while
+// the investigator role stays denied by design.
+const SCAN_COMMAND_AGENTS = {
+  "npm audit*": SCAN_AGENTS,
+  "npm run audit*": SCAN_AGENTS,
+  "pip audit*": ["inspector.md", "artisan.md"],
+};
 const INSTALL_AGENTS = ["artisan.md"];
 const INSTALL_COMMANDS = ["npm install --save-dev*"];
 const RUST_BUILD_AGENTS = ["artisan.md"];
@@ -102,6 +110,9 @@ const ARTISAN_HEADLESS_COMMANDS = [
   "poetry install*", "cargo build*", "composer install*",
   "make test*", "make build*", "go get*", "go install*",
   "uv run*", "uv sync*", "pip install*",
+  "poetry add*", "poetry update*", "poetry lock*",
+  "uv add*", "uv lock*",
+  "yarn install --frozen-lockfile*", "pnpm install --frozen-lockfile*",
   "docker compose exec*", "docker compose run --rm*",
   "podman compose exec*", "podman compose run --rm*",
   "compose exec*", "compose run --rm*",
@@ -161,6 +172,58 @@ const CURATED_TEST_BUILD_COMMANDS = [
   "pytest tests*",
   "go test*",
 ];
+// Python read-only probes: verb-first inspection entries shared by the
+// gate-running roles. Ownership varies per entry (only the builder holds
+// pip-compile), so each entry maps to its owning roles.
+const PYTHON_READ_PROBE_COMMANDS = [
+  "poetry check*", "poetry show*", "poetry --version*",
+  "pip check*", "pip list*", "pip show*", "pip freeze*", "pip --version*",
+  "uv pip list*", "uv --version*",
+  "python --version*", "pip-compile --version*",
+];
+const PYTHON_READ_PROBE_AGENTS = {
+  "poetry check*": ["artisan.md", "analyzer.md", "inspector.md"],
+  "poetry show*": ["artisan.md", "analyzer.md", "inspector.md"],
+  "poetry --version*": ["artisan.md", "analyzer.md"],
+  "pip check*": ["artisan.md", "analyzer.md", "inspector.md"],
+  "pip list*": ["artisan.md", "analyzer.md", "inspector.md"],
+  "pip show*": ["artisan.md", "analyzer.md", "inspector.md"],
+  "pip freeze*": ["artisan.md", "analyzer.md", "inspector.md"],
+  "pip --version*": ["artisan.md", "analyzer.md"],
+  "uv pip list*": ["artisan.md", "analyzer.md"],
+  "uv --version*": ["artisan.md", "analyzer.md"],
+  "python --version*": ["artisan.md", "analyzer.md"],
+  "pip-compile --version*": ["artisan.md"],
+};
+// Python mutators stay builder-only: the investigator and verifier roles
+// must not gain dependency-write entries.
+const PYTHON_MUTATOR_COMMANDS = [
+  "poetry add*", "poetry update*", "poetry lock*",
+  "pip install*", "uv add*", "uv sync*", "uv lock*",
+];
+// Read-only make gates: lint/check/vet/audit for all three gate-running
+// roles; the format gate mutates sources so only the builder holds it.
+const MAKE_GATE_COMMANDS = [
+  "make fmt*", "make lint*", "make check*", "make vet*", "make audit*",
+];
+const MAKE_GATE_AGENTS = {
+  "make fmt*": ["artisan.md"],
+  "make lint*": ["artisan.md", "analyzer.md", "inspector.md"],
+  "make check*": ["artisan.md", "analyzer.md", "inspector.md"],
+  "make vet*": ["artisan.md", "analyzer.md", "inspector.md"],
+  "make audit*": ["artisan.md", "analyzer.md", "inspector.md"],
+};
+// Read-only gh inspection entries for the gate-running roles; roles without
+// a verification mandate hold none of them.
+const GH_READ_COMMANDS = [
+  "gh issue view*", "gh pr view*", "gh search*",
+  "gh release view*", "gh repo view*",
+];
+const GH_READ_AGENTS = ["artisan.md", "analyzer.md", "inspector.md"];
+const GH_READ_EXCLUDED_AGENTS = ["overseer.md", "explorer.md", "committer.md"];
+// Analyzer parity additions: the test-runner entry and toolchain probes the
+// other gate-running roles already hold, without any installer scope.
+const ANALYZER_PARITY_COMMANDS = ["npm run test*", "cargo --version*", "cargo fmt --check*"];
 
 describe("SPEC-template git hygiene", () => {
   const skill = readRoot(join("skills", "template-spec", "SKILL.md"));
@@ -264,15 +327,18 @@ describe("agent permission allowlists", () => {
 
   it("keeps verb-pinned dependency-scan commands for the scanning agents", () => {
     const missing = [];
-    for (const f of SCAN_AGENTS) {
-      const patterns = entriesByFile.get(f).map((e) => e.pattern);
-      for (const cmd of SCAN_COMMANDS) {
+    for (const cmd of SCAN_COMMANDS) {
+      for (const f of SCAN_COMMAND_AGENTS[cmd]) {
+        const patterns = entriesByFile.get(f).map((e) => e.pattern);
         if (!patterns.includes(cmd)) {
           missing.push(`${f}: ${cmd}`);
         }
       }
     }
     expect(missing).toEqual([]);
+    expect(
+      entriesByFile.get("analyzer.md").map((e) => e.pattern)
+    ).not.toContain("pip audit*");
   });
 
   it("keeps the scoped npm install enabler for Artisan", () => {
@@ -384,6 +450,79 @@ describe("agent permission allowlists", () => {
     }
     expect(offenders).toEqual([]);
     expect(CURATED_TEST_BUILD_COMMANDS).not.toContain("pytest*");
+  });
+
+  it("pins the python read probes per owning role and keeps mutators builder-only", () => {
+    const missing = [];
+    for (const cmd of PYTHON_READ_PROBE_COMMANDS) {
+      for (const f of PYTHON_READ_PROBE_AGENTS[cmd]) {
+        const patterns = entriesByFile.get(f).map((e) => e.pattern);
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+    const offenders = [];
+    for (const f of ["analyzer.md", "inspector.md"]) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of PYTHON_MUTATOR_COMMANDS) {
+        if (patterns.includes(cmd)) {
+          offenders.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("pins the read-only make gates per owning role and keeps the format gate builder-only", () => {
+    const missing = [];
+    for (const cmd of MAKE_GATE_COMMANDS) {
+      for (const f of MAKE_GATE_AGENTS[cmd]) {
+        const patterns = entriesByFile.get(f).map((e) => e.pattern);
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+    const offenders = [];
+    for (const f of ["analyzer.md", "inspector.md"]) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      if (patterns.includes("make fmt*")) {
+        offenders.push(`${f}: make fmt*`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("pins the read-only gh inspection entries for the gate-running roles only", () => {
+    const missing = [];
+    for (const f of GH_READ_AGENTS) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of GH_READ_COMMANDS) {
+        if (!patterns.includes(cmd)) {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+    const offenders = [];
+    for (const f of GH_READ_EXCLUDED_AGENTS) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of GH_READ_COMMANDS) {
+        if (patterns.includes(cmd)) {
+          offenders.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("carries the test-runner parity entries for the analysis role", () => {
+    const patterns = entriesByFile.get("analyzer.md").map((e) => e.pattern);
+    const missing = ANALYZER_PARITY_COMMANDS.filter((cmd) => !patterns.includes(cmd));
+    expect(missing).toEqual([]);
   });
 });
 
