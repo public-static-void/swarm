@@ -77,6 +77,9 @@ permissions:
     resource: "npm run lint*"
     effect: allow
   - action: shell
+    resource: "npm run test*"
+    effect: allow
+  - action: shell
     resource: "bun test*"
     effect: allow
   - action: shell
@@ -93,6 +96,33 @@ permissions:
     effect: allow
   - action: shell
     resource: "poetry run*"
+    effect: allow
+  - action: shell
+    resource: "poetry check*"
+    effect: allow
+  - action: shell
+    resource: "poetry show*"
+    effect: allow
+  - action: shell
+    resource: "poetry --version*"
+    effect: allow
+  - action: shell
+    resource: "pip check*"
+    effect: allow
+  - action: shell
+    resource: "pip list*"
+    effect: allow
+  - action: shell
+    resource: "pip show*"
+    effect: allow
+  - action: shell
+    resource: "pip freeze*"
+    effect: allow
+  - action: shell
+    resource: "pip --version*"
+    effect: allow
+  - action: shell
+    resource: "python --version*"
     effect: allow
   - action: shell
     resource: "mvn test*"
@@ -116,7 +146,19 @@ permissions:
     resource: "rustup toolchain*"
     effect: allow
   - action: shell
+    resource: "cargo --version*"
+    effect: allow
+  - action: shell
+    resource: "cargo fmt --check*"
+    effect: allow
+  - action: shell
     resource: "uv run*"
+    effect: allow
+  - action: shell
+    resource: "uv pip list*"
+    effect: allow
+  - action: shell
+    resource: "uv --version*"
     effect: allow
   - action: shell
     resource: "php -l *"
@@ -200,6 +242,21 @@ permissions:
     resource: "git log --oneline*"
     effect: allow
   - action: shell
+    resource: "gh issue view*"
+    effect: allow
+  - action: shell
+    resource: "gh pr view*"
+    effect: allow
+  - action: shell
+    resource: "gh search*"
+    effect: allow
+  - action: shell
+    resource: "gh release view*"
+    effect: allow
+  - action: shell
+    resource: "gh repo view*"
+    effect: allow
+  - action: shell
     resource: "npx vitest*"
     effect: allow
   - action: shell
@@ -219,6 +276,18 @@ permissions:
     effect: allow
   - action: shell
     resource: "make test*"
+    effect: allow
+  - action: shell
+    resource: "make lint*"
+    effect: allow
+  - action: shell
+    resource: "make check*"
+    effect: allow
+  - action: shell
+    resource: "make vet*"
+    effect: allow
+  - action: shell
+    resource: "make audit*"
     effect: allow
   - action: shell
     resource: "docker compose logs*"
