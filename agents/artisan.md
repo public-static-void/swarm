@@ -125,6 +125,21 @@ permissions:
     resource: "git rm*"
     effect: allow
   - action: shell
+    resource: "gh issue view*"
+    effect: allow
+  - action: shell
+    resource: "gh pr view*"
+    effect: allow
+  - action: shell
+    resource: "gh search*"
+    effect: allow
+  - action: shell
+    resource: "gh release view*"
+    effect: allow
+  - action: shell
+    resource: "gh repo view*"
+    effect: allow
+  - action: shell
     resource: "npm test*"
     effect: allow
   - action: shell
@@ -149,6 +164,18 @@ permissions:
     resource: "npm ci*"
     effect: allow
   - action: shell
+    resource: "npm ls*"
+    effect: allow
+  - action: shell
+    resource: "npm outdated*"
+    effect: allow
+  - action: shell
+    resource: "yarn install --frozen-lockfile*"
+    effect: allow
+  - action: shell
+    resource: "pnpm install --frozen-lockfile*"
+    effect: allow
+  - action: shell
     resource: "bun install*"
     effect: allow
   - action: shell
@@ -171,6 +198,24 @@ permissions:
     effect: allow
   - action: shell
     resource: "poetry install*"
+    effect: allow
+  - action: shell
+    resource: "poetry add*"
+    effect: allow
+  - action: shell
+    resource: "poetry update*"
+    effect: allow
+  - action: shell
+    resource: "poetry lock*"
+    effect: allow
+  - action: shell
+    resource: "poetry check*"
+    effect: allow
+  - action: shell
+    resource: "poetry show*"
+    effect: allow
+  - action: shell
+    resource: "poetry --version*"
     effect: allow
   - action: shell
     resource: "pytest tests*"
@@ -201,6 +246,21 @@ permissions:
     effect: allow
   - action: shell
     resource: "make build*"
+    effect: allow
+  - action: shell
+    resource: "make fmt*"
+    effect: allow
+  - action: shell
+    resource: "make lint*"
+    effect: allow
+  - action: shell
+    resource: "make check*"
+    effect: allow
+  - action: shell
+    resource: "make vet*"
+    effect: allow
+  - action: shell
+    resource: "make audit*"
     effect: allow
   - action: shell
     resource: "mvn test*"
@@ -258,6 +318,42 @@ permissions:
     effect: allow
   - action: shell
     resource: "pip install*"
+    effect: allow
+  - action: shell
+    resource: "pip check*"
+    effect: allow
+  - action: shell
+    resource: "pip list*"
+    effect: allow
+  - action: shell
+    resource: "pip show*"
+    effect: allow
+  - action: shell
+    resource: "pip freeze*"
+    effect: allow
+  - action: shell
+    resource: "pip --version*"
+    effect: allow
+  - action: shell
+    resource: "pip audit*"
+    effect: allow
+  - action: shell
+    resource: "pip-compile --version*"
+    effect: allow
+  - action: shell
+    resource: "python --version*"
+    effect: allow
+  - action: shell
+    resource: "uv add*"
+    effect: allow
+  - action: shell
+    resource: "uv lock*"
+    effect: allow
+  - action: shell
+    resource: "uv pip list*"
+    effect: allow
+  - action: shell
+    resource: "uv --version*"
     effect: allow
   - action: shell
     resource: "php -l *"
