@@ -798,7 +798,7 @@ describe("planning shape and scribe composition discipline", () => {
     "failing test first",
     "implementation plus handoff",
     "skeleton",
-    "final implementation milestone",
+    "milestone that caused it",
   ];
 
   it("keeps the milestone discipline in parity between role and template", () => {
