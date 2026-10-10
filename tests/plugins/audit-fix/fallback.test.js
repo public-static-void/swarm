@@ -105,22 +105,21 @@ describe("shell interception wiring", () => {
     for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   });
 
-  it("throws the attributed message for a denied builder target", async () => {
+  it("throws the attributed message for a denied code-execution probe", async () => {
     const hooks = await loadHooks();
     const sessionID = "fallback-wiring-denied";
     await hooks["chat.params"]({ sessionID, agent: "artisan" }, {});
     const failure = await hooks["tool.execute.before"](
       { tool: "shell", sessionID, callID: "call-1" },
-      { args: { command: "make lint" } }
+      { args: { command: "python -c 'print(1)'" } }
     ).then(
       () => null,
       (error) => error
     );
     expect(failure).not.toBeNull();
     expect(failure.code).toBe("SHELL_DENIED_ATTRIBUTED");
-    expect(failure.message).toContain("`make lint`");
-    expect(failure.message).toContain("make test*");
-    expect(failure.message).toContain("make build*");
+    expect(failure.message).toContain("`python -c 'print(1)'`");
+    expect(failure.message).toContain("python --version*");
   });
 
   it("passes an allowlisted builder target through untouched", async () => {
