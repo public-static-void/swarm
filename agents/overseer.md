@@ -207,22 +207,22 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 
 When re-dispatching an agent for the same task, choose the target instance deliberately. The `TASK ID` delegation field (passed through to the subagent tool's `task_id`) resumes the same subagent session, preserving its in-flight context and partial work.
 
-**Prefer the same instance** (reuse the prior `TASK ID`) when the agent:
+**Reuse the same instance** (reuse the prior `TASK ID`) when the re-dispatch targets the same artifact — same RESULT KD path, same milestone row, or same KD artifact amendment — including when the agent:
 - returned an empty result;
 - stopped mid-task before completing;
 - exhausted its token budget;
 - worked on a milestone that a VERIFY FAIL verdict reopened — reuse the same artisans who worked on the reopened milestones so they continue from their existing context.
 
-**Prefer a fresh instance** (omit `TASK ID` or use a new one) when the agent:
+**Start a fresh instance** (omit `TASK ID` or use a new one) for a genuinely new task, including when the agent:
 - is looping or repeating the same action without progress;
 - is misbehaving or producing unreliable output;
 - has a prior session that is stale or evicted.
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, include the same `TASK ID` to continue the same agent's work.
 
-Resume the same instance on a same-task reopen: a reopened milestone row reuses the prior `TASK ID`; a new task omits `TASK ID` and starts a fresh instance.
+Resume the same instance on a same-artifact re-dispatch: the same RESULT KD path, same milestone row, or same KD artifact amendment reuses the prior `TASK ID`; a genuinely new task omits `TASK ID` and starts a fresh instance.
 
-Record the continuity choice on every same-task reopen: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). A reopen dispatch that omits `TASK ID` and records no `fresh: <reason>` is an Overseer-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched.
+Record the continuity choice on every same-artifact re-dispatch in any mode: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). A re-dispatch that omits `TASK ID` and records no `fresh: <reason>` is an Overseer-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched.
 
 ## Context Marker
 
