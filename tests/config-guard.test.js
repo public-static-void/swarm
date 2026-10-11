@@ -235,6 +235,11 @@ const GH_READ_COMMANDS = [
 ];
 const GH_READ_AGENTS = ["artisan.md", "analyzer.md", "inspector.md"];
 const GH_READ_EXCLUDED_AGENTS = ["overseer.md", "explorer.md", "committer.md"];
+// Narrow-role diagnostic minimums: the read-only inspection roles hold the
+// echo diagnostic; only the codebase-mapping role holds git diff/log.
+const NARROW_ECHO_AGENTS = ["explorer.md", "scribe.md", "pathfinder.md"];
+const NARROW_ECHO_COMMANDS = ["echo*"];
+const EXPLORER_GIT_DIAG_COMMANDS = ["git diff*", "git log*"];
 // Analyzer parity additions: the test-runner entry and toolchain probes the
 // other gate-running roles already hold, without any installer scope.
 const ANALYZER_PARITY_COMMANDS = ["npm run test*", "cargo --version*", "cargo fmt --check*"];
@@ -569,6 +574,50 @@ describe("agent permission allowlists", () => {
     const patterns = entriesByFile.get("analyzer.md").map((e) => e.pattern);
     const missing = ANALYZER_PARITY_COMMANDS.filter((cmd) => !patterns.includes(cmd));
     expect(missing).toEqual([]);
+  });
+
+  it("carries the echo diagnostic for the narrow inspection roles", () => {
+    const missing = [];
+    for (const f of NARROW_ECHO_AGENTS) {
+      const allows = new Map(
+        entriesByFile.get(f).filter((e) => e.mode === "allow").map((e) => [e.pattern, e.mode])
+      );
+      for (const cmd of NARROW_ECHO_COMMANDS) {
+        if (allows.get(cmd) !== "allow") {
+          missing.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("scopes the git diff and log diagnostics to the explorer role", () => {
+    const explorer = new Map(entriesByFile.get("explorer.md").map((e) => [e.pattern, e.mode]));
+    const missing = EXPLORER_GIT_DIAG_COMMANDS.filter((cmd) => explorer.get(cmd) !== "allow");
+    expect(missing).toEqual([]);
+    const offenders = [];
+    for (const f of ["scribe.md", "pathfinder.md"]) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of EXPLORER_GIT_DIAG_COMMANDS) {
+        if (patterns.includes(cmd)) {
+          offenders.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps dependency mutators out of the narrow inspection roles", () => {
+    const offenders = [];
+    for (const f of [...NARROW_ECHO_AGENTS, "analyzer.md", "inspector.md"]) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of ["npm install*", "npm update*", "npm ci*"]) {
+        if (patterns.includes(cmd)) {
+          offenders.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 
