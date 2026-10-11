@@ -527,6 +527,83 @@ function findInvalidMultiPhaseHop(phases, currentPhase, backwardTransitions) {
   return null;
 }
 
+// Full-walk pre-validation for a /phase override queue. Checks three classes
+// in order and reports the first unsatisfiable hop:
+//   1. connectivity — the existing backward-chain + reachability check;
+//   2. scope — every hop resolves to a phase carrying a tool-scope entry, so
+//      the walk never lands where no tool contract is documented;
+//   3. gate-type — every hop resolves to a phase with a known advancement
+//      gate (KD prefix, dual-KD, or verdict gate), so the walk never lands
+//      where no evidence check can run.
+// Returns null when the whole walk is committable, or { from, to, reason }
+// with reason one of "connectivity" | "scope" | "gate-type". Single-hop
+// walks skip the chain check (vacuous) and run scope + gate-type only, so
+// single-phase overrides flow through the same atomic path with unchanged
+// behavior. The scope/gate tables are injectable for unit tests; defaults
+// are the live gate tables.
+function validateMultiPhaseWalk(phases, currentPhase, backwardTransitions, overrides) {
+  const tables = overrides || {};
+  const allowlist = tables.toolAllowlist || TOOL_ALLOWLIST;
+  const prefixes = tables.gatePrefixes || KD_TYPE_PREFIXES;
+  const hops = Array.isArray(phases) ? phases : [phases];
+  if (hops.length >= 2) {
+    const badHop = findInvalidMultiPhaseHop(hops, currentPhase, backwardTransitions);
+    if (badHop) return { from: badHop.from, to: badHop.to, reason: "connectivity" };
+  }
+  for (let i = 0; i < hops.length; i++) {
+    if (!allowlist[getPhaseName(hops[i])]) {
+      return { from: i === 0 ? currentPhase : hops[i - 1], to: hops[i], reason: "scope" };
+    }
+  }
+  for (let i = 0; i < hops.length; i++) {
+    const gate = prefixes[hops[i]];
+    // REPORT is terminal — its advancement demand (lifecycle end, no KD
+    // evidence) is known, so overrides naming it stay committable.
+    const known = hops[i] === STATES.REPORT || (Array.isArray(gate) ? gate.length > 0 : !!gate);
+    if (!known) {
+      return { from: i === 0 ? currentPhase : hops[i - 1], to: hops[i], reason: "gate-type" };
+    }
+  }
+  return null;
+}
+
+// Renders a rejected walk as a fail-closed error string. The connectivity
+// wording is the long-standing rejection text (kept byte-identical); scope
+// and gate-type rejections name the hop and the reason class.
+function describeRejectedWalk(rejected) {
+  const name = (p) => `${getPhaseName(p)} (${p})`;
+  if (rejected.reason === "scope") return `Error: phase ${name(rejected.to)} carries no tool scope — the walk cannot be committed.`;
+  if (rejected.reason === "gate-type") return `Error: phase ${name(rejected.to)} has no advancement gate — the walk cannot be committed.`;
+  return `Error: phase ${name(rejected.to)} is not a legal backward transition from ${name(rejected.from)}.`;
+}
+
+// Stall probe: whether the head hop of a committed multi-phase queue has
+// earned any fresh KD evidence (a session- and generation-matching file under
+// the head phase's gate prefix with mtime >= since). Pure query — never
+// mutates. Backs the wedged-queue error: a discarded queue whose head earned
+// nothing was abandoned, never advanced through.
+function queueHeadHasFreshEvidence(sessionPhaseMap, sessionID, marker) {
+  if (!marker || !Array.isArray(marker.phases) || marker.phases.length === 0) return false;
+  if (typeof marker.since !== "number") return false;
+  const prefixes = getPrefixes(marker.phases[0]);
+  if (prefixes.length === 0) return false;
+  let files = [];
+  try {
+    files = readdirSync(getKnowledgeDir(sessionID));
+  } catch (_) {
+    return false;
+  }
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const knowledgeDir = getKnowledgeDir(sessionID);
+  const lowered = prefixes.map((p) => String(p).toLowerCase());
+  return files.some((f) => {
+    if (!matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation)) return false;
+    const fl = f.toLowerCase();
+    if (!lowered.some((p) => fl.startsWith(`${p}-`))) return false;
+    return getFileMtimeMs(join(knowledgeDir, f)) >= marker.since;
+  });
+}
+
 // sanitizeSessionID lives in ./kd-match.js and atomicWriteFileSync in
 // ./fs-atomic.js — gate-local, imported above.
 
@@ -2484,6 +2561,13 @@ async function protocolGateServer(input, options) {
             state.overrideUntil = { phases: overrideUntil.phases, since: overrideUntil.since };
           }
         }
+        // Serialize the pre-walk snapshot so a wedged queue stays
+        // diagnosable and roll-back-able across a mid-session restart.
+        // Omitted when absent — legacy state files load unchanged.
+        const overrideSafePoint = sessionPhaseMap.get(`${sessionID}:overrideSafePoint`);
+        if (overrideSafePoint && typeof overrideSafePoint.phase === "number") {
+          state.overrideSafePoint = { phase: overrideSafePoint.phase, marker: overrideSafePoint.marker ?? null };
+        }
         // Serialize the /phase override record (bounded walk history) so the
         // walk survives a mid-session restart and stays citable from lifecycle
         // KDs. Omitted when empty — legacy state files load unchanged.
@@ -2679,6 +2763,12 @@ async function protocolGateServer(input, options) {
           debug(`reconcile: restored overrideUntil queue=${JSON.stringify(state.overrideUntil.phases)} since=${state.overrideUntil.since} for ${sessionID}`);
         }
       }
+      // Restore the pre-walk snapshot alongside the marker it documents.
+      // Omitted when absent — legacy state files load unchanged.
+      if (state.overrideSafePoint && typeof state.overrideSafePoint.phase === "number") {
+        sessionPhaseMap.set(`${sessionID}:overrideSafePoint`, { phase: state.overrideSafePoint.phase, marker: state.overrideSafePoint.marker ?? null });
+        debug(`reconcile: restored overrideSafePoint phase=${getPhaseName(state.overrideSafePoint.phase)} for ${sessionID}`);
+      }
       // Restore the /phase override record so the walk stays citable after a
       // restart. Entries are trusted as written by recordPhaseOverride
       // (bounded at write time); malformed shapes are dropped. Omitted when
@@ -2748,6 +2838,8 @@ async function protocolGateServer(input, options) {
       // user chose to move back, so the previous override no longer applies.
       if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
         sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+        sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+        sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
         debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
       }
       // A backward transition also supersedes any pending auto-advance
@@ -2996,7 +3088,16 @@ async function protocolGateServer(input, options) {
       if (currentPhase !== STATES.SWARM) return false;
       // checkDiskAdvancement applies the full SWARM gate including the
       // override fresh-evidence requirement (registry mtime >= since).
-      if (!checkDiskAdvancement(candidate, STATES.SWARM, sessionPhaseMap, swarmDispatchCount)) return false;
+      if (!checkDiskAdvancement(candidate, STATES.SWARM, sessionPhaseMap, swarmDispatchCount)) {
+        // Stall accounting: an advance evaluation ran against the committed
+        // queue head and found no fresh evidence. See the commit path — the
+        // wedged-queue error fires only after such an evaluation.
+        const stalledMarker = getOverrideUntil(sessionPhaseMap, candidate);
+        if (stalledMarker && Array.isArray(stalledMarker.phases) && currentPhase === getOverrideTargetPhase(stalledMarker)) {
+          sessionPhaseMap.set(`${candidate}:overrideEvals`, (sessionPhaseMap.get(`${candidate}:overrideEvals`) || 0) + 1);
+        }
+        return false;
+      }
       const newPhase = STATES.VERIFY;
       sessionPhaseMap.set(candidate, newPhase);
       // The phase advanced away from the override target on fresh evidence —
@@ -3010,6 +3111,8 @@ async function protocolGateServer(input, options) {
           debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
         } else {
           sessionPhaseMap.delete(`${candidate}:overrideUntil`);
+          sessionPhaseMap.delete(`${candidate}:overrideSafePoint`);
+          sessionPhaseMap.delete(`${candidate}:overrideEvals`);
           debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence`);
         }
       }
@@ -3139,7 +3242,35 @@ async function protocolGateServer(input, options) {
         if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
           const marker = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
           const was = getOverrideTargetPhase(marker);
+          const safePoint = sessionPhaseMap.get(`${sessionID}:overrideSafePoint`);
+          // Wedged queue: the committed queue's head hop never earned its
+          // fresh-evidence advance — surface the explicit error and roll back
+          // to the pre-walk snapshot taken at commit time instead of dropping
+          // the pin silently. Healthy markers clear exactly as before.
+          const stalled = Array.isArray(marker?.phases)
+            && (sessionPhaseMap.get(`${sessionID}:overrideEvals`) || 0) > 0
+            && !queueHeadHasFreshEvidence(sessionPhaseMap, sessionID, marker);
+          if (stalled && safePoint && typeof safePoint.phase === "number") {
+            const wedgeError = { hop: marker.phases[0], since: marker.since, safePoint: { phase: safePoint.phase, marker: safePoint.marker ?? null } };
+            output.wedgeError = wedgeError;
+            if (wedgeError.safePoint.marker && typeof wedgeError.safePoint.marker.since === "number") {
+              sessionPhaseMap.set(`${sessionID}:overrideUntil`, wedgeError.safePoint.marker);
+            } else {
+              sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+            }
+            sessionPhaseMap.set(sessionID, safePoint.phase);
+            sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+            sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+            recordPhaseOverride(sessionPhaseMap, sessionID, { at, from: currentPhase, wedgedHop: marker.phases[0], rolledBackTo: wedgeError.safePoint });
+            saveState(sessionID);
+            debug(`Wedged queue: head ${getPhaseName(marker.phases[0])} earned no fresh evidence — rolled back to ${getPhaseName(safePoint.phase)} for session ${sessionID}`);
+            output.parts = [{ type: "text", text: `Phase override cleared for session ${sessionID} (was ${getPhaseName(was)} (${was}) at ${getPhaseName(currentPhase)} (${currentPhase})).${genNote} Override record persisted in lifecycle state (overrideHistory).` },
+              { type: "text", text: `Wedged override queue: hop ${getPhaseName(wedgeError.hop)} (${wedgeError.hop}) earned no fresh evidence — rolled back to ${getPhaseName(safePoint.phase)} (${safePoint.phase}).` }];
+            return;
+          }
           sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+          sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+          sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
           recordPhaseOverride(sessionPhaseMap, sessionID, { at, from: currentPhase, to: currentPhase, cleared: true, ...(generationSuffix !== null ? { gen: generationSuffix } : {}) });
           saveState(sessionID);
           debug(`Override cleared: explicit /phase clear at ${getPhaseName(currentPhase)} for session ${sessionID}`);
@@ -3166,24 +3297,52 @@ async function protocolGateServer(input, options) {
         output.parts = [{ type: "text", text: `Error: too many phases in override (${phases.length}). Maximum is 12.` }];
         return;
       }
-      // Multi-phase overrides are scoped to backward chains: the queue's
-      // phases must form a connected chain in the backward-transition graph
-      // with one end reachable from the current phase. This accepts both the
-      // forward redo walk ({3,4,5} from 7 — the chain 7→5→4→3 traversed from
-      // 3) and the backward walk ({5,4,3} from 7 — the same chain traversed
-      // from 5), while rejecting queues that no phase can reach ({3,4,5} from
-      // 2). Single-phase overrides keep their existing behavior — any phase
-      // 1-12 is accepted without validation.
-      if (isMulti) {
+      // Override walks are atomic: the full requested walk is pre-validated
+      // (chain connectivity over the transition graph, per-hop tool-scope
+      // admissibility, per-hop advancement-gate type) before any state is
+      // touched. This accepts both the forward redo walk ({3,4,5} from 7 —
+      // the chain 7→5→4→3 traversed from 3) and the backward walk ({5,4,3}
+      // from 7 — the same chain traversed from 5), while rejecting queues
+      // that no phase can reach ({3,4,5} from 2). Single-phase overrides
+      // flow through the same atomic path as one-hop walks — scope and gate
+      // checks pass for every phase 1-12, so their behavior is unchanged.
+      // On any rejection the session-phase map and the state file stay
+      // untouched and the error names the first unsatisfiable hop plus the
+      // reason class (connectivity vs scope vs gate-type).
+      {
         const currentPhase = sessionPhaseMap.get(sessionID);
-        const invalidHop = findInvalidMultiPhaseHop(phases, currentPhase, BACKWARD_TRANSITIONS);
-        if (invalidHop) {
-          output.parts = [{ type: "text", text: `Error: phase ${getPhaseName(invalidHop.to)} (${invalidHop.to}) is not a legal backward transition from ${getPhaseName(invalidHop.from)} (${invalidHop.from}).` }];
+        const rejected = validateMultiPhaseWalk(phases, currentPhase, BACKWARD_TRANSITIONS);
+        if (rejected) {
+          output.phaseError = { from: rejected.from, to: rejected.to, reason: rejected.reason };
+          output.parts = [{ type: "text", text: describeRejectedWalk(rejected) }];
           return;
         }
       }
       const n = phases[0];
       const prevPhase = sessionPhaseMap.get(sessionID);
+      // Pre-walk snapshot for the documented safe point: a discarded queue
+      // whose head never earned fresh evidence rolls back to this phase plus
+      // marker instead of pinning the lifecycle silently. Overwritten by
+      // every new commit; dropped when the marker clears by any other path.
+      {
+        const priorMarker = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
+        let markerSnapshot = null;
+        if (priorMarker && typeof priorMarker.since === "number") {
+          if (typeof priorMarker.phase === "number") {
+            markerSnapshot = { phase: priorMarker.phase, since: priorMarker.since };
+          } else if (Array.isArray(priorMarker.phases) && priorMarker.phases.length > 0) {
+            markerSnapshot = { phases: [...priorMarker.phases], since: priorMarker.since };
+          }
+        }
+        sessionPhaseMap.set(`${sessionID}:overrideSafePoint`, { phase: prevPhase, marker: markerSnapshot });
+        // Stall accounting starts at zero with every new commitment: the
+        // wedged-queue error fires only after an advance evaluation actually
+        // ran against the committed head and found no fresh evidence. A queue
+        // discarded before any evaluation ran was simply changed-mind (silent
+        // clear, as before); a queue discarded after starved evaluations was
+        // stalled mid-walk (explicit error + rollback).
+        sessionPhaseMap.set(`${sessionID}:overrideEvals`, 0);
+      }
       sessionPhaseMap.set(sessionID, n);
       // Every /phase invocation persists an override marker — the legacy
       // single-phase shape { phase, since } or the multi-phase queue
@@ -3201,11 +3360,13 @@ async function protocolGateServer(input, options) {
       // (overrideHistory, persisted by the saveState below) and is echoed in
       // the confirmation so lifecycle KDs can cite it without reading logs.
       const at = new Date().toISOString();
+      const walkSafePoint = sessionPhaseMap.get(`${sessionID}:overrideSafePoint`);
       recordPhaseOverride(sessionPhaseMap, sessionID, {
         at,
         from: prevPhase,
         to: n,
         ...(isMulti ? { queue: [...phases] } : {}),
+        ...(walkSafePoint ? { safePoint: { phase: walkSafePoint.phase, marker: walkSafePoint.marker } } : {}),
         ...(generationSuffix !== null ? { gen: generationSuffix } : {})
       });
       // A manual /phase override supersedes any pending auto-advance.
@@ -3281,7 +3442,14 @@ async function protocolGateServer(input, options) {
     async function advanceFromDiskEvidence(sessionID) {
       const currentPhase = sessionPhaseMap.get(sessionID);
       const currentPhaseName = getPhaseName(currentPhase);
-      if (!(await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount, { verdictRegressedKDs, backwardTransition: handleBackwardTransition }))) return false;
+      if (!(await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount, { verdictRegressedKDs, backwardTransition: handleBackwardTransition }))) {
+        // Stall accounting — see advanceParentSessionFromSwarm above.
+        const stalledMarker = getOverrideUntil(sessionPhaseMap, sessionID);
+        if (stalledMarker && Array.isArray(stalledMarker.phases) && currentPhase === getOverrideTargetPhase(stalledMarker)) {
+          sessionPhaseMap.set(`${sessionID}:overrideEvals`, (sessionPhaseMap.get(`${sessionID}:overrideEvals`) || 0) + 1);
+        }
+        return false;
+      }
 
         sessionPhaseMap.set(sessionID, currentPhase + 1);
         // The phase advanced away from the override target on
@@ -3297,6 +3465,8 @@ async function protocolGateServer(input, options) {
             debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
           } else {
             sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+            sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+            sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
             debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence`);
           }
         }
@@ -3599,6 +3769,8 @@ async function protocolGateServer(input, options) {
             sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
             debug(`Override cleared: REPORT reset`);
           }
+          sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+          sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
           // Lifecycle end drops the override record with the finished
           // lifecycle — the next lifecycle starts fresh.
           sessionPhaseMap.delete(`${sessionID}:overrideHistory`);
@@ -3763,6 +3935,8 @@ async function protocolGateServer(input, options) {
             sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
             debug(`Override cleared: REPORT reset via edit`);
           }
+          sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+          sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
           // Lifecycle end drops the override record (see write handler).
           sessionPhaseMap.delete(`${sessionID}:overrideHistory`);
           swarmDispatchCount.delete(sessionID);
@@ -4454,6 +4628,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       OVERRIDE_HISTORY_MAX,
       getOverrideTargetPhase,
       findInvalidMultiPhaseHop,
+      validateMultiPhaseWalk,
+      describeRejectedWalk,
+      queueHeadHasFreshEvidence,
       argsFromPrompt,
       saveState,
       loadState,

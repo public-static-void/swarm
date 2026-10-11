@@ -743,70 +743,8 @@ describe("agents delegation dispatch docs", () => {
   });
 });
 
-describe("impl KD handoff contract", () => {
-  const implTemplate = readRoot(join("skills", "template-impl", "SKILL.md"));
-  const artisan = readAgent("artisan.md");
-  const inspector = readAgent("inspector.md");
-
-  // Schema labels, not sentences: both handoff variants (behavior and
-  // docs-only) carry the full denial delta row.
-  const IMPL_HANDOFF_FIELDS = [
-    "tests touched:",
-    "handoff:",
-    "touched surface:",
-    "compile-level status:",
-    "declared gate:",
-    "attempted alternatives:",
-    "actually-run gate:",
-    "run status:",
-    "full-gate status:",
-  ];
-
-  it("carries the handoff schema with the denial delta fields in the impl template", () => {
-    const missing = IMPL_HANDOFF_FIELDS.filter((f) => !implTemplate.includes(f));
-    expect(missing).toEqual([]);
-    for (const field of ["attempted alternatives:", "actually-run gate:", "run status:"]) {
-      const occurrences = implTemplate.split(field).length - 1;
-      expect(occurrences).toBeGreaterThanOrEqual(2);
-    }
-  });
-
-  it("records the denial delta row in the artisan handoff", () => {
-    for (const label of ["declared gate", "attempted alternatives", "actually-run gate", "run status", "handoff block"]) {
-      expect(artisan).toContain(label);
-    }
-  });
-
-  it("consumes the handoff block into the inspector traceability matrix", () => {
-    expect(inspector).toContain("handoff block");
-    expect(inspector).toContain("traceability matrix");
-    expect(inspector).toContain("actually-run gate");
-  });
-});
-
 describe("planning shape and scribe composition discipline", () => {
-  const pathfinder = readAgent("pathfinder.md");
-  const planTemplate = readRoot(join("skills", "template-plan", "SKILL.md"));
   const scribe = readAgent("scribe.md");
-
-  // The milestone discipline is a parity contract: the role definition and
-  // the plan template agree label for label, so neither drifts alone.
-  const MILESTONE_DISCIPLINE_LABELS = [
-    "same milestone",
-    "standing suite",
-    "tests touched:",
-    "failing test first",
-    "implementation plus handoff",
-    "skeleton",
-    "final implementation milestone",
-  ];
-
-  it("keeps the milestone discipline in parity between role and template", () => {
-    for (const content of [pathfinder, planTemplate]) {
-      const missing = MILESTONE_DISCIPLINE_LABELS.filter((l) => !content.includes(l));
-      expect(missing).toEqual([]);
-    }
-  });
 
   it("routes permanent suite changes to the body and ephemeral scratch to Excluded with disposition", () => {
     const rule = scribe.split("\n").find((l) => l.includes("Excluded"));

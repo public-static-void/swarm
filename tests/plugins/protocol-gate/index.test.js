@@ -6588,6 +6588,57 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
 
+    it("an unsatisfiable multi-hop walk fails closed with the first hop and reason class, leaving state untouched", async () => {
+      const s = sid("atomic-prevalidate");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      const phaseBefore = hooks.sessionPhaseMap.get(s);
+      const markerBefore = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      const stateBefore = readFileSync(statePath(s), "utf8");
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,4,5}" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(phaseBefore);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`)).toBe(markerBefore);
+      expect(readFileSync(statePath(s), "utf8")).toBe(stateBefore);
+      expect(out.phaseError).toEqual({ from: hooks.STATES.PREFLIGHT, to: hooks.STATES.EXPLORE, reason: "connectivity" });
+
+      // The validator covers the remaining reason classes without touching state.
+      const chain = { 3: [4], 4: [3, 5], 5: [4], 7: [3, 5] };
+      expect(hooks.validateMultiPhaseWalk([3, 4, 5], 7, chain)).toBeNull();
+      expect(hooks.validateMultiPhaseWalk([3, 4, 5], 7, chain, { toolAllowlist: { EXPLORE: ["subagent"] } }))
+        .toEqual({ from: 3, to: 4, reason: "scope" });
+      expect(hooks.validateMultiPhaseWalk([3, 4, 5], 7, chain, { gatePrefixes: { 3: ["exploration"] } }))
+        .toEqual({ from: 3, to: 4, reason: "gate-type" });
+    });
+
+    it("a committed queue whose head never earns fresh evidence reports a wedged queue and rolls back on clear", async () => {
+      const s = sid("atomic-stall");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const commitOut = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,4,5}" }, commitOut);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phases).toEqual([3, 4, 5]);
+
+      // No exploration KD arrives — the head hop earns nothing; the tick holds.
+      await tick(s, "w1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+
+      // Clearing the stalled queue surfaces the wedged-queue error and
+      // restores the pre-walk snapshot taken at commit time.
+      const clearOut = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "clear" }, clearOut);
+      expect(clearOut.wedgeError).toEqual({ hop: hooks.STATES.EXPLORE, since: marker.since, safePoint: { phase: hooks.STATES.SWARM, marker: null } });
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
+      const history = hooks.sessionPhaseMap.get(`${s}:overrideHistory`);
+      expect(history[history.length - 1]).toMatchObject({ wedgedHop: hooks.STATES.EXPLORE, rolledBackTo: { phase: hooks.STATES.SWARM } });
+    });
+
     it("a pre-existing state file with { phase, since } loads as a single-phase override", async () => {
       const s = sid("ac022-multi");
       const since = Date.now() - 5000;
