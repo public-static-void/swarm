@@ -83,6 +83,9 @@ permissions:
     resource: "wc*"
     effect: allow
   - action: shell
+    resource: "echo*"
+    effect: allow
+  - action: shell
     resource: "mkdir*"
     effect: allow
   - action: shell
