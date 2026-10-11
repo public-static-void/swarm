@@ -619,6 +619,24 @@ describe("agent permission allowlists", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  it("keeps the dangerous exec and privilege class out of every agent allowlist", () => {
+    const dangerousVerbs = ["chmod", "chown", "sudo", "su", "curl", "wget", "ssh", "eval"];
+    const dangerousPhrases = ["python -c", "node -e", "bash -c"];
+    const offenders = [];
+    for (const f of files) {
+      for (const e of entriesByFile.get(f)) {
+        if (e.mode !== "allow") continue;
+        const verb = e.pattern.split(" ")[0].replace(/\*+$/, "");
+        if (dangerousVerbs.includes(verb)) {
+          offenders.push(`${f}: ${e.pattern}`);
+        } else if (dangerousPhrases.some((p) => e.pattern.startsWith(p))) {
+          offenders.push(`${f}: ${e.pattern}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe("git force-add staging guard", () => {
