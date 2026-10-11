@@ -100,13 +100,13 @@ const SCAN_COMMAND_AGENTS = {
   "pip audit*": ["inspector.md", "artisan.md"],
 };
 const INSTALL_AGENTS = ["artisan.md"];
-const INSTALL_COMMANDS = ["npm install --save-dev*"];
+const INSTALL_COMMANDS = ["npm install --save-dev*", "npm install*", "npm update*"];
 const RUST_BUILD_AGENTS = ["artisan.md"];
 // Intentionally empty: no cargo run invocation is project-agnostic, so any
 // cargo run allow in any agent file is an offender by design.
 const SANCTIONED_CARGO_RUN_COMMANDS = [];
 const ARTISAN_HEADLESS_COMMANDS = [
-  "git rm*", "npm install --save-dev*", "npm ci*", "bun install*",
+  "git rm*", "npm install --save-dev*", "npm install*", "npm update*", "npm ci*", "bun install*",
   "poetry install*", "cargo build*", "composer install*",
   "make test*", "make build*", "go get*", "go install*",
   "uv run*", "uv sync*", "pip install*",
@@ -402,6 +402,13 @@ describe("agent permission allowlists", () => {
     const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
     const violations = ARTISAN_HEADLESS_COMMANDS.filter((cmd) => artisan.get(cmd) !== "allow");
     expect(violations).toEqual([]);
+  });
+
+  it("holds the dependency-mutation path approval-free for Artisan", () => {
+    const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
+    for (const cmd of ["npm install*", "npm update*", "npm ci*"]) {
+      expect(artisan.get(cmd)).toBe("allow");
+    }
   });
 
   it("keeps builder and installer grants out of the read-only analyzer role", () => {
