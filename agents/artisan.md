@@ -71,6 +71,12 @@ permissions:
     resource: "node --version*"
     effect: allow
   - action: shell
+    resource: "node --help*"
+    effect: allow
+  - action: shell
+    resource: "npx --version*"
+    effect: allow
+  - action: shell
     resource: "node --test*"
     effect: allow
   - action: shell
@@ -140,6 +146,9 @@ permissions:
     resource: "gh repo view*"
     effect: allow
   - action: shell
+    resource: "gh --version*"
+    effect: allow
+  - action: shell
     resource: "npm test*"
     effect: allow
   - action: shell
@@ -176,13 +185,25 @@ permissions:
     resource: "npm outdated*"
     effect: allow
   - action: shell
+    resource: "npm --version*"
+    effect: allow
+  - action: shell
     resource: "yarn install --frozen-lockfile*"
+    effect: allow
+  - action: shell
+    resource: "yarn --version*"
     effect: allow
   - action: shell
     resource: "pnpm install --frozen-lockfile*"
     effect: allow
   - action: shell
+    resource: "pnpm --version*"
+    effect: allow
+  - action: shell
     resource: "bun install*"
+    effect: allow
+  - action: shell
+    resource: "bun --version*"
     effect: allow
   - action: shell
     resource: "bun test*"
@@ -296,6 +317,9 @@ permissions:
     resource: "go vet*"
     effect: allow
   - action: shell
+    resource: "go version*"
+    effect: allow
+  - action: shell
     resource: "gradle build*"
     effect: allow
   - action: shell
@@ -350,6 +374,9 @@ permissions:
     resource: "python --version*"
     effect: allow
   - action: shell
+    resource: "python3 --version*"
+    effect: allow
+  - action: shell
     resource: "uv add*"
     effect: allow
   - action: shell
@@ -375,6 +402,48 @@ permissions:
     effect: allow
   - action: shell
     resource: "wc*"
+    effect: allow
+  - action: shell
+    resource: "pwd*"
+    effect: allow
+  - action: shell
+    resource: "whoami*"
+    effect: allow
+  - action: shell
+    resource: "date*"
+    effect: allow
+  - action: shell
+    resource: "printenv*"
+    effect: allow
+  - action: shell
+    resource: "find*"
+    effect: allow
+  - action: shell
+    resource: "sort*"
+    effect: allow
+  - action: shell
+    resource: "uniq*"
+    effect: allow
+  - action: shell
+    resource: "diff*"
+    effect: allow
+  - action: shell
+    resource: "tree*"
+    effect: allow
+  - action: shell
+    resource: "which*"
+    effect: allow
+  - action: shell
+    resource: "type*"
+    effect: allow
+  - action: shell
+    resource: "stat*"
+    effect: allow
+  - action: shell
+    resource: "du*"
+    effect: allow
+  - action: shell
+    resource: "df*"
     effect: allow
   - action: shell
     resource: "docker compose up -d"
