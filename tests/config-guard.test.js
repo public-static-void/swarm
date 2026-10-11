@@ -118,6 +118,20 @@ const ARTISAN_HEADLESS_COMMANDS = [
   "compose exec*", "compose run --rm*",
 ];
 const ARTISAN_READONLY_GATE_COMMANDS = ["cargo fmt*"];
+// Read-only diagnostic family the implementation role holds for headless
+// triage: shell builtins-free inspection verbs shared with the analysis
+// role's baseline, each a single-verb glob with no interpreter scope.
+const ARTISAN_DIAGNOSTIC_COMMANDS = [
+  "pwd*", "whoami*", "date*", "printenv*", "find*", "sort*", "uniq*",
+  "diff*", "tree*", "which*", "type*", "stat*", "du*", "df*",
+];
+// Toolchain version probes for the implementation role: verb-first entries
+// with a scoped target (tool plus version flag), never a bare interpreter.
+const ARTISAN_VERSION_PROBE_COMMANDS = [
+  "npm --version*", "node --help*", "node --version*", "npx --version*",
+  "python3 --version*", "go version*", "gh --version*",
+  "yarn --version*", "pnpm --version*", "bun --version*",
+];
 const ANALYZER_BUILDER_INSTALLER_COMMANDS = [
   "cargo build*", "pip install*", "poetry install*", "make build*",
   "composer install*", "cmake --build*", "gradle build*", "uv sync*",
@@ -408,6 +422,31 @@ describe("agent permission allowlists", () => {
     const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
     for (const cmd of ["npm install*", "npm update*", "npm ci*"]) {
       expect(artisan.get(cmd)).toBe("allow");
+    }
+  });
+
+  it("carries the read-only diagnostic family for the implementation role", () => {
+    const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
+    const missing = ARTISAN_DIAGNOSTIC_COMMANDS.filter((cmd) => artisan.get(cmd) !== "allow");
+    expect(missing).toEqual([]);
+  });
+
+  it("carries the toolchain version probes for the implementation role", () => {
+    const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
+    const missing = ARTISAN_VERSION_PROBE_COMMANDS.filter((cmd) => artisan.get(cmd) !== "allow");
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the new diagnostic and probe grants scoped with no bare-interpreter allow", () => {
+    const allows = entriesByFile.get("artisan.md").filter((e) => e.mode === "allow").map((e) => e.pattern);
+    const bareInterpreters = [
+      "npm*", "node*", "npx*", "yarn*", "pnpm*", "bun*",
+      "python3*", "go*", "gh*",
+    ];
+    const offenders = allows.filter((p) => bareInterpreters.includes(p));
+    expect(offenders).toEqual([]);
+    for (const cmd of [...ARTISAN_DIAGNOSTIC_COMMANDS, ...ARTISAN_VERSION_PROBE_COMMANDS]) {
+      expect(cmd.endsWith("*")).toBe(true);
     }
   });
 
