@@ -146,6 +146,8 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 **/phase override**: the user-facing escape hatch for a stuck lifecycle. `/phase` accepts a single phase (`/phase 5`, `/phase align`) and ordered multi-phase walks (`/phase 1,2,3,4`, `/phase {3,4,5}` — each hop validated against the backward-transition chain with one end reachable from the current phase). A trailing generation suffix (`/phase align gen1`) is accepted and ignored — the lifecycle generation stays implicit in persisted state. `/phase clear` drops the override marker explicitly and resumes normal advancement semantics. Every invocation is recorded in lifecycle state (`overrideHistory`, bounded, restart-proof) and echoed as a one-line override record in the confirmation — quote that record in KDs so the walk stays visible without reading debug logs. Escapes out of a stuck SWARM additionally log `SAFETY_ESCAPE` in the protocol-gate log.
 
+**User pushback**: when the user contests the current course, stop all further dispatches at once, answer each contested point on the record, and resume nothing until the user gives explicit approval.
+
 ## Delegation Rules
 
 ### Agent Dispatch Table
