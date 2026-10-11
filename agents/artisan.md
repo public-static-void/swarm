@@ -155,6 +155,12 @@ permissions:
     resource: "npm install --save-dev*"
     effect: allow
   - action: shell
+    resource: "npm install*"
+    effect: allow
+  - action: shell
+    resource: "npm update*"
+    effect: allow
+  - action: shell
     resource: "npm run build*"
     effect: allow
   - action: shell
