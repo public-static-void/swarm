@@ -83,6 +83,9 @@ permissions:
     resource: "wc*"
     effect: allow
   - action: shell
+    resource: "echo*"
+    effect: allow
+  - action: shell
     resource: "mkdir*"
     effect: allow
   - action: shell
@@ -90,6 +93,9 @@ permissions:
     effect: allow
   - action: shell
     resource: "git status*"
+    effect: allow
+  - action: shell
+    resource: "git diff*"
     effect: allow
   - action: shell
     resource: "git show*"
