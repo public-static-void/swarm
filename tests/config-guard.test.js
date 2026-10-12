@@ -235,10 +235,10 @@ const GH_READ_COMMANDS = [
 ];
 const GH_READ_AGENTS = ["artisan.md", "analyzer.md", "inspector.md"];
 const GH_READ_EXCLUDED_AGENTS = ["overseer.md", "explorer.md", "committer.md"];
-// Narrow-role diagnostic minimums: the read-only inspection roles hold the
-// echo diagnostic; only the codebase-mapping role holds git diff/log.
-const NARROW_ECHO_AGENTS = ["explorer.md", "scribe.md", "pathfinder.md"];
-const NARROW_ECHO_COMMANDS = ["echo*"];
+// Read-only posture for the narrow inspection roles: none of them holds an
+// echo shell grant (echo with redirect is a file-write primitive). The
+// absence assertion below fails on any echo-verb allow in those files.
+const READONLY_NO_ECHO_AGENTS = ["explorer.md", "scribe.md", "pathfinder.md"];
 const EXPLORER_GIT_DIAG_COMMANDS = ["git diff*", "git log*"];
 // Analyzer parity additions: the test-runner entry and toolchain probes the
 // other gate-running roles already hold, without any installer scope.
@@ -576,19 +576,18 @@ describe("agent permission allowlists", () => {
     expect(missing).toEqual([]);
   });
 
-  it("carries the echo diagnostic for the narrow inspection roles", () => {
-    const missing = [];
-    for (const f of NARROW_ECHO_AGENTS) {
-      const allows = new Map(
-        entriesByFile.get(f).filter((e) => e.mode === "allow").map((e) => [e.pattern, e.mode])
-      );
-      for (const cmd of NARROW_ECHO_COMMANDS) {
-        if (allows.get(cmd) !== "allow") {
-          missing.push(`${f}: ${cmd}`);
+  it("holds no echo shell grant in the narrow inspection roles", () => {
+    const offenders = [];
+    for (const f of READONLY_NO_ECHO_AGENTS) {
+      for (const e of entriesByFile.get(f)) {
+        if (e.mode !== "allow") continue;
+        const verb = e.pattern.split(" ")[0].replace(/\*+$/, "");
+        if (verb === "echo") {
+          offenders.push(`${f}: ${e.pattern}`);
         }
       }
     }
-    expect(missing).toEqual([]);
+    expect(offenders).toEqual([]);
   });
 
   it("scopes the git diff and log diagnostics to the explorer role", () => {
@@ -609,7 +608,7 @@ describe("agent permission allowlists", () => {
 
   it("keeps dependency mutators out of the narrow inspection roles", () => {
     const offenders = [];
-    for (const f of [...NARROW_ECHO_AGENTS, "analyzer.md", "inspector.md"]) {
+    for (const f of [...READONLY_NO_ECHO_AGENTS, "analyzer.md", "inspector.md"]) {
       const patterns = entriesByFile.get(f).map((e) => e.pattern);
       for (const cmd of ["npm install*", "npm update*", "npm ci*"]) {
         if (patterns.includes(cmd)) {
