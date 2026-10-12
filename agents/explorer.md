@@ -92,6 +92,9 @@ permissions:
     resource: "git status*"
     effect: allow
   - action: shell
+    resource: "git diff*"
+    effect: allow
+  - action: shell
     resource: "git show*"
     effect: allow
   - action: shell

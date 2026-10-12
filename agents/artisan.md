@@ -71,6 +71,12 @@ permissions:
     resource: "node --version*"
     effect: allow
   - action: shell
+    resource: "node --help*"
+    effect: allow
+  - action: shell
+    resource: "npx --version*"
+    effect: allow
+  - action: shell
     resource: "node --test*"
     effect: allow
   - action: shell
@@ -140,6 +146,9 @@ permissions:
     resource: "gh repo view*"
     effect: allow
   - action: shell
+    resource: "gh --version*"
+    effect: allow
+  - action: shell
     resource: "npm test*"
     effect: allow
   - action: shell
@@ -153,6 +162,12 @@ permissions:
     effect: allow
   - action: shell
     resource: "npm install --save-dev*"
+    effect: allow
+  - action: shell
+    resource: "npm install*"
+    effect: allow
+  - action: shell
+    resource: "npm update*"
     effect: allow
   - action: shell
     resource: "npm run build*"
@@ -170,13 +185,25 @@ permissions:
     resource: "npm outdated*"
     effect: allow
   - action: shell
+    resource: "npm --version*"
+    effect: allow
+  - action: shell
     resource: "yarn install --frozen-lockfile*"
+    effect: allow
+  - action: shell
+    resource: "yarn --version*"
     effect: allow
   - action: shell
     resource: "pnpm install --frozen-lockfile*"
     effect: allow
   - action: shell
+    resource: "pnpm --version*"
+    effect: allow
+  - action: shell
     resource: "bun install*"
+    effect: allow
+  - action: shell
+    resource: "bun --version*"
     effect: allow
   - action: shell
     resource: "bun test*"
@@ -290,6 +317,9 @@ permissions:
     resource: "go vet*"
     effect: allow
   - action: shell
+    resource: "go version*"
+    effect: allow
+  - action: shell
     resource: "gradle build*"
     effect: allow
   - action: shell
@@ -344,6 +374,9 @@ permissions:
     resource: "python --version*"
     effect: allow
   - action: shell
+    resource: "python3 --version*"
+    effect: allow
+  - action: shell
     resource: "uv add*"
     effect: allow
   - action: shell
@@ -369,6 +402,48 @@ permissions:
     effect: allow
   - action: shell
     resource: "wc*"
+    effect: allow
+  - action: shell
+    resource: "pwd*"
+    effect: allow
+  - action: shell
+    resource: "whoami*"
+    effect: allow
+  - action: shell
+    resource: "date*"
+    effect: allow
+  - action: shell
+    resource: "printenv*"
+    effect: allow
+  - action: shell
+    resource: "find*"
+    effect: allow
+  - action: shell
+    resource: "sort*"
+    effect: allow
+  - action: shell
+    resource: "uniq*"
+    effect: allow
+  - action: shell
+    resource: "diff*"
+    effect: allow
+  - action: shell
+    resource: "tree*"
+    effect: allow
+  - action: shell
+    resource: "which*"
+    effect: allow
+  - action: shell
+    resource: "type*"
+    effect: allow
+  - action: shell
+    resource: "stat*"
+    effect: allow
+  - action: shell
+    resource: "du*"
+    effect: allow
+  - action: shell
+    resource: "df*"
     effect: allow
   - action: shell
     resource: "docker compose up -d"
@@ -518,7 +593,7 @@ When re-dispatching a subagent for the same task, include the `TASK ID` delegati
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, reuse the same `TASK ID` to continue the same agent's work.
 
-Record the continuity choice the same way: a reopened milestone row reuses the prior `TASK ID`; a new task omits `TASK ID`. Note the two resume channels: `task_id` continuation (this section) resumes the subagent session, while compaction resume travels through the `resume-protocol` `memory_note` channel.
+Record the continuity choice the same way: a reopened milestone row reuses the prior `TASK ID`; a new task omits `TASK ID`. On every same-artifact re-dispatch the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). A same-artifact re-dispatch that omits `TASK ID` and records no `fresh: <reason>` is an Overseer-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched. Note the two resume channels: `task_id` continuation (this section) resumes the subagent session, while compaction resume travels through the `resume-protocol` `memory_note` channel.
 
 ### Checkpoint Verification
 

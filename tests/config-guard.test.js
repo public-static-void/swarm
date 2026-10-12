@@ -100,13 +100,13 @@ const SCAN_COMMAND_AGENTS = {
   "pip audit*": ["inspector.md", "artisan.md"],
 };
 const INSTALL_AGENTS = ["artisan.md"];
-const INSTALL_COMMANDS = ["npm install --save-dev*"];
+const INSTALL_COMMANDS = ["npm install --save-dev*", "npm install*", "npm update*"];
 const RUST_BUILD_AGENTS = ["artisan.md"];
 // Intentionally empty: no cargo run invocation is project-agnostic, so any
 // cargo run allow in any agent file is an offender by design.
 const SANCTIONED_CARGO_RUN_COMMANDS = [];
 const ARTISAN_HEADLESS_COMMANDS = [
-  "git rm*", "npm install --save-dev*", "npm ci*", "bun install*",
+  "git rm*", "npm install --save-dev*", "npm install*", "npm update*", "npm ci*", "bun install*",
   "poetry install*", "cargo build*", "composer install*",
   "make test*", "make build*", "go get*", "go install*",
   "uv run*", "uv sync*", "pip install*",
@@ -118,6 +118,20 @@ const ARTISAN_HEADLESS_COMMANDS = [
   "compose exec*", "compose run --rm*",
 ];
 const ARTISAN_READONLY_GATE_COMMANDS = ["cargo fmt*"];
+// Read-only diagnostic family the implementation role holds for headless
+// triage: shell builtins-free inspection verbs shared with the analysis
+// role's baseline, each a single-verb glob with no interpreter scope.
+const ARTISAN_DIAGNOSTIC_COMMANDS = [
+  "pwd*", "whoami*", "date*", "printenv*", "find*", "sort*", "uniq*",
+  "diff*", "tree*", "which*", "type*", "stat*", "du*", "df*",
+];
+// Toolchain version probes for the implementation role: verb-first entries
+// with a scoped target (tool plus version flag), never a bare interpreter.
+const ARTISAN_VERSION_PROBE_COMMANDS = [
+  "npm --version*", "node --help*", "node --version*", "npx --version*",
+  "python3 --version*", "go version*", "gh --version*",
+  "yarn --version*", "pnpm --version*", "bun --version*",
+];
 const ANALYZER_BUILDER_INSTALLER_COMMANDS = [
   "cargo build*", "pip install*", "poetry install*", "make build*",
   "composer install*", "cmake --build*", "gradle build*", "uv sync*",
@@ -221,6 +235,11 @@ const GH_READ_COMMANDS = [
 ];
 const GH_READ_AGENTS = ["artisan.md", "analyzer.md", "inspector.md"];
 const GH_READ_EXCLUDED_AGENTS = ["overseer.md", "explorer.md", "committer.md"];
+// Read-only posture for the narrow inspection roles: none of them holds an
+// echo shell grant (echo with redirect is a file-write primitive). The
+// absence assertion below fails on any echo-verb allow in those files.
+const READONLY_NO_ECHO_AGENTS = ["explorer.md", "scribe.md", "pathfinder.md"];
+const EXPLORER_GIT_DIAG_COMMANDS = ["git diff*", "git log*"];
 // Analyzer parity additions: the test-runner entry and toolchain probes the
 // other gate-running roles already hold, without any installer scope.
 const ANALYZER_PARITY_COMMANDS = ["npm run test*", "cargo --version*", "cargo fmt --check*"];
@@ -404,6 +423,38 @@ describe("agent permission allowlists", () => {
     expect(violations).toEqual([]);
   });
 
+  it("holds the dependency-mutation path approval-free for Artisan", () => {
+    const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
+    for (const cmd of ["npm install*", "npm update*", "npm ci*"]) {
+      expect(artisan.get(cmd)).toBe("allow");
+    }
+  });
+
+  it("carries the read-only diagnostic family for the implementation role", () => {
+    const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
+    const missing = ARTISAN_DIAGNOSTIC_COMMANDS.filter((cmd) => artisan.get(cmd) !== "allow");
+    expect(missing).toEqual([]);
+  });
+
+  it("carries the toolchain version probes for the implementation role", () => {
+    const artisan = new Map(entriesByFile.get("artisan.md").map((e) => [e.pattern, e.mode]));
+    const missing = ARTISAN_VERSION_PROBE_COMMANDS.filter((cmd) => artisan.get(cmd) !== "allow");
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the new diagnostic and probe grants scoped with no bare-interpreter allow", () => {
+    const allows = entriesByFile.get("artisan.md").filter((e) => e.mode === "allow").map((e) => e.pattern);
+    const bareInterpreters = [
+      "npm*", "node*", "npx*", "yarn*", "pnpm*", "bun*",
+      "python3*", "go*", "gh*",
+    ];
+    const offenders = allows.filter((p) => bareInterpreters.includes(p));
+    expect(offenders).toEqual([]);
+    for (const cmd of [...ARTISAN_DIAGNOSTIC_COMMANDS, ...ARTISAN_VERSION_PROBE_COMMANDS]) {
+      expect(cmd.endsWith("*")).toBe(true);
+    }
+  });
+
   it("keeps builder and installer grants out of the read-only analyzer role", () => {
     const patterns = new Map(entriesByFile.get("analyzer.md").map((e) => [e.pattern, e.mode]));
     const granted = ANALYZER_BUILDER_INSTALLER_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
@@ -523,6 +574,67 @@ describe("agent permission allowlists", () => {
     const patterns = entriesByFile.get("analyzer.md").map((e) => e.pattern);
     const missing = ANALYZER_PARITY_COMMANDS.filter((cmd) => !patterns.includes(cmd));
     expect(missing).toEqual([]);
+  });
+
+  it("holds no echo shell grant in the narrow inspection roles", () => {
+    const offenders = [];
+    for (const f of READONLY_NO_ECHO_AGENTS) {
+      for (const e of entriesByFile.get(f)) {
+        if (e.mode !== "allow") continue;
+        const verb = e.pattern.split(" ")[0].replace(/\*+$/, "");
+        if (verb === "echo") {
+          offenders.push(`${f}: ${e.pattern}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("scopes the git diff and log diagnostics to the explorer role", () => {
+    const explorer = new Map(entriesByFile.get("explorer.md").map((e) => [e.pattern, e.mode]));
+    const missing = EXPLORER_GIT_DIAG_COMMANDS.filter((cmd) => explorer.get(cmd) !== "allow");
+    expect(missing).toEqual([]);
+    const offenders = [];
+    for (const f of ["scribe.md", "pathfinder.md"]) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of EXPLORER_GIT_DIAG_COMMANDS) {
+        if (patterns.includes(cmd)) {
+          offenders.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps dependency mutators out of the narrow inspection roles", () => {
+    const offenders = [];
+    for (const f of [...READONLY_NO_ECHO_AGENTS, "analyzer.md", "inspector.md"]) {
+      const patterns = entriesByFile.get(f).map((e) => e.pattern);
+      for (const cmd of ["npm install*", "npm update*", "npm ci*"]) {
+        if (patterns.includes(cmd)) {
+          offenders.push(`${f}: ${cmd}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps the dangerous exec and privilege class out of every agent allowlist", () => {
+    const dangerousVerbs = ["chmod", "chown", "sudo", "su", "curl", "wget", "ssh", "eval"];
+    const dangerousPhrases = ["python -c", "node -e", "bash -c"];
+    const offenders = [];
+    for (const f of files) {
+      for (const e of entriesByFile.get(f)) {
+        if (e.mode !== "allow") continue;
+        const verb = e.pattern.split(" ")[0].replace(/\*+$/, "");
+        if (dangerousVerbs.includes(verb)) {
+          offenders.push(`${f}: ${e.pattern}`);
+        } else if (dangerousPhrases.some((p) => e.pattern.startsWith(p))) {
+          offenders.push(`${f}: ${e.pattern}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 
