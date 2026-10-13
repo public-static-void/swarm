@@ -30,19 +30,9 @@ superseded_by: null
 2. {{Step 2}}
 3. {{Step 3}}
 
-## Automation Status
-
-- [ ] **Show**: Process documented
-- [ ] **Repeat**: Verified with agent execution
-- [ ] **Automate**: Mechanical steps replaced with scripts
-
 ## Gotchas
 
 - {{Things that went wrong and how to prevent them}}
-
-## Scripts / Tools
-
-{{Links to decisions, resolution notes, or references related to this process}}
 
 ## Process Friction
 
