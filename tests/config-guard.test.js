@@ -1002,3 +1002,148 @@ describe("local-contract guardrail", () => {
     expect(config).not.toContain("commands/");
   });
 });
+
+// Consolidation home for the removed audit-fix suite's short-term channel
+// group: the bare memory_note name is the compaction-resume path, so its
+// registration name, skill wording, and prompt-wide absence of the prefixed
+// form stay pinned here while the behavioral half lives with the
+// knowledge-gate suite.
+describe("short-term memory bare channel", () => {
+  function readResumeSkill() {
+    return readFileSync(join(ROOT, "skills", "resume-protocol", "SKILL.md"), "utf8");
+  }
+
+  function readKnowledgeGateSource() {
+    return readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
+  }
+
+  function markdownFilesRecursive(dir) {
+    const out = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...markdownFilesRecursive(full));
+      else if (entry.name.endsWith(".md")) out.push(full);
+    }
+    return out;
+  }
+
+  it("states the bare write invocation in the resume skill", () => {
+    const skill = readResumeSkill();
+    const section = skill.slice(skill.indexOf("### Short-Term Layer"));
+    expect(section).toContain("memory_note");
+    expect(section).toContain("tools.memory_note");
+  });
+
+  it("carries the bare invocation in the write channel descriptions", () => {
+    const source = readKnowledgeGateSource();
+    const occurrences = source.split("tools.memory_note").length - 1;
+    expect(occurrences).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps prompts and sources free of the prefixed channel name", () => {
+    const offenders = [];
+    const targets = [
+      ...markdownFilesRecursive(join(ROOT, "agents")),
+      ...markdownFilesRecursive(join(ROOT, "skills")),
+      join(ROOT, "plugins", "knowledge-gate", "index.js"),
+    ];
+    for (const file of targets) {
+      if (readFileSync(file, "utf8").includes("default.memory_note")) {
+        offenders.push(file);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("grants the implementation role the bare memory channel", () => {
+    expect(readAgent("artisan.md")).toContain("- action: memory_note");
+  });
+});
+
+// The delete channel is scoped to short-term notes only: ownership rules
+// live with the knowledge-gate suite, this pins the blast radius of the
+// handler itself.
+describe("short-term note deletion scope", () => {
+  it("bounds the note-delete channel to short-term notes", () => {
+    const source = readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
+    const deleteSection = source.slice(source.indexOf('if (toolID === "memory_note_delete")'));
+    expect(deleteSection).toContain("short-term");
+    expect(deleteSection).not.toContain("byproduct");
+    expect(deleteSection).not.toContain("/tmp/opencode");
+  });
+});
+
+// Verification verbs stay routed to the role that owns them: doc-lint and
+// format-check verbs never landed as grants, the dependency scan sits with
+// the reviewer, supply-chain mutation is denied everywhere, and the ignore
+// probe stays with the read roles.
+describe("verification verb routing", () => {
+  const DOC_LINT_PATTERN = "make lint-docs*";
+  const FORMAT_CHECK_PATTERN = "make fmt-check*";
+  const REVIEW_SCAN_PATTERN = "cargo audit*";
+  const SUPPLY_MUTATION_PATTERN = "cargo update*";
+  const IGNORE_PROBE_PATTERN = "git check-ignore*";
+  const READ_ROLE_FILES = ["analyzer.md", "explorer.md", "inspector.md"];
+
+  function shellAllows(content) {
+    return permissionRules(content).filter((r) => r.action === "shell" && r.effect === "allow");
+  }
+
+  it("leaves doc-lint and format-check verbs ungranted", () => {
+    const offenders = [];
+    for (const file of agentFiles()) {
+      const content = readAgent(file);
+      for (const rule of shellAllows(content)) {
+        if (rule.resource === DOC_LINT_PATTERN || rule.resource === FORMAT_CHECK_PATTERN) {
+          offenders.push(`${file}: ${rule.resource}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps the dependency scan with the reviewer role", () => {
+    expect(shellAllows(readAgent("artisan.md")).some((r) => r.resource === REVIEW_SCAN_PATTERN)).toBe(false);
+    expect(shellAllows(readAgent("inspector.md")).some((r) => r.resource === REVIEW_SCAN_PATTERN)).toBe(true);
+  });
+
+  it("leaves supply-chain mutation denied everywhere", () => {
+    const offenders = [];
+    for (const file of agentFiles()) {
+      const content = readAgent(file);
+      for (const rule of shellAllows(content)) {
+        if (rule.resource === SUPPLY_MUTATION_PATTERN || rule.resource.startsWith("cargo update")) {
+          offenders.push(`${file}: ${rule.resource}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("keeps the ignore probe with the read roles", () => {
+    const holders = agentFiles().filter((file) =>
+      shellAllows(readAgent(file)).some((r) => r.resource === IGNORE_PROBE_PATTERN)
+    );
+    expect(holders.sort()).toEqual(READ_ROLE_FILES);
+  });
+});
+
+// Durable prose survives the scribe: lasting decisions live in the body,
+// downstream trace stops at its source, and the commit hook stays scoped to
+// the suite plus security lint.
+describe("composed-docs durability", () => {
+  it("states that durable content lives in the composed body", () => {
+    expect(readAgent("scribe.md")).toContain("Durable content lives in the body");
+  });
+
+  it("honors the source stop-line when composing downstream", () => {
+    expect(readAgent("scribe.md")).toContain("Downstream trace stops at the source");
+  });
+
+  it("keeps the commit hook scoped to the suite plus security lint", () => {
+    const hook = readRoot(".githooks/pre-commit");
+    expect(hook).toContain("npx vitest run");
+    expect(hook).toContain("npx eslint -c eslint.security.config.mjs");
+    expect(hook).not.toContain("knowledge");
+  });
+});
