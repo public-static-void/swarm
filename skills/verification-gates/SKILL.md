@@ -134,7 +134,7 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 4. If FAIL, trace to the specific requirement code and plan-step code (code plus file:line)
 5. Write the verdict into the REVIEW KD frontmatter (`verdict: PASS | FAIL | FUNDAMENTAL`) — the single machine source for the VERIFY gate
 6. Produce ONE REVIEW KD containing the Review Findings (with traceability matrix) and the Audit section (Scope, Risk Summary, Security Findings)
-7. On FAIL, protocol-gate machine-regresses VERIFY→SWARM automatically (no `BACKWARD: true` flag, no explicit dispatch): the producer fixes the findings, re-submits, and the Inspector re-reviews — repeat until PASS or diminishing returns
+7. On FAIL, the gate regresses VERIFY→SWARM automatically: the producer fixes the findings, re-submits, and the Inspector re-reviews — repeat until PASS or diminishing returns
 8. On stalled progress (2-3 cycles without improvement), the Inspector issues a FUNDAMENTAL verdict, which blocks VERIFY advancement and escalates to the user (Happy to Delete)
 
 ### VERIFY Acceptance Proof
@@ -146,12 +146,12 @@ VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the ful
 | Verdict     | Meaning                 | Machine behavior                                                                                                                      |
 | ----------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | PASS        | All criteria met, clean | VERIFY advances to the next phase (presence-based)                                                                                    |
-| FAIL        | Specific fixable issues | protocol-gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; producer fixes                                      |
-| FUNDAMENTAL | Design-level flaw       | protocol-gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
+| FAIL        | Specific fixable issues | The gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; the producer fixes the findings and re-submits |
+| FUNDAMENTAL | Design-level flaw       | The gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
 
 A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). Every FAIL finding MUST cite at least one milestone token (`M\d+` or `impl-<id>-`); a FAIL verdict with zero milestone citations is MALFORMED — the gate blocks, regresses nothing, and reopens nothing (re-dispatch the review with citations). A `FUNDAMENTAL` verdict blocks advancement and escalates; the phase stays at VERIFY.
 
-During protocol-gate vitest runs, `FUNDAMENTAL_ESCALATION` lines are asserted test output from the named protocol-gate fixture (`tests/plugins/protocol-gate/index.test.js`). Verify the line against the test source before treating it as a lifecycle anomaly.
+FUNDAMENTAL-labeled lines in test output are asserted test output. Verify the line against the test source before treating it as a lifecycle anomaly.
 
 ## Feedback Loop
 
