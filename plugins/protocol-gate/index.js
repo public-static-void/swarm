@@ -505,8 +505,9 @@ function recordPhaseOverride(sessionPhaseMap, sessionID, entry) {
   return history;
 }
 
-// Identical-verdict brake: the count threshold lives here, defined once —
-// agents/overseer.md names this constant rather than restating the value.
+// Identical-verdict advisory: the count threshold lives here, defined once —
+// agent contracts describe the repeated-verdict expectation behaviorally
+// rather than naming this constant.
 const IDENTICAL_FAIL_BRAKE_THRESHOLD = 2;
 
 // File-backed store for consecutive-identical-verdict counts. The store file
@@ -619,24 +620,24 @@ function stripBrakeDiagnosisClaim(argText) {
     .trim();
 }
 
-// Gate check for the /phase override path. A session with no engaged slot
-// passes through untouched (a lone verdict still permits override). An
-// engaged slot refuses the override — audit record, no advancement — unless
-// the arguments carry both diagnosis and escalation references, in which
-// case the override proceeds, the diagnosis reference is logged, and the
-// session's slots clear as the recorded recovery.
+// Gate check for the /phase override path, advisory-only: the user's /phase
+// override always proceeds. A session with no engaged slot passes through
+// untouched (a lone verdict still permits override). An engaged slot is
+// recorded as an advisory diagnosis (count, milestone, fingerprint, plus any
+// carried diagnosis/escalation references) in the protocol-gate log — the
+// override advances regardless. Diagnosis-claim tokens travel as optional
+// carriage and never gate the override; a diagnosed override clears the
+// session's slots as the recorded recovery.
 function evaluatePhaseOverrideBrake(sessionID, argText) {
   const engaged = findEngagedBrakes(sessionID);
   if (engaged.length === 0) return { allowed: true, engaged: false, consecutiveCount: 0 };
   const { diagnosis, escalation } = parseBrakeDiagnosisClaim(argText);
   const first = engaged[0];
+  loud(`BRAKE_ENGAGED session=${sessionID} milestone=${first.milestoneId} verdict=${first.fingerprint} consecutiveCount=${first.count} diagnosis=${diagnosis ?? "none"} escalation=${escalation ?? "none"} allowed=true`);
   if (diagnosis && escalation) {
-    loud(`BRAKE_ENGAGED session=${sessionID} milestone=${first.milestoneId} verdict=${first.fingerprint} consecutiveCount=${first.count} diagnosis=${diagnosis} escalation=${escalation} allowed=true`);
     resetGateVerdictBrake(sessionID);
-    return { allowed: true, engaged: true, consecutiveCount: first.count, milestoneId: first.milestoneId, fingerprint: first.fingerprint, diagnosis, escalation };
   }
-  loud(`BRAKE_ENGAGED session=${sessionID} milestone=${first.milestoneId} verdict=${first.fingerprint} consecutiveCount=${first.count} diagnosis=${diagnosis ?? "none"} escalation=${escalation ?? "none"} allowed=false`);
-  return { allowed: false, engaged: true, consecutiveCount: first.count, milestoneId: first.milestoneId, fingerprint: first.fingerprint, diagnosis, escalation };
+  return { allowed: true, engaged: true, consecutiveCount: first.count, milestoneId: first.milestoneId, fingerprint: first.fingerprint, diagnosis, escalation };
 }
 // Validates a multi-phase override queue against lifecycle.json
 // backwardTransitions. The queue's phases must form a connected chain in the
@@ -3658,15 +3659,11 @@ async function protocolGateServer(input, options) {
       }
       const n = phases[0];
       const prevPhase = sessionPhaseMap.get(sessionID);
-      // Identical-verdict brake: an engaged slot holds the override until a
-      // diagnosis plus escalation reference travels with it. Refusal touches
-      // nothing — no marker, no history, no phase change.
+      // Identical-verdict advisory: an engaged slot is noted in the
+      // protocol-gate log for diagnosis, and the override always proceeds
+      // to marker, history, and phase change below.
       {
-        const brake = evaluatePhaseOverrideBrake(sessionID, trimmed);
-        if (!brake.allowed) {
-          output.parts = [{ type: "text", text: `BRAKE_ENGAGED: override refused for session ${sessionID} — ${brake.consecutiveCount} consecutive identical gate verdicts on milestone ${brake.milestoneId}. Record a diagnosis and invoke the escalation protocol, then retry as /phase <target> diagnosis:<reference> escalation:<reference>. Refusal recorded in the protocol-gate log.` }];
-          return;
-        }
+        evaluatePhaseOverrideBrake(sessionID, trimmed);
       }
       // Pre-walk snapshot for the documented safe point: a discarded queue
       // whose head never earned fresh evidence rolls back to this phase plus
