@@ -172,6 +172,8 @@ The user's `/phase` slash-command override is the escape hatch from a stuck SWAR
 - **Same-phase override fires nothing.** `/phase SWARM → SWARM` is not an escape (`prevPhase === SWARM && n !== SWARM` is false); budgets and counters are preserved for the no-op override.
 - Other `/phase` transitions (into or between non-SWARM phases) leave redispatch counters unchanged.
 
+Identical-verdict brake: 2 consecutive identical gate verdicts on one milestone and session engage the brake, and a `/phase` override runs after a recorded diagnosis plus escalation-protocol invocation. The threshold is the single constant `IDENTICAL_FAIL_BRAKE_THRESHOLD` (value 2 in `plugins/protocol-gate/index.js`); counts persist under gitignored `plugins/protocol-gate/.state/`. An escape clears per-milestone budgets; a diagnosed override clears the brake count as the recorded recovery. Gate `.js` loads once per process, so restart opencode before the brake behavior takes effect.
+
 ## Security Audits
 
 Run separately from code reviews when:
