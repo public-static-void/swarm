@@ -1128,6 +1128,32 @@ describe("verification verb routing", () => {
   });
 });
 
+// Dispatch-discipline anchors stay greppable in the overseer delegation docs:
+// the fault-recovery pair names the rewrite and escalation rules, the shape
+// trio names the dispatch contract, and the tone pair names the phrasing
+// contract. Store-number close references stay out so a title-cited issue
+// can never resolve to an unrelated store record.
+describe("overseer dispatch-discipline anchors", () => {
+  it("carries the fault-recovery anchors", () => {
+    const overseer = readAgent("overseer.md");
+    expect(overseer).toContain("rewrite-dont-stop");
+    expect(overseer).toContain("escalate-with-exact-phase");
+  });
+
+  it("carries the dispatch-shape and phrasing anchors", () => {
+    const overseer = readAgent("overseer.md");
+    for (const anchor of ["WHAT-only", "diagnose-first", "cleanup-if-required", "expert-tone", "exact-issue-verbatim"]) {
+      expect(overseer).toContain(anchor);
+    }
+  });
+
+  it("cites issues by title without store-number close references", () => {
+    const overseer = readAgent("overseer.md");
+    expect(overseer).not.toContain("swarm/11");
+    expect(overseer).not.toContain("swarm/12");
+  });
+});
+
 // Durable prose survives the scribe: lasting decisions live in the body,
 // downstream trace stops at its source, and the commit hook stays scoped to
 // the suite plus security lint.

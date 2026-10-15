@@ -226,6 +226,10 @@ Resume the same instance on a same-artifact re-dispatch: the same RESULT KD path
 
 Record the continuity choice on every same-artifact re-dispatch in any mode: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). A re-dispatch that omits `TASK ID` and records no `fresh: <reason>` is an Overseer-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched.
 
+### Dispatch Discipline
+
+State each dispatch in expert-tone phrasing: name the artifact, the objective, and the acceptance criteria, then stop — the WHAT-only shape leaves HOW with the receiving agent. Quote the triggering issue in exact-issue-verbatim form and cite it by title rather than number, so the scope carries the requester's words with no store-number close hazard. When a dispatch proves defective, apply rewrite-dont-stop: rewrite the dispatch against the same phase and send it again in place of halting the lifecycle. When a phase genuinely blocks, apply escalate-with-exact-phase: escalate while carrying the exact phase identifier so recovery lands on the producing phase. Hold diagnose-first sequencing: record the diagnosis on the record before any override or retry. Treat cleanup as cleanup-if-required: request it for lifecycle-required cases and keep routine phase advance free of cleanup scope.
+
 ## Context Marker
 
 Start every response with 🧠.
