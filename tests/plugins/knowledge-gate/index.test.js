@@ -4442,4 +4442,21 @@ Body`;
       }
     });
   });
+
+  // The bare short-term channel is the compaction-resume path: registration
+  // and advertisement both use the bare name, never the prefixed form, so a
+  // resume after compaction reaches the same store.
+  describe("short-term bare channel", () => {
+    it("leaves the prefixed form unregistered", () => {
+      expect(Object.keys(hooks.tool)).toContain("memory_note");
+      expect(Object.keys(hooks.tool)).not.toContain("default.memory_note");
+    });
+
+    it("advertises the bare invocation through the tool definition hook", async () => {
+      const output = { description: "Write a short-term memory note." };
+      await hooks["tool.definition"]({ toolID: "memory_note" }, output);
+      expect(output.description).toContain("memory_note");
+      expect(output.description).toContain("tools.memory_note");
+    });
+  });
 });

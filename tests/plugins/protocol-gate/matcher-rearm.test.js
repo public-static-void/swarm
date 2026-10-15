@@ -5,12 +5,14 @@ import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 
 // M5 (swarm/1) regression: the live check-off hook (autoCheckOffMilestone)
-// matches impl-KD evidence via matchesSessionKDAnyGeneration — session-id
-// match mandatory, generation wildcarded — aligned with the disk-evidence
-// predicate findMilestoneImplKD. A VERIFY FAIL backtrack that skews the
-// persisted generation must not block valid same-session evidence from
-// re-firing the check-off. Self-contained: own temp dirs and fixtures, no
-// dependence on live milestone state.
+// matches impl-KD evidence via matchesSessionKDPinnedGeneration — the
+// filename's embedded generation must equal the persisted lifecycle
+// generation, aligned with the disk-evidence predicate findMilestoneImplKD.
+// A VERIFY FAIL backtrack that skews the persisted generation declines
+// skewed same-session evidence with a GEN_MISMATCH_SKIP; recovery is
+// diagnose → scoped-remove → redispatch with current-generation evidence.
+// Self-contained: own temp dirs and fixtures, no dependence on live
+// milestone state.
 describe("Protocol-Gate matcher re-arm (swarm/1)", () => {
   let tempRoot;
   let knowledgeDir;
@@ -95,7 +97,7 @@ ${table}
     createKD(filePath.split("/").pop());
   }
 
-  it("reopen → canonical rewrite with skewed generation re-checks off with no /phase override", async () => {
+  it("reopen → canonical rewrite with skewed generation stays open — a pinned rewrite re-checks off with no /phase override", async () => {
     const s = "m5-rearm-1";
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -104,8 +106,18 @@ ${table}
     createKD(`milestones-feature-${s}.md`, registryContent([["M5", "in-progress"]]));
 
     // Canonical rewrite whose embedded generation (gen1) diverges from the
-    // persisted lifecycle generation (gen0) — the strict matcher stalls here.
+    // persisted lifecycle generation (gen0): the pinned predicate refuses —
+    // the row stays in-progress and no phase override is installed.
     await writeImplKD("m5-rearm-1-art", `knowledge/impl-M5-fix-${s}-gen1.md`);
+
+    const refused = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+    expect(refused).toContain("  M5: in-progress");
+    expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`)).toBeUndefined();
+    // The skew is named loudly on the write path.
+    expect(readFileSync(join(protocolLogDir, "protocol-gate.log"), "utf8")).toContain("GEN_MISMATCH_SKIP");
+
+    // Paired positive: a rewrite at the persisted generation re-checks off.
+    await writeImplKD("m5-rearm-1-art", `knowledge/impl-M5-fix-${s}-gen0.md`);
 
     const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
     expect(content).toContain("  M5: checked-off");

@@ -2211,26 +2211,32 @@ Amendment body.
       expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-feature-${s}.md`);
       expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M5")).toBeNull();
 
-      // Deliberate contract update (Issue 64): the FILENAME's embedded
-      // generation is the evidence, so the legacy suffix keeps counting under
-      // a later persisted generation. Staleness within the session is handled
-      // by supersede-on-reopen and REPORT cleanup, not by generation-scoping
-      // here.
+      // Deliberate contract update (pinned generation): the FILENAME's embedded
+      // generation is the evidence, so a legacy generation-0 file no longer
+      // counts once the lifecycle persists generation 2 — the lookup refuses
+      // and the row stays open. Skewed evidence declines with a
+      // GEN_MISMATCH_SKIP on the reconcile path; recovery is diagnose →
+      // scoped-remove → redispatch with current-generation evidence.
       hooks.sessionPhaseMap.set(`${s}:gen`, 2);
-      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-feature-${s}.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBeNull();
+
+      // Paired positive: evidence at the persisted generation promotes.
+      removeKD(`impl-M4-feature-${s}.md`);
+      createKD(`impl-M4-next-${s}-gen2.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-next-${s}-gen2.md`);
 
       // The session-id match stays mandatory: another session's impl KD for
       // the same milestone id is never evidence.
       const other = sid("m4-find-other");
       createKD(`impl-M4-cross-${other}-gen2.md`);
-      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-feature-${s}.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-next-${s}-gen2.md`);
 
       // A filename whose embedded generation differs from the persisted one
-      // satisfies the lookup on its own — the observed gen0/gen1 divergence
-      // must not block the gate after reconciliation.
-      removeKD(`impl-M4-feature-${s}.md`);
-      createKD(`impl-M4-next-${s}-gen1.md`);
-      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBe(`impl-M4-next-${s}-gen1.md`);
+      // no longer satisfies the lookup — the observed gen1/gen2 skew refuses
+      // instead of promoting.
+      removeKD(`impl-M4-next-${s}-gen2.md`);
+      createKD(`impl-M4-skewed-${s}-gen1.md`);
+      expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M4")).toBeNull();
     });
 
     it("checkMilestoneCheckedOff cross-checks the registry row against its impl KD on disk", async () => {
@@ -3287,7 +3293,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
     }
 
-    it("promotes an evidence-backed stuck row at gate evaluation and advances — including a filename generation that differs from the persisted generation", async () => {
+    it("refuses a generation-skewed stuck row at gate evaluation and keeps the gate blocked — pinned evidence promotes", async () => {
       const s = sid("m1-rec-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3297,14 +3303,31 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       createKD(`milestones-feature-${s}-gen1.md`, registryContent([["M1", "in-progress"], ["M2", "checked-off"]]));
       createKD(`impl-M2-feat-${s}-gen1.md`);
       // M1's impl KD embeds gen 0 while the lifecycle persists generation 1 —
-      // the observed gen0/gen1 divergence must still count as evidence.
+      // the pinned predicate refuses the skew: the row stays in-progress, the
+      // gate stays blocked, and the skip is named loudly.
       createKD(`impl-M1-feat-${s}-gen0.md`);
 
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
+        expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+        expect(readLoudLog()).toContain(`GEN_MISMATCH_SKIP`);
+        expect(readLoudLog()).toContain(`impl-M1-feat-${s}-gen0.md`);
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+      // The refusal is persisted — the registry row itself still reads in-progress.
+      const refused = readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8");
+      expect(refused).toContain("  M1: in-progress");
+
+      // Paired positive: evidence at the persisted generation promotes.
+      createKD(`impl-M1-feat-${s}-gen1.md`);
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
         expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
-        expect(readLoudLog()).toContain(`RECONCILE_CHECKOFF: milestone M1 promoted in-progress → checked-off (impl KD impl-M1-feat-${s}-gen0.md)`);
+        expect(readLoudLog()).toContain(`RECONCILE_CHECKOFF: milestone M1 promoted in-progress → checked-off (impl KD impl-M1-feat-${s}-gen1.md)`);
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
@@ -3713,11 +3736,12 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8")).toContain("  M1: checked-off");
     });
 
-    it("checks off on a generation-mismatched same-session write with no unmatched diagnostic", async () => {
+    it("declines a generation-mismatched same-session write with a GEN_MISMATCH_SKIP diagnostic — a pinned write checks off", async () => {
       // The lifecycle persists generation 1; the impl KD filename embeds gen 0.
-      // The live hook matches session-id with generation wildcarded, so valid
-      // same-session evidence re-fires the check-off even when the persisted
-      // generation skewed after a backtrack — no gate round-trip required.
+      // The live hook is generation-pinned, so skewed same-session evidence
+      // declines with a GEN_MISMATCH_SKIP instead of checking off — recovery
+      // is diagnose → scoped-remove → redispatch with current-generation
+      // evidence. No gate round-trip is required for pinned evidence.
       const s = sid("m1-genmis-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3736,17 +3760,33 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
           { tool: "write", sessionID: writer, callID: "c1" },
           { args: { filePath: `knowledge/impl-M1-feat-${s}-gen0.md`, content: "# IMPLEMENTATION SUMMARY" } }
         );
-        expect(readLoudLog()).not.toContain("AUTO_CHECKOFF_UNMATCHED");
+        expect(readLoudLog()).toContain("GEN_MISMATCH_SKIP");
+        expect(readLoudLog()).toContain(`impl-M1-feat-${s}-gen0.md`);
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
-      // The live hook checked the row off directly despite the generation skew.
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
-      // The write tool lands the impl KD on disk after the before-hook.
+      // The skewed write left the row open.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: in-progress");
+      // The write tool lands the impl KD on disk after the before-hook — disk
+      // evidence alone still refuses the skew at the gate.
       createKD(`impl-M1-feat-${s}-gen0.md`);
 
-      // The gate confirms the row against the disk evidence.
+      // The gate refuses the skewed disk evidence.
+      expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: in-progress");
+
+      // Paired positive: a write at the persisted generation checks the row
+      // off directly.
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: writer, callID: "c2" },
+        { args: { filePath: `knowledge/impl-M1-feat-${s}-gen1.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      );
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
+      // The write tool lands the impl KD on disk after the before-hook.
+      createKD(`impl-M1-feat-${s}-gen1.md`);
+
+      // The gate confirms the row against the pinned disk evidence.
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
     });

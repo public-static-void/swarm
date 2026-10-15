@@ -172,7 +172,7 @@ ${table}
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
   });
 
-  it("the remediation path restores a legacy renamed file to its canonical name and completes the row", async () => {
+  it("the remediation path restores a legacy renamed file to its canonical name but the gate refuses skewed evidence — pinned evidence confirms", async () => {
     const s = "m6-supersede-4";
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -186,6 +186,13 @@ ${table}
     expect(existsSync(join(knowledgeDir, `impl-M6-stale-${s}-gen1.md`))).toBe(true);
     expect(existsSync(join(knowledgeDir, `impl-M6-stale-${s}-gen1.md.superseded.md`))).toBe(false);
     expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M6: checked-off");
+    // The restored file embeds gen 1 while the lifecycle persists generation
+    // 0 — the pinned live-evidence check refuses it, so the gate stays closed
+    // despite the remediation-stamped row.
+    expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
+
+    // Paired positive: current-generation evidence confirms the gate.
+    createKD(`impl-M6-fresh-${s}-gen0.md`, implKD(s));
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
   });
 });
