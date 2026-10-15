@@ -5,8 +5,8 @@ import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 
 // Identical-verdict brake: repeated identical gate verdicts on one milestone
-// engage a brake that holds further /phase overrides until a diagnosis plus an
-// escalation reference travels with the override. Self-contained: own temp
+// are recorded as an advisory diagnosis, and the /phase override always
+// proceeds. Self-contained: own temp
 // dirs and fixtures, no dependence on live milestone state.
 describe("identical-verdict brake", () => {
   let tempRoot;
@@ -76,7 +76,7 @@ describe("identical-verdict brake", () => {
     return output;
   }
 
-  it("refuses the override at threshold and records the refusal", async () => {
+  it("lets the override through at threshold and records the advisory diagnosis", async () => {
     const s = "brake-refuse-1";
     await startSwarm(s);
 
@@ -84,11 +84,11 @@ describe("identical-verdict brake", () => {
     expect(hooks.recordGateVerdict(s, "M3", "FAIL:M3").count).toBe(2);
 
     const output = await attemptOverride(s, "EXPLORE");
-    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
-    expect(output.parts[0].text).toContain("BRAKE_ENGAGED");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+    expect(output.parts[0].text).toContain("Phase set to EXPLORE");
+    expect(output.parts[0].text).not.toContain("override refused");
 
     const log = logText();
-    expect(log).toContain("BRAKE_ENGAGED");
     expect(log).toContain(`session=${s}`);
     expect(log).toContain("milestone=M3");
     expect(log).toContain("consecutiveCount=2");
@@ -150,7 +150,7 @@ describe("identical-verdict brake", () => {
     expect(output.parts[0].text).toContain("Phase set to EXPLORE");
   });
 
-  it("the engaged brake survives a process restart via the state file", async () => {
+  it("the engaged advisory count survives a process restart via the state file", async () => {
     const s = "brake-restart-6";
     await startSwarm(s);
 
@@ -158,14 +158,16 @@ describe("identical-verdict brake", () => {
     hooks.recordGateVerdict(s, "M3", "FAIL:M3");
 
     // Simulated restart with the same session ID: fresh module state, same
-    // state dir — the file-backed count rehydrates and still holds.
+    // state dir — the file-backed count rehydrates and is still recorded as
+    // advisory, while the override proceeds.
     hooks = await pluginModule.server({}, {});
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
 
     const output = await attemptOverride(s, "EXPLORE");
-    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
-    expect(output.parts[0].text).toContain("BRAKE_ENGAGED");
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+    expect(output.parts[0].text).toContain("Phase set to EXPLORE");
+    expect(output.parts[0].text).not.toContain("override refused");
   });
 
   it("a repeated FAIL regression advances the count through the gate path", async () => {
