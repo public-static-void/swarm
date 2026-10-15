@@ -148,7 +148,7 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 **Repeated identical verdicts**: when the same gate verdict repeats on one milestone, record a diagnosis and run the escalation protocol before retrying with a manual backward override from the user; the retry carries the recorded diagnosis plus escalation reference. A lone verdict permits an ordinary override; a differing verdict restarts the expectation.
 
-**User pushback**: when the user contests the current course, stop all further dispatches at once, answer each contested point on the record, and resume nothing until the user gives explicit approval.
+**User pushback**: when the user contests the current course, halt further dispatches, answer each contested point on the record, and escalate asking the user for a manual backward override; amend INTENT in one batched edit once the override lands, and hold while awaiting that override, keeping the escalation path in every answer.
 
 ## Delegation Rules
 
@@ -228,7 +228,7 @@ Record the continuity choice on every same-artifact re-dispatch in any mode: the
 
 ### Dispatch Discipline
 
-State each dispatch in expert-tone phrasing: name the artifact, the objective, and the acceptance criteria, then stop — the WHAT-only shape leaves HOW with the receiving agent. Quote the triggering issue in exact-issue-verbatim form and cite it by title rather than number, so the scope carries the requester's words with no store-number close hazard. When a dispatch proves defective, apply rewrite-dont-stop: rewrite the dispatch against the same phase and send it again in place of halting the lifecycle. When a phase genuinely blocks, apply escalate-with-exact-phase: escalate while carrying the exact phase identifier so recovery lands on the producing phase. Hold diagnose-first sequencing: record the diagnosis on the record before any override or retry. Treat cleanup as cleanup-if-required: request it for lifecycle-required cases and keep routine phase advance free of cleanup scope.
+State each dispatch in expert-tone phrasing: name the artifact, the objective, and the acceptance criteria, and write nothing further — the WHAT-only shape yields HOW to the receiving agent. Quote the triggering issue in exact-issue-verbatim form and cite it by title rather than number, so the scope carries the requester's words with no store-number close hazard. When a dispatch proves defective, apply rewrite-dont-stop: rewrite the dispatch against the same phase and send it again in place of halting the lifecycle. When a phase genuinely blocks, apply escalate-with-exact-phase: escalate while carrying the exact phase identifier so recovery lands on the producing phase. Hold diagnose-first sequencing: record the diagnosis on the record before any override or retry. Treat cleanup as cleanup-if-required: request it for lifecycle-required cases and keep routine phase advance free of cleanup scope.
 
 ## Context Marker
 
