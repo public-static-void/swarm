@@ -163,16 +163,16 @@ On FAIL with clear cause:
 4. Same Inspector re-reviews (consistency)
 5. Loop until PASS; abort on diminishing returns (2-3 cycles without progress) → escalate to fundamental flaw
 
-## /phase SAFETY_ESCAPE Counter Semantics
+## Manual Override Escape and Counter Semantics
 
-The user's `/phase` slash-command override is the escape hatch from a stuck SWARM phase — the automatic safety mechanisms keep the phase at SWARM (protocol-gate logs `SAFETY_ESCAPE` on the escape). Its effect on the redispatch counters (see the linked swarm issue and requirement code):
+A manual override is the user-facing escape hatch from a stuck SWARM phase — the automatic safety mechanisms keep the phase at SWARM while the escape is recorded. Its effect on redispatch budgets:
 
-- **Resets per-milestone redispatch budgets.** Escaping SWARM → non-SWARM deletes every non-numeric `{sessionID}:{milestone}` key (e.g. `sid:M1`) in `phaseRedispatchCount`, so an escaped-and-continued lifecycle restarts each milestone with a fresh budget instead of inheriting stale pre-escape caps.
-- **Preserves phase counters.** Numeric `{sessionID}:{phase-constant}` keys (e.g. `sid:7` for SWARM) are untouched — the phase's own dispatch count is not reset by the escape.
-- **Same-phase override fires nothing.** `/phase SWARM → SWARM` is not an escape (`prevPhase === SWARM && n !== SWARM` is false); budgets and counters are preserved for the no-op override.
-- Other `/phase` transitions (into or between non-SWARM phases) leave redispatch counters unchanged.
+- **Resets per-milestone redispatch budgets.** Escaping SWARM to another phase restarts each milestone with a fresh budget instead of inheriting stale pre-escape caps.
+- **Preserves phase dispatch counts.** The phase's own dispatch count is not reset by the escape.
+- **Same-phase override is a no-op.** A manual override naming the current phase fires nothing; budgets and counters are preserved.
+- Other manual transitions (into or between non-SWARM phases) leave redispatch counters unchanged.
 
-Identical-verdict brake: 2 consecutive identical gate verdicts on one milestone and session engage the brake, and a `/phase` override runs after a recorded diagnosis plus escalation-protocol invocation. The threshold is the single constant `IDENTICAL_FAIL_BRAKE_THRESHOLD` (value 2 in `plugins/protocol-gate/index.js`); counts persist under gitignored `plugins/protocol-gate/.state/`. An escape clears per-milestone budgets; a diagnosed override clears the brake count as the recorded recovery. Gate `.js` loads once per process, so restart opencode before the brake behavior takes effect.
+Identical-verdict brake: 2 consecutive identical gate verdicts on one milestone and session engage the brake, and a manual backward override follows a recorded diagnosis plus escalation-protocol invocation. An escape resets per-milestone budgets; a diagnosed override clears the brake count as the recorded recovery.
 
 ## Security Audits
 
