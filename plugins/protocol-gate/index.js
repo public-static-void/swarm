@@ -44,10 +44,12 @@ import {
 } from "./attribution.js";
 import {
   escapeRegExp,
+  extractImplKDGeneration,
   getKDLookupSIDs,
   matchesSessionKDAnyGeneration,
   matchesSessionKD,
   matchesSessionKDForSession,
+  matchesSessionKDPinnedGeneration,
   sanitizeSessionID,
 } from "./kd-match.js";
 import { atomicWriteFileSync } from "./fs-atomic.js";
@@ -501,6 +503,141 @@ function recordPhaseOverride(sessionPhaseMap, sessionID, entry) {
   while (history.length > OVERRIDE_HISTORY_MAX) history.shift();
   sessionPhaseMap.set(key, history);
   return history;
+}
+
+// Identical-verdict advisory: the count threshold lives here, defined once —
+// agent contracts describe the repeated-verdict expectation behaviorally
+// rather than naming this constant.
+const IDENTICAL_FAIL_BRAKE_THRESHOLD = 2;
+
+// File-backed store for consecutive-identical-verdict counts. The store file
+// lives under the gitignored state dir (same family as the lifecycle state
+// files), so counts survive an opencode restart. No in-memory cache: every
+// read hits disk, so a fresh plugin load rehydrates the same counts and a
+// restart neither clears an engaged brake nor fabricates one. Shape:
+// { "<sessionID>:<MILESTONE>": { milestoneId, fingerprint, count, updatedAt } }.
+function brakeStorePath() {
+  return join(getStateDir(), ".identical-verdict-brake.json");
+}
+
+function readBrakeStore() {
+  try {
+    const parsed = JSON.parse(readFileSync(brakeStorePath(), "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function writeBrakeStore(store) {
+  mkdirSync(getStateDir(), { recursive: true });
+  atomicWriteFileSync(brakeStorePath(), JSON.stringify(store));
+}
+
+function brakeSlotKey(sessionID, milestoneId) {
+  return `${sessionID}:${String(milestoneId).toUpperCase()}`;
+}
+
+// Records one gate verdict for a milestone and returns the consecutive run.
+// An identical fingerprint extends the run; a differing fingerprint restarts
+// it at 1, so flapping verdicts never accumulate toward the threshold.
+function recordGateVerdict(sessionID, milestoneId, verdictFingerprint) {
+  const store = readBrakeStore();
+  const slot = brakeSlotKey(sessionID, milestoneId);
+  const fingerprint = String(verdictFingerprint);
+  const prev = store[slot];
+  const count = prev && prev.fingerprint === fingerprint ? prev.count + 1 : 1;
+  store[slot] = { milestoneId: String(milestoneId), fingerprint, count, updatedAt: Date.now() };
+  try {
+    writeBrakeStore(store);
+  } catch (e) {
+    debug(`brake store write failed for session ${sessionID}: ${e.message}`);
+  }
+  return { count, fingerprint };
+}
+
+// Diagnosed recovery: clears the session's brake slots (one milestone, or
+// all when no milestone is named). A cleared slot restarts at zero — the
+// next verdict begins a fresh run.
+function resetGateVerdictBrake(sessionID, milestoneId) {
+  const store = readBrakeStore();
+  if (milestoneId === undefined) {
+    const prefix = `${sessionID}:`;
+    for (const key of Object.keys(store)) {
+      if (key.startsWith(prefix)) delete store[key];
+    }
+  } else {
+    delete store[brakeSlotKey(sessionID, milestoneId)];
+  }
+  try {
+    writeBrakeStore(store);
+  } catch (e) {
+    debug(`brake store reset failed for session ${sessionID}: ${e.message}`);
+  }
+}
+
+function getBrakeEntry(sessionID, milestoneId) {
+  const entry = readBrakeStore()[brakeSlotKey(sessionID, milestoneId)];
+  return entry && typeof entry.count === "number" ? entry : null;
+}
+
+function findEngagedBrakes(sessionID) {
+  const store = readBrakeStore();
+  const prefix = `${sessionID}:`;
+  const engaged = [];
+  for (const [key, entry] of Object.entries(store)) {
+    if (!key.startsWith(prefix)) continue;
+    if (entry && typeof entry.count === "number" && entry.count >= IDENTICAL_FAIL_BRAKE_THRESHOLD) {
+      engaged.push(entry);
+    }
+  }
+  return engaged;
+}
+
+// Parses the machine-readable diagnosis claim from /phase arguments:
+// `diagnosis:<reference>` and `escalation:<reference>` tokens (bare or
+// quoted). Returns { diagnosis, escalation } with null for absent tokens.
+// The claim is the gate-visible half of the overseer rule — the human half
+// (a recorded diagnosis note plus escalation-protocol invocation) is what
+// the references point at.
+function parseBrakeDiagnosisClaim(argText) {
+  const text = String(argText ?? "");
+  const take = (name) => {
+    const m = text.match(new RegExp(`(?:^|\\s)${name}\\s*:\\s*("[^"]+"|'[^']+'|\\S+)`, "i"));
+    if (!m) return null;
+    return m[1].replace(/^["']|["']$/g, "");
+  };
+  return { diagnosis: take("diagnosis"), escalation: take("escalation") };
+}
+
+// Removes the diagnosis-claim tokens so the remaining text parses as the
+// plain phase argument the override path already accepts. Claim-free input
+// passes through unchanged.
+function stripBrakeDiagnosisClaim(argText) {
+  return String(argText ?? "")
+    .replace(/(?:^|\s)(?:diagnosis|escalation)\s*:\s*("[^"]+"|'[^']+'|\S+)/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Gate check for the /phase override path, advisory-only: the user's /phase
+// override always proceeds. A session with no engaged slot passes through
+// untouched (a lone verdict still permits override). An engaged slot is
+// recorded as an advisory diagnosis (count, milestone, fingerprint, plus any
+// carried diagnosis/escalation references) in the protocol-gate log — the
+// override advances regardless. Diagnosis-claim tokens travel as optional
+// carriage and never gate the override; a diagnosed override clears the
+// session's slots as the recorded recovery.
+function evaluatePhaseOverrideBrake(sessionID, argText) {
+  const engaged = findEngagedBrakes(sessionID);
+  if (engaged.length === 0) return { allowed: true, engaged: false, consecutiveCount: 0 };
+  const { diagnosis, escalation } = parseBrakeDiagnosisClaim(argText);
+  const first = engaged[0];
+  loud(`BRAKE_ENGAGED session=${sessionID} milestone=${first.milestoneId} verdict=${first.fingerprint} consecutiveCount=${first.count} diagnosis=${diagnosis ?? "none"} escalation=${escalation ?? "none"} allowed=true`);
+  if (diagnosis && escalation) {
+    resetGateVerdictBrake(sessionID);
+  }
+  return { allowed: true, engaged: true, consecutiveCount: first.count, milestoneId: first.milestoneId, fingerprint: first.fingerprint, diagnosis, escalation };
 }
 // Validates a multi-phase override queue against lifecycle.json
 // backwardTransitions. The queue's phases must form a connected chain in the
@@ -1111,17 +1248,43 @@ function readMilestoneState(sessionID, sessionPhaseMap, milestoneId) {
   return rowMatch ? rowMatch[1] : null;
 }
 
+// DIVERGENCE RECOVERY PROCEDURE (swarm/50 audited recovery — operator-invoked,
+// never automatic). The pinned evidence predicate below refuses to promote a
+// row from a same-session impl KD whose embedded `-gen{N}` differs from the
+// persisted lifecycle generation (the gen0/gen1 skew a VERIFY FAIL backtrack
+// can produce), and logs a GEN_MISMATCH_SKIP line naming session, milestone,
+// file generation, and persisted generation. When that skew wedges a row, the
+// operator recovers in three steps:
+//   Step 1 — diagnose (role: Overseer/operator; artifact: the GEN_MISMATCH_SKIP
+//     log line in plugins/logs/protocol-gate.log). Read fileGen vs
+//     persistedGen to confirm generation skew rather than missing evidence.
+//   Step 2 — scoped-remove (role: operator, in-process via
+//     deleteStaleMilestoneKD after evaluateStaleKDDeletable passes —
+//     no shell grant exists for this; agents/committer.md holds no
+//     `rm knowledge/*` grant by design). Applies only to files
+//     satisfying the four-clause stale predicate documented below;
+//     artifact: the STALE_KD_DELETE audit line, or
+//     STALE_KD_DELETE_REFUSED when live evidence is attempted).
+//   Step 3 — redispatch (role: Overseer; artifact: a fresh impl KD at the
+//     current persisted generation, which the pinned predicate promotes, and
+//     the SWARM→VERIFY gate opening on it).
+// RESTART REQUIRED: plugins load once per opencode process, so this
+// gate-logic change — pinning plus the skip/remove diagnostics — takes effect
+// only after opencode restarts. Live behavior lags disk until then; operators
+// should restart after pulling gate-logic fixes.
+
 // Finds the milestone-scoped impl KD on disk for a milestone. Evidence
-// predicate: the FILENAME's own embedded `-gen{N}` (any N,
-// including one that differs from the persisted lifecycle generation — the
-// observed gen0/gen1 divergence) or the legacy `-<session>.md` suffix counts;
-// the session-id match stays mandatory, so a foreign session's impl KD is
-// never evidence. Staleness within the session is handled by
-// supersedeMilestoneImplKDs (re-open) and cleanupLifecycleKDs (REPORT), not by
-// generation-scoping here — a strict persisted-generation match would reconcile
-// the registry yet still block the gate on exactly the divergence this check
-// must recover from. The milestone prefix match is case-insensitive. Returns
-// the filename or null.
+// matching is generation-pinned: the FILENAME's own embedded `-gen{N}` must
+// equal the persisted lifecycle generation (matchesSessionKDPinnedGeneration);
+// legacy suffix-less files count as generation 0, so they satisfy the lookup
+// only in a generation-0 lifecycle. A stale prior-generation file never
+// satisfies the lookup — the reconcile path below logs a GEN_MISMATCH_SKIP
+// diagnostic for it instead (see the DIVERGENCE RECOVERY PROCEDURE above for
+// the operator-invoked recovery). The session-id match stays mandatory, so a
+// foreign session's impl KD is never evidence. Staleness within the session is
+// additionally handled by supersedeMilestoneImplKDs (re-open) and
+// cleanupLifecycleKDs (REPORT). The milestone prefix match is
+// case-insensitive. Returns the filename or null.
 function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   if (!milestoneId) return null;
   const knowledgeDir = getKnowledgeDir(sessionID);
@@ -1134,7 +1297,8 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   // reopen) and never count, so a reopened row cannot re-complete on the
   // work the review just invalidated. Shared predicate below, so the
   // cross-check and the write-hook check-off agree on stamped rows.
-  const found = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, milestoneId));
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const found = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, milestoneId, generation));
   return found || null;
 }
 
@@ -1157,16 +1321,32 @@ function isStaleImplKDContent(content) {
 
 // Shared staleness predicate for milestone completion evidence: a
 // same-session impl KD filename counts as live evidence only when its
+// embedded generation equals the persisted lifecycle generation AND its
 // frontmatter does NOT carry a superseded status. Consulted by the
 // cross-check path (findMilestoneImplKD), the write-hook check-off path
 // (autoCheckOffMilestone, via the incoming-content variant above), and the
 // stuck-row reconciliation path (reconcileStuckRowsFromDiskEvidence) alike,
 // so registry promotion and checkMilestoneCheckedOff agree on stamped rows.
-function isLiveMilestoneEvidence(knowledgeDir, filename, sessionID, milestoneId) {
+function isLiveMilestoneEvidence(knowledgeDir, filename, sessionID, milestoneId, generation) {
   const prefix = `impl-${milestoneId}-`;
   if (!filename.toLowerCase().startsWith(prefix.toLowerCase())) return false;
-  if (!matchesSessionKDAnyGeneration(filename, sessionID)) return false;
-  return !isSupersededByFrontmatter(knowledgeDir, filename);
+  if (!matchesSessionKDPinnedGeneration(filename, sessionID, generation)) return false;
+  return isLiveEvidenceFile(knowledgeDir, filename);
+}
+
+// Fail-closed readability gate for the pinned evidence path: a file whose
+// bytes cannot be read is not evidence — it never promotes (it is named by
+// the GEN_MISMATCH_SKIP diagnostic instead). Readable files without a
+// frontmatter fence keep the long-standing live default, so KDs written
+// without frontmatter still count; only the superseded stamp disqualifies.
+function isLiveEvidenceFile(knowledgeDir, filename) {
+  let content;
+  try {
+    content = readFileSync(join(knowledgeDir, filename), "utf8");
+  } catch (_) {
+    return false;
+  }
+  return !isStaleImplKDContent(content);
 }
 
 // Reads the leading frontmatter block of a knowledge KD and reports whether
@@ -1293,6 +1473,90 @@ function supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId) {
   }
 }
 
+// Scoped stale-KD removal predicate and operator (swarm/50 C-SCOPED-DELETE).
+// Holder: protocol-gate (in-process). There is NO `rm knowledge/impl-*`
+// shell grant in agents/committer.md by design — the committer shell
+// allowlist is git-only (`git add*` allow, `git add -f*` deny), and
+// `knowledge/` stays untracked via `.gitignore:5` (staging via the
+// committer allowlist only). Removal, when the four clauses below all
+// hold, is performed in-process by deleteStaleMilestoneKD (unlinkSync
+// after evaluateStaleKDDeletable passes) with audit emission on both
+// paths — no shell invocation path exists. Operators consult
+// evaluateStaleKDDeletable; live-generation evidence is always refused.
+//
+// Stale predicate (all must hold):
+//   (a) basename matches `impl-<milestoneId>-<sessionId>-gen<N>.md` (or the
+//       legacy `impl-<milestoneId>-<sessionId>.md`, counted as generation 0);
+//       renamed `.superseded.md` provenance is never removed by this path.
+//   (b) the embedded session marker equals the active lifecycle session.
+//   (c) the embedded generation differs from the persisted lifecycle
+//       generation, OR the frontmatter status is stamped superseded.
+//   (d) live-generation evidence never qualifies: a file whose generation
+//       equals the persisted generation with a live frontmatter status is
+//       refused deletion (predicate-level impossibility).
+// Audit record shapes:
+//   removal: STALE_KD_DELETE session=<id> milestone=<rowId> file=<name>
+//     fileGen=<N> persistedGen=<M> reason=<gen-mismatch|superseded>
+//     actor=<role> deleted=true
+//   refusal: STALE_KD_DELETE_REFUSED session=<id> milestone=<rowId> file=<name>
+//     fileGen=<N|unknown> persistedGen=<M> reason=<...> actor=<role>
+//     deleted=false
+function evaluateStaleKDDeletable(filename, sessionID, persistedGeneration, frontmatterStatus) {
+  const unknown = { deletable: false, reason: "invalid-path", milestoneId: "unknown", fileGen: null };
+  if (typeof filename !== "string" || filename.length === 0) return unknown;
+  if (filename.includes("/") || filename.includes("\\")) return unknown;
+  if (!/^impl-/i.test(filename)) return { ...unknown, reason: "not-impl-kd" };
+  if (filename.toLowerCase().endsWith(".superseded.md")) return { ...unknown, reason: "renamed-provenance" };
+  const fileGen = extractImplKDGeneration(filename, sessionID);
+  if (fileGen === null) return { ...unknown, reason: "foreign-session" };
+  const milestoneId = extractMilestoneIdFromImplKD(filename) || "unknown";
+  const stamped = String(frontmatterStatus ?? "").trim().toLowerCase() === "superseded";
+  if (fileGen === persistedGeneration && !stamped) {
+    return { deletable: false, reason: "live-evidence", milestoneId, fileGen };
+  }
+  if (fileGen !== persistedGeneration) {
+    return { deletable: true, reason: "gen-mismatch", milestoneId, fileGen };
+  }
+  return { deletable: true, reason: "superseded", milestoneId, fileGen };
+}
+
+// Operator half of the scoped stale-KD removal: evaluates the four-clause
+// predicate against the file on disk, removes only qualifying files, and
+// emits the audit record on both paths. Returns { ok, reason, milestoneId,
+// fileGen, persistedGen }. Never throws for missing/unreadable files —
+// refusal with a record is the fail-closed outcome.
+function deleteStaleMilestoneKD(sessionID, sessionPhaseMap, filename, actor) {
+  const who = actor || "Committer";
+  const knowledgeDir = getKnowledgeDir(sessionID);
+  const persistedGen = getCurrentGeneration(sessionPhaseMap, sessionID);
+  let content = null;
+  try {
+    content = readFileSync(join(knowledgeDir, filename), "utf8");
+  } catch (_) {
+    content = null;
+  }
+  if (typeof content !== "string") {
+    loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=unknown file=${filename} fileGen=unknown persistedGen=${persistedGen} reason=missing actor=${who} deleted=false`);
+    return { ok: false, reason: "missing", milestoneId: "unknown", fileGen: null, persistedGen: persistedGen };
+  }
+  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
+  const statusMatch = fence && fence[1].match(/^\s*status\s*:\s*("([^"]*)"|'([^']*)'|([^\s#\r\n]+))/im);
+  const status = statusMatch ? (statusMatch[2] ?? statusMatch[3] ?? statusMatch[4] ?? "") : "";
+  const verdict = evaluateStaleKDDeletable(filename, sessionID, persistedGen, status);
+  if (!verdict.deletable) {
+    loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen ?? "unknown"} persistedGen=${persistedGen} reason=${verdict.reason} actor=${who} deleted=false`);
+    return { ok: false, reason: verdict.reason, milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, persistedGen: persistedGen };
+  }
+  try {
+    unlinkSync(join(knowledgeDir, filename));
+  } catch (e) {
+    loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen} persistedGen=${persistedGen} reason=delete-failed actor=${who} deleted=false`);
+    return { ok: false, reason: "delete-failed", milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, persistedGen: persistedGen };
+  }
+  loud(`STALE_KD_DELETE: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen} persistedGen=${persistedGen} reason=${verdict.reason} actor=${who} deleted=true`);
+  return { ok: true, reason: verdict.reason, milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, persistedGen: persistedGen };
+}
+
 // Cross-checks a milestone's registry state against its impl KD on disk — the
 // verifiable check-off semantics the all-checked-off gate consumes. A row is
 // genuinely checked-off only when BOTH the registry row says checked-off AND
@@ -1347,12 +1611,52 @@ function resolveMilestoneRowId(registry, relPath, milestoneId) {
   return prefix ? prefix.id : milestoneId;
 }
 
+// Generation-mismatch skip diagnostic (swarm/50): same-session impl files for
+// a milestone row whose embedded generation differs from the persisted
+// lifecycle generation — or whose bytes cannot be read (fail-closed) — are
+// skipped with an auditable record, never promoted. Legacy suffix-less files
+// count as generation 0, so they skip (with fileGen=0) once the lifecycle
+// moves past generation 0. Files from foreign sessions are not this
+// lifecycle's evidence and stay silent here. Record shape:
+// GEN_MISMATCH_SKIP session=<id> milestone=<rowId> file=<name>
+// fileGen=<N> persistedGen=<M> reason=<gen-mismatch|unreadable> promoted=false.
+function emitGenerationMismatchSkips(knowledgeDir, files, sessionID, milestoneId, persistedGeneration) {
+  const prefix = `impl-${milestoneId}-`;
+  for (const f of files) {
+    if (!f.toLowerCase().startsWith(prefix.toLowerCase())) continue;
+    if (f.toLowerCase().endsWith(".superseded.md")) continue;
+    const fileGen = extractImplKDGeneration(f, sessionID);
+    if (fileGen === null) continue;
+    if (fileGen === persistedGeneration) {
+      // Same generation but not live evidence: either unreadable bytes
+      // (fail-closed — the pinned predicate already declined) or
+      // frontmatter-superseded (named by the STALE_EVIDENCE probe below).
+      // Only the unreadable case skips here.
+      let readable = true;
+      try {
+        readFileSync(join(knowledgeDir, f), "utf8");
+      } catch (_) {
+        readable = false;
+      }
+      if (!readable) {
+        loud(`GEN_MISMATCH_SKIP: session=${sessionID} milestone=${milestoneId} file=${f} fileGen=${fileGen} persistedGen=${persistedGeneration} reason=unreadable promoted=false`);
+      }
+      continue;
+    }
+    loud(`GEN_MISMATCH_SKIP: session=${sessionID} milestone=${milestoneId} file=${f} fileGen=${fileGen} persistedGen=${persistedGeneration} reason=gen-mismatch promoted=false`);
+  }
+}
+
 // Disk-evidence reconciliation: before the all-checked-off
 // verdict is computed, every non-checked-off row (`in-progress`, `assigned`,
 // `pending`, `failed`) whose milestone-scoped impl KD exists on disk under the
-// SAME session id is promoted to checked-off. Evidence matching takes the
-// generation from the FILENAME (any N, including ≠ persisted generation);
-// rows without evidence are never promoted and keep blocking the gate.
+// SAME session id AND at the persisted lifecycle generation is promoted to
+// checked-off. Evidence matching is generation-pinned (filename `-gen{N}`
+// equals the persisted generation; legacy suffix-less files count as
+// generation 0); rows without pinned evidence are never promoted and keep
+// blocking the gate. Same-session files that miss the pin are named by a
+// GEN_MISMATCH_SKIP diagnostic — see the DIVERGENCE RECOVERY PROCEDURE above
+// for the operator-invoked recovery (diagnose → scoped-remove → redispatch).
 //
 // RESTART REQUIRED: plugins load once per opencode process, so this
 // gate-logic change — reconciliation and the loud auto-checkoff diagnostics —
@@ -1372,14 +1676,22 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return 0; }
+  const persistedGeneration = getCurrentGeneration(sessionPhaseMap, sessionID);
   let promoted = 0;
   for (const row of stuck) {
     const prefix = `impl-${row.id}-`;
-    // Shared staleness predicate: only live (non-frontmatter-superseded)
-    // same-session evidence promotes — the write-hook check-off consults the
-    // same parse over the incoming content, so both agree on stamped rows.
-    const evidence = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, row.id));
+    // Shared pinned predicate: only live (non-frontmatter-superseded)
+    // same-session, current-generation evidence promotes — the write-hook
+    // check-off consults the same generation pin over the incoming path, so
+    // both agree on skewed rows.
+    const evidence = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, row.id, persistedGeneration));
     if (!evidence) {
+      // Generation-mismatch skip: same-session impl files for this row that
+      // miss the generation pin (or cannot be read) are skipped audibly —
+      // never promoted. The row keeps blocking the gate; the operator
+      // recovers via the DIVERGENCE RECOVERY PROCEDURE (diagnose →
+      // scoped-remove → redispatch).
+      emitGenerationMismatchSkips(knowledgeDir, files, sessionID, row.id, persistedGeneration);
       // Superseded-only evidence probe: a reopened row's stale impl
       // KDs survive on disk as `*.superseded.md` — invisible to the predicate
       // above by design, since widening it would double-suffix the files on
@@ -1457,11 +1769,14 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
   // mask a live-evidence check-off. Frontmatter-stamped files are stale, not
   // live, so they do not block the remediation. Only a row whose sole
   // same-session impl evidence is `.superseded.md` file(s) qualifies.
+  // Liveness uses the pinned predicate: wrong-generation evidence is ghost
+  // evidence, never a block on explicit audited remediation.
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return { ok: false, reason: "no-knowledge-dir", milestoneId }; }
   const prefix = `impl-${milestoneId}-`;
-  const live = files.find(f => f.toLowerCase().startsWith(prefix.toLowerCase()) && matchesSessionKDAnyGeneration(f, sessionID) && !isSupersededByFrontmatter(knowledgeDir, f));
+  const persistedGeneration = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const live = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, milestoneId, persistedGeneration));
   if (live) return { ok: false, reason: "live-evidence-present", milestoneId };
   const superseded = files.filter(f => {
     if (!f.toLowerCase().startsWith(prefix.toLowerCase())) return false;
@@ -1912,6 +2227,18 @@ function regressVerifyOnFail(sessionID, kdFilename, sessionFiles, sessionPhaseMa
   debug(`VERDICT_FAIL: KD ${kdFilename} verdict=FAIL — auto-regressing VERIFY→SWARM (no BACKWARD flag)`);
   backwardTransition(sessionID, STATES.VERIFY, STATES.SWARM);
   reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds, `FAIL citations in review KD ${kdFilename}`);
+  // Identical-verdict brake feed: each genuine FAIL regression extends the
+  // consecutive run for its cited milestones under the verdict fingerprint
+  // (verdict plus cited set — a re-emitted review with the same shape
+  // increments; a differently-shaped one restarts). Consumed duplicates
+  // return false above and never reach this line, so fresh verdicts count.
+  // The /phase override path consults the run via
+  // evaluatePhaseOverrideBrake.
+  const cited = [...new Set((citedMilestoneIds || []).map(id => String(id).toUpperCase()))];
+  const fingerprint = `FAIL:${cited.slice().sort().join(",")}`;
+  for (const milestoneId of cited) {
+    recordGateVerdict(sessionID, milestoneId, fingerprint);
+  }
   return true;
 }
 
@@ -2898,10 +3225,11 @@ async function protocolGateServer(input, options) {
     // source of the parent lifecycle. Candidate parent sessions are collected
     // from the on-disk .state files (which survive restart) plus the in-memory
     // overseer cache; the filename's embedded `-{sessionID}` suffix selects
-    // the parent via matchesSessionKDAnyGeneration (session-id match is
-    // mandatory, generation is wildcarded — aligned with the disk-evidence
-    // predicate findMilestoneImplKD so valid evidence re-fires after a
-    // VERIFY FAIL backtrack that skews generations). A fresh instance with an
+    // the parent with the session-id match mandatory, and the embedded
+    // `-gen{N}` must equal the persisted lifecycle generation
+    // (generation-pinned — aligned with the disk-evidence predicate
+    // findMilestoneImplKD, so skewed evidence declines with a
+    // GEN_MISMATCH_SKIP instead of checking off). A fresh instance with an
     // empty overseerSessions set still checks the milestone off.
     function collectParentSessionCandidates() {
       const candidates = new Set(overseerSessions);
@@ -2987,48 +3315,56 @@ async function protocolGateServer(input, options) {
         // Disk generation is the SSOT (restart-proof); the map is a fallback.
         // Seeded into the map so the generation-scoped registry lookup
         // (locateMilestoneRegistry) finds the same lifecycle after a restart
-        // when the map is empty. The live-hook match itself is
-        // generation-wildcarded (matchesSessionKDAnyGeneration, aligned with
-        // the disk-evidence predicate) so a VERIFY FAIL backtrack that skews
-        // the persisted generation never blocks valid same-session evidence;
+        // when the map is empty. The live-hook match is generation-pinned
+        // (extractImplKDGeneration equals the persisted generation, aligned
+        // with the disk-evidence predicate): a write whose embedded
+        // generation skews from the persisted generation declines with a
+        // GEN_MISMATCH_SKIP diagnostic instead of checking off — the operator
+        // recovers via the DIVERGENCE RECOVERY PROCEDURE (diagnose →
+        // scoped-remove → redispatch with fresh current-generation evidence).
         // updateMilestoneRegistry's in-progress→checked-off guard stays the
         // strict writer.
         const generation = getPersistedGeneration(candidate) ?? getCurrentGeneration(sessionPhaseMap, candidate);
-        if (matchesSessionKDAnyGeneration(relPath, candidate)) {
-          // Seed the in-memory generation so the generation-scoped registry
-          // lookup (locateMilestoneRegistry) finds the same lifecycle after a
-          // restart when the map is empty.
-          if (!sessionPhaseMap.has(`${candidate}:gen`)) {
-            sessionPhaseMap.set(`${candidate}:gen`, generation);
-          }
-          // Resolve the milestone against the parent-session registry rows —
-          // the SSOT of milestone IDs. Hyphenated IDs (e.g. `M-core`) are
-          // truncated to their first token (`M`) by the legacy extractor, so
-          // the row whose ID prefix-matches the impl KD's name portion is the
-          // authoritative ID to check off. An exact row-ID match is preferred
-          // over a prefix match — `impl-M-core-...` prefix-matches both `M`
-          // and `M-core`, and the exact row wins.
-          const registry = readMilestoneRegistry(candidate, sessionPhaseMap);
-          const resolvedId = resolveMilestoneRowId(registry, relPath, milestoneId);
-          const result = updateMilestoneRegistry(candidate, sessionPhaseMap, resolvedId, ["checked-off"]);
-          debug(`auto check-off: impl KD for milestone ${resolvedId} (parent ${candidate}) → ${JSON.stringify(result)}`);
-          // Only a SUCCESSFUL check-off resets the per-milestone
-          // redispatch budget. A failed registry update keeps the counter so
-          // retries still count toward the cap; a re-opened milestone
-          // starts fresh because its budget was cleared at the earlier
-          // check-off — the desired re-open semantics.
-          if (result.ok) {
-            phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, resolvedId));
-            debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${resolvedId} (session ${candidate})`);
-          } else {
-            // Loud, non-blocking diagnostic: silent failures here left
-            // registries stuck in SWARM. Visible without
-            // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
-            // (no-registry / milestone-not-found / invalid-transition / write-failed).
-            warn(`AUTO_CHECKOFF_FAILED: milestone ${resolvedId} (parent ${candidate}) — ${result.reason}`);
-          }
+        const base = relPath.replace(/\\/g, "/").split("/").pop();
+        const fileGen = extractImplKDGeneration(base, candidate);
+        if (fileGen === null) continue;
+        if (fileGen !== generation) {
+          warn(`GEN_MISMATCH_SKIP: session=${candidate} milestone=${milestoneId} file=${relPath} fileGen=${fileGen} persistedGen=${generation} reason=gen-mismatch promoted=false`);
           return;
         }
+        // Seed the in-memory generation so the generation-scoped registry
+        // lookup (locateMilestoneRegistry) finds the same lifecycle after a
+        // restart when the map is empty.
+        if (!sessionPhaseMap.has(`${candidate}:gen`)) {
+          sessionPhaseMap.set(`${candidate}:gen`, generation);
+        }
+        // Resolve the milestone against the parent-session registry rows —
+        // the SSOT of milestone IDs. Hyphenated IDs (e.g. `M-core`) are
+        // truncated to their first token (`M`) by the legacy extractor, so
+        // the row whose ID prefix-matches the impl KD's name portion is the
+        // authoritative ID to check off. An exact row-ID match is preferred
+        // over a prefix match — `impl-M-core-...` prefix-matches both `M`
+        // and `M-core`, and the exact row wins.
+        const registry = readMilestoneRegistry(candidate, sessionPhaseMap);
+        const resolvedId = resolveMilestoneRowId(registry, relPath, milestoneId);
+        const result = updateMilestoneRegistry(candidate, sessionPhaseMap, resolvedId, ["checked-off"]);
+        debug(`auto check-off: impl KD for milestone ${resolvedId} (parent ${candidate}) → ${JSON.stringify(result)}`);
+        // Only a SUCCESSFUL check-off resets the per-milestone
+        // redispatch budget. A failed registry update keeps the counter so
+        // retries still count toward the cap; a re-opened milestone
+        // starts fresh because its budget was cleared at the earlier
+        // check-off — the desired re-open semantics.
+        if (result.ok) {
+          phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, resolvedId));
+          debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${resolvedId} (session ${candidate})`);
+        } else {
+          // Loud, non-blocking diagnostic: silent failures here left
+          // registries stuck in SWARM. Visible without
+          // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
+          // (no-registry / milestone-not-found / invalid-transition / write-failed).
+          warn(`AUTO_CHECKOFF_FAILED: milestone ${resolvedId} (parent ${candidate}) — ${result.reason}`);
+        }
+        return;
       }
       // No parent-session/generation candidate matched the impl KD filename —
       // nothing was checked off. Loud no-op diagnostic so the miss is
@@ -3230,8 +3566,11 @@ async function protocolGateServer(input, options) {
       }
       // A trailing lifecycle-generation token (`/phase align gen1`) is
       // accepted and ignored — the lifecycle generation stays implicit in
-      // persisted state. The stripped rest drives parsing below.
-      const { rest: phaseArg, generation: generationSuffix } = stripGenerationSuffix(trimmed);
+      // persisted state. Diagnosis-claim tokens (`diagnosis:<ref>
+      // escalation:<ref>`) travel alongside the phase argument for the
+      // identical-verdict brake and are stripped before parsing, so the
+      // stripped rest drives parsing below.
+      const { rest: phaseArg, generation: generationSuffix } = stripGenerationSuffix(stripBrakeDiagnosisClaim(trimmed));
       const genNote = generationSuffix !== null ? ` Generation suffix gen${generationSuffix} ignored — lifecycle generation stays implicit.` : "";
       // Explicit clear: drop the override marker without moving the phase and
       // resume normal advancement semantics. Not an escape — the phase never
@@ -3320,6 +3659,12 @@ async function protocolGateServer(input, options) {
       }
       const n = phases[0];
       const prevPhase = sessionPhaseMap.get(sessionID);
+      // Identical-verdict advisory: an engaged slot is noted in the
+      // protocol-gate log for diagnosis, and the override always proceeds
+      // to marker, history, and phase change below.
+      {
+        evaluatePhaseOverrideBrake(sessionID, trimmed);
+      }
       // Pre-walk snapshot for the documented safe point: a discarded queue
       // whose head never earned fresh evidence rolls back to this phase plus
       // marker instead of pinning the lifecycle silently. Overwritten by
@@ -3478,6 +3823,11 @@ async function protocolGateServer(input, options) {
         debug(`pendingVerification: CLEARED (disk advancement) for session ${sessionID}`);
         // Reset re-dispatch counter for the phase we just advanced from
         phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
+        // Diagnosed-recovery reset for the identical-verdict brake: a forward
+        // advance out of VERIFY means fresh evidence satisfied the gate, so
+        // the session's consecutive-verdict runs clear instead of persisting
+        // across the recovery.
+        if (currentPhase === STATES.VERIFY) resetGateVerdictBrake(sessionID);
         // Reset the per-target-phase cycle counter on a successful forward
         // advance out of the phase: a genuine fix cycle completed,
         // so the next regression to this phase starts fresh instead of
@@ -4591,6 +4941,10 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       updateMilestoneRegistry,
       extractMilestoneIdFromImplKD,
       findMilestoneImplKD,
+      isLiveMilestoneEvidence,
+      emitGenerationMismatchSkips,
+      evaluateStaleKDDeletable,
+      deleteStaleMilestoneKD,
       readMilestoneState,
       checkMilestoneCheckedOff,
       readMilestoneRegistry,
@@ -4601,6 +4955,8 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       matchesSessionKDAnyGeneration,
       matchesSessionKD,
       matchesSessionKDForSession,
+      matchesSessionKDPinnedGeneration,
+      extractImplKDGeneration,
       escapeRegExp,
       atomicWriteFileSync,
       extractToolPath,
@@ -4625,6 +4981,15 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       parseSinglePhaseArg,
       stripGenerationSuffix,
       recordPhaseOverride,
+      IDENTICAL_FAIL_BRAKE_THRESHOLD,
+      recordGateVerdict,
+      resetGateVerdictBrake,
+      getBrakeEntry,
+      findEngagedBrakes,
+      parseBrakeDiagnosisClaim,
+      stripBrakeDiagnosisClaim,
+      evaluatePhaseOverrideBrake,
+      brakeSlotKey,
       OVERRIDE_HISTORY_MAX,
       getOverrideTargetPhase,
       findInvalidMultiPhaseHop,
