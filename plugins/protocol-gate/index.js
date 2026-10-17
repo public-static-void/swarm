@@ -207,7 +207,8 @@ const ERROR_TEMPLATES = {
   FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
   GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json) or `git add .` to stage all non-ignored changes" },
-  SHELL_DENIED_ATTRIBUTED: { code: "SHELL_DENIED_ATTRIBUTED", message: "SHELL DENIED (attributed — see message)", guidance: "Follow the Try next line in the message" }
+  SHELL_DENIED_ATTRIBUTED: { code: "SHELL_DENIED_ATTRIBUTED", message: "SHELL DENIED (attributed — see message)", guidance: "Follow the Try next line in the message" },
+  INTENT_BOUNDARY_CLOSED: { code: "INTENT_BOUNDARY_CLOSED", message: "❌ INTENT BOUNDARY CLOSED: write/edit of intent-*.md outside INTENT", guidance: "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md" }
 };
 
 function getPhaseName(phaseId) {
@@ -4047,6 +4048,27 @@ async function protocolGateServer(input, options) {
       }
 
       let phaseName = getPhaseName(phase);
+
+      // INTENT edit boundary (swarm/57). The session leaves INTENT
+      // deterministically on the first successful write of its intent KD —
+      // presence-based, never turn-timed. A later write/edit of any intent-*.md
+      // is therefore a phase-boundary crossing, not a generic unlisted-tool
+      // call: refuse it with a boundary-specific message (raised before the
+      // generic admission refusal) that names the current phase and the
+      // deterministic /phase INTENT recovery, so an in-session amendment can
+      // never land silently in a downstream phase.
+      if ((tool === "write" || tool === "edit") && phase !== STATES.INTENT) {
+        const boundaryRel = toProjectRelative(extractToolPath(args));
+        const isIntentTarget = boundaryRel.startsWith("knowledge/intent-") || boundaryRel.includes("/knowledge/intent-");
+        if (isIntentTarget) {
+          debug(`tool.execute.before: INTENT BOUNDARY refusal — ${tool} of ${boundaryRel} in phase=${phaseName}`);
+          throw new ProtocolGateError(
+            ERROR_TEMPLATES.INTENT_BOUNDARY_CLOSED.code,
+            `❌ INTENT BOUNDARY CLOSED: ${tool} of intent-*.md is refused in ${phaseName}. The INTENT edit window closed on the first successful write of this session's intent KD. To amend the intent KD, run /phase INTENT (user-initiated) first — the corrected KD must carry an mtime at or after the override.`,
+            "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md"
+          );
+        }
+      }
 
       // Enforce the phase admission predicate — safety net for tools not gated
       // by permission.ask. Transport tools pass through; the phase decision
