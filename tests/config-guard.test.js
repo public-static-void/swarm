@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../plugins/delegation-gate/index.js";
+import * as protocolPhases from "../plugins/protocol-gate/phases.js";
 
 // Static guards for the swarm configuration surface: SPEC-template git
 // hygiene, agent permission allowlists, the git force-add staging guard, the
@@ -1171,5 +1172,66 @@ describe("composed-docs durability", () => {
     expect(hook).toContain("npx vitest run");
     expect(hook).toContain("npx eslint -c eslint.security.config.mjs");
     expect(hook).not.toContain("knowledge");
+  });
+});
+
+// The phase gate enforces a tool-id allowlist and advertises the same set back
+// to the model. Both surfaces must derive from one table each — TOOL_ALLOWLIST
+// for the phase-legal logical tools, TRANSPORT_TOOLS for the carriers
+// (`execute` Code Mode, `subagent` delegation) the gate passes through without
+// a phase decision of its own. A second in-tree copy of either set, or a
+// per-site carve-out, re-opens the advertised-vs-enforced identity split this
+// guard closes.
+describe("protocol-gate tool-identity single source of truth", () => {
+  const PHASE_NAMES = Object.keys(protocolPhases.STATES);
+
+  it("declares the carrier and the delegator as the transport set", () => {
+    expect(protocolPhases.TRANSPORT_TOOLS).toContain("execute");
+    expect(protocolPhases.TRANSPORT_TOOLS).toContain("subagent");
+  });
+
+  it("derives admission from the transport set plus the phase allowlist", () => {
+    for (const phase of PHASE_NAMES) {
+      const allowed = protocolPhases.TOOL_ALLOWLIST[phase] || [];
+      for (const tool of [...allowed, ...protocolPhases.TRANSPORT_TOOLS]) {
+        expect(protocolPhases.admitTool(phase, tool), `${phase}:${tool}`).toBe(true);
+      }
+      // A transport tool is admitted in every phase without a phase decision.
+      expect(protocolPhases.admitTool(phase, "execute"), `${phase}:execute`).toBe(true);
+      expect(protocolPhases.admitTool(phase, "subagent"), `${phase}:subagent`).toBe(true);
+    }
+  });
+
+  it("fails closed for a permitted and a forbidden inner tool per phase class", () => {
+    // A permitted inner tool reaches the carrier's phase-legal set.
+    expect(protocolPhases.admitTool("INTENT", "memory_search")).toBe(true);
+    expect(protocolPhases.admitTool("EXPLORE", "memory_search")).toBe(true);
+    // A phase-forbidden inner tool is refused rather than silently carried.
+    expect(protocolPhases.admitTool("INTENT", "glob")).toBe(false);
+    expect(protocolPhases.admitTool("EXPLORE", "read")).toBe(false);
+    // An unknown id is refused — the predicate is allowlist-closed.
+    expect(protocolPhases.admitTool("INTENT", "frobnicate")).toBe(false);
+  });
+
+  it("binds the memory_search advertisement to every phase allowlist", () => {
+    const missing = PHASE_NAMES.filter((p) => !(protocolPhases.TOOL_ALLOWLIST[p] || []).includes("memory_search"));
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the knowledge-gate memory_search hint emitted for every agent", () => {
+    const knowledgeGate = readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
+    expect(knowledgeGate).toContain("memory_search tool");
+  });
+
+  it("derives every gate decision from the tables — no per-site subagent carve-out", () => {
+    const gate = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
+    expect(gate).toContain("TRANSPORT_TOOLS");
+    expect(gate).toContain("admitTool");
+    // The three admission sites (permission.ask, tool.execute.before,
+    // tool.definition) and the context adapter no longer branch on a literal
+    // subagent comparison.
+    expect(gate).not.toContain(`tool !== "subagent" && !allowedTools.includes(tool)`);
+    expect(gate).not.toContain(`if (toolID === "subagent") return;`);
+    expect(gate).not.toContain(`canonicalToolName(toolID) === "subagent"`);
   });
 });
