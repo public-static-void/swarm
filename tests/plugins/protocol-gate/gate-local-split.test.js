@@ -41,9 +41,10 @@ describe("Protocol-Gate gate-local split", () => {
       expect(typeof kdMatch[name], name).toBe("function");
     }
     expect(typeof fsAtomic.atomicWriteFileSync).toBe("function");
-    for (const name of ["STATES", "PHASE_INSTRUCTIONS", "TOOL_ALLOWLIST", "TOOL_RESTRICTIONS"]) {
+    for (const name of ["STATES", "PHASE_INSTRUCTIONS", "TOOL_ALLOWLIST", "TOOL_RESTRICTIONS", "TRANSPORT_TOOLS"]) {
       expect(typeof phases[name], name).toBe("object");
     }
+    expect(typeof phases.admitTool).toBe("function");
   });
 
   it("re-exports every moved symbol by reference from the gate entry", async () => {
@@ -59,6 +60,15 @@ describe("Protocol-Gate gate-local split", () => {
     expect(hooks.PHASE_INSTRUCTIONS).toBe(phases.PHASE_INSTRUCTIONS);
     expect(hooks.TOOL_ALLOWLIST).toBe(phases.TOOL_ALLOWLIST);
     expect(hooks.TOOL_RESTRICTIONS).toBe(phases.TOOL_RESTRICTIONS);
+    expect(hooks.TRANSPORT_TOOLS).toBe(phases.TRANSPORT_TOOLS);
+    expect(hooks.admitTool).toBe(phases.admitTool);
+  });
+
+  it("declares the transport set once — the carrier and the delegator are never phase-blocked", async () => {
+    // The carrier `execute` and the delegator `subagent` move as one set, so a
+    // renamed carrier is a single table entry rather than a per-site carve-out.
+    expect(phases.TRANSPORT_TOOLS).toContain("execute");
+    expect(phases.TRANSPORT_TOOLS).toContain("subagent");
   });
 
   it("keeps moved-symbol behavior identical through the gate entry", async () => {

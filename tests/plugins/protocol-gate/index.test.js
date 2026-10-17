@@ -2581,6 +2581,96 @@ Amendment body.
     });
   });
 
+  // Carrier admission: the Code Mode `execute` tool is a transport the gate
+  // passes through in every phase — the phase decision lands on the inner tool
+  // the carrier reaches. A phase-legal inner call resolves with no "Wrong
+  // phase" refusal; a phase-forbidden inner call is refused naming that tool.
+  describe("carrier admission (Code Mode execute)", () => {
+    it("admits the execute carrier in INTENT — before-hook passes, permission.ask does not deny", async () => {
+      const s = sid("carrier-intent");
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "execute", sessionID: s, callID: "c1" },
+          { args: { code: "return 1" } }
+        )
+      ).resolves.toBeUndefined();
+
+      const perm = {};
+      await hooks["permission.ask"]({ sessionID: s, type: "execute" }, perm);
+      expect(perm.status).not.toBe("deny");
+    });
+
+    it("admits an inner memory_search call in INTENT with no Wrong-phase refusal", async () => {
+      const s = sid("carrier-memsearch");
+      await initOverseer(s);
+
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "memory_search", sessionID: s, callID: "c1" },
+          { args: { tags: ["roadmap"] } }
+        )
+      ).resolves.toBeUndefined();
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+      const perm = {};
+      await hooks["permission.ask"]({ sessionID: s, type: "memory_search" }, perm);
+      expect(perm.status).not.toBe("deny");
+    });
+
+    it("refuses a phase-forbidden inner read call in EXPLORE, naming read and the phase allowlist", async () => {
+      const s = sid("carrier-explore-read");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.EXPLORE);
+
+      let caught;
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "c1" },
+          { args: { filePath: "AGENTS.md" } }
+        );
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught, "a phase-forbidden inner tool must be refused").toBeTruthy();
+      expect(caught.message).toContain("read");
+      expect(caught.message).toContain("Available tools in EXPLORE");
+
+      const perm = {};
+      await hooks["permission.ask"]({ sessionID: s, type: "read" }, perm);
+      expect(perm.status).toBe("deny");
+    });
+
+    it("carries no blocked-tool prefix on the execute tool definition", async () => {
+      const s = sid("carrier-def");
+      await initOverseer(s);
+      const out = { description: "Code Mode carrier", parameters: {} };
+      await hooks["tool.definition"]({ toolID: "execute" }, out);
+      expect(out.description).not.toContain("⛔");
+      expect(out.description).toContain("Code Mode carrier");
+    });
+
+    it("fails closed on an unknown tool id — refusal names the id and the phase allowlist", async () => {
+      const s = sid("carrier-failclosed");
+      await initOverseer(s);
+
+      let caught;
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "frobnicate", sessionID: s, callID: "c1" },
+          { args: {} }
+        );
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught, "an unknown tool id must fail closed").toBeTruthy();
+      expect(caught.message).toContain("frobnicate");
+      expect(caught.message).toContain("Available tools in INTENT");
+    });
+  });
+
   it("tool.definition respects the phase allowlist — read restricted during SWARM, non-allowlisted tools blocked elsewhere, task always passes", async () => {
     // SWARM: read is allowlisted and carries the milestone-registry restriction
     const s = sid("swarm-def-1");
