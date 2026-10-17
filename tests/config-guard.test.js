@@ -1235,3 +1235,33 @@ describe("protocol-gate tool-identity single source of truth", () => {
     expect(gate).not.toContain(`canonicalToolName(toolID) === "subagent"`);
   });
 });
+
+// The INTENT stop-edit boundary (swarm/57) has a behavioural half the plugin
+// owns and a compliance half owned by the Overseer's own instructions. The
+// boundary refusal points the agent at the recovery; these guards keep both
+// halves greppable as prose and source drift — the three overseer section
+// headings that carry the advance/stop rules, and the boundary-specific
+// refusal text distinct from the generic wrong-phase message.
+describe("INTENT stop-edit boundary (swarm/57)", () => {
+  it("keeps the swarm/57 instruction sections in the overseer definition", () => {
+    const overseer = readAgent("overseer.md");
+    for (const heading of ["### Phase Transition Rules", "### Failure Handling", "### Dispatch Discipline"]) {
+      expect(overseer, `overseer.md must carry the ${heading} section`).toContain(heading);
+    }
+  });
+
+  it("raises a boundary-specific refusal naming the phase and the /phase INTENT recovery", () => {
+    const gate = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
+    expect(gate).toContain("INTENT BOUNDARY CLOSED");
+    expect(gate).toContain("INTENT_BOUNDARY_CLOSED");
+    expect(gate).toContain("/phase INTENT");
+  });
+
+  it("keeps the presence-based INTENT advance — the first intent-KD write is the boundary", () => {
+    const gate = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
+    // The non-override branch keeps the presence exemption: a session-matching
+    // intent KD advances regardless of mtime. Reintroducing a freshness gate
+    // here would re-open the write→stop stall the advance was added to close.
+    expect(gate).toContain("presence exemption (a session-matching intent KD advances regardless of");
+  });
+});
