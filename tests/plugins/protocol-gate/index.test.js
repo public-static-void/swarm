@@ -2671,6 +2671,80 @@ Amendment body.
     });
   });
 
+  // INTENT edit boundary (swarm/57): the session leaves INTENT deterministically
+  // on the first successful write of its intent KD (presence-based, not
+  // turn-timed). A later write/edit of an intent-*.md file outside INTENT has
+  // crossed the boundary and must be refused loudly — naming the current phase
+  // and the /phase INTENT recovery — never reported through the generic
+  // unlisted-tool refusal alone.
+  describe("INTENT edit boundary (swarm/57)", () => {
+    it("refuses a PREFLIGHT edit of the intent KD with a boundary-specific message naming the phase and /phase INTENT", async () => {
+      const s = sid("intent-boundary");
+      await initOverseer(s);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+      // The first successful write of the session's intent KD is the
+      // deterministic boundary: it advances INTENT → PREFLIGHT.
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: s, callID: "c1" },
+        { args: { filePath: `knowledge/intent-a-${s}.md`, content: "intent" } }
+      );
+      createKD(`intent-a-${s}.md`);
+      await hooks["tool.execute.after"]({ tool: "write", sessionID: s, callID: "c1" }, {});
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+
+      // An in-session amendment attempt of the intent KD now crosses the
+      // closed boundary.
+      let caught;
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "edit", sessionID: s, callID: "c2" },
+          { args: { filePath: `knowledge/intent-a-${s}.md`, content: "amended" } }
+        );
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught, "an intent-KD edit outside INTENT must be refused").toBeTruthy();
+      expect(caught.message).toContain("INTENT BOUNDARY CLOSED");
+      expect(caught.message).toContain("PREFLIGHT");
+      expect(caught.message).toContain("/phase INTENT");
+      // Distinct from the generic unlisted-tool refusal text.
+      expect(caught.message).not.toContain("Available tools in PREFLIGHT");
+      // The presence-based advance itself is unchanged.
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+    });
+
+    it("keeps the INTENT window open — an intent-KD write inside INTENT resolves and does not advance in the before-hook", async () => {
+      const s = sid("intent-boundary-open");
+      await initOverseer(s);
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "write", sessionID: s, callID: "c1" },
+          { args: { filePath: `knowledge/intent-a-${s}.md`, content: "intent" } }
+        )
+      ).resolves.toBeUndefined();
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+    });
+
+    it("leaves a non-intent target outside INTENT on the generic admission path", async () => {
+      const s = sid("intent-boundary-other");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      let caught;
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "write", sessionID: s, callID: "c1" },
+          { args: { filePath: "knowledge/report-foo.md", content: "x" } }
+        );
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeTruthy();
+      expect(caught.message).toContain("Available tools in PREFLIGHT");
+      expect(caught.message).not.toContain("INTENT BOUNDARY CLOSED");
+    });
+  });
+
   it("tool.definition respects the phase allowlist — read restricted during SWARM, non-allowlisted tools blocked elsewhere, task always passes", async () => {
     // SWARM: read is allowlisted and carries the milestone-registry restriction
     const s = sid("swarm-def-1");
