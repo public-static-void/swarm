@@ -54,6 +54,22 @@ export const TOOL_ALLOWLIST = {
   REPORT: ["edit", "read", "write", "skill", "memory_search"]
 };
 
+// Tools that are never phase-blocked because they carry or delegate work: the
+// phase gate governs the inner/child tool they invoke instead. `execute` is
+// the Code Mode carrier whose nested calls reach the gate as their own tool
+// ids; `subagent` dispatches to another agent whose session has its own phase
+// context. Keeping the set here means one admission predicate feeds every
+// enforcement and advertisement site, so a renamed carrier is one table entry.
+export const TRANSPORT_TOOLS = ["subagent", "execute"];
+
+// Single admission predicate for every enforcement and advertisement site: a
+// tool may run in a phase when it is a transport tool or when the phase
+// allowlist names it. Anything else is refused — an unknown id fails closed
+// rather than being silently carried.
+export function admitTool(phaseName, tool) {
+  return TRANSPORT_TOOLS.includes(tool) || (TOOL_ALLOWLIST[phaseName] || []).includes(tool);
+}
+
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
 // tool.definition appends these to the description so the LLM sees the restriction
 // instead of treating the tool as fully available.

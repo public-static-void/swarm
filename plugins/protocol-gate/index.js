@@ -53,7 +53,7 @@ import {
   sanitizeSessionID,
 } from "./kd-match.js";
 import { atomicWriteFileSync } from "./fs-atomic.js";
-import { PHASE_INSTRUCTIONS, STATES, TOOL_ALLOWLIST, TOOL_RESTRICTIONS } from "./phases.js";
+import { PHASE_INSTRUCTIONS, STATES, TOOL_ALLOWLIST, TOOL_RESTRICTIONS, TRANSPORT_TOOLS, admitTool } from "./phases.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -138,9 +138,9 @@ function learnKnowledgeDirFromArgs(sessionID, args) {
   }
 }
 
-// Phase tables (STATES, PHASE_INSTRUCTIONS, TOOL_ALLOWLIST, TOOL_RESTRICTIONS)
-// live in ./phases.js — gate-local, imported above and re-exported by
-// reference in the test-access block below.
+// Phase tables (STATES, PHASE_INSTRUCTIONS, TOOL_ALLOWLIST, TOOL_RESTRICTIONS,
+// TRANSPORT_TOOLS, admitTool) live in ./phases.js — gate-local, imported above
+// and re-exported by reference in the test-access block below.
 
 // Retention cap for the per-session verbatim raw-intent capture. The
 // chat.message hook keeps only the latest RAW_INTENT_MAX_MESSAGES overseer
@@ -3757,10 +3757,10 @@ async function protocolGateServer(input, options) {
       if (!phaseName) return;
 
       const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-      if (tool !== "subagent" && !allowedTools.includes(tool)) {
+      if (!admitTool(phaseName, tool)) {
         debug(`permission.ask: DENY tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
         output.status = "deny";
-        // Non-subagent tool blocks set output.status = "deny" without throwing
+        // Tool blocks set output.status = "deny" without throwing
       } else {
         debug(`permission.ask: ALLOW tool=${tool} in phase=${phaseName}`);
       }
@@ -4048,17 +4048,19 @@ async function protocolGateServer(input, options) {
 
       let phaseName = getPhaseName(phase);
 
-      // Enforce tool allowlist — safety net for tools not gated by permission.ask.
-      if (tool !== "subagent") {
+      // Enforce the phase admission predicate — safety net for tools not gated
+      // by permission.ask. Transport tools pass through; the phase decision
+      // then lands on the inner tool the carrier reaches, which arrives here as
+      // its own tool id. A refused id is named so the caller sees which tool
+      // the phase forbade and the set it may use instead.
+      if (!admitTool(phaseName, tool)) {
         const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-        if (!allowedTools.includes(tool)) {
-          debug(`tool.execute.before: BLOCKED tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
-          throw new ProtocolGateError(
-            ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
-            `❌ BLOCKED: Wrong phase. Available tools in ${phaseName}: ${allowedTools.join(", ")}`,
-            `Allowed tools: ${allowedTools.join(", ")}`
-          );
-        }
+        debug(`tool.execute.before: BLOCKED tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
+        throw new ProtocolGateError(
+          ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
+          `❌ BLOCKED: Wrong phase. Tool "${tool}" is not available in ${phaseName}. Available tools in ${phaseName}: ${allowedTools.join(", ")}`,
+          `Allowed tools: ${allowedTools.join(", ")}`
+        );
       }
 
       // --- write handler ---
@@ -4803,8 +4805,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       const phaseName = getPhaseName(phase);
       if (!phaseName) return;
       const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-      // subagent is always allowed (delegation mechanism) — never block it
-      if (toolID === "subagent") return;
+      // Transport tools carry or delegate work — they are never phase-blocked,
+      // so they receive no blocked-tool prefix.
+      if (TRANSPORT_TOOLS.includes(toolID)) return;
       // Allowed tool — check if it has per-tool restrictions to display
       if (allowedTools.includes(toolID)) {
         const restriction = TOOL_RESTRICTIONS[phaseName]?.[toolID];
@@ -4906,6 +4909,8 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       PHASE_INSTRUCTIONS,
       TOOL_ALLOWLIST,
       TOOL_RESTRICTIONS,
+      TRANSPORT_TOOLS,
+      admitTool,
       DISK_CHECK_TOOLS,
       ensureGitRepo,
       sessionPhaseMap,
@@ -5062,7 +5067,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         const tools = event?.tools;
         if (tools && sessionID) {
           for (const toolID of Object.keys(tools)) {
-            if (canonicalToolName(toolID) === "subagent") continue;
+            if (TRANSPORT_TOOLS.includes(canonicalToolName(toolID))) continue;
             const current = tools[toolID] || {};
             const output = { description: current.description, parameters: current.input };
             await v1["tool.definition"]?.({ toolID, sessionID }, output);
