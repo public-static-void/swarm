@@ -27,34 +27,34 @@
     },
 
     "overseer": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     },
     "explorer": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     },
     "spec-weaver": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     },
     "pathfinder": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     },
     "analyzer": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     },
     "artisan": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     },
     "committer": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     },
     "inspector": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     },
     "scribe": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     },
     "habit-builder": {
-      "model": "opencode/muse-spark-1.3-contributor-free"
+      "model": "opencode/deepseek-v4.1-flash-free"
     }
   }
 }
