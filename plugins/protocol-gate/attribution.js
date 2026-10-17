@@ -128,10 +128,17 @@ export function buildAttributionMessage({ agent, denied, fallbackUsed }) {
   let deniedLine;
   if (denied.length === 1) {
     const only = denied[0];
+    // Only claim the prefix stays available when a same-prefix grant exists;
+    // with zero variants the prefix is unlisted outright, so name the routing
+    // target instead of asserting an availability the enforcement refuses.
+    const prefixStatus =
+      only.variants.length > 0
+        ? `this target only, \`${only.prefix}\` itself stays available`
+        : `${routingFor(only.prefix)}`;
     deniedLine =
       `DENIED segment: \`${only.segment}\` ` +
       `(prefix \`${only.prefix}\` is unlisted for ${agent} — ` +
-      `this target only, \`${only.prefix}\` itself stays available)`;
+      `${prefixStatus})`;
   } else {
     const parts = denied
       .map((detail) => `\`${detail.segment}\` (prefix \`${detail.prefix}\`)`)
