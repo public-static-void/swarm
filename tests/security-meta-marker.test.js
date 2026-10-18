@@ -4,12 +4,14 @@ import { join } from "path";
 import {
   noMetaMarker,
   noMetaMarkerProse,
+  noMetadataComment,
 } from "../eslint.security.config.mjs";
 
 // Rule-level pins for the workflow-token guard: the JavaScript comment/label
-// rule keeps its scope, and the prose rule extends coverage to agent and skill
-// docs with convention-line allowlisting. Fixture tokens below live in string
-// literals, which the guard never scans.
+// rule keeps its scope, the prose rule extends coverage to agent and skill
+// docs with convention-line allowlisting, and the metadata-comment rule mirrors
+// the metadata-purity guard over the leading frontmatter block. Fixture tokens
+// below live in string literals, which the guard never scans.
 
 const ROOT = process.cwd();
 
@@ -128,6 +130,59 @@ describe("prose marker guard for agent and skill docs", () => {
   });
 });
 
+describe("metadata-comment guard for agent and skill frontmatter", () => {
+  it("flags a comment line inside the leading metadata block", () => {
+    const reports = collectReports(
+      noMetadataComment,
+      proseSource(["---", "# class rationale in prose", "name: x", "---", "Body text."])
+    );
+    expect(reports).toHaveLength(1);
+    expect(reports[0].messageId).toBe("metadata-comment");
+    expect(reports[0].loc.line).toBe(2);
+  });
+
+  it("flags an indented comment line inside the metadata block", () => {
+    const reports = collectReports(
+      noMetadataComment,
+      proseSource(["---", "  # indented rationale", "---"])
+    );
+    expect(reports).toHaveLength(1);
+    expect(reports[0].messageId).toBe("metadata-comment");
+  });
+
+  it("leaves body prose alone", () => {
+    const reports = collectReports(
+      noMetadataComment,
+      proseSource(["---", "name: x", "---", "# Body heading", "## Section"])
+    );
+    expect(reports).toEqual([]);
+  });
+
+  it("leaves a second metadata region out of scope", () => {
+    const reports = collectReports(
+      noMetadataComment,
+      proseSource(["---", "name: template", "---", "", "---", "# template comment", "---"])
+    );
+    expect(reports).toEqual([]);
+  });
+
+  it("passes a file with no leading metadata block", () => {
+    const reports = collectReports(
+      noMetadataComment,
+      proseSource(["# Title", "## Section"])
+    );
+    expect(reports).toEqual([]);
+  });
+
+  it("ignores a hash that does not lead the line", () => {
+    const reports = collectReports(
+      noMetadataComment,
+      proseSource(["---", 'description: "tracks issue #12"', "---"])
+    );
+    expect(reports).toEqual([]);
+  });
+});
+
 describe("prose guard wiring in the security config", () => {
   const configText = readFileSync(join(ROOT, "eslint.security.config.mjs"), "utf8");
 
@@ -144,5 +199,13 @@ describe("prose guard wiring in the security config", () => {
 
   it("carries an explicit convention-line allowlist", () => {
     expect(configText).toContain("local contract");
+  });
+
+  it("wires the metadata-comment mirror over the same docs surfaces", () => {
+    for (const surface of ["agents/**/*.md", "skills/**/*.md", "AGENTS.md"]) {
+      expect(configText).toContain(surface);
+    }
+    expect(configText).toContain("no-metadata-comment");
+    expect(configText).toContain("noMetadataComment");
   });
 });
