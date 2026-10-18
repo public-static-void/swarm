@@ -185,10 +185,11 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    GENERATION: <lifecycle generation number>
     BASELINE BRANCH: <base branch recorded by preflight>
     HEAD SHA: <head commit recorded by preflight>
+   TASK ID: <prior resume handle for a same-artifact re-dispatch>
    SCOPE: <optional context>
    ```
 
-   Required: `mode`, `intent_kd` (except checkpoint/cleanup modes), `result_kd` (for KD-producing modes), `session_date`. `SESSION ID` and `GENERATION` fall back to the session and protocol-gate state when omitted, but pass them explicitly. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The plugin generates `prompt` and `description` from the template and keeps your `agent` selection.
+   Required: `mode`, `intent_kd` (except checkpoint/cleanup modes), `result_kd` (for KD-producing modes), `session_date`. `SESSION ID` and `GENERATION` fall back to the session and protocol-gate state when omitted, but pass them explicitly. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes), `task_id` (the resume handle the delegation-gate forwards as the subagent call's `task_id` argument). The plugin generates `prompt` and `description` from the template and keeps your `agent` selection.
 
     Provenance travels stamped: the Committer's preflight recording sets `BASELINE BRANCH` and `HEAD SHA`, and each dispatch carries those values forward as given. Branch discovery rests with the preflight recording, so a dispatch leaving the provenance fields empty is a dispatch defect.
 
@@ -207,7 +208,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 
 ### Redispatch Preference Rules
 
-When re-dispatching an agent for the same task, choose the target instance deliberately. The `TASK ID` delegation field (passed through to the subagent tool's `task_id`) resumes the same subagent session, preserving its in-flight context and partial work.
+When re-dispatching an agent for the same task, choose the target instance deliberately. The delegation-gate extracts the `TASK ID` field from the dispatch prompt and forwards it verbatim as the `task_id` argument on the subagent call. The subagent tool's use of that handle — resuming the same subagent session with its in-flight context and partial work — is a harness-side behavior, so in-tree evidence covers the passthrough while the subagent tool owns the resume.
 
 **Reuse the same instance** (reuse the prior `TASK ID`) when the re-dispatch targets the same artifact — same RESULT KD path, same milestone row, or same KD artifact amendment — including when the agent:
 - returned an empty result;
