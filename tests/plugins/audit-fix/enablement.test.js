@@ -193,3 +193,78 @@ describe("gate debug enablement", () => {
     });
   }
 });
+
+// The shipped posture: with no enablement signal the shipped config resolves
+// off. These cases leave the sentinel seam unset so each gate resolves its own
+// default sentinel path inside the plugin directory and every gate stays
+// silent — a committed sentinel or a default flipped on turns them red.
+describe("shipped default-off logging posture", () => {
+  for (const def of GATES) {
+    it(`resolves logging off from the shipped config for ${def.gate}`, async () => {
+      const logDir = makeTemp();
+      process.env[def.logDirEnv] = logDir;
+      delete process.env[def.debugFileEnv];
+      delete process.env[def.debugEnv];
+
+      const { hooks } = await loadGate(def);
+      const state = hooks.getEnablementState();
+
+      expect(state.enabled).toBe(false);
+      expect(state.via).toBe("none");
+      expect(isAbsolute(state.sentinelPath)).toBe(true);
+      expect(state.sentinelPath.endsWith(join("plugins", def.gate, ".debug"))).toBe(true);
+      expect(existsSync(state.sentinelPath)).toBe(false);
+      expect(existsSync(join(logDir, `${def.gate}.log`))).toBe(false);
+    });
+  }
+});
+
+// The enablement path carries deny/override seam evidence: each gate's
+// file-only seam channel writes nothing while logging stays off and appends a
+// structured line once logging is on. Drive a real denial through the public
+// shell hook so the pin covers the channel seam events travel on rather than
+// the load signal alone. Live seam evidence from a running host remains
+// harness-side; this pins the in-tree mechanism that would carry it.
+describe("deny seam evidence channel", () => {
+  const protocolGate = GATES.find((g) => g.gate === "protocol-gate");
+
+  async function denyOnce(sessionID) {
+    const { hooks } = await loadGate(protocolGate);
+    await hooks["chat.params"]({ sessionID, agent: "artisan" }, {});
+    return hooks["tool.execute.before"](
+      { tool: "shell", sessionID, callID: `${sessionID}-call` },
+      { args: { command: "python -c 'print(1)'" } }
+    ).then(
+      () => null,
+      (error) => error
+    );
+  }
+
+  it("writes no deny seam line while logging stays off", async () => {
+    const logDir = makeTemp();
+    process.env[protocolGate.logDirEnv] = logDir;
+    process.env[protocolGate.debugFileEnv] = join(makeTemp(), ".debug-missing");
+    delete process.env[protocolGate.debugEnv];
+
+    const failure = await denyOnce("seam-logging-off");
+
+    expect(failure).not.toBeNull();
+    expect(failure.code).toBe("SHELL_DENIED_ATTRIBUTED");
+    expect(existsSync(join(logDir, "protocol-gate.log"))).toBe(false);
+  });
+
+  it("appends a deny seam line when logging is enabled", async () => {
+    const logDir = makeTemp();
+    process.env[protocolGate.logDirEnv] = logDir;
+    process.env[protocolGate.debugFileEnv] = join(makeTemp(), ".debug-missing");
+    process.env[protocolGate.debugEnv] = "1";
+
+    const failure = await denyOnce("seam-logging-on");
+
+    expect(failure).not.toBeNull();
+    expect(failure.code).toBe("SHELL_DENIED_ATTRIBUTED");
+    const body = readFileSync(join(logDir, "protocol-gate.log"), "utf8");
+    expect(body).toContain("SHELL ATTRIBUTION");
+    expect(body).toContain("denied=");
+  });
+});
