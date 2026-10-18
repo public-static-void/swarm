@@ -6684,7 +6684,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.parsePhaseArg("{3,4,5")).toBeNull();
     });
 
-    it("/phase {3,4,5} from SWARM sets a queue that re-arms across hops and clears at the end", async () => {
+    it("/phase {3,4,5} from SWARM re-arms across hops, then returns to the origin phase it started from", async () => {
       const s = sid("ac007-multi");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -6714,10 +6714,12 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5]);
 
-      // Fresh spec KD advances ALIGN → DECOMPOSE and clears the exhausted queue.
+      // Fresh spec KD exhausts the queue. ALIGN (5) was the last named hop, so
+      // the lifecycle returns to the phase the override started from — SWARM (7),
+      // the pre-walk origin — rather than the serial DECOMPOSE (6).
       createKD(`spec-fresh-${s}.md`);
       await tick(s, "m4");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
     });
@@ -6759,16 +6761,16 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toEqual({ phase: hooks.STATES.EXPLORE, since: marker.since });
     });
 
-    it("/phase {3,4,5} from PREFLIGHT is rejected — forward walks unsupported", async () => {
+    it("/phase {3,4,5} from PREFLIGHT is accepted — a forward-ordered plan is the contract", async () => {
       const s = sid("ac010-multi");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
 
       const out = { parts: [] };
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,4,5}" }, out);
-      expect(out.parts[0].text).toContain("not a legal backward transition");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
-      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(out.phaseError).toBeUndefined();
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([3, 4, 5]);
     });
 
     it("the multi-phase queue is capped at 12 phases", async () => {
@@ -6792,22 +6794,22 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
 
-    it("an unsatisfiable multi-hop walk fails closed with the first hop and reason class, leaving state untouched", async () => {
+    it("an ordered multi-hop walk is accepted while the scope and gate-type checks still fail closed", async () => {
       const s = sid("atomic-prevalidate");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
-      const phaseBefore = hooks.sessionPhaseMap.get(s);
-      const markerBefore = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
-      const stateBefore = readFileSync(statePath(s), "utf8");
 
+      // A forward-ordered walk is the contract now — connectivity no longer
+      // rejects it. The walk lands on the first named phase, and the pre-walk
+      // scope + gate-type checks run on the same atomic path.
       const out = { parts: [] };
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "{3,4,5}" }, out);
-      expect(hooks.sessionPhaseMap.get(s)).toBe(phaseBefore);
-      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`)).toBe(markerBefore);
-      expect(readFileSync(statePath(s), "utf8")).toBe(stateBefore);
-      expect(out.phaseError).toEqual({ from: hooks.STATES.PREFLIGHT, to: hooks.STATES.EXPLORE, reason: "connectivity" });
+      expect(out.phaseError).toBeUndefined();
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([3, 4, 5]);
 
-      // The validator covers the remaining reason classes without touching state.
+      // The retained validator classes reject without touching state (the
+      // connectivity parameter is inert — an ordered plan is accepted).
       const chain = { 3: [4], 4: [3, 5], 5: [4], 7: [3, 5] };
       expect(hooks.validateMultiPhaseWalk([3, 4, 5], 7, chain)).toBeNull();
       expect(hooks.validateMultiPhaseWalk([3, 4, 5], 7, chain, { toolAllowlist: { EXPLORE: ["subagent"] } }))
@@ -6854,6 +6856,127 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(marker).toEqual({ phase: 3, since });
       // The legacy marker resolves to a single-phase queue [3].
       expect(hooks.getOverrideTargetPhase(marker)).toBe(3);
+    });
+  });
+
+  describe("multi-phase override forward plan and origin-return", () => {
+    it("accepts a forward-ordered plan and lands on the first named phase", async () => {
+      const s = sid("fwd-plan");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "1,5,6" }, out);
+      expect(out.phaseError).toBeUndefined();
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([1, 5, 6]);
+      expect(out.parts[0].text).toContain("override queue [1,5,6]");
+    });
+
+    it("still accepts a forward single hop", async () => {
+      const s = sid("fwd-single");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3" }, out);
+      expect(out.phaseError).toBeUndefined();
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+    });
+
+    it("advancing at the active head jumps to the next named phase, not currentPhase + 1", async () => {
+      const s = sid("head-jump");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3,5" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([3, 5]);
+
+      createKD(`exploration-fresh-${s}.md`);
+      await tick(s, "j1");
+      // Jump-to-next-named: EXPLORE (3) → ALIGN (5), never the serial INVESTIGATE (4).
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5]);
+
+      // The final named hop exhausts the queue and returns to the origin (SWARM).
+      createKD(`spec-fresh-${s}.md`);
+      await tick(s, "j2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("traverses the user's worked example /phase 1,3,4,5,6 from SWARM, then returns to the origin", async () => {
+      const s = sid("worked");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "1,3,4,5,6" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([1, 3, 4, 5, 6]);
+
+      // The Overseer rewrites the intent KD → auto-advance straight to EXPLORE (3),
+      // skipping PREFLIGHT (2): the next list entry is 3 and preflight's work is done.
+      createKD(`intent-fixed-${s}.md`);
+      await tick(s, "w1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+
+      // Each subsequent named entry is reached in list order.
+      createKD(`exploration-fixed-${s}.md`);
+      await tick(s, "w2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+
+      createKD(`analysis-fixed-${s}.md`);
+      await tick(s, "w3");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+
+      createKD(`spec-fixed-${s}.md`);
+      await tick(s, "w4");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+
+      // Only after the list is exhausted does it return to SWARM (7) — the phase
+      // the override started from — never between hops.
+      createKD(`plan-fixed-${s}.md`);
+      createKD(`milestones-fixed-${s}.md`, registryContent([["M1", "checked-off"]]));
+      await tick(s, "w5");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("a single-phase override returns to its origin once the named phase's work completes", async () => {
+      const s = sid("single-origin");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "1" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+
+      createKD(`intent-fixed-${s}.md`);
+      await tick(s, "s1");
+      // Origin-return: INTENT → SWARM, never the serial PREFLIGHT (2).
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("/phase never touches the milestone registry", () => {
+      const src = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      const start = src.indexOf("async function commandExecuteBefore(");
+      const end = src.indexOf("// --- Hook: permission.ask ---", start);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const body = src.slice(start, end);
+      expect(body).not.toContain("updateMilestoneRegistry");
+      expect(body).not.toContain("readMilestoneRegistry");
+    });
+
+    it("states the forward-plan contract in the /phase usage text and the Overseer override section", () => {
+      const src = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      expect(src).toContain("forward plan");
+      const overseer = readFileSync(join(process.cwd(), "agents", "overseer.md"), "utf8");
+      expect(overseer).toContain("forward plan");
     });
   });
 
