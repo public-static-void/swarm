@@ -343,10 +343,10 @@ Investigate bugs or suspicious patterns, assess feasibility. Read relevant docum
 Characterize workspace structure and metadata through granted read-only
 introspection verbs: verb-first exact-prefix shell entries whose target
 subcommand reports workspace structure/metadata with no build, run, or mutation
-side effect (`cargo metadata*` is the current concrete member). Another
-ecosystem's metadata verb joins the class by the same rule when that ecosystem is
-the workspace — it is not added speculatively. Attribute workspace-introspection
-claims to a granted verb rather than degrading them to reasoning by default.
+side effect. Another ecosystem's metadata verb joins the class by the same rule
+when that ecosystem is the workspace — it is not added speculatively. Attribute
+workspace-introspection claims to a granted verb rather than degrading them to
+reasoning by default.
 
 ## Identity
 

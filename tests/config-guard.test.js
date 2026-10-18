@@ -100,6 +100,22 @@ function metadataCommentOffenders(content) {
   return offenders;
 }
 
+// Prose body of a role definition: everything after the leading metadata
+// region's closing fence. The class rule lives here, so a member literal in
+// this region would restate membership the ordered grants already carry.
+function bodyRegion(content) {
+  const region = frontmatterRegion(content);
+  if (!region) return content;
+  return content.split("\n").slice(region.end + 1).join("\n");
+}
+
+// The member literals whose membership the ordered grants carry: each pinned
+// entry with its trailing wildcard stripped, so a prose mention is caught with
+// or without the wildcard.
+function introspectionMemberLiterals() {
+  return ANALYZER_INTROSPECTION_COMMANDS.map((cmd) => cmd.replace(/\*+$/, ""));
+}
+
 // Every source file beneath a tree, filtered by extension. Used to sweep the
 // configuration surface for external path literals; directories named in
 // `skip` are pruned wholesale.
@@ -287,10 +303,10 @@ const EXPLORER_GIT_DIAG_COMMANDS = ["git diff*", "git log*"];
 const ANALYZER_PARITY_COMMANDS = ["npm run test*", "cargo --version*", "cargo fmt --check*"];
 // Read-only workspace-introspection class (swarm/60): verb-first, exact-prefix
 // shell entries whose target subcommand reports workspace structure/metadata
-// with no build, run, or mutation side effect. `cargo metadata` is the current
-// concrete member; the class rule carries the generality, so a future workspace
-// ecosystem's metadata verb joins this pinned list rather than being added
-// speculatively.
+// with no build, run, or mutation side effect. The pinned list below carries the
+// members; the class rule in the role instructions carries the generality, so a
+// future workspace ecosystem's metadata verb joins this pinned list rather than
+// being added speculatively.
 const ANALYZER_INTROSPECTION_COMMANDS = ["cargo metadata*"];
 // Target subcommands carrying a build, run, or mutation side effect — an entry
 // whose subcommand is one of these is not a read-only introspection probe.
@@ -742,8 +758,8 @@ describe("agent metadata block purity", () => {
 // grant for read-only workspace-introspection verbs — verb-first exact-prefix
 // shell entries whose target subcommand reports workspace structure/metadata
 // with no build, run, or mutation side effect. The class rule, stated in the
-// role instructions, carries the generality; `cargo metadata*` is its current
-// concrete member and no other ecosystem verb is added speculatively.
+// role instructions, carries the generality; no other ecosystem verb is added
+// speculatively.
 describe("analyzer read-only introspection class (swarm/60)", () => {
   const analyzer = readAgent("analyzer.md");
   const patterns = new Map(bashEntries(analyzer).map((e) => [e.pattern, e.mode]));
@@ -785,6 +801,49 @@ describe("analyzer read-only introspection class (swarm/60)", () => {
   it("adds no speculative ecosystem metadata verb beyond the class member", () => {
     const offenders = SPECULATIVE_INTROSPECTION_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
     expect(offenders).toEqual([]);
+  });
+
+  it("states the class rule without naming a member", () => {
+    // The join rule is stated structurally — a verb-first exact-prefix shell
+    // entry whose target subcommand reports workspace structure/metadata with no
+    // build, run, or mutation side effect — together with the clause that
+    // workspace-introspection claims attribute to a granted verb.
+    const body = bodyRegion(analyzer).replace(/\s+/g, " ");
+    expect(body).toContain("verb-first exact-prefix");
+    expect(body).toContain("no build, run, or mutation side effect");
+    expect(body).toContain("granted verb");
+    for (const member of introspectionMemberLiterals()) {
+      expect(body, `role prose must not name the member ${member}`).not.toContain(member);
+    }
+  });
+
+  it("keeps the introspection member out of agent prose", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      const body = bodyRegion(readAgent(f));
+      for (const member of introspectionMemberLiterals()) {
+        if (body.includes(member)) offenders.push(`${f}: ${member}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("confines the introspection member to the grant and the pinned constant", () => {
+    // Membership has exactly two on-disk homes: the analyzer's ordered grant and
+    // the pinned constant below. Every other surface — role prose and this
+    // suite's own comments — stays member-agnostic, so a member change edits the
+    // two homes in lockstep and never touches prose.
+    const members = introspectionMemberLiterals();
+    const mentions = (text) =>
+      text.split("\n").filter((line) => members.some((m) => line.includes(m)));
+
+    const grantMentions = mentions(readAgent("analyzer.md"));
+    expect(grantMentions).toHaveLength(1);
+    expect(grantMentions[0]).toContain("resource:");
+
+    const suiteMentions = mentions(readRoot(join("tests", "config-guard.test.js")));
+    expect(suiteMentions).toHaveLength(1);
+    expect(suiteMentions[0]).toContain("ANALYZER_INTROSPECTION_COMMANDS");
   });
 });
 
