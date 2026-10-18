@@ -151,10 +151,6 @@ permissions:
   - action: shell
     resource: "cargo fmt --check*"
     effect: allow
-  # Read-only workspace introspection: reports workspace structure/metadata
-  # (resolver membership) with no build, run, or mutation side effect. The class
-  # rule in the role instructions carries the generality — a future ecosystem's
-  # metadata verb joins here by that rule, not speculatively.
   - action: shell
     resource: "cargo metadata*"
     effect: allow
