@@ -264,6 +264,61 @@ const proseMetaMarkerConfig = {
   rules: { 'meta-marker/no-meta-marker-prose': 'error' },
 }
 
-export default [security.configs.recommended, rulesLayerConfig, sourceMetaMarkerConfig, proseMetaMarkerConfig]
+// ── no-metadata-comment: metadata-purity mirror at the lint layer ────────────
+// Mirrors the guard's metadata-purity assertion over the span both markdown
+// rules above skip: the leading frontmatter block is data (role config and the
+// ordered permission rules), so a line-leading '#' inside it is a comment, not
+// a rule. Only the leading region is scanned — a file whose first line is not
+// '---' has no region, and a second '---' region later in the file stays out of
+// scope by this leading-region rule rather than being folded into the first.
+const noMetadataComment = {
+  meta: {
+    type: 'problem',
+    docs: { description: 'Reject comment lines inside the leading metadata block' },
+    messages: {
+      'metadata-comment':
+        'Comment line inside the leading metadata block — the frontmatter region carries data; state prose in the body.',
+    },
+  },
+  create(context) {
+    const lines = context.sourceCode.lines
+    return {
+      Program() {
+        if (lines.length === 0 || lines[0].trim() !== '---') return
+        let end = -1
+        for (let i = 1; i < lines.length; i++) {
+          if (lines[i].trim() === '---') {
+            end = i
+            break
+          }
+        }
+        if (end === -1) return
+        for (let lineIndex = 1; lineIndex < end; lineIndex++) {
+          if (lines[lineIndex].trimStart().startsWith('#')) {
+            context.report({
+              loc: { line: lineIndex + 1, column: 0 },
+              messageId: 'metadata-comment',
+            })
+          }
+        }
+      },
+    }
+  },
+}
 
-export { noMetaMarker, noMetaMarkerProse }
+const metadataCommentConfig = {
+  files: ['AGENTS.md', 'agents/**/*.md', 'skills/**/*.md'],
+  languageOptions: { parser: textParser },
+  plugins: { 'metadata-purity': { rules: { 'no-metadata-comment': noMetadataComment } } },
+  rules: { 'metadata-purity/no-metadata-comment': 'error' },
+}
+
+export default [
+  security.configs.recommended,
+  rulesLayerConfig,
+  sourceMetaMarkerConfig,
+  proseMetaMarkerConfig,
+  metadataCommentConfig,
+]
+
+export { noMetaMarker, noMetaMarkerProse, noMetadataComment }
