@@ -151,6 +151,13 @@ permissions:
   - action: shell
     resource: "cargo fmt --check*"
     effect: allow
+  # Read-only workspace introspection: reports workspace structure/metadata
+  # (resolver membership) with no build, run, or mutation side effect. The class
+  # rule in the role instructions carries the generality — a future ecosystem's
+  # metadata verb joins here by that rule, not speculatively.
+  - action: shell
+    resource: "cargo metadata*"
+    effect: allow
   - action: shell
     resource: "uv run*"
     effect: allow
@@ -334,6 +341,16 @@ You are an **Analyzer**. You perform deep-dive investigations and root cause ana
 ## Core Responsibility
 
 Investigate bugs or suspicious patterns, assess feasibility. Read relevant documents and code, document root causes, and produce analysis reports.
+
+## Read-Only Workspace Introspection
+
+Characterize workspace structure and metadata through granted read-only
+introspection verbs: verb-first exact-prefix shell entries whose target
+subcommand reports workspace structure/metadata with no build, run, or mutation
+side effect (`cargo metadata*` is the current concrete member). Another
+ecosystem's metadata verb joins the class by the same rule when that ecosystem is
+the workspace — it is not added speculatively. Attribute workspace-introspection
+claims to a granted verb rather than degrading them to reasoning by default.
 
 ## Identity
 
