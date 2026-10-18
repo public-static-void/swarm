@@ -73,6 +73,20 @@ function bashEntries(content) {
   return actionEntries(content, "shell");
 }
 
+// Metadata-family shell grants: the resource strings of every shell grant whose
+// second whitespace token (the target subcommand, wildcard stripped) is a member
+// of the declared family. The helper reads the same ordered grants the role
+// holds, so membership is decided by the grant itself and never by a prose
+// mention.
+function metadataFamilyGrants(content, family) {
+  const out = [];
+  for (const { pattern } of bashEntries(content)) {
+    const tokens = pattern.replace(/\*+$/, "").split(" ").filter(Boolean);
+    if (tokens.length > 1 && family.includes(tokens[1])) out.push(pattern);
+  }
+  return out;
+}
+
 // Line-index span of a file's leading `--- … ---` metadata region. Only the
 // first region is ever returned: a file whose first line is not `---` has no
 // frontmatter, and a later `---` region belongs to a different document shape
@@ -319,6 +333,11 @@ const INTROSPECTION_MUTATION_SUBCOMMANDS = [
 const SPECULATIVE_INTROSPECTION_COMMANDS = [
   "npm ls*", "bun pm ls*", "go list*", "yarn list*", "pnpm list*",
 ];
+// The declared finite set of target-subcommand tokens that make a shell grant
+// metadata-family-shaped. The granted-to-pinned predicate decides only inside
+// this set, so a metadata-shaped verb under a name outside it is not decided
+// here; the speculative-list check above covers the deliberately ungranted set.
+const INTROSPECTION_METADATA_FAMILY = ["metadata", "ls", "info", "describe"];
 // Working-directory boundary: the external-directory posture is a blanket deny
 // in every role, and no OS-specific or literal external path prefix appears in
 // the swarm configuration. The matcher below is the scannable boundary
@@ -801,6 +820,32 @@ describe("analyzer read-only introspection class (swarm/60)", () => {
   it("adds no speculative ecosystem metadata verb beyond the class member", () => {
     const offenders = SPECULATIVE_INTROSPECTION_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
     expect(offenders).toEqual([]);
+  });
+
+  it("pins every metadata-family grant or declares it speculative", () => {
+    // Membership has a single source: the ordered grants and the pinned constant
+    // move together, so a member change never requires a prose edit. The
+    // predicate decides only inside the declared finite family — a
+    // metadata-shaped verb under an undeclared name escapes it, while the
+    // speculative-list check covers the deliberately ungranted set.
+    const declared = new Set([...ANALYZER_INTROSPECTION_COMMANDS, ...SPECULATIVE_INTROSPECTION_COMMANDS]);
+    const unpinned = (content) =>
+      metadataFamilyGrants(content, INTROSPECTION_METADATA_FAMILY).filter((grant) => !declared.has(grant));
+
+    expect(unpinned(analyzer)).toEqual([]);
+
+    // Non-vacuous: a grant of a metadata-family verb that is neither pinned nor
+    // declared speculative is reported. The fixture is observed reporting before
+    // the current-tree assertion above is accepted.
+    const fixture = [
+      "---",
+      "permissions:",
+      "  - action: shell",
+      '    resource: "ecosystem info*"',
+      "    effect: allow",
+      "---",
+    ].join("\n");
+    expect(unpinned(fixture)).toEqual(["ecosystem info*"]);
   });
 
   it("states the class rule without naming a member", () => {
