@@ -258,6 +258,24 @@ const EXPLORER_GIT_DIAG_COMMANDS = ["git diff*", "git log*"];
 // Analyzer parity additions: the test-runner entry and toolchain probes the
 // other gate-running roles already hold, without any installer scope.
 const ANALYZER_PARITY_COMMANDS = ["npm run test*", "cargo --version*", "cargo fmt --check*"];
+// Read-only workspace-introspection class (swarm/60): verb-first, exact-prefix
+// shell entries whose target subcommand reports workspace structure/metadata
+// with no build, run, or mutation side effect. `cargo metadata` is the current
+// concrete member; the class rule carries the generality, so a future workspace
+// ecosystem's metadata verb joins this pinned list rather than being added
+// speculatively.
+const ANALYZER_INTROSPECTION_COMMANDS = ["cargo metadata*"];
+// Target subcommands carrying a build, run, or mutation side effect — an entry
+// whose subcommand is one of these is not a read-only introspection probe.
+const INTROSPECTION_MUTATION_SUBCOMMANDS = [
+  "build", "run", "install", "add", "remove", "update", "clean",
+  "check", "test", "clippy", "fmt", "fix", "bench", "publish",
+];
+// Ecosystem metadata verbs the class rule deliberately leaves ungranted: each
+// joins the class only when that ecosystem is the workspace.
+const SPECULATIVE_INTROSPECTION_COMMANDS = [
+  "npm ls*", "bun pm ls*", "go list*", "yarn list*", "pnpm list*",
+];
 // Working-directory boundary: the external-directory posture is a blanket deny
 // in every role, and no OS-specific or literal external path prefix appears in
 // the swarm configuration. The matcher below is the scannable boundary
@@ -671,6 +689,56 @@ describe("agent permission allowlists", () => {
         }
       }
     }
+    expect(offenders).toEqual([]);
+  });
+});
+
+// Analyzer read-only workspace introspection (swarm/60): the analyzer holds a
+// grant for read-only workspace-introspection verbs — verb-first exact-prefix
+// shell entries whose target subcommand reports workspace structure/metadata
+// with no build, run, or mutation side effect. The class rule, stated in the
+// role instructions, carries the generality; `cargo metadata*` is its current
+// concrete member and no other ecosystem verb is added speculatively.
+describe("analyzer read-only introspection class (swarm/60)", () => {
+  const analyzer = readAgent("analyzer.md");
+  const patterns = new Map(bashEntries(analyzer).map((e) => [e.pattern, e.mode]));
+
+  it("grants the concrete introspection member to the analysis role", () => {
+    const missing = ANALYZER_INTROSPECTION_COMMANDS.filter((cmd) => patterns.get(cmd) !== "allow");
+    expect(missing).toEqual([]);
+  });
+
+  it("shapes every introspection entry verb-first with a scoped, read-only target", () => {
+    const misshapen = [];
+    for (const cmd of ANALYZER_INTROSPECTION_COMMANDS) {
+      if (!cmd.endsWith("*")) {
+        misshapen.push(`${cmd}: not a trailing-wildcard scoped target`);
+        continue;
+      }
+      const tokens = cmd.replace(/\*+$/, "").split(" ").filter(Boolean);
+      if (tokens.length < 2) {
+        misshapen.push(`${cmd}: not verb-first (needs a verb and a metadata subcommand)`);
+        continue;
+      }
+      if (FORBIDDEN_BARE.includes(cmd.replace(/\*+$/, ""))) {
+        misshapen.push(`${cmd}: bare tool invocation, not a scoped introspection verb`);
+      }
+      if (INTROSPECTION_MUTATION_SUBCOMMANDS.includes(tokens[1])) {
+        misshapen.push(`${cmd}: ${tokens[1]} carries a build/run/mutation side effect`);
+      }
+    }
+    expect(misshapen).toEqual([]);
+  });
+
+  it("states the read-only introspection class rule in the role instructions", () => {
+    // Prose wraps across lines, so normalize whitespace before matching the rule.
+    const flat = analyzer.replace(/\s+/g, " ");
+    expect(flat).toMatch(/read-only introspection/i);
+    expect(flat).toContain("no build, run, or mutation side effect");
+  });
+
+  it("adds no speculative ecosystem metadata verb beyond the class member", () => {
+    const offenders = SPECULATIVE_INTROSPECTION_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
     expect(offenders).toEqual([]);
   });
 });
