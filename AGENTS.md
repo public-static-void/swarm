@@ -33,4 +33,4 @@ Agents accept WHAT-level dispatches — each dispatch describes the artifact to 
 
 ## Searching Gitignored Trees
 
-The dedicated Grep tool searches every tree on disk — gitignored directories (`knowledge/`, `references/`, `node_modules/`) included. Log files (`*.log`, e.g. under `plugins/logs/`) fall outside its default file-type set: pass an explicit `include` glob such as `"*.log"`, or investigate them via the Read tool and bash allowlisted commands (`cat*`, `head*`, `tail*`).
+The dedicated Grep tool searches every tree on disk — gitignored directories (`knowledge/`, `references/`, `node_modules/`) included. Log files (`*.log`, e.g. under `plugins/logs/`) fall outside its default file-type set: pass an explicit `include` glob such as `"*.log"`, or investigate them via the Read tool and bash allowlisted commands (`cat*`, `head*`, `tail*`). This swarm's own logs and config are workspace-relative paths: investigate them in-tree under `plugins/logs/`. An external evidence request is redirected to a workspace-local target — the working directory is the boundary, and no out-of-project path is admitted.
