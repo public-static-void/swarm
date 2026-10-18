@@ -79,23 +79,7 @@ After verification passes:
 
 ## Semantic Commit Convention
 
-| Type     | Usage                  |
-| -------- | ---------------------- |
-| feat     | New feature            |
-| fix      | Bug fix                |
-| docs     | Documentation          |
-| style    | Formatting             |
-| refactor | Internal restructuring |
-| test     | Add/modify tests       |
-| chore    | Build/tooling          |
-| ci       | CI/CD                  |
-
-**Rules:** Scope required if ≥80% of representative commits use scope. Subject: imperative present tense, ≤72 chars, omits trailing period.
-
-**Commit message format:** `<type>(<scope>): <description>`
-- **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
-- **scope**: the component or module affected
-- **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning. The format defines the positive shape; internal tracking metadata is excluded because it is not part of the format.
+The semantic commit convention — the type table, the scope rule, and the message format — is owned by the `committer-checkpoint` skill, §Semantic Commit Convention. Apply that section as the single source for cleanup commits.
 
 ## Exit
 
