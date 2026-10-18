@@ -1450,3 +1450,109 @@ describe("working-directory boundary (no external literals)", () => {
     expect(groundRules).toMatch(/working directory/);
   });
 });
+
+// The advertised-vs-granted seam (A2): the phase layer advertises a tool by
+// NAME while the acting agent's permission block grants it by RESOURCE SCOPE.
+// The two derivations live in different files, so nothing but a guard keeps
+// them in step — a phase that lists a resource-scoped tool must advertise that
+// scope through TOOL_RESTRICTIONS, and the advertised scope must match what the
+// agent is actually granted. The Overseer's docs-only glob reach is the
+// by-design limit this binds; widening the grant to satisfy the advertisement
+// is the failure mode, not the remedy.
+const OVERSEER_GLOB_PHASES = Object.keys(protocolPhases.STATES).filter((p) =>
+  (protocolPhases.TOOL_ALLOWLIST[p] || []).includes("glob")
+);
+
+function overseerGlobGrantPatterns() {
+  return actionEntries(readAgent("overseer.md"), "glob")
+    .filter((e) => e.mode === "allow")
+    .map((e) => e.pattern);
+}
+
+// The resource tokens an advertised scope names. The binding reads the paths
+// back out of the advertisement text instead of trusting its prose, so a
+// dropped pattern and a widened one are both visible: the text carries no other
+// dotted token, which makes the extraction unambiguous.
+function advertisedScopeTokens(text) {
+  return [...new Set(text.match(/[-A-Za-z0-9_.*\/]+\.[A-Za-z0-9]+/g) || [])].sort();
+}
+
+// Scope-level comparison of an advertised restriction table against a grant.
+// Empty means every phase that advertises glob names exactly the granted
+// resource set; a missing entry, a dropped pattern, or an extra one is drift.
+function globScopeFindings(restrictions, grantPatterns) {
+  const findings = [];
+  const granted = [...grantPatterns].sort().join(", ");
+  for (const phase of OVERSEER_GLOB_PHASES) {
+    const advertised = restrictions[phase]?.glob;
+    if (typeof advertised !== "string" || advertised.length === 0) {
+      findings.push(`${phase}: glob is advertised with no scope`);
+      continue;
+    }
+    const tokens = advertisedScopeTokens(advertised).sort().join(", ");
+    if (tokens !== granted) {
+      findings.push(`${phase}: advertised "${tokens}" != granted "${granted}"`);
+    }
+  }
+  return findings;
+}
+
+describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
+  it("carries a glob restriction entry in every phase that advertises glob", () => {
+    // Coverage, not mere presence: a partial table re-creates the asymmetry
+    // that opened the seam. glob is listed everywhere except INTENT and REPORT,
+    // where the tool is blocked outright and no scope is advertised.
+    expect(OVERSEER_GLOB_PHASES).toHaveLength(10);
+    expect(OVERSEER_GLOB_PHASES).not.toContain("INTENT");
+    expect(OVERSEER_GLOB_PHASES).not.toContain("REPORT");
+    const missing = OVERSEER_GLOB_PHASES.filter(
+      (p) => typeof protocolPhases.TOOL_RESTRICTIONS[p]?.glob !== "string"
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("binds the advertised glob scope to the Overseer's granted glob scope", () => {
+    const granted = overseerGlobGrantPatterns();
+    expect(granted).toEqual(["knowledge/*.md", "knowledge/impl-*.md", "knowledge/checkpoint-*.md"]);
+    expect(globScopeFindings(protocolPhases.TOOL_RESTRICTIONS, granted)).toEqual([]);
+  });
+
+  it("fails closed when an advertised scope drops, widens, or omits a granted pattern", () => {
+    const granted = overseerGlobGrantPatterns();
+    const live = protocolPhases.TOOL_RESTRICTIONS;
+    const withSwarmGlob = (text) => ({ ...live, SWARM: { ...live.SWARM, glob: text } });
+    // Advertised narrower than granted (a dropped pattern).
+    expect(globScopeFindings(withSwarmGlob("ONLY knowledge/*.md — docs-scoped"), granted)).not.toEqual([]);
+    // Advertised wider than granted (an extra resource).
+    expect(
+      globScopeFindings(
+        withSwarmGlob("ONLY knowledge/*.md, knowledge/impl-*.md, knowledge/checkpoint-*.md, src/*.ts — docs-scoped"),
+        granted
+      )
+    ).not.toEqual([]);
+    // No entry at all for a glob-advertising phase.
+    expect(globScopeFindings({ ...live, SWARM: { read: "ONLY milestone registry KDs" } }, granted)).not.toEqual([]);
+    // The grant narrowed without the advertisement following.
+    expect(
+      globScopeFindings(live, granted.filter((p) => p !== "knowledge/checkpoint-*.md"))
+    ).not.toEqual([]);
+  });
+
+  it("advertises an allowed tool's scope through the generic restriction path", () => {
+    // No per-tool branch: an allowlisted glob picks up its entry through the
+    // same lookup read already uses, so a scope entry needs no index.js edit.
+    const gate = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
+    expect(gate).toContain("TOOL_RESTRICTIONS[phaseName]?.[toolID]");
+    expect(gate).toContain("phase restriction: ${restriction}");
+  });
+
+  it("keeps the Overseer docs-only scope and its watchdog unchanged", () => {
+    // The seam closes on the advertisement side; the grant itself stands.
+    expect(overseerScopeFindings(readAgent("overseer.md"))).toEqual([]);
+    expect(overseerGlobGrantPatterns()).toEqual([
+      "knowledge/*.md",
+      "knowledge/impl-*.md",
+      "knowledge/checkpoint-*.md",
+    ]);
+  });
+});
