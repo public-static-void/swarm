@@ -73,6 +73,33 @@ function bashEntries(content) {
   return actionEntries(content, "shell");
 }
 
+// Line-index span of a file's leading `--- … ---` metadata region. Only the
+// first region is ever returned: a file whose first line is not `---` has no
+// frontmatter, and a later `---` region belongs to a different document shape
+// (the multi-region skill template) that this guard deliberately does not fold
+// into the leading one.
+function frontmatterRegion(content) {
+  const lines = content.split("\n");
+  if (lines[0].trim() !== "---") return null;
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+  return end === -1 ? null : { start: 0, end };
+}
+
+// 1-based line numbers inside that region whose first non-whitespace character
+// is `#` — a YAML comment where the metadata block carries data only. The test
+// keys on a line-leading `#`, so a `#` inside a quoted scalar value is never
+// mistaken for a comment.
+function metadataCommentOffenders(content) {
+  const region = frontmatterRegion(content);
+  if (!region) return [];
+  const lines = content.split("\n");
+  const offenders = [];
+  for (let i = region.start + 1; i < region.end; i++) {
+    if (/^\s*#/.test(lines[i])) offenders.push(i + 1);
+  }
+  return offenders;
+}
+
 // Every source file beneath a tree, filtered by extension. Used to sweep the
 // configuration surface for external path literals; directories named in
 // `skip` are pruned wholesale.
@@ -687,6 +714,24 @@ describe("agent permission allowlists", () => {
         } else if (dangerousPhrases.some((p) => e.pattern.startsWith(p))) {
           offenders.push(`${f}: ${e.pattern}`);
         }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+// Metadata-block purity (frontmatter is data): the leading `--- … ---` region
+// of an agent definition carries role config and ordered permission rules, and
+// no prose. A line-leading `#` in that region is the defect this guard names.
+// Only the leading region is read — a file carrying more than one `---` region
+// (the multi-region skill template shape) is out of scope by explicit decision,
+// so a second region is never folded in and never silently scanned.
+describe("agent metadata block purity", () => {
+  it("keeps agent metadata blocks free of comment lines", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      for (const line of metadataCommentOffenders(readAgent(f))) {
+        offenders.push(`${f}:${line}`);
       }
     }
     expect(offenders).toEqual([]);
