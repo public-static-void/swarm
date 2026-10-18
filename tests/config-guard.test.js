@@ -770,6 +770,14 @@ describe("agent permission allowlists", () => {
 // (the multi-region skill template shape) is out of scope by explicit decision,
 // so a second region is never folded in and never silently scanned.
 describe("agent metadata block purity", () => {
+  it("reports a comment line injected into the leading metadata region", () => {
+    // Non-vacuous: the predicate reports the offender at line 2 of an injected
+    // fixture, so the current-tree assertion below rests on observed reporting
+    // rather than on an empty result a `return []` regression would preserve.
+    const fixture = ["---", "# role rationale in prose", "name: x", "---", "Body."].join("\n");
+    expect(metadataCommentOffenders(fixture)).toEqual([2]);
+  });
+
   it("keeps agent metadata blocks free of comment lines", () => {
     const offenders = [];
     for (const f of agentFiles()) {
@@ -778,6 +786,15 @@ describe("agent metadata block purity", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("reads a leading metadata region for every agent file", () => {
+    // A file whose first line is not `---`, or which lacks a closing fence, has
+    // no region, and the purity predicate then returns []. Asserting the region
+    // is present keeps such a file reported rather than silently exempt.
+    for (const f of agentFiles()) {
+      expect(frontmatterRegion(readAgent(f)), `${f} carries a leading metadata region`).not.toBeNull();
+    }
   });
 });
 
