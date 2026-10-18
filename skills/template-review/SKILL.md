@@ -25,21 +25,11 @@ verdict: {{PASS | FAIL | FUNDAMENTAL}}
 {{PASS / FAIL / FUNDAMENTAL}}
 
 The `verdict` frontmatter field above is the single machine source — protocol-gate
-reads it during VERIFY, and the REVIEW KD carries the lifecycle acceptance proof (full suite re-run, dependency and SAST scans, traceability matrix). `MISSING` (absent or invalid) blocks VERIFY with a
-diagnostic and is not treated as PASS; `PASS` advances when this review KD is
-newer than the newest `impl-*` KD (fresh PASS after the last fix — a stale PASS
-blocks); `FAIL` auto-regresses VERIFY→SWARM and reopens exactly the milestone
-row(s) its findings cite; `FUNDAMENTAL` blocks advancement and escalates.
+reads it during VERIFY, and the REVIEW KD carries the lifecycle acceptance proof (full suite re-run, dependency and SAST scans, traceability matrix). The Inspector's §Verdict Rules (`agents/inspector.md`) are the authoritative home for the field's machine semantics; read them there.
 
 ## Verdict Rules (citation mandate)
 
-- Every **FAIL** finding MUST cite at least one milestone token (`M\d+` id like
-  `M3`, or an `impl-<milestone-id>-` path like `impl-M3-short-term-store-...`).
-  The protocol-gate parses these tokens to reopen exactly the cited milestone
-  rows when a FAIL regresses VERIFY→SWARM.
-- A FAIL verdict with **zero milestone citations** is **MALFORMED**: the gate
-  blocks with a diagnostic, regresses nothing, and reopens nothing. Re-dispatch
-  the review with proper citations rather than relying on a citation-less FAIL.
+The Inspector's §Verdict Rules (`agents/inspector.md`) are the authoritative home for the citation mandate. The finding block below carries the citation field that mandate governs.
 
 ## Review Findings
 

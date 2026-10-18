@@ -139,17 +139,11 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 
 ### VERIFY Acceptance Proof
 
-VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the full suite re-run, dependency and SAST scans, and the traceability matrix above carrying declared gate → actually-run gate → Test/Check → PASS/FAIL per row. The frontmatter verdict field carries the single lifecycle acceptance verdict under the FAIL citation mandate (every FAIL finding cites at least one milestone token) and the fresh PASS contract (a PASS advances when the review KD is newer than the newest impl KD; a stale PASS blocks pending re-review).
+VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the full suite re-run, dependency and SAST scans, and the traceability matrix above carrying declared gate → actually-run gate → Test/Check → PASS/FAIL per row. The frontmatter `verdict` field carries the single lifecycle acceptance verdict; its machine semantics live in the Inspector's §Verdict Rules (`agents/inspector.md`), the authoritative home.
 
 ## Verdicts
 
-| Verdict     | Meaning                 | Machine behavior                                                                                                                      |
-| ----------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| PASS        | All criteria met, clean | VERIFY advances to the next phase (presence-based)                                                                                    |
-| FAIL        | Specific fixable issues | The gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; the producer fixes the findings and re-submits |
-| FUNDAMENTAL | Design-level flaw       | The gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
-
-A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). Every FAIL finding MUST cite at least one milestone token (`M\d+` or `impl-<id>-`); a FAIL verdict with zero milestone citations is MALFORMED — the gate blocks, regresses nothing, and reopens nothing (re-dispatch the review with citations). A `FUNDAMENTAL` verdict blocks advancement and escalates; the phase stays at VERIFY.
+The Inspector's §Verdict Rules (`agents/inspector.md`) are the authoritative machine-semantics statement: the `verdict` field as the single machine source the protocol-gate VERIFY gate reads, the gate behavior each verdict value drives, and the mandate every FAIL finding carries. Read them there.
 
 FUNDAMENTAL-labeled lines in test output are asserted test output. Verify the line against the test source before treating it as a lifecycle anomaly.
 
