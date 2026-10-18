@@ -338,6 +338,14 @@ const SPECULATIVE_INTROSPECTION_COMMANDS = [
 // this set, so a metadata-shaped verb under a name outside it is not decided
 // here; the speculative-list check above covers the deliberately ungranted set.
 const INTROSPECTION_METADATA_FAMILY = ["metadata", "ls", "info", "describe"];
+// The boundary rule this suite keeps: frontmatter is data; body is prose; tests
+// are the enforcement home. Each clause names the assertion that backs it, so a
+// clause left without a live predicate shows up as a dangling name.
+const BOUNDARY_RULE = {
+  "frontmatter is data": "keeps agent metadata blocks free of comment lines",
+  "body is prose": "states the class rule without naming a member",
+  "tests enforce membership": "pins every metadata-family grant or declares it speculative",
+};
 // Working-directory boundary: the external-directory posture is a blanket deny
 // in every role, and no OS-specific or literal external path prefix appears in
 // the swarm configuration. The matcher below is the scannable boundary
@@ -889,6 +897,20 @@ describe("analyzer read-only introspection class (swarm/60)", () => {
     const suiteMentions = mentions(readRoot(join("tests", "config-guard.test.js")));
     expect(suiteMentions).toHaveLength(1);
     expect(suiteMentions[0]).toContain("ANALYZER_INTROSPECTION_COMMANDS");
+  });
+});
+
+// Boundary rule, clause by clause: frontmatter carries data with no comment line,
+// the role body carries the class rule as prose that names no member, and the
+// suite carries membership as the pinned constant the granted-to-pinned
+// predicate enforces. Each clause maps to the assertion named in BOUNDARY_RULE.
+describe("boundary rule — frontmatter is data, body is prose, tests enforce", () => {
+  it("states each clause with a backing assertion that exists in the suite", () => {
+    const clauses = Object.keys(BOUNDARY_RULE);
+    expect(clauses).toEqual(["frontmatter is data", "body is prose", "tests enforce membership"]);
+    const suiteSource = readRoot(join("tests", "config-guard.test.js"));
+    const dangling = clauses.filter((clause) => !suiteSource.includes(`it("${BOUNDARY_RULE[clause]}"`));
+    expect(dangling).toEqual([]);
   });
 });
 
