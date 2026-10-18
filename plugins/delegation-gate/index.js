@@ -730,8 +730,8 @@ GENERATION: the lifecycle generation number
 SCOPE: optional context
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
-TASK ID: task id (optional — same-instance redispatch identifier)
-SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance).
+TASK ID: subagent resume handle (optional) — the delegation-gate forwards it as the subagent call's task_id argument; reuse the prior handle for a same-artifact redispatch
+SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance), passed through as the subagent call's task_id argument — the host's resume behavior is a harness-side property of the subagent tool.
 `;
 }
 
@@ -762,10 +762,13 @@ function injectToolDocs(output, agentName, mode, generation) {
   // protocol-gate registry transition keys on. Only injected for swarm
   // so other modes don't see a field they must not include.
   const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: (exactly one, required for swarm)\n" : "";
-  // TASK ID resumes the same subagent session (task tool task_id). Swarm-only
-  // like MILESTONE ID — the same-instance redispatch preference is exercised
-  // on reopened milestone rows, so other modes don't see the field.
-  const taskIdLine = displayMode === "swarm" ? "TASK ID: (optional — same-instance redispatch identifier)\n" : "";
+  // TASK ID carries a subagent resume handle: the gate forwards it as the
+  // subagent call's task_id argument, and the host's resume behavior belongs to
+  // the subagent tool — a harness-side property, not something in-tree code
+  // proves. Swarm-only like MILESTONE ID — the same-artifact redispatch
+  // preference is exercised on reopened milestone rows, so other modes meet the
+  // field through the mode-agnostic dispatcher hint instead.
+  const taskIdLine = displayMode === "swarm" ? "TASK ID: (optional — resume handle forwarded to the subagent call as its task_id argument)\n" : "";
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
@@ -776,7 +779,7 @@ SESSION ID: (your session id)
 GENERATION: (the lifecycle generation number)
 SCOPE: (optional context)
 RESULT KD: ${resultKdExamples} (when subagent produces a KD)
-SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance).
+SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance), passed through as the subagent call's task_id argument — the host's resume behavior is a harness-side property of the subagent tool.
 
 RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
 - ${displayMode}: ${resultKdExamples}
