@@ -1541,6 +1541,27 @@ describe("INTENT stop-edit boundary (swarm/57)", () => {
   });
 });
 
+// The Committer's remit at the CLEANUP authoring site: the CLEANUP dispatch
+// scope is Overseer-authored free text, so the remit clause lives in the
+// Overseer definition where that scope is written — the git closeout belongs to
+// the Committer, while gate and test execution belongs to the implementing and
+// verifying agents. The pin reads the agent file and asserts the clause text is
+// present, so a later edit that drops it fails the suite rather than silently
+// re-opening the defect the clause closes.
+describe("CLEANUP committer-remit clause (overseer scope authoring)", () => {
+  it("keeps the git-closeout remit clause in the overseer CLEANUP guidance", () => {
+    expect(readAgent("overseer.md"), "overseer.md must carry the committer-remit clause").toContain(
+      "The CLEANUP scope covers the git closeout"
+    );
+  });
+
+  it("keeps gate and test execution with the implementing and verifying agents", () => {
+    expect(readAgent("overseer.md")).toContain(
+      "gate and test execution stays with Artisan (implementation) and Inspector (verification)"
+    );
+  });
+});
+
 // The working-directory boundary: the swarm configuration carries no
 // OS-specific or literal external path prefix, and every role keeps a blanket
 // external-directory deny. The scan is grant-shaped and covers the agent

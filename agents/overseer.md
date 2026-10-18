@@ -129,7 +129,7 @@ The Knowledge Gate plugin automatically injects open issues into your session co
 - **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD (review + audit section).
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
-- **Phase 11 (CLEANUP)**: Dispatch Committer (MODE: CLEANUP). The CLEANUP dispatch SCOPE directs the Committer to push committed changes to the remote by default when safe: committed changes exist at lifecycle end, a remote repo is configured, and the current branch is a feature/fix/chore-style branch. The SCOPE states this push-by-default expectation positively so the Committer pushes the branch at lifecycle end.
+- **Phase 11 (CLEANUP)**: Dispatch Committer (MODE: CLEANUP). The CLEANUP dispatch SCOPE directs the Committer to push committed changes to the remote by default when safe: committed changes exist at lifecycle end, a remote repo is configured, and the current branch is a feature/fix/chore-style branch. The SCOPE states this push-by-default expectation positively so the Committer pushes the branch at lifecycle end. The CLEANUP scope covers the git closeout — the branch, the working tree, and the remote ref. The Committer's git remit names that closeout, and gate and test execution stays with Artisan (implementation) and Inspector (verification), whose gate outcomes the scope carries as recorded results.
 - **Phase 12 (REPORT)**: Deliver REPORT KD.
 
 ### Phase Transition Rules
