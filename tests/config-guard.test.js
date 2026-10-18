@@ -73,6 +73,20 @@ function bashEntries(content) {
   return actionEntries(content, "shell");
 }
 
+// Every source file beneath a tree, filtered by extension. Used to sweep the
+// configuration surface for external path literals; directories named in
+// `skip` are pruned wholesale.
+function sourceFilesRecursive(dir, extensions, skip = []) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (skip.includes(full)) continue;
+    if (entry.isDirectory()) out.push(...sourceFilesRecursive(full, extensions, skip));
+    else if (extensions.some((ext) => entry.name.endsWith(ext))) out.push(full);
+  }
+  return out;
+}
+
 const FORBIDDEN_BARE = [
   "node", "bun", "npm", "npx", "yarn", "pnpm", "deno",
   "cargo", "poetry", "pip", "make", "mvn", "gradle", "cmake", "composer",
@@ -244,6 +258,28 @@ const EXPLORER_GIT_DIAG_COMMANDS = ["git diff*", "git log*"];
 // Analyzer parity additions: the test-runner entry and toolchain probes the
 // other gate-running roles already hold, without any installer scope.
 const ANALYZER_PARITY_COMMANDS = ["npm run test*", "cargo --version*", "cargo fmt --check*"];
+// Working-directory boundary: the external-directory posture is a blanket deny
+// in every role, and no OS-specific or literal external path prefix appears in
+// the swarm configuration. The matcher below is the scannable boundary
+// predicate; the scan is grant-shaped — a permission `resource:` value, an
+// `external_directory` rule, or an allow-mapping entry — so the path literals
+// that ordinary suite fixtures carry are not mistaken for grants. The sole
+// enumerated exception is the pre-existing artisan scratch-removal grant,
+// retained pending the open decision to retarget it to a workspace-relative
+// scratch.
+const EXTERNAL_PATH =
+  /(?:~|\$HOME)[/\\]|\b[A-Za-z]:[/\\]|(?:^|[\s"'`([{=:])\/(?:tmp|home|Users|usr|etc|var|opt|root|mnt|media|srv|proc|sys|dev|boot|lib|bin|sbin|run)(?=[/\\])/;
+const EXTERNAL_GRANT_SHAPE =
+  /\bresource\s*:|\bexternal_directory\b|["'][^"'\n]+["']\s*:\s*["']?(?:allow|ask)["']/;
+
+function hasExternalLiteral(text) {
+  return EXTERNAL_GRANT_SHAPE.test(text) && EXTERNAL_PATH.test(text);
+}
+
+// The one pre-existing in-tree external literal: artisan's scoped scratch
+// removal grant, kept as the enumerated exception pending the open retarget
+// decision.
+const EXTERNAL_LITERAL_EXCEPTIONS = ['resource: "rm /tmp/opencode/*"'];
 
 describe("SPEC-template git hygiene", () => {
   const skill = readRoot(join("skills", "template-spec", "SKILL.md"));
@@ -1263,5 +1299,86 @@ describe("INTENT stop-edit boundary (swarm/57)", () => {
     // intent KD advances regardless of mtime. Reintroducing a freshness gate
     // here would re-open the write→stop stall the advance was added to close.
     expect(gate).toContain("presence exemption (a session-matching intent KD advances regardless of");
+  });
+});
+
+// The working-directory boundary: the swarm configuration carries no
+// OS-specific or literal external path prefix, and every role keeps a blanket
+// external-directory deny. The scan is grant-shaped and covers the agent
+// permission blocks, the plugin sources and templates, the suites (bar this
+// guard file, which hosts the predicate along with its injected negative
+// fixtures), and the ground rules. Runtime transcripts under plugins/logs are
+// excluded — they are log output, not configuration.
+describe("working-directory boundary (no external literals)", () => {
+  const SURFACE_SKIP = [join(ROOT, "plugins", "logs"), join(ROOT, "tests", "config-guard.test.js")];
+
+  function surfaceFiles() {
+    return [
+      ...agentFiles().map((f) => join(AGENTS_DIR, f)),
+      join(ROOT, "AGENTS.md"),
+      ...sourceFilesRecursive(join(ROOT, "plugins"), [".js", ".json", ".md"], SURFACE_SKIP),
+      ...sourceFilesRecursive(join(ROOT, "tests"), [".js", ".json"], SURFACE_SKIP),
+    ];
+  }
+
+  it("keeps the boundary predicate catch the external grant shapes", () => {
+    expect(hasExternalLiteral('    resource: "~/.local/share/opencode/log/*"')).toBe(true);
+    expect(hasExternalLiteral('    resource: "/tmp/opencode/*"')).toBe(true);
+    expect(hasExternalLiteral('{ "external_directory": { "~/.local/share/opencode/log/*": "allow" } }')).toBe(true);
+    expect(hasExternalLiteral('    resource: "plugins/logs/**"')).toBe(false);
+    expect(hasExternalLiteral('    expect(x).not.toContain("/tmp/opencode")')).toBe(false);
+  });
+
+  it("carries no external path literal outside the enumerated exception", () => {
+    const offenders = [];
+    for (const file of surfaceFiles()) {
+      readFileSync(file, "utf8").split("\n").forEach((line, i) => {
+        if (!hasExternalLiteral(line)) return;
+        if (EXTERNAL_LITERAL_EXCEPTIONS.some((ex) => line.includes(ex))) return;
+        offenders.push(`${file}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("enumerates the single pre-existing artisan exception verbatim", () => {
+    expect(EXTERNAL_LITERAL_EXCEPTIONS.length).toBeLessThanOrEqual(1);
+    const artisan = readAgent("artisan.md");
+    for (const ex of EXTERNAL_LITERAL_EXCEPTIONS) {
+      expect(artisan, "the enumerated exception must name the artisan block verbatim").toContain(ex);
+    }
+  });
+
+  it("keeps a blanket external-directory deny with no allow in any role", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      const ext = actionEntries(readAgent(f), "external_directory");
+      if (!ext.some((e) => e.pattern === "*" && e.mode === "deny")) {
+        offenders.push(`${f}: missing external_directory "*" deny`);
+      }
+      for (const e of ext) {
+        if (e.mode === "allow") offenders.push(`${f}: external allow ${e.pattern}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(agentFiles()).toHaveLength(10);
+  });
+
+  it("leaves the Overseer docs-only scope unchanged", () => {
+    const overseer = readAgent("overseer.md");
+    const readAllows = actionEntries(overseer, "read").filter((e) => e.mode === "allow").map((e) => e.pattern);
+    const globAllows = actionEntries(overseer, "glob").filter((e) => e.mode === "allow").map((e) => e.pattern);
+    expect(globAllows).toEqual(["knowledge/*.md", "knowledge/impl-*.md", "knowledge/checkpoint-*.md"]);
+    for (const p of [...readAllows, ...globAllows]) {
+      expect(p.startsWith("knowledge/"), `${p} must stay in the docs scope`).toBe(true);
+    }
+    expect(overseerScopeFindings(overseer)).toEqual([]);
+  });
+
+  it("redirects external evidence requests to workspace-local targets in the ground rules", () => {
+    const groundRules = readRoot("AGENTS.md");
+    expect(groundRules).toContain("plugins/logs/");
+    expect(groundRules).toMatch(/workspace-local/);
+    expect(groundRules).toMatch(/working directory/);
   });
 });
