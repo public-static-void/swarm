@@ -54,6 +54,22 @@ export const TOOL_ALLOWLIST = {
   REPORT: ["edit", "read", "write", "skill", "memory_search"]
 };
 
+// Tools that are never phase-blocked because they carry or delegate work: the
+// phase gate governs the inner/child tool they invoke instead. `execute` is
+// the Code Mode carrier whose nested calls reach the gate as their own tool
+// ids; `subagent` dispatches to another agent whose session has its own phase
+// context. Keeping the set here means one admission predicate feeds every
+// enforcement and advertisement site, so a renamed carrier is one table entry.
+export const TRANSPORT_TOOLS = ["subagent", "execute"];
+
+// Single admission predicate for every enforcement and advertisement site: a
+// tool may run in a phase when it is a transport tool or when the phase
+// allowlist names it. Anything else is refused — an unknown id fails closed
+// rather than being silently carried.
+export function admitTool(phaseName, tool) {
+  return TRANSPORT_TOOLS.includes(tool) || (TOOL_ALLOWLIST[phaseName] || []).includes(tool);
+}
+
 // Per-tool restrictions for tools that ARE in the allowlist but have path/scope limits.
 // tool.definition appends these to the description so the LLM sees the restriction
 // instead of treating the tool as fully available.
@@ -61,10 +77,27 @@ export const TOOL_ALLOWLIST = {
 // dispatch — never read by the Overseer. KD-format templates are auto-loaded
 // skills loaded via the skill tool. The read restrictions below scope the read
 // tool to phase KDs; neither string instructs reading templates.
+//
+// glob needs the same treatment read gets: the gate advertises tools to the
+// Overseer by name, while the Overseer's permission block grants glob by
+// resource scope only (agents/overseer.md). Without a scope entry the
+// advertisement promises tree browsing the grant refuses, so every phase that
+// lists glob advertises the granted scope alongside the name. The grant stands
+// — widening it to match the advertisement is the failure this closes.
+const OVERSEER_GLOB_SCOPE =
+  "ONLY knowledge/*.md, knowledge/impl-*.md, knowledge/checkpoint-*.md — docs-scoped: the Overseer glob grant stays as granted and is never widened to satisfy this advertisement";
+
 export const TOOL_RESTRICTIONS = {
   INTENT: { read: "ONLY intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", shell: "ONLY mkdir for knowledge directory creation" },
-  DECOMPOSE: { read: "ONLY milestone registry KDs" },
-  SWARM: { read: "ONLY milestone registry KDs" },
-  VERIFY: { read: "ONLY milestone registry KDs" },
+  PREFLIGHT: { glob: OVERSEER_GLOB_SCOPE },
+  EXPLORE: { glob: OVERSEER_GLOB_SCOPE },
+  INVESTIGATE: { glob: OVERSEER_GLOB_SCOPE },
+  ALIGN: { glob: OVERSEER_GLOB_SCOPE },
+  DECOMPOSE: { read: "ONLY milestone registry KDs", glob: OVERSEER_GLOB_SCOPE },
+  SWARM: { read: "ONLY milestone registry KDs", glob: OVERSEER_GLOB_SCOPE },
+  VERIFY: { read: "ONLY milestone registry KDs", glob: OVERSEER_GLOB_SCOPE },
+  EXTRACT: { glob: OVERSEER_GLOB_SCOPE },
+  EVOLVE: { glob: OVERSEER_GLOB_SCOPE },
+  CLEANUP: { glob: OVERSEER_GLOB_SCOPE },
   REPORT: { read: "ONLY knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
 };

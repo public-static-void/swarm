@@ -185,6 +185,48 @@ describe("compound-command attribution", () => {
   });
 });
 
+describe("single-offender attribution honesty", () => {
+  it("does not claim a zero-variant prefix stays available and names the routing target", () => {
+    const advice = adviseDenial({
+      agent: "explorer",
+      rawCommand: "make test",
+      patterns: realPatterns("explorer"),
+    });
+    expect(advice.allowed).toBe(false);
+    expect(advice.result.deniedSegments).toEqual(["make test"]);
+    expect(advice.result.deniedPrefix).toBe("make");
+    expect(advice.message).not.toContain("stays available");
+    expect(advice.message).toContain("unlisted for explorer");
+    expect(advice.message).toContain("route make work to artisan or analyzer");
+    expect(nonEmptyLineCount(advice.message)).toBeLessThanOrEqual(5);
+  });
+
+  it("routes a zero-variant file-read prefix instead of asserting it stays available", () => {
+    const advice = adviseDenial({
+      agent: "committer",
+      rawCommand: "cat notes.txt",
+      patterns: realPatterns("committer"),
+    });
+    expect(advice.allowed).toBe(false);
+    expect(advice.result.deniedPrefix).toBe("cat");
+    expect(advice.message).not.toContain("stays available");
+    expect(advice.message).toContain("read files through the Read tool");
+    expect(nonEmptyLineCount(advice.message)).toBeLessThanOrEqual(5);
+  });
+
+  it("still names the available variant when a same-prefix grant exists", () => {
+    const advice = adviseDenial({
+      agent: "artisan",
+      rawCommand: "python -c 'print(1)'",
+      patterns: realPatterns("artisan"),
+    });
+    expect(advice.allowed).toBe(false);
+    expect(advice.message).toContain("python --version*");
+    expect(advice.message).toContain("stays available");
+    expect(nonEmptyLineCount(advice.message)).toBeLessThanOrEqual(5);
+  });
+});
+
 describe("suggestion traceability", () => {
   it("traces every suggested variant to a literal line in the calling role file", async () => {
     const { readFile } = await import("node:fs/promises");

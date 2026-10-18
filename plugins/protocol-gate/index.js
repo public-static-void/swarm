@@ -53,7 +53,7 @@ import {
   sanitizeSessionID,
 } from "./kd-match.js";
 import { atomicWriteFileSync } from "./fs-atomic.js";
-import { PHASE_INSTRUCTIONS, STATES, TOOL_ALLOWLIST, TOOL_RESTRICTIONS } from "./phases.js";
+import { PHASE_INSTRUCTIONS, STATES, TOOL_ALLOWLIST, TOOL_RESTRICTIONS, TRANSPORT_TOOLS, admitTool } from "./phases.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const PLUGIN_DIR = dirname(__filename);
@@ -138,9 +138,9 @@ function learnKnowledgeDirFromArgs(sessionID, args) {
   }
 }
 
-// Phase tables (STATES, PHASE_INSTRUCTIONS, TOOL_ALLOWLIST, TOOL_RESTRICTIONS)
-// live in ./phases.js — gate-local, imported above and re-exported by
-// reference in the test-access block below.
+// Phase tables (STATES, PHASE_INSTRUCTIONS, TOOL_ALLOWLIST, TOOL_RESTRICTIONS,
+// TRANSPORT_TOOLS, admitTool) live in ./phases.js — gate-local, imported above
+// and re-exported by reference in the test-access block below.
 
 // Retention cap for the per-session verbatim raw-intent capture. The
 // chat.message hook keeps only the latest RAW_INTENT_MAX_MESSAGES overseer
@@ -207,7 +207,8 @@ const ERROR_TEMPLATES = {
   FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
   GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json) or `git add .` to stage all non-ignored changes" },
-  SHELL_DENIED_ATTRIBUTED: { code: "SHELL_DENIED_ATTRIBUTED", message: "SHELL DENIED (attributed — see message)", guidance: "Follow the Try next line in the message" }
+  SHELL_DENIED_ATTRIBUTED: { code: "SHELL_DENIED_ATTRIBUTED", message: "SHELL DENIED (attributed — see message)", guidance: "Follow the Try next line in the message" },
+  INTENT_BOUNDARY_CLOSED: { code: "INTENT_BOUNDARY_CLOSED", message: "❌ INTENT BOUNDARY CLOSED: write/edit of intent-*.md outside INTENT", guidance: "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md" }
 };
 
 function getPhaseName(phaseId) {
@@ -639,54 +640,26 @@ function evaluatePhaseOverrideBrake(sessionID, argText) {
   }
   return { allowed: true, engaged: true, consecutiveCount: first.count, milestoneId: first.milestoneId, fingerprint: first.fingerprint, diagnosis, escalation };
 }
-// Validates a multi-phase override queue against lifecycle.json
-// backwardTransitions. The queue's phases must form a connected chain in the
-// backward-transition graph (each consecutive pair adjacent via a backward
-// transition in either direction), and one end of the chain must connect to
-// the current phase. This accepts both the forward redo walk ({3,4,5} from 7:
-// the chain 7→5→4→3 traversed from 3) and the backward walk ({5,4,3} from 7:
-// the same chain traversed from 5), while rejecting forward walks from phases
-// that cannot reach the queue ({3,4,5} from 2). Returns null when the queue is
-// a valid backward chain, or { from, to } describing the first invalid hop.
-function findInvalidMultiPhaseHop(phases, currentPhase, backwardTransitions) {
-  if (!Array.isArray(phases) || phases.length < 2) return { from: currentPhase, to: phases?.[0] };
-  const bt = backwardTransitions || {};
-  const connectsTo = (a, b) => (bt[a] || []).includes(b);
-  for (let i = 0; i < phases.length - 1; i++) {
-    if (!connectsTo(phases[i], phases[i + 1]) && !connectsTo(phases[i + 1], phases[i])) {
-      return { from: phases[i], to: phases[i + 1] };
-    }
-  }
-  const currentTargets = bt[currentPhase] || [];
-  if (!currentTargets.includes(phases[0]) && !currentTargets.includes(phases[phases.length - 1])) {
-    return { from: currentPhase, to: phases[0] };
-  }
-  return null;
-}
-
-// Full-walk pre-validation for a /phase override queue. Checks three classes
-// in order and reports the first unsatisfiable hop:
-//   1. connectivity — the existing backward-chain + reachability check;
-//   2. scope — every hop resolves to a phase carrying a tool-scope entry, so
+// Full-walk pre-validation for a /phase override queue. Checks two classes in
+// order and reports the first unsatisfiable hop:
+//   1. scope — every hop resolves to a phase carrying a tool-scope entry, so
 //      the walk never lands where no tool contract is documented;
-//   3. gate-type — every hop resolves to a phase with a known advancement
+//   2. gate-type — every hop resolves to a phase with a known advancement
 //      gate (KD prefix, dual-KD, or verdict gate), so the walk never lands
 //      where no evidence check can run.
-// Returns null when the whole walk is committable, or { from, to, reason }
-// with reason one of "connectivity" | "scope" | "gate-type". Single-hop
-// walks skip the chain check (vacuous) and run scope + gate-type only, so
-// single-phase overrides flow through the same atomic path with unchanged
-// behavior. The scope/gate tables are injectable for unit tests; defaults
-// are the live gate tables.
-function validateMultiPhaseWalk(phases, currentPhase, backwardTransitions, overrides) {
+// Connectivity is deliberately NOT checked: a multi-phase argument is a
+// forward plan, and the user's ordering wins — an ordered list is traversed as
+// given, so the walk is never rejected for being "not backward". Returns null
+// when the whole walk is committable, or { from, to, reason } with reason one
+// of "scope" | "gate-type". The second parameter is retained so the
+// test-access signature stays stable; the walk no longer consults the
+// backward-transition graph. The scope/gate tables are injectable for unit
+// tests; defaults are the live gate tables.
+function validateMultiPhaseWalk(phases, currentPhase, _backwardTransitions, overrides) {
   const tables = overrides || {};
   const allowlist = tables.toolAllowlist || TOOL_ALLOWLIST;
   const prefixes = tables.gatePrefixes || KD_TYPE_PREFIXES;
   const hops = Array.isArray(phases) ? phases : [phases];
-  if (hops.length >= 2) {
-    const badHop = findInvalidMultiPhaseHop(hops, currentPhase, backwardTransitions);
-    if (badHop) return { from: badHop.from, to: badHop.to, reason: "connectivity" };
-  }
   for (let i = 0; i < hops.length; i++) {
     if (!allowlist[getPhaseName(hops[i])]) {
       return { from: i === 0 ? currentPhase : hops[i - 1], to: hops[i], reason: "scope" };
@@ -704,14 +677,14 @@ function validateMultiPhaseWalk(phases, currentPhase, backwardTransitions, overr
   return null;
 }
 
-// Renders a rejected walk as a fail-closed error string. The connectivity
-// wording is the long-standing rejection text (kept byte-identical); scope
-// and gate-type rejections name the hop and the reason class.
+// Renders a rejected walk as a fail-closed error string. Scope and gate-type
+// rejections name the hop and the reason class; any unrecognized reason class
+// fails closed with a generic message (the walk is never silently committed).
 function describeRejectedWalk(rejected) {
   const name = (p) => `${getPhaseName(p)} (${p})`;
   if (rejected.reason === "scope") return `Error: phase ${name(rejected.to)} carries no tool scope — the walk cannot be committed.`;
   if (rejected.reason === "gate-type") return `Error: phase ${name(rejected.to)} has no advancement gate — the walk cannot be committed.`;
-  return `Error: phase ${name(rejected.to)} is not a legal backward transition from ${name(rejected.from)}.`;
+  return `Error: the override walk is not committable — phase ${name(rejected.to)} was rejected (${rejected.reason}).`;
 }
 
 // Stall probe: whether the head hop of a committed multi-phase queue has
@@ -3436,6 +3409,9 @@ async function protocolGateServer(input, options) {
       }
       const newPhase = STATES.VERIFY;
       sessionPhaseMap.set(candidate, newPhase);
+      // This parent hand-off is fixed at SWARM → VERIFY; the override queue's
+      // next-named-phase rule governs the disk-evidence advance path only, so a
+      // plan naming SWARM then a phase other than VERIFY is not honored here.
       // The phase advanced away from the override target on fresh evidence —
       // re-arm a multi-phase queue or clear a single-phase marker so normal
       // advancement semantics resume.
@@ -3534,6 +3510,15 @@ async function protocolGateServer(input, options) {
     // with a deterministic confirmation. Any valid phase 1-12 is accepted with
     // no forward-jump cap; the command template is confirmation-only —
     // the LLM never hand-writes state files.
+    //
+    // The /phase override contract, echoed in every usage and rejection reply.
+    // A multi-phase argument is a forward plan of target phases: the lifecycle
+    // lands on the first, auto-advances to the next NAMED phase on fresh
+    // evidence, and returns to the phase the override started from once the
+    // list is exhausted. Phases the plan skips do not run their gates and
+    // produce no KDs (so a missing downstream KD is not a fault). A trailing
+    // gen<N> suffix is accepted and ignored.
+    const PHASE_USAGE = "Usage: /phase <1-12|PHASE_NAME|{3,4,5}|clear>. A multi-phase list is a forward plan of target phases — the lifecycle lands on the first and auto-advances to each next named phase on fresh evidence, then returns to the phase the override started from; skipped phases do not run their gates. A trailing gen<N> suffix is accepted and ignored (the lifecycle generation stays implicit).";
     async function commandExecuteBefore(input, output) {
       const commandName = String(input.command || "").replace(/^\/+/, "");
       // Explicit, audited remediation path: /reconcile-superseded restores a
@@ -3561,7 +3546,7 @@ async function protocolGateServer(input, options) {
       const { sessionID, arguments: arg } = input;
       const trimmed = String(arg ?? "").trim();
       if (!trimmed) {
-        output.parts = [{ type: "text", text: "Error: /phase requires an argument. Usage: /phase <1-12|PHASE_NAME|{3,4,5}|clear> (a trailing gen<N> generation suffix is accepted and ignored — generation stays implicit)." }];
+        output.parts = [{ type: "text", text: `Error: /phase requires an argument. ${PHASE_USAGE}` }];
         return;
       }
       // A trailing lifecycle-generation token (`/phase align gen1`) is
@@ -3620,12 +3605,12 @@ async function protocolGateServer(input, options) {
         return;
       }
       if (!phaseArg.trim()) {
-        output.parts = [{ type: "text", text: "Error: /phase requires an argument. Usage: /phase <1-12|PHASE_NAME|{3,4,5}|clear> (a trailing gen<N> generation suffix is accepted and ignored — generation stays implicit)." }];
+        output.parts = [{ type: "text", text: `Error: /phase requires an argument. ${PHASE_USAGE}` }];
         return;
       }
       const parsed = parsePhaseArg(phaseArg);
       if (parsed === null) {
-        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 1-12, a phase name, an ordered list like {3,4,5}, or "clear". A trailing gen<N> (e.g. /phase align gen1) is accepted and ignored.` }];
+        output.parts = [{ type: "text", text: `Error: invalid phase "${trimmed}". Valid: a number 1-12, a phase name, an ordered list like {3,4,5}, or "clear". ${PHASE_USAGE}` }];
         return;
       }
       const isMulti = Array.isArray(parsed);
@@ -3637,17 +3622,15 @@ async function protocolGateServer(input, options) {
         return;
       }
       // Override walks are atomic: the full requested walk is pre-validated
-      // (chain connectivity over the transition graph, per-hop tool-scope
-      // admissibility, per-hop advancement-gate type) before any state is
-      // touched. This accepts both the forward redo walk ({3,4,5} from 7 —
-      // the chain 7→5→4→3 traversed from 3) and the backward walk ({5,4,3}
-      // from 7 — the same chain traversed from 5), while rejecting queues
-      // that no phase can reach ({3,4,5} from 2). Single-phase overrides
-      // flow through the same atomic path as one-hop walks — scope and gate
-      // checks pass for every phase 1-12, so their behavior is unchanged.
-      // On any rejection the session-phase map and the state file stay
-      // untouched and the error names the first unsatisfiable hop plus the
-      // reason class (connectivity vs scope vs gate-type).
+      // (per-hop tool-scope admissibility, per-hop advancement-gate type)
+      // before any state is touched. Connectivity is not checked — a
+      // multi-phase argument is a forward plan and the user's ordering wins,
+      // so an ordered list is traversed exactly as given. Single-phase
+      // overrides flow through the same atomic path as one-hop walks — scope
+      // and gate checks pass for every phase 1-12, so their behavior is
+      // unchanged. On any rejection the session-phase map and the state file
+      // stay untouched and the error names the first unsatisfiable hop plus
+      // the reason class (scope vs gate-type).
       {
         const currentPhase = sessionPhaseMap.get(sessionID);
         const rejected = validateMultiPhaseWalk(phases, currentPhase, BACKWARD_TRANSITIONS);
@@ -3693,9 +3676,11 @@ async function protocolGateServer(input, options) {
       // single-phase shape { phase, since } or the multi-phase queue
       // { phases, since }. While the current phase equals the target, only
       // fresh evidence (KD mtime >= since) advances and consistency never
-      // regresses. A new /phase replaces any prior marker (clear-on-new-
-      // override); the marker clears on advance-away (or re-arms to the next
-      // queue entry for multi-phase), backward transition, or REPORT reset.
+      // regresses. On fresh evidence the walk moves to the next named hop and
+      // re-arms (pop the head); once the plan is exhausted it returns to the
+      // origin phase carried in `overrideSafePoint`. A new /phase replaces any
+      // prior marker (clear-on-new-override); the marker also clears on a
+      // backward transition or REPORT reset.
       if (isMulti) {
         sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases, since: Date.now() });
       } else {
@@ -3757,10 +3742,10 @@ async function protocolGateServer(input, options) {
       if (!phaseName) return;
 
       const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-      if (tool !== "subagent" && !allowedTools.includes(tool)) {
+      if (!admitTool(phaseName, tool)) {
         debug(`permission.ask: DENY tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
         output.status = "deny";
-        // Non-subagent tool blocks set output.status = "deny" without throwing
+        // Tool blocks set output.status = "deny" without throwing
       } else {
         debug(`permission.ask: ALLOW tool=${tool} in phase=${phaseName}`);
       }
@@ -3796,23 +3781,47 @@ async function protocolGateServer(input, options) {
         return false;
       }
 
-        sessionPhaseMap.set(sessionID, currentPhase + 1);
-        // The phase advanced away from the override target on
-        // fresh evidence. A multi-phase queue re-arms to the next phase
-        // (pop the head) so the chain survives the auto-advance; a
-        // single-phase marker (or an exhausted queue) clears so normal
-        // advancement semantics resume for this and later phases.
+        // Advance target. The default machine steps serially, but an active
+        // override queue at its head redirects the step: the queue is a forward
+        // plan of target phases, so on fresh evidence the lifecycle moves to the
+        // next NAMED phase (phases[1]) — a skipped hop (e.g. 1 → 3, preflight
+        // already done) is never re-entered. When the plan is exhausted (the
+        // last named hop, or a single-phase marker) the lifecycle returns to the
+        // phase the override started from — the walk safe point — so a detour
+        // re-enters the default machine where it left it instead of drifting
+        // forward past the origin. Origin return applies only when that phase
+        // lies ahead of the plan's end; an origin behind it (e.g. /phase PREFLIGHT
+        // issued from INTENT) would be a backward jump the serial machine never
+        // makes, so the serial step stands.
         const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
-        if (overrideUntil && currentPhase === getOverrideTargetPhase(overrideUntil)) {
+        const overrideAtHead = !!overrideUntil && currentPhase === getOverrideTargetPhase(overrideUntil);
+        let advanceTarget = currentPhase + 1;
+        if (overrideUntil && overrideAtHead) {
+          const named = Array.isArray(overrideUntil.phases) ? overrideUntil.phases : [overrideUntil.phase];
+          if (named.length > 1) {
+            advanceTarget = named[1];
+          } else {
+            const safePoint = sessionPhaseMap.get(`${sessionID}:overrideSafePoint`);
+            const origin = safePoint && typeof safePoint.phase === "number" ? safePoint.phase : null;
+            advanceTarget = origin !== null && origin > currentPhase ? origin : currentPhase + 1;
+          }
+        }
+        sessionPhaseMap.set(sessionID, advanceTarget);
+        // The phase advanced away from the override target on fresh evidence.
+        // A multi-phase queue re-arms to the next named phase (pop the head) so
+        // the plan survives the auto-advance; a single-phase marker (or an
+        // exhausted queue) clears once the origin has been restored, so normal
+        // advancement semantics resume.
+        if (overrideUntil && overrideAtHead) {
           if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 1) {
             const remaining = overrideUntil.phases.slice(1);
             sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: remaining, since: overrideUntil.since });
-            debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
+            debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(advanceTarget)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
           } else {
             sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
             sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
             sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
-            debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(currentPhase + 1)} on fresh evidence`);
+            debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(advanceTarget)} on fresh evidence${advanceTarget !== currentPhase + 1 ? " (origin return)" : ""}`);
           }
         }
         diskCheckFailures.set(sessionID, 0);
@@ -3837,9 +3846,9 @@ async function protocolGateServer(input, options) {
         const cycles = cycleMap.get(sessionID);
         if (cycles && cycles[currentPhase] !== undefined) {
           delete cycles[currentPhase];
-          debug(`COUNTER_RESET: cycle counter reset for ${currentPhaseName} (forward advance to ${getPhaseName(currentPhase + 1)})`);
+          debug(`COUNTER_RESET: cycle counter reset for ${currentPhaseName} (advance to ${getPhaseName(advanceTarget)})`);
         }
-        const newPhase = currentPhase + 1;
+        const newPhase = advanceTarget;
         // Record fresh advancement to prevent false regression.
         // checkPhaseStateConsistency uses this to grant a grace period before
         // allowing regression from the new phase back to the old one.
@@ -4048,17 +4057,40 @@ async function protocolGateServer(input, options) {
 
       let phaseName = getPhaseName(phase);
 
-      // Enforce tool allowlist — safety net for tools not gated by permission.ask.
-      if (tool !== "subagent") {
-        const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-        if (!allowedTools.includes(tool)) {
-          debug(`tool.execute.before: BLOCKED tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
+      // INTENT edit boundary (swarm/57). The session leaves INTENT
+      // deterministically on the first successful write of its intent KD —
+      // presence-based, never turn-timed. A later write/edit of any intent-*.md
+      // is therefore a phase-boundary crossing, not a generic unlisted-tool
+      // call: refuse it with a boundary-specific message (raised before the
+      // generic admission refusal) that names the current phase and the
+      // deterministic /phase INTENT recovery, so an in-session amendment can
+      // never land silently in a downstream phase.
+      if ((tool === "write" || tool === "edit") && phase !== STATES.INTENT) {
+        const boundaryRel = toProjectRelative(extractToolPath(args));
+        const isIntentTarget = boundaryRel.startsWith("knowledge/intent-") || boundaryRel.includes("/knowledge/intent-");
+        if (isIntentTarget) {
+          debug(`tool.execute.before: INTENT BOUNDARY refusal — ${tool} of ${boundaryRel} in phase=${phaseName}`);
           throw new ProtocolGateError(
-            ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
-            `❌ BLOCKED: Wrong phase. Available tools in ${phaseName}: ${allowedTools.join(", ")}`,
-            `Allowed tools: ${allowedTools.join(", ")}`
+            ERROR_TEMPLATES.INTENT_BOUNDARY_CLOSED.code,
+            `❌ INTENT BOUNDARY CLOSED: ${tool} of intent-*.md is refused in ${phaseName}. The INTENT edit window closed on the first successful write of this session's intent KD. To amend the intent KD, run /phase INTENT (user-initiated) first — the corrected KD must carry an mtime at or after the override.`,
+            "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md"
           );
         }
+      }
+
+      // Enforce the phase admission predicate — safety net for tools not gated
+      // by permission.ask. Transport tools pass through; the phase decision
+      // then lands on the inner tool the carrier reaches, which arrives here as
+      // its own tool id. A refused id is named so the caller sees which tool
+      // the phase forbade and the set it may use instead.
+      if (!admitTool(phaseName, tool)) {
+        const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
+        debug(`tool.execute.before: BLOCKED tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
+        throw new ProtocolGateError(
+          ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
+          `❌ BLOCKED: Wrong phase. Tool "${tool}" is not available in ${phaseName}. Available tools in ${phaseName}: ${allowedTools.join(", ")}`,
+          `Allowed tools: ${allowedTools.join(", ")}`
+        );
       }
 
       // --- write handler ---
@@ -4803,8 +4835,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       const phaseName = getPhaseName(phase);
       if (!phaseName) return;
       const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
-      // subagent is always allowed (delegation mechanism) — never block it
-      if (toolID === "subagent") return;
+      // Transport tools carry or delegate work — they are never phase-blocked,
+      // so they receive no blocked-tool prefix.
+      if (TRANSPORT_TOOLS.includes(toolID)) return;
       // Allowed tool — check if it has per-tool restrictions to display
       if (allowedTools.includes(toolID)) {
         const restriction = TOOL_RESTRICTIONS[phaseName]?.[toolID];
@@ -4906,6 +4939,8 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       PHASE_INSTRUCTIONS,
       TOOL_ALLOWLIST,
       TOOL_RESTRICTIONS,
+      TRANSPORT_TOOLS,
+      admitTool,
       DISK_CHECK_TOOLS,
       ensureGitRepo,
       sessionPhaseMap,
@@ -4992,7 +5027,6 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       brakeSlotKey,
       OVERRIDE_HISTORY_MAX,
       getOverrideTargetPhase,
-      findInvalidMultiPhaseHop,
       validateMultiPhaseWalk,
       describeRejectedWalk,
       queueHeadHasFreshEvidence,
@@ -5062,7 +5096,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         const tools = event?.tools;
         if (tools && sessionID) {
           for (const toolID of Object.keys(tools)) {
-            if (canonicalToolName(toolID) === "subagent") continue;
+            if (TRANSPORT_TOOLS.includes(canonicalToolName(toolID))) continue;
             const current = tools[toolID] || {};
             const output = { description: current.description, parameters: current.input };
             await v1["tool.definition"]?.({ toolID, sessionID }, output);

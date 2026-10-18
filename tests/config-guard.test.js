@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, existsSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../plugins/delegation-gate/index.js";
+import * as protocolPhases from "../plugins/protocol-gate/phases.js";
 
 // Static guards for the swarm configuration surface: SPEC-template git
 // hygiene, agent permission allowlists, the git force-add staging guard, the
@@ -70,6 +71,77 @@ function actionEntries(content, action) {
 
 function bashEntries(content) {
   return actionEntries(content, "shell");
+}
+
+// Metadata-family shell grants: the resource strings of every shell grant whose
+// second whitespace token (the target subcommand, wildcard stripped) is a member
+// of the declared family. The helper reads the same ordered grants the role
+// holds, so membership is decided by the grant itself and never by a prose
+// mention.
+function metadataFamilyGrants(content, family) {
+  const out = [];
+  for (const { pattern } of bashEntries(content)) {
+    const tokens = pattern.replace(/\*+$/, "").split(" ").filter(Boolean);
+    if (tokens.length > 1 && family.includes(tokens[1])) out.push(pattern);
+  }
+  return out;
+}
+
+// Line-index span of a file's leading `--- … ---` metadata region. Only the
+// first region is ever returned: a file whose first line is not `---` has no
+// frontmatter, and a later `---` region belongs to a different document shape
+// (the multi-region skill template) that this guard deliberately does not fold
+// into the leading one.
+function frontmatterRegion(content) {
+  const lines = content.split("\n");
+  if (lines[0].trim() !== "---") return null;
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+  return end === -1 ? null : { start: 0, end };
+}
+
+// 1-based line numbers inside that region whose first non-whitespace character
+// is `#` — a YAML comment where the metadata block carries data only. The test
+// keys on a line-leading `#`, so a `#` inside a quoted scalar value is never
+// mistaken for a comment.
+function metadataCommentOffenders(content) {
+  const region = frontmatterRegion(content);
+  if (!region) return [];
+  const lines = content.split("\n");
+  const offenders = [];
+  for (let i = region.start + 1; i < region.end; i++) {
+    if (/^\s*#/.test(lines[i])) offenders.push(i + 1);
+  }
+  return offenders;
+}
+
+// Prose body of a role definition: everything after the leading metadata
+// region's closing fence. The class rule lives here, so a member literal in
+// this region would restate membership the ordered grants already carry.
+function bodyRegion(content) {
+  const region = frontmatterRegion(content);
+  if (!region) return content;
+  return content.split("\n").slice(region.end + 1).join("\n");
+}
+
+// The member literals whose membership the ordered grants carry: each pinned
+// entry with its trailing wildcard stripped, so a prose mention is caught with
+// or without the wildcard.
+function introspectionMemberLiterals() {
+  return ANALYZER_INTROSPECTION_COMMANDS.map((cmd) => cmd.replace(/\*+$/, ""));
+}
+
+// Every source file beneath a tree, filtered by extension. Used to sweep the
+// configuration surface for external path literals; directories named in
+// `skip` are pruned wholesale.
+function sourceFilesRecursive(dir, extensions, skip = []) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (skip.includes(full)) continue;
+    if (entry.isDirectory()) out.push(...sourceFilesRecursive(full, extensions, skip));
+    else if (extensions.some((ext) => entry.name.endsWith(ext))) out.push(full);
+  }
+  return out;
 }
 
 const FORBIDDEN_BARE = [
@@ -243,6 +315,59 @@ const EXPLORER_GIT_DIAG_COMMANDS = ["git diff*", "git log*"];
 // Analyzer parity additions: the test-runner entry and toolchain probes the
 // other gate-running roles already hold, without any installer scope.
 const ANALYZER_PARITY_COMMANDS = ["npm run test*", "cargo --version*", "cargo fmt --check*"];
+// Read-only workspace-introspection class (swarm/60): verb-first, exact-prefix
+// shell entries whose target subcommand reports workspace structure/metadata
+// with no build, run, or mutation side effect. The pinned list below carries the
+// members; the class rule in the role instructions carries the generality, so a
+// future workspace ecosystem's metadata verb joins this pinned list rather than
+// being added speculatively.
+const ANALYZER_INTROSPECTION_COMMANDS = ["cargo metadata*"];
+// Target subcommands carrying a build, run, or mutation side effect — an entry
+// whose subcommand is one of these is not a read-only introspection probe.
+const INTROSPECTION_MUTATION_SUBCOMMANDS = [
+  "build", "run", "install", "add", "remove", "update", "clean",
+  "check", "test", "clippy", "fmt", "fix", "bench", "publish",
+];
+// Ecosystem metadata verbs the class rule deliberately leaves ungranted: each
+// joins the class only when that ecosystem is the workspace.
+const SPECULATIVE_INTROSPECTION_COMMANDS = [
+  "npm ls*", "bun pm ls*", "go list*", "yarn list*", "pnpm list*",
+];
+// The declared finite set of target-subcommand tokens that make a shell grant
+// metadata-family-shaped. The granted-to-pinned predicate decides only inside
+// this set, so a metadata-shaped verb under a name outside it is not decided
+// here; the speculative-list check above covers the deliberately ungranted set.
+const INTROSPECTION_METADATA_FAMILY = ["metadata", "ls", "info", "describe"];
+// The boundary rule this suite keeps: frontmatter is data; body is prose; tests
+// are the enforcement home. Each clause names the assertion that backs it, so a
+// clause left without a live predicate shows up as a dangling name.
+const BOUNDARY_RULE = {
+  "frontmatter is data": "keeps agent metadata blocks free of comment lines",
+  "body is prose": "states the class rule without naming a member",
+  "tests enforce membership": "pins every metadata-family grant or declares it speculative",
+};
+// Working-directory boundary: the external-directory posture is a blanket deny
+// in every role, and no OS-specific or literal external path prefix appears in
+// the swarm configuration. The matcher below is the scannable boundary
+// predicate; the scan is grant-shaped — a permission `resource:` value, an
+// `external_directory` rule, or an allow-mapping entry — so the path literals
+// that ordinary suite fixtures carry are not mistaken for grants. The sole
+// enumerated exception is the pre-existing artisan scratch-removal grant,
+// retained pending the open decision to retarget it to a workspace-relative
+// scratch.
+const EXTERNAL_PATH =
+  /(?:~|\$HOME)[/\\]|\b[A-Za-z]:[/\\]|(?:^|[\s"'`([{=:])\/(?:tmp|home|Users|usr|etc|var|opt|root|mnt|media|srv|proc|sys|dev|boot|lib|bin|sbin|run)(?=[/\\])/;
+const EXTERNAL_GRANT_SHAPE =
+  /\bresource\s*:|\bexternal_directory\b|["'][^"'\n]+["']\s*:\s*["']?(?:allow|ask)["']/;
+
+function hasExternalLiteral(text) {
+  return EXTERNAL_GRANT_SHAPE.test(text) && EXTERNAL_PATH.test(text);
+}
+
+// The one pre-existing in-tree external literal: artisan's scoped scratch
+// removal grant, kept as the enumerated exception pending the open retarget
+// decision.
+const EXTERNAL_LITERAL_EXCEPTIONS = ['resource: "rm /tmp/opencode/*"'];
 
 describe("SPEC-template git hygiene", () => {
   const skill = readRoot(join("skills", "template-spec", "SKILL.md"));
@@ -635,6 +760,157 @@ describe("agent permission allowlists", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+// Metadata-block purity (frontmatter is data): the leading `--- … ---` region
+// of an agent definition carries role config and ordered permission rules, and
+// no prose. A line-leading `#` in that region is the defect this guard names.
+// Only the leading region is read — a file carrying more than one `---` region
+// (the multi-region skill template shape) is out of scope by explicit decision,
+// so a second region is never folded in and never silently scanned.
+describe("agent metadata block purity", () => {
+  it("keeps agent metadata blocks free of comment lines", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      for (const line of metadataCommentOffenders(readAgent(f))) {
+        offenders.push(`${f}:${line}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+// Analyzer read-only workspace introspection (swarm/60): the analyzer holds a
+// grant for read-only workspace-introspection verbs — verb-first exact-prefix
+// shell entries whose target subcommand reports workspace structure/metadata
+// with no build, run, or mutation side effect. The class rule, stated in the
+// role instructions, carries the generality; no other ecosystem verb is added
+// speculatively.
+describe("analyzer read-only introspection class (swarm/60)", () => {
+  const analyzer = readAgent("analyzer.md");
+  const patterns = new Map(bashEntries(analyzer).map((e) => [e.pattern, e.mode]));
+
+  it("grants the concrete introspection member to the analysis role", () => {
+    const missing = ANALYZER_INTROSPECTION_COMMANDS.filter((cmd) => patterns.get(cmd) !== "allow");
+    expect(missing).toEqual([]);
+  });
+
+  it("shapes every introspection entry verb-first with a scoped, read-only target", () => {
+    const misshapen = [];
+    for (const cmd of ANALYZER_INTROSPECTION_COMMANDS) {
+      if (!cmd.endsWith("*")) {
+        misshapen.push(`${cmd}: not a trailing-wildcard scoped target`);
+        continue;
+      }
+      const tokens = cmd.replace(/\*+$/, "").split(" ").filter(Boolean);
+      if (tokens.length < 2) {
+        misshapen.push(`${cmd}: not verb-first (needs a verb and a metadata subcommand)`);
+        continue;
+      }
+      if (FORBIDDEN_BARE.includes(cmd.replace(/\*+$/, ""))) {
+        misshapen.push(`${cmd}: bare tool invocation, not a scoped introspection verb`);
+      }
+      if (INTROSPECTION_MUTATION_SUBCOMMANDS.includes(tokens[1])) {
+        misshapen.push(`${cmd}: ${tokens[1]} carries a build/run/mutation side effect`);
+      }
+    }
+    expect(misshapen).toEqual([]);
+  });
+
+  it("states the read-only introspection class rule in the role instructions", () => {
+    // Prose wraps across lines, so normalize whitespace before matching the rule.
+    const flat = analyzer.replace(/\s+/g, " ");
+    expect(flat).toMatch(/read-only introspection/i);
+    expect(flat).toContain("no build, run, or mutation side effect");
+  });
+
+  it("adds no speculative ecosystem metadata verb beyond the class member", () => {
+    const offenders = SPECULATIVE_INTROSPECTION_COMMANDS.filter((cmd) => patterns.get(cmd) === "allow");
+    expect(offenders).toEqual([]);
+  });
+
+  it("pins every metadata-family grant or declares it speculative", () => {
+    // Membership has a single source: the ordered grants and the pinned constant
+    // move together, so a member change never requires a prose edit. The
+    // predicate decides only inside the declared finite family — a
+    // metadata-shaped verb under an undeclared name escapes it, while the
+    // speculative-list check covers the deliberately ungranted set.
+    const declared = new Set([...ANALYZER_INTROSPECTION_COMMANDS, ...SPECULATIVE_INTROSPECTION_COMMANDS]);
+    const unpinned = (content) =>
+      metadataFamilyGrants(content, INTROSPECTION_METADATA_FAMILY).filter((grant) => !declared.has(grant));
+
+    expect(unpinned(analyzer)).toEqual([]);
+
+    // Non-vacuous: a grant of a metadata-family verb that is neither pinned nor
+    // declared speculative is reported. The fixture is observed reporting before
+    // the current-tree assertion above is accepted.
+    const fixture = [
+      "---",
+      "permissions:",
+      "  - action: shell",
+      '    resource: "ecosystem info*"',
+      "    effect: allow",
+      "---",
+    ].join("\n");
+    expect(unpinned(fixture)).toEqual(["ecosystem info*"]);
+  });
+
+  it("states the class rule without naming a member", () => {
+    // The join rule is stated structurally — a verb-first exact-prefix shell
+    // entry whose target subcommand reports workspace structure/metadata with no
+    // build, run, or mutation side effect — together with the clause that
+    // workspace-introspection claims attribute to a granted verb.
+    const body = bodyRegion(analyzer).replace(/\s+/g, " ");
+    expect(body).toContain("verb-first exact-prefix");
+    expect(body).toContain("no build, run, or mutation side effect");
+    expect(body).toContain("granted verb");
+    for (const member of introspectionMemberLiterals()) {
+      expect(body, `role prose must not name the member ${member}`).not.toContain(member);
+    }
+  });
+
+  it("keeps the introspection member out of agent prose", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      const body = bodyRegion(readAgent(f));
+      for (const member of introspectionMemberLiterals()) {
+        if (body.includes(member)) offenders.push(`${f}: ${member}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("confines the introspection member to the grant and the pinned constant", () => {
+    // Membership has exactly two on-disk homes: the analyzer's ordered grant and
+    // the pinned constant below. Every other surface — role prose and this
+    // suite's own comments — stays member-agnostic, so a member change edits the
+    // two homes in lockstep and never touches prose.
+    const members = introspectionMemberLiterals();
+    const mentions = (text) =>
+      text.split("\n").filter((line) => members.some((m) => line.includes(m)));
+
+    const grantMentions = mentions(readAgent("analyzer.md"));
+    expect(grantMentions).toHaveLength(1);
+    expect(grantMentions[0]).toContain("resource:");
+
+    const suiteMentions = mentions(readRoot(join("tests", "config-guard.test.js")));
+    expect(suiteMentions).toHaveLength(1);
+    expect(suiteMentions[0]).toContain("ANALYZER_INTROSPECTION_COMMANDS");
+  });
+});
+
+// Boundary rule, clause by clause: frontmatter carries data with no comment line,
+// the role body carries the class rule as prose that names no member, and the
+// suite carries membership as the pinned constant the granted-to-pinned
+// predicate enforces. Each clause maps to the assertion named in BOUNDARY_RULE.
+describe("boundary rule — frontmatter is data, body is prose, tests enforce", () => {
+  it("states each clause with a backing assertion that exists in the suite", () => {
+    const clauses = Object.keys(BOUNDARY_RULE);
+    expect(clauses).toEqual(["frontmatter is data", "body is prose", "tests enforce membership"]);
+    const suiteSource = readRoot(join("tests", "config-guard.test.js"));
+    const dangling = clauses.filter((clause) => !suiteSource.includes(`it("${BOUNDARY_RULE[clause]}"`));
+    expect(dangling).toEqual([]);
   });
 });
 
@@ -1171,5 +1447,283 @@ describe("composed-docs durability", () => {
     expect(hook).toContain("npx vitest run");
     expect(hook).toContain("npx eslint -c eslint.security.config.mjs");
     expect(hook).not.toContain("knowledge");
+  });
+});
+
+// The phase gate enforces a tool-id allowlist and advertises the same set back
+// to the model. Both surfaces must derive from one table each — TOOL_ALLOWLIST
+// for the phase-legal logical tools, TRANSPORT_TOOLS for the carriers
+// (`execute` Code Mode, `subagent` delegation) the gate passes through without
+// a phase decision of its own. A second in-tree copy of either set, or a
+// per-site carve-out, re-opens the advertised-vs-enforced identity split this
+// guard closes.
+describe("protocol-gate tool-identity single source of truth", () => {
+  const PHASE_NAMES = Object.keys(protocolPhases.STATES);
+
+  it("declares the carrier and the delegator as the transport set", () => {
+    expect(protocolPhases.TRANSPORT_TOOLS).toContain("execute");
+    expect(protocolPhases.TRANSPORT_TOOLS).toContain("subagent");
+  });
+
+  it("derives admission from the transport set plus the phase allowlist", () => {
+    for (const phase of PHASE_NAMES) {
+      const allowed = protocolPhases.TOOL_ALLOWLIST[phase] || [];
+      for (const tool of [...allowed, ...protocolPhases.TRANSPORT_TOOLS]) {
+        expect(protocolPhases.admitTool(phase, tool), `${phase}:${tool}`).toBe(true);
+      }
+      // A transport tool is admitted in every phase without a phase decision.
+      expect(protocolPhases.admitTool(phase, "execute"), `${phase}:execute`).toBe(true);
+      expect(protocolPhases.admitTool(phase, "subagent"), `${phase}:subagent`).toBe(true);
+    }
+  });
+
+  it("fails closed for a permitted and a forbidden inner tool per phase class", () => {
+    // A permitted inner tool reaches the carrier's phase-legal set.
+    expect(protocolPhases.admitTool("INTENT", "memory_search")).toBe(true);
+    expect(protocolPhases.admitTool("EXPLORE", "memory_search")).toBe(true);
+    // A phase-forbidden inner tool is refused rather than silently carried.
+    expect(protocolPhases.admitTool("INTENT", "glob")).toBe(false);
+    expect(protocolPhases.admitTool("EXPLORE", "read")).toBe(false);
+    // An unknown id is refused — the predicate is allowlist-closed.
+    expect(protocolPhases.admitTool("INTENT", "frobnicate")).toBe(false);
+  });
+
+  it("binds the memory_search advertisement to every phase allowlist", () => {
+    const missing = PHASE_NAMES.filter((p) => !(protocolPhases.TOOL_ALLOWLIST[p] || []).includes("memory_search"));
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the knowledge-gate memory_search hint emitted for every agent", () => {
+    const knowledgeGate = readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
+    expect(knowledgeGate).toContain("memory_search tool");
+  });
+
+  it("derives every gate decision from the tables — no per-site subagent carve-out", () => {
+    const gate = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
+    expect(gate).toContain("TRANSPORT_TOOLS");
+    expect(gate).toContain("admitTool");
+    // The three admission sites (permission.ask, tool.execute.before,
+    // tool.definition) and the context adapter no longer branch on a literal
+    // subagent comparison.
+    expect(gate).not.toContain(`tool !== "subagent" && !allowedTools.includes(tool)`);
+    expect(gate).not.toContain(`if (toolID === "subagent") return;`);
+    expect(gate).not.toContain(`canonicalToolName(toolID) === "subagent"`);
+  });
+});
+
+// The INTENT stop-edit boundary (swarm/57) has a behavioural half the plugin
+// owns and a compliance half owned by the Overseer's own instructions. The
+// boundary refusal points the agent at the recovery; these guards keep both
+// halves greppable as prose and source drift — the three overseer section
+// headings that carry the advance/stop rules, and the boundary-specific
+// refusal text distinct from the generic wrong-phase message.
+describe("INTENT stop-edit boundary (swarm/57)", () => {
+  it("keeps the swarm/57 instruction sections in the overseer definition", () => {
+    const overseer = readAgent("overseer.md");
+    for (const heading of ["### Phase Transition Rules", "### Failure Handling", "### Dispatch Discipline"]) {
+      expect(overseer, `overseer.md must carry the ${heading} section`).toContain(heading);
+    }
+  });
+
+  it("raises a boundary-specific refusal naming the phase and the /phase INTENT recovery", () => {
+    const gate = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
+    expect(gate).toContain("INTENT BOUNDARY CLOSED");
+    expect(gate).toContain("INTENT_BOUNDARY_CLOSED");
+    expect(gate).toContain("/phase INTENT");
+  });
+
+  it("keeps the presence-based INTENT advance — the first intent-KD write is the boundary", () => {
+    const gate = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
+    // The non-override branch keeps the presence exemption: a session-matching
+    // intent KD advances regardless of mtime. Reintroducing a freshness gate
+    // here would re-open the write→stop stall the advance was added to close.
+    expect(gate).toContain("presence exemption (a session-matching intent KD advances regardless of");
+  });
+});
+
+// The working-directory boundary: the swarm configuration carries no
+// OS-specific or literal external path prefix, and every role keeps a blanket
+// external-directory deny. The scan is grant-shaped and covers the agent
+// permission blocks, the plugin sources and templates, the suites (bar this
+// guard file, which hosts the predicate along with its injected negative
+// fixtures), and the ground rules. Runtime transcripts under plugins/logs are
+// excluded — they are log output, not configuration.
+describe("working-directory boundary (no external literals)", () => {
+  const SURFACE_SKIP = [join(ROOT, "plugins", "logs"), join(ROOT, "tests", "config-guard.test.js")];
+
+  function surfaceFiles() {
+    return [
+      ...agentFiles().map((f) => join(AGENTS_DIR, f)),
+      join(ROOT, "AGENTS.md"),
+      ...sourceFilesRecursive(join(ROOT, "plugins"), [".js", ".json", ".md"], SURFACE_SKIP),
+      ...sourceFilesRecursive(join(ROOT, "tests"), [".js", ".json"], SURFACE_SKIP),
+    ];
+  }
+
+  it("keeps the boundary predicate catch the external grant shapes", () => {
+    expect(hasExternalLiteral('    resource: "~/.local/share/opencode/log/*"')).toBe(true);
+    expect(hasExternalLiteral('    resource: "/tmp/opencode/*"')).toBe(true);
+    expect(hasExternalLiteral('{ "external_directory": { "~/.local/share/opencode/log/*": "allow" } }')).toBe(true);
+    expect(hasExternalLiteral('    resource: "plugins/logs/**"')).toBe(false);
+    expect(hasExternalLiteral('    expect(x).not.toContain("/tmp/opencode")')).toBe(false);
+  });
+
+  it("carries no external path literal outside the enumerated exception", () => {
+    const offenders = [];
+    for (const file of surfaceFiles()) {
+      readFileSync(file, "utf8").split("\n").forEach((line, i) => {
+        if (!hasExternalLiteral(line)) return;
+        if (EXTERNAL_LITERAL_EXCEPTIONS.some((ex) => line.includes(ex))) return;
+        offenders.push(`${file}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("enumerates the single pre-existing artisan exception verbatim", () => {
+    expect(EXTERNAL_LITERAL_EXCEPTIONS.length).toBeLessThanOrEqual(1);
+    const artisan = readAgent("artisan.md");
+    for (const ex of EXTERNAL_LITERAL_EXCEPTIONS) {
+      expect(artisan, "the enumerated exception must name the artisan block verbatim").toContain(ex);
+    }
+  });
+
+  it("keeps a blanket external-directory deny with no allow in any role", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      const ext = actionEntries(readAgent(f), "external_directory");
+      if (!ext.some((e) => e.pattern === "*" && e.mode === "deny")) {
+        offenders.push(`${f}: missing external_directory "*" deny`);
+      }
+      for (const e of ext) {
+        if (e.mode === "allow") offenders.push(`${f}: external allow ${e.pattern}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    expect(agentFiles()).toHaveLength(10);
+  });
+
+  it("leaves the Overseer docs-only scope unchanged", () => {
+    const overseer = readAgent("overseer.md");
+    const readAllows = actionEntries(overseer, "read").filter((e) => e.mode === "allow").map((e) => e.pattern);
+    const globAllows = actionEntries(overseer, "glob").filter((e) => e.mode === "allow").map((e) => e.pattern);
+    expect(globAllows).toEqual(["knowledge/*.md", "knowledge/impl-*.md", "knowledge/checkpoint-*.md"]);
+    for (const p of [...readAllows, ...globAllows]) {
+      expect(p.startsWith("knowledge/"), `${p} must stay in the docs scope`).toBe(true);
+    }
+    expect(overseerScopeFindings(overseer)).toEqual([]);
+  });
+
+  it("redirects external evidence requests to workspace-local targets in the ground rules", () => {
+    const groundRules = readRoot("AGENTS.md");
+    expect(groundRules).toContain("plugins/logs/");
+    expect(groundRules).toMatch(/workspace-local/);
+    expect(groundRules).toMatch(/working directory/);
+  });
+});
+
+// The advertised-vs-granted seam (A2): the phase layer advertises a tool by
+// NAME while the acting agent's permission block grants it by RESOURCE SCOPE.
+// The two derivations live in different files, so nothing but a guard keeps
+// them in step — a phase that lists a resource-scoped tool must advertise that
+// scope through TOOL_RESTRICTIONS, and the advertised scope must match what the
+// agent is actually granted. The Overseer's docs-only glob reach is the
+// by-design limit this binds; widening the grant to satisfy the advertisement
+// is the failure mode, not the remedy.
+const OVERSEER_GLOB_PHASES = Object.keys(protocolPhases.STATES).filter((p) =>
+  (protocolPhases.TOOL_ALLOWLIST[p] || []).includes("glob")
+);
+
+function overseerGlobGrantPatterns() {
+  return actionEntries(readAgent("overseer.md"), "glob")
+    .filter((e) => e.mode === "allow")
+    .map((e) => e.pattern);
+}
+
+// The resource tokens an advertised scope names. The binding reads the paths
+// back out of the advertisement text instead of trusting its prose, so a
+// dropped pattern and a widened one are both visible: the text carries no other
+// dotted token, which makes the extraction unambiguous.
+function advertisedScopeTokens(text) {
+  return [...new Set(text.match(/[-A-Za-z0-9_.*\/]+\.[A-Za-z0-9]+/g) || [])].sort();
+}
+
+// Scope-level comparison of an advertised restriction table against a grant.
+// Empty means every phase that advertises glob names exactly the granted
+// resource set; a missing entry, a dropped pattern, or an extra one is drift.
+function globScopeFindings(restrictions, grantPatterns) {
+  const findings = [];
+  const granted = [...grantPatterns].sort().join(", ");
+  for (const phase of OVERSEER_GLOB_PHASES) {
+    const advertised = restrictions[phase]?.glob;
+    if (typeof advertised !== "string" || advertised.length === 0) {
+      findings.push(`${phase}: glob is advertised with no scope`);
+      continue;
+    }
+    const tokens = advertisedScopeTokens(advertised).sort().join(", ");
+    if (tokens !== granted) {
+      findings.push(`${phase}: advertised "${tokens}" != granted "${granted}"`);
+    }
+  }
+  return findings;
+}
+
+describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
+  it("carries a glob restriction entry in every phase that advertises glob", () => {
+    // Coverage, not mere presence: a partial table re-creates the asymmetry
+    // that opened the seam. glob is listed everywhere except INTENT and REPORT,
+    // where the tool is blocked outright and no scope is advertised.
+    expect(OVERSEER_GLOB_PHASES).toHaveLength(10);
+    expect(OVERSEER_GLOB_PHASES).not.toContain("INTENT");
+    expect(OVERSEER_GLOB_PHASES).not.toContain("REPORT");
+    const missing = OVERSEER_GLOB_PHASES.filter(
+      (p) => typeof protocolPhases.TOOL_RESTRICTIONS[p]?.glob !== "string"
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("binds the advertised glob scope to the Overseer's granted glob scope", () => {
+    const granted = overseerGlobGrantPatterns();
+    expect(granted).toEqual(["knowledge/*.md", "knowledge/impl-*.md", "knowledge/checkpoint-*.md"]);
+    expect(globScopeFindings(protocolPhases.TOOL_RESTRICTIONS, granted)).toEqual([]);
+  });
+
+  it("fails closed when an advertised scope drops, widens, or omits a granted pattern", () => {
+    const granted = overseerGlobGrantPatterns();
+    const live = protocolPhases.TOOL_RESTRICTIONS;
+    const withSwarmGlob = (text) => ({ ...live, SWARM: { ...live.SWARM, glob: text } });
+    // Advertised narrower than granted (a dropped pattern).
+    expect(globScopeFindings(withSwarmGlob("ONLY knowledge/*.md — docs-scoped"), granted)).not.toEqual([]);
+    // Advertised wider than granted (an extra resource).
+    expect(
+      globScopeFindings(
+        withSwarmGlob("ONLY knowledge/*.md, knowledge/impl-*.md, knowledge/checkpoint-*.md, src/*.ts — docs-scoped"),
+        granted
+      )
+    ).not.toEqual([]);
+    // No entry at all for a glob-advertising phase.
+    expect(globScopeFindings({ ...live, SWARM: { read: "ONLY milestone registry KDs" } }, granted)).not.toEqual([]);
+    // The grant narrowed without the advertisement following.
+    expect(
+      globScopeFindings(live, granted.filter((p) => p !== "knowledge/checkpoint-*.md"))
+    ).not.toEqual([]);
+  });
+
+  it("advertises an allowed tool's scope through the generic restriction path", () => {
+    // No per-tool branch: an allowlisted glob picks up its entry through the
+    // same lookup read already uses, so a scope entry needs no index.js edit.
+    const gate = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
+    expect(gate).toContain("TOOL_RESTRICTIONS[phaseName]?.[toolID]");
+    expect(gate).toContain("phase restriction: ${restriction}");
+  });
+
+  it("keeps the Overseer docs-only scope and its watchdog unchanged", () => {
+    // The seam closes on the advertisement side; the grant itself stands.
+    expect(overseerScopeFindings(readAgent("overseer.md"))).toEqual([]);
+    expect(overseerGlobGrantPatterns()).toEqual([
+      "knowledge/*.md",
+      "knowledge/impl-*.md",
+      "knowledge/checkpoint-*.md",
+    ]);
   });
 });
