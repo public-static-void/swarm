@@ -1201,6 +1201,94 @@ describe("VERIFY evidence shape", () => {
   });
 });
 
+// The rules layer reaches its audience by injection — an agent definition to
+// that agent alone, a skill at the moment an agent loads it, AGENTS.md to every
+// agent. The reader does not open a sibling file at runtime, so a layer that
+// points at another layer strands the rule its reader never loads. Each layer
+// states its rule whole; this group fails on a pointer to another file or a
+// truncated statement.
+describe("rule layers state their rules self-containedly", () => {
+  // A pointer to a sibling rules-layer file, a section anchor into another
+  // document, or a "see <file>" clause. A hit means the layer defers its rule
+  // to a file its reader does not load.
+  const CROSS_FILE_REFERENCE =
+    /agents\/[a-z-]+\.md|skills\/[a-z-]+\/SKILL\.md|§|see\s+`?(?:agents|skills)\//i;
+
+  function headingRegion(content, startHeading, endHeading) {
+    const start = content.indexOf(startHeading);
+    if (start === -1) return "";
+    const end = content.indexOf(endHeading, start + startHeading.length);
+    return content.slice(start, end === -1 ? undefined : end);
+  }
+
+  function missingFacts(content, facts) {
+    return facts.filter((fact) => !content.includes(fact));
+  }
+
+  // The Artisan applies the redispatch choice to its own Committer dispatches,
+  // so its section carries the reuse-versus-fresh choice itself.
+  const REDISPATCH_FACTS = [
+    "`TASK ID`",
+    "Reuse the same `TASK ID`",
+    "Start a fresh instance",
+    "returned an empty result",
+    "exhausted its token budget",
+  ];
+
+  // The verdict semantics each loading agent needs: the erroneous-verdict
+  // posture, the uncited-FAIL malform, and the stale-PASS recency rule.
+  const VERDICT_FACTS = ["MALFORMED", "zero milestone citations", "stale PASS"];
+
+  const artisanRedispatch = headingRegion(
+    readAgent("artisan.md"),
+    "### Same-Instance Redispatch",
+    "\n### "
+  );
+  const gatesVerdicts = headingRegion(
+    readRoot(join("skills", "verification-gates", "SKILL.md")),
+    "### VERIFY Acceptance Proof",
+    "\n## Feedback Loop"
+  );
+  const reviewVerdicts = headingRegion(
+    readRoot(join("skills", "template-review", "SKILL.md")),
+    "## Verdict",
+    "\n## Review Findings"
+  );
+
+  it("states the Artisan redispatch choice in the Artisan layer alone", () => {
+    expect(artisanRedispatch, "artisan.md must carry the Same-Instance Redispatch section").not.toBe("");
+    expect(missingFacts(artisanRedispatch, REDISPATCH_FACTS)).toEqual([]);
+  });
+
+  it("states the verdict semantics in each layer that carries them", () => {
+    expect(missingFacts(gatesVerdicts, VERDICT_FACTS)).toEqual([]);
+    expect(missingFacts(reviewVerdicts, VERDICT_FACTS)).toEqual([]);
+  });
+
+  it("keeps each of the three layers free of cross-file references", () => {
+    for (const [layer, text] of [
+      ["artisan redispatch", artisanRedispatch],
+      ["verification-gates verdicts", gatesVerdicts],
+      ["review-template verdicts", reviewVerdicts],
+    ]) {
+      expect(text, `${layer} section present`).not.toBe("");
+      expect(CROSS_FILE_REFERENCE.test(text), `${layer} states its rule without a pointer`).toBe(false);
+    }
+  });
+
+  it("fails on an injected cross-file reference or a truncated section", () => {
+    // Injected offenders: a pointer strands the reader, a truncated section
+    // drops the facts its audience needs.
+    expect(CROSS_FILE_REFERENCE.test(`${artisanRedispatch}\nSee agents/overseer.md for the contract.`)).toBe(true);
+    expect(CROSS_FILE_REFERENCE.test(`${gatesVerdicts}\nThe rules live in agents/inspector.md.`)).toBe(true);
+    expect(CROSS_FILE_REFERENCE.test(`${reviewVerdicts}\nSee skills/verification-gates/SKILL.md.`)).toBe(true);
+    expect(
+      missingFacts("### Same-Instance Redispatch\n\nInclude the `TASK ID` field.\n", REDISPATCH_FACTS)
+    ).not.toEqual([]);
+    expect(missingFacts("## Verdict\n\nPASS / FAIL / FUNDAMENTAL\n", VERDICT_FACTS)).not.toEqual([]);
+  });
+});
+
 describe("inspector rebuild parity and overseer disk-check scope", () => {
   it("carries rebuild-class shell grants for the verifier role", () => {
     const patterns = new Map(bashEntries(readAgent("inspector.md")).map((e) => [e.pattern, e.mode]));
