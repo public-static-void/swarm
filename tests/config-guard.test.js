@@ -388,8 +388,141 @@ describe("SPEC-template git hygiene", () => {
     expect(acSection).not.toContain("staged");
   });
 
+  it("keeps the post-AC template sections free of git-state evidence", () => {
+    // The AC slice spans to end of file, so the sections added after it are
+    // read by the same guard; a git-state token in either one reddens it.
+    const postAc = skill.slice(
+      skill.indexOf("## Verification Methods"),
+      skill.indexOf("## Open Questions")
+    );
+    expect(postAc).not.toContain("git diff");
+    expect(postAc).not.toContain("staged");
+  });
+
   it("keeps knowledge/ gitignored in .gitignore", () => {
     expect(gitignore.split("\n")).toContain("knowledge/");
+  });
+});
+
+// The SPEC template shapes the artifact the Spec Weaver writes, so the template
+// section set and the body order the producing protocol declares are one
+// contract with two on-disk homes. A section the protocol requires without a
+// template home is dropped in practice; a template section the protocol never
+// assembles has no producer. Both sides are read from disk and compared, so a
+// drop on either side reddens.
+const SPEC_SECTION_ORDER = [
+  "Overview",
+  "Check Alignment",
+  "Functional Requirements",
+  "Non-Functional Requirements",
+  "Interface Contracts",
+  "Acceptance Criteria",
+  "Verification Methods",
+  "Edge Cases & Failure Modes",
+  "Open Questions",
+  "Process Friction",
+];
+
+// Level-two headings in document order. The template's first heading is the
+// level-one title, so only `##` sections enter the shape.
+function markdownSections(content) {
+  return [...content.matchAll(/^## +(.+?)\s*$/gm)].map((m) => m[1]);
+}
+
+// The section order the producing protocol declares, read from the sentence
+// that names it, so the guard follows the shipped contract rather than a second
+// hand-maintained list.
+function declaredSpecSections(weaver) {
+  const marker = "Assemble the SPEC KD body in this order:";
+  const line = weaver.split("\n").find((l) => l.includes(marker));
+  if (!line) return [];
+  return line
+    .slice(line.indexOf(marker) + marker.length)
+    .trim()
+    .replace(/\.$/, "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// Two-way section-set comparison: a section one side carries and the other
+// omits is a drop, and a reordering of the shared set is drift.
+function specSectionDrift(actual, required) {
+  const shared = actual.filter((s) => required.includes(s));
+  return {
+    missing: required.filter((s) => !actual.includes(s)),
+    extra: actual.filter((s) => !required.includes(s)),
+    misordered: shared.join(" | ") !== required.join(" | "),
+  };
+}
+
+describe("SPEC template and protocol section conformance", () => {
+  const template = readRoot(join("skills", "template-spec", "SKILL.md"));
+  const weaver = readAgent("spec-weaver.md");
+  const templateSections = markdownSections(template);
+  const declaredSections = declaredSpecSections(weaver);
+
+  it("declares the required section order in the producing protocol", () => {
+    expect(declaredSections).toEqual(SPEC_SECTION_ORDER);
+  });
+
+  it("shapes the template to the declared sections in order", () => {
+    expect(templateSections).toEqual(SPEC_SECTION_ORDER);
+    expect(specSectionDrift(templateSections, declaredSections)).toEqual({
+      missing: [],
+      extra: [],
+      misordered: false,
+    });
+  });
+
+  it("places the alignment section ahead of the requirements", () => {
+    const alignment = templateSections.indexOf("Check Alignment");
+    expect(alignment).toBeGreaterThan(templateSections.indexOf("Overview"));
+    expect(alignment).toBeLessThan(templateSections.indexOf("Functional Requirements"));
+  });
+
+  it("places the verification and failure sections after the acceptance criteria", () => {
+    const ac = templateSections.indexOf("Acceptance Criteria");
+    expect(templateSections.indexOf("Verification Methods")).toBe(ac + 1);
+    expect(templateSections.indexOf("Edge Cases & Failure Modes")).toBe(ac + 2);
+  });
+
+  it("requires a per-requirement observable check in the verification section", () => {
+    const section = template.slice(
+      template.indexOf("## Verification Methods"),
+      template.indexOf("## Edge Cases & Failure Modes")
+    );
+    expect(section).toMatch(/each functional requirement/i);
+    expect(section).toContain("observable check");
+  });
+
+  it("states the alignment step once in the producing protocol", () => {
+    const normative = weaver.match(/summarize your understanding/gi) || [];
+    expect(normative).toHaveLength(1);
+  });
+
+  it("keeps the authoring rule with the producing agent, not the template", () => {
+    expect(template).not.toContain("Spec-author requirement");
+    const principles = weaver.slice(weaver.indexOf("## Principles"), weaver.indexOf("## Constraints"));
+    expect(principles).toMatch(/positive framing/i);
+    expect(principles).toContain("expected action directly");
+  });
+
+  it("fails when either side drops a required section", () => {
+    // Injected offenders: a template that loses the alignment section, and a
+    // protocol that stops requiring the verification-methods section.
+    const templateDropped = templateSections.filter((s) => s !== "Check Alignment");
+    expect(specSectionDrift(templateDropped, declaredSections).missing).toEqual(["Check Alignment"]);
+    const declaredDropped = declaredSections.filter((s) => s !== "Verification Methods");
+    expect(specSectionDrift(templateSections, declaredDropped).extra).toEqual(["Verification Methods"]);
+  });
+
+  it("fails on a misordered section set", () => {
+    const swapped = [...templateSections];
+    const i = swapped.indexOf("Edge Cases & Failure Modes");
+    swapped[i] = swapped[i - 1];
+    swapped[i - 1] = "Edge Cases & Failure Modes";
+    expect(specSectionDrift(swapped, declaredSections).misordered).toBe(true);
   });
 });
 
