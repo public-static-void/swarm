@@ -2029,6 +2029,69 @@ describe("protocol-gate tool-identity single source of truth", () => {
   });
 });
 
+// The short-term note family is the durable carrier for in-flight state, and
+// the knowledge-gate advertises its resume read to every agent on every call.
+// The phase table and the gate's tool contract are separate surfaces, so this
+// group binds them: a phase that admits the write but not the read strands the
+// note, and a resume hint naming a channel no phase admits strands the agent.
+describe("short-term memory family phase legality (swarm/67)", () => {
+  const PHASE_NAMES = Object.keys(protocolPhases.STATES);
+  const MEMORY_FAMILY = [
+    "memory_note",
+    "memory_note_read",
+    "memory_notes_list",
+    "memory_note_delete",
+    "memory_search",
+  ];
+
+  function readKnowledgeGateSource() {
+    return readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
+  }
+
+  function phasesMissing(family, allowlist) {
+    return PHASE_NAMES.filter((p) => family.some((tool) => !(allowlist[p] || []).includes(tool)));
+  }
+
+  it("registers every family member against its schema in the knowledge-gate contract", () => {
+    const source = readKnowledgeGateSource();
+    const missing = MEMORY_FAMILY.filter((name) => !source.includes(`args: V2_SCHEMAS.${name}`));
+    expect(missing).toEqual([]);
+  });
+
+  it("admits the whole family in every phase", () => {
+    expect(phasesMissing(MEMORY_FAMILY, protocolPhases.TOOL_ALLOWLIST)).toEqual([]);
+  });
+
+  it("keeps the resume read phase-legal for the Overseer in every phase", () => {
+    const notLegal = PHASE_NAMES.filter((p) => !protocolPhases.admitTool(p, "memory_note_read"));
+    expect(notLegal).toEqual([]);
+    // The hint names memory_note_read, so the phase table must admit the name
+    // the hint instructs the agent to call.
+    expect(readKnowledgeGateSource()).toContain("Read them with memory_note_read to resume in-flight state");
+  });
+
+  it("keeps SWARM able to write, read, and list a note — the cross-phase carrier", () => {
+    for (const tool of ["memory_note", "memory_note_read", "memory_notes_list"]) {
+      expect(protocolPhases.TOOL_ALLOWLIST.SWARM).toContain(tool);
+    }
+  });
+
+  it("fails on the pre-fix state where no phase admitted the family", () => {
+    const preFix = Object.fromEntries(
+      PHASE_NAMES.map((p) => [p, (protocolPhases.TOOL_ALLOWLIST[p] || []).filter((t) => !MEMORY_FAMILY.includes(t))])
+    );
+    expect(phasesMissing(MEMORY_FAMILY, preFix)).toEqual(PHASE_NAMES);
+  });
+
+  it("fails when a single phase drops one family member", () => {
+    const dropped = {
+      ...protocolPhases.TOOL_ALLOWLIST,
+      SWARM: protocolPhases.TOOL_ALLOWLIST.SWARM.filter((t) => t !== "memory_note_read"),
+    };
+    expect(phasesMissing(MEMORY_FAMILY, dropped)).toEqual(["SWARM"]);
+  });
+});
+
 // The INTENT stop-edit boundary (swarm/57) has a behavioural half the plugin
 // owns and a compliance half owned by the Overseer's own instructions. The
 // boundary refusal points the agent at the recovery; these guards keep both
