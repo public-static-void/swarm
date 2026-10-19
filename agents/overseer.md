@@ -183,8 +183,8 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    SESSION DATE: <YYYY-MM-DD>
    SESSION ID: <session id>
    GENERATION: <lifecycle generation number>
-    BASELINE BRANCH: <base branch recorded by preflight>
-    HEAD SHA: <head commit recorded by preflight>
+   BASELINE BRANCH: <base branch recorded by preflight>
+   HEAD SHA: <head commit recorded by preflight>
    TASK ID: <prior resume handle for a same-artifact re-dispatch>
    SCOPE: <optional context>
    ```
