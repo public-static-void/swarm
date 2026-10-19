@@ -1571,7 +1571,14 @@ RESULT KD: knowledge/exploration-foo.md`;
 
     it("injects the TASK ID hint into the swarm tool doc only", async () => {
       const swarmOutput = await emitTaskId("ses_scope_probe");
-      expect(swarmOutput.args.description).toContain("TASK ID:");
+      // The full-phrase property: the swarm entry states the field's
+      // optionality and what the handle is for, not merely its label.
+      const taskIdEntry = swarmOutput.args.description
+        .split("\n")
+        .find((line) => line.startsWith("TASK ID:"));
+      expect(taskIdEntry).toBeDefined();
+      expect(taskIdEntry).toMatch(/\(optional/);
+      expect(taskIdEntry).toMatch(/resume|redispatch/i);
 
       const ckptPrompt = `AGENT: committer
 MODE: checkpoint
