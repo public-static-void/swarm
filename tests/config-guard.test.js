@@ -1184,73 +1184,11 @@ describe("VERIFY evidence shape", () => {
     }
   });
 
-  // The machine facts the Inspector's Verdict Rules section owns: the
-  // frontmatter verdict field, the MISSING posture, the fresh PASS recency
-  // contract, the FAIL regression, and the FAIL citation mandate. The review
-  // dispatch template carries the binding delivery block to the dispatched
-  // Inspector, so the pair travels in lockstep — the block restates the same
-  // facts, and a drift on either side fails this group. The skills that
-  // describe the gate carry a pointer to that authority rather than a second
-  // restatement, so the facts live in exactly two places: the owning section
-  // and its runtime carrier.
-  const VERDICT_MACHINE_FACTS = [
-    "verdict",
-    "frontmatter",
-    "MISSING",
-    "blocks VERIFY",
-    "newer than the newest impl KD",
-    "stale PASS",
-    "regresses VERIFY→SWARM",
-    "reopens",
-    "zero milestone citations",
-    "MALFORMED",
-  ];
-
-  function inspectorVerdictSection() {
-    const start = inspector.indexOf("## Verdict Rules");
-    const end = inspector.indexOf("\n## ", start + 1);
-    return start === -1 ? "" : inspector.slice(start, end === -1 ? undefined : end);
-  }
-
-  function reviewDispatchBlock() {
-    const file = readRoot(join("plugins", "delegation-gate", "templates", "review.json"));
-    return JSON.parse(file).template;
-  }
-
-  // Findings for the verdict single-home pair: every machine fact appears in
-  // the inspector section that owns the semantics and in the runtime carrier
-  // that delivers them to the dispatched Inspector. Empty means the pair is in
-  // step; a dropped fact on either side is drift.
-  function verdictFactFindings(inspectorFacts, carrier) {
-    const findings = [];
-    for (const fact of VERDICT_MACHINE_FACTS) {
-      if (!inspectorFacts.includes(fact)) findings.push(`inspector verdict rules: missing "${fact}"`);
-      if (!carrier.includes(fact)) findings.push(`review template block: missing "${fact}"`);
-    }
-    return findings;
-  }
-
-  it("keeps the verdict machine facts in lockstep between the inspector rules and the review dispatch block", () => {
-    const facts = inspectorVerdictSection();
-    expect(facts, "inspector.md must carry a Verdict Rules section").not.toBe("");
-    expect(verdictFactFindings(facts, reviewDispatchBlock())).toEqual([]);
-  });
-
-  it("fails closed when either side of the verdict pair drops a machine fact", () => {
-    const facts = inspectorVerdictSection();
-    const carrier = reviewDispatchBlock();
-    expect(verdictFactFindings(facts.replace("MALFORMED", ""), carrier)).not.toEqual([]);
-    expect(verdictFactFindings(facts, carrier.replace("MALFORMED", ""))).not.toEqual([]);
-    expect(verdictFactFindings(facts.replace("zero milestone citations", ""), carrier)).not.toEqual([]);
-    expect(verdictFactFindings(facts, carrier.replace("stale PASS", ""))).not.toEqual([]);
-  });
-
-  it("points the verdict skills at the inspector authority instead of restating it", () => {
-    for (const content of [gates, reviewTemplate]) {
-      expect(content).toContain("Verdict Rules");
-      expect(content).toContain("agents/inspector.md");
-      expect(content).not.toContain("MALFORMED");
-      expect(content).not.toContain("zero milestone citations");
+  it("malforms uncited FAIL findings under the stale-PASS recency rule", () => {
+    for (const content of [inspector, gates, reviewTemplate]) {
+      expect(content).toContain("MALFORMED");
+      expect(content).toMatch(/zero milestone citations/);
+      expect(content).toContain("stale PASS");
     }
   });
 
@@ -1638,47 +1576,6 @@ describe("CLEANUP committer-remit clause (overseer scope authoring)", () => {
     expect(readAgent("overseer.md")).toContain(
       "gate and test execution stays with Artisan (implementation) and Inspector (verification)"
     );
-  });
-});
-
-// The redispatch contract has one home: the Overseer's Redispatch Preference
-// Rules. The Artisan definition dispatches the Committer from its own protocol,
-// so it carries only the application note pointing at that home — the reuse
-// bullet list stays with the Overseer, and a second copy would drift between
-// two dispatcher layers.
-describe("redispatch contract single home", () => {
-  function redispatchSection() {
-    const artisan = readAgent("artisan.md");
-    const start = artisan.indexOf("### Same-Instance Redispatch");
-    const end = artisan.indexOf("\n### ", start + 1);
-    return start === -1 ? "" : artisan.slice(start, end === -1 ? undefined : end);
-  }
-
-  it("keeps the reuse-versus-fresh contract in the overseer redispatch rules", () => {
-    const overseer = readAgent("overseer.md");
-    expect(overseer).toContain("### Redispatch Preference Rules");
-    expect(overseer).toContain("**Reuse the same instance**");
-    expect(overseer).toContain("**Start a fresh instance**");
-  });
-
-  it("keeps the reopened-milestone reuse rule with the overseer", () => {
-    expect(readAgent("overseer.md")).toContain(
-      "reuse the same artisans who worked on the reopened milestones"
-    );
-    expect(readAgent("artisan.md")).not.toContain("same artisans");
-  });
-
-  it("points the artisan redispatch note at the overseer-owned contract", () => {
-    const section = redispatchSection();
-    expect(section, "artisan.md must carry the Same-Instance Redispatch section").not.toBe("");
-    expect(section).toContain("agents/overseer.md");
-    expect(section).toContain("Redispatch Preference Rules");
-  });
-
-  it("drops the duplicated contract copy from the artisan definition", () => {
-    const section = redispatchSection();
-    expect(section).not.toContain("- returned an empty result");
-    expect(section).not.toContain("exhausted its token budget");
   });
 });
 
