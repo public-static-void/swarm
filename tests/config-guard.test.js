@@ -1367,6 +1367,69 @@ describe("rule layers state their rules self-containedly", () => {
     expect(missingFacts("## Principles\n\n- **Hook-failure relay**: escalate when a hook fails.\n", COMMITTER_RELAY_FACTS)).not.toEqual([]);
     expect(missingFacts("## Constraints\n\n- Stage the files this task changed.\n", COMMITTER_CONSTRAINT_FACTS)).not.toEqual([]);
   });
+
+  // The auto-injected rule layers every agent's rule arrives in: AGENTS.md, each
+  // agent definition, and each skill. A rule reaches its audience by injection,
+  // so each file states its rules whole rather than handing them to a sibling
+  // config file the reader would have to open.
+  function sweptLayerFiles() {
+    const skillFiles = readdirSync(join(ROOT, "skills"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(ROOT, "skills", entry.name, "SKILL.md"))
+      .filter((path) => existsSync(path));
+    return [join(ROOT, "AGENTS.md"), ...agentFiles().map((name) => join(AGENTS_DIR, name)), ...skillFiles];
+  }
+
+  // A rule's authority or home deferred to a sibling config layer: a path into
+  // agents/ or skills/, a section anchor, or a "see <sibling> skill for <rule>"
+  // clause. A load instruction ("load the <name> skill") and a data path (a KD
+  // path or a template file name) name the mechanism or the artifact the reader
+  // handles directly, so the predicate leaves them alone.
+  const LAYER_DEFERRAL =
+    /agents\/[a-z-]+\.md|skills\/[a-z-]+\/SKILL\.md|§|see\s+(?:the\s+)?[a-z]+(?:-[a-z]+)*\s+skill\s+for\b/i;
+
+  it("keeps every swept config layer free of a cross-file rule reference", () => {
+    const offenders = sweptLayerFiles().filter((file) => LAYER_DEFERRAL.test(readFileSync(file, "utf8")));
+    expect(offenders, "these layers hand their rules to a sibling config file").toEqual([]);
+  });
+
+  it("fails on an injected cross-file rule reference or a truncated rule", () => {
+    // Offenders: an agent-definition path, a section anchor, and a "see
+    // <sibling> skill for <rule>" clause each defer a rule to a file the reader
+    // does not load.
+    expect(LAYER_DEFERRAL.test("Severity follows the rubric in `agents/habit-builder.md`.")).toBe(true);
+    expect(LAYER_DEFERRAL.test("See `agents/inspector.md` §Verdict Rules for the verdicts.")).toBe(true);
+    expect(LAYER_DEFERRAL.test("See verification-gates skill for the matrix format.")).toBe(true);
+    // Non-offenders: a load instruction and a data path state the mechanism or
+    // the artifact, so the predicate leaves them alone.
+    expect(LAYER_DEFERRAL.test("Load the escalation-protocol skill and escalate.")).toBe(false);
+    expect(LAYER_DEFERRAL.test("Write the KD at `knowledge/impl-M1-x-ses_1-gen0.md`.")).toBe(false);
+    expect(LAYER_DEFERRAL.test("Use the `template-checkpoint.md` template from the kd-system skill.")).toBe(false);
+    expect(missingFacts("### Step 5: Process Friction\n\n- [ ] Add a friction table.\n", ["low", "medium", "high"]))
+      .not.toEqual([]);
+  });
+
+  it("states the friction severity scale in the kd-system skill itself", () => {
+    const step = headingRegion(
+      readRoot(join("skills", "kd-system", "SKILL.md")),
+      "### Step 5: Process Friction",
+      "\n## Post-Creation Verification"
+    );
+    expect(step, "kd-system must carry the Process Friction step").not.toBe("");
+    expect(missingFacts(step, ["low", "medium", "high"])).toEqual([]);
+    expect(LAYER_DEFERRAL.test(step), "severity scale states its rule without a pointer").toBe(false);
+  });
+
+  it("states the traceability shape in the code-review skill itself", () => {
+    const region = headingRegion(
+      readRoot(join("skills", "code-review-skill", "SKILL.md")),
+      "### V-Model Traceability",
+      "\n### Review Decision Framework"
+    );
+    expect(region, "code-review-skill must carry the V-Model Traceability section").not.toBe("");
+    expect(missingFacts(region, ["Req ID", "Declared Gate", "Actually-Run Gate", "Status"])).toEqual([]);
+    expect(LAYER_DEFERRAL.test(region), "traceability shape states its rule without a pointer").toBe(false);
+  });
 });
 
 describe("inspector rebuild parity and overseer disk-check scope", () => {
