@@ -1287,6 +1287,86 @@ describe("rule layers state their rules self-containedly", () => {
     ).not.toEqual([]);
     expect(missingFacts("## Verdict\n\nPASS / FAIL / FUNDAMENTAL\n", VERDICT_FACTS)).not.toEqual([]);
   });
+
+  // A dispatch loads one committer mode skill, so a site that hands its rule to
+  // a sibling file strands the reader who loaded this one. The predicate also
+  // catches a sibling skill named as the rule's owner, which a path-only match
+  // would miss.
+  const SIBLING_OWNER_POINTER =
+    /agents\/[a-z-]+\.md|skills\/[a-z-]+\/SKILL\.md|§|see\s+`?(?:agents|skills)\/|committer-(?:checkpoint|cleanup|preflight)`?\s+skill|handoff step owns/i;
+
+  // The cleanup convention its loading agent applies: the type table, the
+  // scope rule, and the message format.
+  const CLEANUP_CONVENTION_FACTS = [
+    "| feat",
+    "| fix",
+    "| style",
+    "| refactor",
+    "| test",
+    "| chore",
+    "Scope required if ≥80% of representative commits use scope",
+    "imperative present tense",
+    "≤72 chars",
+    "<type>(<scope>): <description>",
+  ];
+
+  // The relay the committer definition's reader runs: capture the hook signal,
+  // record it, escalate, retry.
+  const COMMITTER_RELAY_FACTS = [
+    "exit code",
+    "stderr",
+    "CHECKPOINT KD friction record",
+    "escalate to Artisan",
+    "retries",
+  ];
+
+  // The staging constraints state their own behavior rather than naming the
+  // skill step that carries it.
+  const COMMITTER_CONSTRAINT_FACTS = [
+    "classify by dominant concern",
+    "coherent, independently verifiable change set",
+  ];
+
+  const cleanupConvention = headingRegion(
+    readRoot(join("skills", "committer-cleanup", "SKILL.md")),
+    "## Semantic Commit Convention",
+    "\n## Exit"
+  );
+  const committerPrinciples = headingRegion(readAgent("committer.md"), "## Principles", "\n## Constraints");
+  const committerConstraints = headingRegion(readAgent("committer.md"), "## Constraints", "\n## Context Marker");
+
+  it("states the semantic commit convention in the cleanup skill itself", () => {
+    expect(cleanupConvention, "committer-cleanup must carry the Semantic Commit Convention section").not.toBe("");
+    expect(missingFacts(cleanupConvention, CLEANUP_CONVENTION_FACTS)).toEqual([]);
+    expect(SIBLING_OWNER_POINTER.test(cleanupConvention), "cleanup convention states its rule without a pointer").toBe(
+      false
+    );
+  });
+
+  it("states the hook-failure relay whole in the committer definition", () => {
+    expect(committerPrinciples, "committer.md must carry a Principles section").not.toBe("");
+    expect(missingFacts(committerPrinciples, COMMITTER_RELAY_FACTS)).toEqual([]);
+    expect(SIBLING_OWNER_POINTER.test(committerPrinciples), "relay principle states its rule without a pointer").toBe(
+      false
+    );
+  });
+
+  it("states the committer staging constraints without deferring to a skill", () => {
+    expect(committerConstraints, "committer.md must carry a Constraints section").not.toBe("");
+    expect(missingFacts(committerConstraints, COMMITTER_CONSTRAINT_FACTS)).toEqual([]);
+    expect(SIBLING_OWNER_POINTER.test(committerConstraints), "staging constraints state their rule").toBe(false);
+  });
+
+  it("fails on an injected sibling-skill pointer or a truncated committer statement", () => {
+    // Injected offenders: the pre-rework pointer text for each site, plus
+    // statements stripped of the facts their reader needs.
+    expect(SIBLING_OWNER_POINTER.test("The convention is owned by the `committer-checkpoint` skill.")).toBe(true);
+    expect(SIBLING_OWNER_POINTER.test("The `committer-checkpoint` skill's hook-failure handoff step owns the relay.")).toBe(true);
+    expect(SIBLING_OWNER_POINTER.test("Reference the committer-checkpoint skill's concern-separation rule.")).toBe(true);
+    expect(missingFacts("## Semantic Commit Convention\n\nUse conventional commits.\n", CLEANUP_CONVENTION_FACTS)).not.toEqual([]);
+    expect(missingFacts("## Principles\n\n- **Hook-failure relay**: escalate when a hook fails.\n", COMMITTER_RELAY_FACTS)).not.toEqual([]);
+    expect(missingFacts("## Constraints\n\n- Stage the files this task changed.\n", COMMITTER_CONSTRAINT_FACTS)).not.toEqual([]);
+  });
 });
 
 describe("inspector rebuild parity and overseer disk-check scope", () => {

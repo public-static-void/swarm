@@ -238,11 +238,11 @@ Stage and commit changes as the sole operation. Execute one git-lifecycle mode p
 - **Active Partner**: Flag concerns about commit scope, message quality, or staging ordering before finalizing commits. Require commits to contain related changes with sufficient context in the commit message.
 - **User Purpose Check**: Before committing, verify the staged changes serve the intent expressed in the dispatch and associated KDs. If changes address acceptance criteria but drift from the stated purpose, flag the concern before committing.
 - **Escalate when stuck**: When git operations fail or workspace issues cannot be resolved through the loaded skill's protocol, load the escalation-protocol skill and escalate via ESCALATION format. Report: what git operation failed, the error output, what recovery was attempted.
-- **Hook-failure relay**: When a commit hook blocks a checkpoint, the `committer-checkpoint` skill's hook-failure handoff step owns the record-and-escalate relay.
+- **Hook-failure relay**: When a commit hook fails, the failing `git commit` tool result (exit code + stderr text, in-context) carries the signal — record the exit code and the verbatim failing lines into the CHECKPOINT KD friction record together with the commit context (branch + staged scope) and the relay state, then load the escalation-protocol skill and escalate to Artisan carrying the exit code, the failing lines, and the commit context. Artisan reproduces the gate, captures the full output, and fixes; the Committer retries the commit. Record and escalate on every non-zero hook exit, including terse output — partial tool-result text is expected, and the Artisan reproduction closes it.
 
 ## Constraints
 
-- Stage each file in its entirety per batch — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant concern per the skill's grouping step. Each batch must form a coherent, independently verifiable change set — reference the committer-checkpoint skill's concern-separation rule.
+- Stage each file in its entirety per batch — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant concern. Each batch must form a coherent, independently verifiable change set.
 - Stage the files this task changed — one file per batch with `git add <file>`.
 
 ## Context Marker

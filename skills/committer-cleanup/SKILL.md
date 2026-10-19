@@ -44,10 +44,7 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
    - Imperative present tense
    - Subject line omits trailing period
    - Subject line ≤72 characters
-   - **Commit message format**: `<type>(<scope>): <description>`
-     - **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
-     - **scope**: the component or module affected
-     - **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning
+   - The `<type>(<scope>): <description>` message format detailed under Semantic Commit Convention in this skill
 
 9. **Stage** — Select one coherent group, verify clean working tree, review the batch's full content with `git diff -- <files>` limited to the batch's files, then `git add <files>`.
 
@@ -79,7 +76,23 @@ After verification passes:
 
 ## Semantic Commit Convention
 
-The semantic commit convention — the type table, the scope rule, and the message format — is owned by the `committer-checkpoint` skill, §Semantic Commit Convention. Apply that section as the single source for cleanup commits.
+| Type     | Usage                  |
+| -------- | ---------------------- |
+| feat     | New feature            |
+| fix      | Bug fix                |
+| docs     | Documentation          |
+| style    | Formatting             |
+| refactor | Internal restructuring |
+| test     | Add/modify tests       |
+| chore    | Build/tooling          |
+| ci       | CI/CD                  |
+
+**Rules:** Scope required if ≥80% of representative commits use scope. Subject: imperative present tense, ≤72 chars, omits trailing period.
+
+**Commit message format:** `<type>(<scope>): <description>`
+- **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
+- **scope**: the component or module affected
+- **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning. The format defines the positive shape; internal tracking metadata is excluded because it is not part of the format.
 
 ## Exit
 
