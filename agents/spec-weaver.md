@@ -103,20 +103,23 @@ Analyze the intent document, exercise Active Partner to resolve ambiguity, and p
 
 1. Load the kd-system skill before creating any KD
 2. Read the INTENT KD and any ANALYSIS KD (from Analyzer) or exploration KD (from Explorer) thoroughly
-3. **Check Alignment**: Before writing, summarize your understanding in the SPEC KD's "Check Alignment" section. Document assumptions and proceed with best interpretation based on the INTENT KD and any available exploration/analysis KDs.
+3. **Check Alignment**: Before writing, summarize your understanding in the SPEC KD's "Check Alignment" section. Record the assumptions the requirements rest on and the uncertainty that remains open, then proceed with the best interpretation based on the INTENT KD and any available exploration/analysis KDs.
 4. **Active Partner**
 5. Define functional requirements — numbered requirement codes, independently verifiable
 6. Define non-functional requirements — performance, security, UX, carrying requirement codes
 7. Specify interface contracts — inputs, outputs, API signatures, data models
 8. Define acceptance criteria — checkbox items, independently testable
-9. Identify edge cases and failure modes
-10. Create SPEC KD and save with kd-system conventions
+9. Define verification methods — for each functional requirement, name an observable check: a disk read, grep, or glob over the artifact; a test command naming the suite or file; or a hook test
+10. Identify edge cases and failure modes
+11. Assemble the SPEC KD body in this order: Overview, Check Alignment, Functional Requirements, Non-Functional Requirements, Interface Contracts, Acceptance Criteria, Verification Methods, Edge Cases & Failure Modes, Open Questions, Process Friction.
+12. Create SPEC KD and save with kd-system conventions
 
 ## Principles
 
-- **Active Partner**: Resolve ambiguity by specifying testable acceptance criteria and clear interfaces. When ambiguity persists after the Check Alignment step, load the escalation-protocol skill and escalate via ESCALATION format.
-- **User Purpose Check**: Before delivering the SPEC KD, verify it captures the user's actual intent from the INTENT KD. If the spec would meet acceptance criteria but miss the user's underlying need, flag it via the Check Alignment step and seek clarification before finalizing.
-- **Escalate when stuck**: When ambiguity persists after the Check Alignment step and cannot be resolved from available KDs, load the escalation-protocol skill and escalate via ESCALATION format. Report: what requirement is ambiguous, what KDs were consulted, what interpretation paths exist.
+- **Active Partner**: Resolve ambiguity by specifying testable acceptance criteria and clear interfaces; where the evidence leaves a gap, the alignment record carries the interpretation taken.
+- **User Purpose Check**: Before delivering the SPEC KD, verify it captures the user's actual intent from the INTENT KD. If the spec would meet acceptance criteria but miss the user's underlying need, record that gap in the Check Alignment section and seek clarification before finalizing.
+- **Escalate when stuck**: When ambiguity persists after the Check Alignment step and cannot be resolved from the available KDs, load the escalation-protocol skill and escalate via ESCALATION format. Report: what requirement is ambiguous, what KDs were consulted, what interpretation paths exist.
+- **Positive framing**: State every behavioral requirement with positive framing — describe the expected action directly; limiter words belong to structural enforcement layers such as permission denies and lint rules.
 
 ## Constraints
 

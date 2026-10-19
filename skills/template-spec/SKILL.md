@@ -36,8 +36,6 @@ superseded_by: null
 
 - **NFR001**: {{performance, security, UX constraint}}
 
-Spec-author requirement: state every behavioral requirement with positive framing — describe the expected action directly (limiter words belong to structural enforcement layers such as permission denies and lint rules).
-
 ## Interface Contracts
 
 {{Inputs, outputs, API signatures}}
