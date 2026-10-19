@@ -172,14 +172,14 @@ GENERATION: (the lifecycle generation number)
 SCOPE: (optional context)
 RESULT KD: knowledge/exploration-<name>-<session_id>.md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
-TASK ID: task id (optional — same-instance redispatch identifier)`;
+TASK ID: subagent resume handle (optional) — the delegation-gate forwards it as the subagent call's task_id argument; reuse the prior handle for a same-artifact redispatch`;
       const output = { args: { prompt: "", description, subagent_type: "explorer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       // The hint's instructional lines must not leak into the rendered prompt.
       expect(output.args.prompt).not.toContain("upstream KD paths");
       expect(output.args.prompt).not.toContain("(optional context)");
       expect(output.args.prompt).not.toContain("(when subagent produces a KD)");
-      expect(output.args.prompt).not.toContain("same-instance redispatch");
+      expect(output.args.prompt).not.toContain("same-artifact redispatch");
       // The legitimate description fields are still extracted.
       expect(output.args.prompt).toContain("knowledge/intent-foo.md");
       expect(output.args.prompt).toContain("2026-08-27");
@@ -1477,7 +1477,11 @@ RESULT KD: knowledge/impl-foo.md`;
   });
 
   describe("TASK ID Field", () => {
-    it("extracts TASK ID from the prompt and passes it through to output.args.task_id", async () => {
+    // Independent expectation for the contract pins below: the passthrough arg
+    // key is read back from the emitted hook output, so the documented plumbing
+    // is checked against the field the plugin actually sets rather than against
+    // a copy of the doc sentence. A renamed emitted field fails these pins.
+    const emitTaskId = async (taskId) => {
       const prompt = `AGENT: artisan
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
@@ -1485,12 +1489,22 @@ SESSION DATE: 2026-09-08
 SESSION ID: ses_abc
 GENERATION: 1
 MILESTONE ID: M1
-TASK ID: ses_abc_task_42
+TASK ID: ${taskId}
 SCOPE: Execute milestone M1
 RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
-
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output);
+      return output;
+    };
+
+    const emittedTaskIdKey = async () => {
+      const probe = "ses_probe_handle_7";
+      const output = await emitTaskId(probe);
+      return Object.keys(output.args).find((k) => output.args[k] === probe);
+    };
+
+    it("extracts TASK ID from the prompt and passes it through to output.args.task_id", async () => {
+      const output = await emitTaskId("ses_abc_task_42");
       expect(output.args.task_id).toBe("ses_abc_task_42");
       expect(output.args.prompt).toContain("TASK ID: ses_abc_task_42");
     });
@@ -1556,17 +1570,15 @@ RESULT KD: knowledge/exploration-foo.md`;
     });
 
     it("injects the TASK ID hint into the swarm tool doc only", async () => {
-      const swarmPrompt = `AGENT: artisan
-MODE: swarm
-INTENT KD: knowledge/intent-foo.md
-SESSION DATE: 2026-09-08
-MILESTONE ID: M1
-SCOPE: Execute milestone M1
-RESULT KD: knowledge/impl-M1-foo.md`;
-
-      const swarmOutput = { args: { prompt: swarmPrompt } };
-      await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, swarmOutput);
-      expect(swarmOutput.args.description).toContain("TASK ID: (optional — same-instance redispatch identifier)");
+      const swarmOutput = await emitTaskId("ses_scope_probe");
+      // The full-phrase property: the swarm entry states the field's
+      // optionality and what the handle is for, not merely its label.
+      const taskIdEntry = swarmOutput.args.description
+        .split("\n")
+        .find((line) => line.startsWith("TASK ID:"));
+      expect(taskIdEntry).toBeDefined();
+      expect(taskIdEntry).toMatch(/\(optional/);
+      expect(taskIdEntry).toMatch(/resume|redispatch/i);
 
       const ckptPrompt = `AGENT: committer
 MODE: checkpoint
@@ -1580,10 +1592,29 @@ RESULT KD: knowledge/checkpoint-foo.md`;
       expect(ckptOutput.args.description).not.toContain("TASK ID:");
     });
 
-    it("annotates the task tool definition with the TASK ID convention", async () => {
+    it("names the emitted passthrough field and its harness-side limit in the swarm tool doc", async () => {
+      const key = await emittedTaskIdKey();
+      expect(key).toBeDefined();
+      const swarmOutput = await emitTaskId("ses_probe_handle_7");
+      expect(swarmOutput.args.description).toContain(key);
+      expect(swarmOutput.args.description).toMatch(/harness/i);
+    });
+
+    it("names the emitted passthrough field and its harness-side limit in the mode-agnostic hint", async () => {
+      const key = await emittedTaskIdKey();
+      expect(key).toBeDefined();
       const output = { description: "Delegate work to another agent." };
       await hooks["tool.definition"]({ toolID: "task" }, output);
-      expect(output.description).toContain("TASK ID: task id (optional — same-instance redispatch identifier)");
+      expect(output.description).toContain(key);
+      expect(output.description).toMatch(/harness/i);
+    });
+
+    it("states the TASK ID contract in the Overseer field doc against the emitted field", async () => {
+      const key = await emittedTaskIdKey();
+      expect(key).toBeDefined();
+      const overseer = readFileSync(new URL("../../../agents/overseer.md", import.meta.url), "utf8");
+      expect(overseer).toContain(key);
+      expect(overseer).toMatch(/harness/i);
     });
   });
 

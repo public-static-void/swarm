@@ -578,22 +578,21 @@ The delegation-gate plugin extracts these fields from the prompt text and render
 
 ### Same-Instance Redispatch
 
-When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt so the task tool resumes the same instance via its `task_id` parameter. Reusing the same `TASK ID` preserves the agent's in-flight context and partial work.
+When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt: the delegation-gate extracts it and forwards it as the subagent call's `task_id` argument. Reuse is chosen for what the harness then does with that handle — resuming the invoked subagent session keeps its in-flight context and partial work — a harness-side effect of the subagent tool rather than something this layer performs.
 
 **Reuse the same `TASK ID`** when the prior dispatch:
 - returned an empty result;
 - stopped mid-task before completing;
-- exhausted its token budget;
-- worked on a milestone that a VERIFY FAIL verdict reopened — continue with the same artisan who worked on the reopened milestone.
+- exhausted its token budget.
 
 **Start a fresh instance** (omit `TASK ID` or use a new one) when the prior dispatch:
 - is looping or repeating the same action without progress;
 - is misbehaving or producing unreliable output;
 - has a prior session that is stale or evicted.
 
-Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, reuse the same `TASK ID` to continue the same agent's work.
+Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance).
 
-Record the continuity choice the same way: a reopened milestone row reuses the prior `TASK ID`; a new task omits `TASK ID`. On every same-artifact re-dispatch the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). A same-artifact re-dispatch that omits `TASK ID` and records no `fresh: <reason>` is an Overseer-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched. Note the two resume channels: `task_id` continuation (this section) resumes the subagent session, while compaction resume travels through the `resume-protocol` `memory_note` channel.
+Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). Note the two resume channels: `task_id` continuation hands the handle through the passthrough above, and the subagent tool's harness performs the resume, while compaction resume travels through a short-term memory note (`memory_note`).
 
 ### Checkpoint Verification
 

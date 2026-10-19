@@ -1966,6 +1966,58 @@ Amendment body.
     expect(hooks.checkDiskAdvancement(ok, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
+  it("DECOMPOSE freshness: a pre-entry plan+registry pair stays put; an at-or-after-entry pair advances", async () => {
+    const s = sid("decomp-fresh");
+    await initOverseer(s);
+    hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    // The DECOMPOSE phase-entry anchor. Evidence predating the phase's own
+    // start is stale — the gate must not advance on artifacts the phase did
+    // not produce.
+    const enteredAt = Date.now();
+    hooks.sessionPhaseMap.set(`${s}:phaseEnteredAt`, enteredAt);
+    const planPath = join(knowledgeDir, `plan-${s}.md`);
+    const registryPath = join(knowledgeDir, `milestones-feature-${s}.md`);
+    createKD(`plan-${s}.md`);
+    createRegistry(s, [["M1", "pending"]]);
+
+    const before = new Date(enteredAt - 60000);
+    utimesSync(planPath, before, before);
+    utimesSync(registryPath, before, before);
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+    // A fresh plan with a still-stale registry does not advance — each
+    // artifact's own mtime is compared against the anchor.
+    const after = new Date(enteredAt + 60000);
+    utimesSync(planPath, after, after);
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+    // Both artifacts at or after entry — the phase's own evidence advances it.
+    utimesSync(registryPath, after, after);
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
+  });
+
+  it("persisted state carries phaseEnteredAt set on phase entry, distinct from the per-save timestamp", async () => {
+    const s = sid("phase-entered-at");
+    await initOverseer(s);
+    // Fresh init establishes the INTENT phase entry and persists the anchor.
+    const first = JSON.parse(readFileSync(statePath(s), "utf8"));
+    expect(typeof first.phaseEnteredAt).toBe("number");
+
+    // A later save refreshes `timestamp` while the phase-entry anchor is the
+    // current phase's start, not the last persistence — the two stay distinct.
+    hooks.sessionPhaseMap.set(`${s}:phaseEnteredAt`, 1000);
+    expect(hooks.saveState(s)).toBe(true);
+    const second = JSON.parse(readFileSync(statePath(s), "utf8"));
+    expect(second.phaseEnteredAt).toBe(1000);
+    expect(second.timestamp).not.toBe(1000);
+
+    // The anchor survives a mid-session restart (restored from state).
+    hooks = await pluginModule.server({}, {});
+    await initOverseer(s);
+    expect(hooks.sessionPhaseMap.get(`${s}:phaseEnteredAt`)).toBe(1000);
+  });
+
   it("SWARM phase reads are restricted to milestone registry KDs (dispatcher visibility)", async () => {
     const s = sid("swarm-read-1");
     await initOverseer(s);

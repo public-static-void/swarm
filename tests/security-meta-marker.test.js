@@ -1,7 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
-import { join } from "path";
-import {
+import securityConfig, {
   noMetaMarker,
   noMetaMarkerProse,
   noMetadataComment,
@@ -12,8 +10,6 @@ import {
 // docs with convention-line allowlisting, and the metadata-comment rule mirrors
 // the metadata-purity guard over the leading frontmatter block. Fixture tokens
 // below live in string literals, which the guard never scans.
-
-const ROOT = process.cwd();
 
 function collectReports(rule, sourceCode) {
   const reports = [];
@@ -183,29 +179,47 @@ describe("metadata-comment guard for agent and skill frontmatter", () => {
   });
 });
 
-describe("prose guard wiring in the security config", () => {
-  const configText = readFileSync(join(ROOT, "eslint.security.config.mjs"), "utf8");
+// The wiring is asserted against the exported default config array, not the
+// file text: a member is located by the rule id it registers, so dropping that
+// member from the array fails here even while its const stays defined.
+const DOC_SURFACES = ["agents/**/*.md", "skills/**/*.md", "AGENTS.md"];
 
+function configEntryForRule(ruleId) {
+  return securityConfig.find((entry) => entry.rules && entry.rules[ruleId] !== undefined);
+}
+
+describe("prose guard wiring in the security config", () => {
   it("covers the agent, skill, and root instruction surfaces", () => {
-    for (const surface of ["agents/**/*.md", "skills/**/*.md", "AGENTS.md"]) {
-      expect(configText).toContain(surface);
+    const entry = configEntryForRule("meta-marker/no-meta-marker-prose");
+    expect(entry, "the exported config carries the prose marker rule").toBeTruthy();
+    for (const surface of DOC_SURFACES) {
+      expect(entry.files).toContain(surface);
     }
-    expect(configText).toContain("no-meta-marker-prose");
   });
 
   it("carries no dead commands glob", () => {
-    expect(configText).not.toContain("commands/");
+    const globs = securityConfig.flatMap((entry) => (Array.isArray(entry.files) ? entry.files : []));
+    expect(globs.filter((glob) => glob.includes("commands/"))).toEqual([]);
   });
 
   it("carries an explicit convention-line allowlist", () => {
-    expect(configText).toContain("local contract");
+    const entry = configEntryForRule("meta-marker/no-meta-marker-prose");
+    const wiredRule = entry.plugins["meta-marker"].rules["no-meta-marker-prose"];
+    expect(wiredRule).toBe(noMetaMarkerProse);
+    const reports = collectReports(
+      wiredRule,
+      proseSource(["Code states its local contract; trace for AC001 lives in KDs."])
+    );
+    expect(reports).toEqual([]);
   });
 
   it("wires the metadata-comment mirror over the same docs surfaces", () => {
-    for (const surface of ["agents/**/*.md", "skills/**/*.md", "AGENTS.md"]) {
-      expect(configText).toContain(surface);
+    const entry = configEntryForRule("metadata-purity/no-metadata-comment");
+    expect(entry, "the exported config carries the metadata-comment rule").toBeTruthy();
+    expect(entry.rules["metadata-purity/no-metadata-comment"]).toBe("error");
+    expect(entry.plugins["metadata-purity"].rules["no-metadata-comment"]).toBe(noMetadataComment);
+    for (const surface of DOC_SURFACES) {
+      expect(entry.files).toContain(surface);
     }
-    expect(configText).toContain("no-metadata-comment");
-    expect(configText).toContain("noMetadataComment");
   });
 });

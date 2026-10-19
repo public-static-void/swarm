@@ -129,7 +129,7 @@ The Knowledge Gate plugin automatically injects open issues into your session co
 - **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD (review + audit section).
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
-- **Phase 11 (CLEANUP)**: Dispatch Committer (MODE: CLEANUP). The CLEANUP dispatch SCOPE directs the Committer to push committed changes to the remote by default when safe: committed changes exist at lifecycle end, a remote repo is configured, and the current branch is a feature/fix/chore-style branch. The SCOPE states this push-by-default expectation positively so the Committer pushes the branch at lifecycle end.
+- **Phase 11 (CLEANUP)**: Dispatch Committer (MODE: CLEANUP). The CLEANUP dispatch SCOPE directs the Committer to push committed changes to the remote by default when safe: committed changes exist at lifecycle end, a remote repo is configured, and the current branch is a feature/fix/chore-style branch. The SCOPE states this push-by-default expectation positively so the Committer pushes the branch at lifecycle end. The CLEANUP scope covers the git closeout — the branch, the working tree, and the remote ref. The Committer's git remit names that closeout, and gate and test execution stays with Artisan (implementation) and Inspector (verification), whose gate outcomes the scope carries as recorded results.
 - **Phase 12 (REPORT)**: Deliver REPORT KD.
 
 ### Phase Transition Rules
@@ -185,10 +185,11 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    GENERATION: <lifecycle generation number>
     BASELINE BRANCH: <base branch recorded by preflight>
     HEAD SHA: <head commit recorded by preflight>
+   TASK ID: <prior resume handle for a same-artifact re-dispatch>
    SCOPE: <optional context>
    ```
 
-   Required: `mode`, `intent_kd` (except checkpoint/cleanup modes), `result_kd` (for KD-producing modes), `session_date`. `SESSION ID` and `GENERATION` fall back to the session and protocol-gate state when omitted, but pass them explicitly. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The plugin generates `prompt` and `description` from the template and keeps your `agent` selection.
+   Required: `mode`, `intent_kd` (except checkpoint/cleanup modes), `result_kd` (for KD-producing modes), `session_date`. `SESSION ID` and `GENERATION` fall back to the session and protocol-gate state when omitted, but pass them explicitly. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes), `task_id` (the resume handle the delegation-gate forwards as the subagent call's `task_id` argument). The plugin generates `prompt` and `description` from the template and keeps your `agent` selection.
 
     Provenance travels stamped: the Committer's preflight recording sets `BASELINE BRANCH` and `HEAD SHA`, and each dispatch carries those values forward as given. Branch discovery rests with the preflight recording, so a dispatch leaving the provenance fields empty is a dispatch defect.
 
@@ -207,7 +208,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 
 ### Redispatch Preference Rules
 
-When re-dispatching an agent for the same task, choose the target instance deliberately. The `TASK ID` delegation field (passed through to the subagent tool's `task_id`) resumes the same subagent session, preserving its in-flight context and partial work.
+When re-dispatching an agent for the same task, choose the target instance deliberately. The delegation-gate extracts the `TASK ID` field from the dispatch prompt and forwards it verbatim as the `task_id` argument on the subagent call. The subagent tool's use of that handle — resuming the same subagent session with its in-flight context and partial work — is a harness-side behavior, so in-tree evidence covers the passthrough while the subagent tool owns the resume.
 
 **Reuse the same instance** (reuse the prior `TASK ID`) when the re-dispatch targets the same artifact — same RESULT KD path, same milestone row, or same KD artifact amendment — including when the agent:
 - returned an empty result;

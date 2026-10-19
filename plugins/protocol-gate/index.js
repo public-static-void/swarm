@@ -2366,6 +2366,24 @@ function getFileMtimeMs(fullPath) {
   }
 }
 
+// Phase-entry anchor — epoch ms when the CURRENT phase was entered, or null
+// when no anchor was recorded (legacy state files, direct map seeding). Kept
+// distinct from the per-save `timestamp`: the anchor marks the phase start
+// (the floor for evidence freshness), while `timestamp` moves on every save.
+function getPhaseEnteredAt(sessionPhaseMap, sessionID) {
+  const value = sessionPhaseMap.get(`${sessionID}:phaseEnteredAt`);
+  return typeof value === "number" ? value : null;
+}
+
+// Establishes a phase entry: sets the phase and stamps the phase-entry anchor.
+// Every transition into a phase (forward advance, regression, backward
+// transition, override, fresh init) routes through here so the anchor always
+// names the current phase's start.
+function enterPhase(sessionPhaseMap, sessionID, phase) {
+  sessionPhaseMap.set(sessionID, phase);
+  sessionPhaseMap.set(`${sessionID}:phaseEnteredAt`, Date.now());
+}
+
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCount, f1Options) {
   if (phase === undefined) return false;
 
@@ -2447,18 +2465,25 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // `## Milestone States` YAML block parses — an unparsable or duplicated
   // registry fails closed here instead of advancing into a guaranteed
   // REGISTRY_MISSING at SWARM. A plan- KD alone is the fail-closed case — no
-  // advancement. Under an override at DECOMPOSE, both KDs must be fresh
-  // (mtime >= since, contract #5).
+  // advancement. Freshness is required on BOTH paths: the pair must be at or
+  // after the phase-entry anchor (the phase's own start) on the non-override
+  // path, and at or after the override `since` while an override is active
+  // (contract #5). A phase whose entry predates the anchor — legacy state or
+  // direct map seeding — keeps presence-only semantics.
   if (phase === STATES.DECOMPOSE) {
-    const hasPlan = sessionFiles.some(f => /^plan-/i.test(f) && (!overrideActive || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
-    const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f) && (!overrideActive || getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since));
+    const phaseEnteredAt = getPhaseEnteredAt(sessionPhaseMap, sessionID);
+    const freshnessAnchor = overrideActive ? overrideUntil.since : phaseEnteredAt;
+    const isFresh = (f) => freshnessAnchor === null || getFileMtimeMs(join(knowledgeDir, f)) >= freshnessAnchor;
+    const hasPlan = sessionFiles.some(f => /^plan-/i.test(f) && isFresh(f));
+    const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f) && isFresh(f));
     // The milestones KD must parse via locateMilestoneRegistry semantics
     // (valid `## Milestone States` YAML block, exactly one registry per
     // session/generation). Reuses the same parser the SWARM gate uses so the
     // two gates can never disagree on what a valid registry is.
     const registryParses = hasMilestones && locateMilestoneRegistry(sessionID, sessionPhaseMap) !== null;
     const result = hasPlan && registryParses;
-    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones}, registry-parses=${registryParses} → ${result}${overrideActive ? ` (override fresh-evidence since ${overrideUntil.since})` : ""}`);
+    const anchorNote = overrideActive ? `override fresh-evidence since ${overrideUntil.since}` : `phase-entry anchor ${freshnessAnchor}`;
+    debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones}, registry-parses=${registryParses} → ${result} (${anchorNote})`);
     return result;
   }
 
@@ -2678,7 +2703,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   if (!foundEarlierKD) return false; // no regression — phase set directly, not via lifecycle
 
   debug(`Consistency regression: ${getPhaseName(currentPhase)} → ${getPhaseName(regressedPhase)}`);
-  sessionPhaseMap.set(sessionID, regressedPhase);
+  enterPhase(sessionPhaseMap, sessionID, regressedPhase);
 
   // Counters persist across regressions — safety mechanisms (force-advance,
   // re-dispatch cap) must remain effective. Only clear swarmDispatchCount when
@@ -2848,6 +2873,11 @@ async function protocolGateServer(input, options) {
         // and producing artifacts in the state file.
         const state = { phase, generation, timestamp: Date.now() };
         if (sid) state.sid = sid;
+        // Phase-entry anchor — persisted alongside the last-save timestamp so
+        // evidence freshness survives a mid-session restart. Omitted when
+        // absent — legacy state files without the field load unchanged.
+        const phaseEnteredAt = sessionPhaseMap.get(`${sessionID}:phaseEnteredAt`);
+        if (typeof phaseEnteredAt === "number") state.phaseEnteredAt = phaseEnteredAt;
         // Serialize the /phase override marker so it survives a
         // mid-session restart. Both marker shapes are persisted: the legacy
         // single-phase `{ phase, since }` and the multi-phase queue
@@ -3004,7 +3034,7 @@ async function protocolGateServer(input, options) {
         // restores via this session's own state file; a restart that
         // mints a NEW session id mid-lifecycle is recovered via the user's
         // /phase override (SAFETY_ESCAPE).
-        sessionPhaseMap.set(sessionID, STATES.INTENT);
+        enterPhase(sessionPhaseMap, sessionID, STATES.INTENT);
         sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
         saveState(sessionID);
         debug(`reconcile: initialized INTENT for ${sessionID} (no cross-session adoption)`);
@@ -3015,7 +3045,7 @@ async function protocolGateServer(input, options) {
         // The corrupt file was backed up by readStateFile — initialize
         // fresh rather than trusting a half-written state. The next valid
         // transition overwrites the original path with valid JSON.
-        sessionPhaseMap.set(sessionID, STATES.INTENT);
+        enterPhase(sessionPhaseMap, sessionID, STATES.INTENT);
         sessionPhaseMap.set(`${sessionID}:sid`, sessionID);
         saveState(sessionID);
         debug(`reconcile: initialized INTENT after corrupt state file for ${sessionID}`);
@@ -3040,6 +3070,13 @@ async function protocolGateServer(input, options) {
       const rawPhase = typeof state.phase === "number" ? state.phase : STATES.INTENT;
       const phase = rawPhase === 0 ? STATES.INTENT : rawPhase;
       sessionPhaseMap.set(sessionID, phase);
+      // Restore the phase-entry anchor so evidence freshness survives a
+      // restart — the restored phase's own start is what the DECOMPOSE gate
+      // compares against. Omitted when absent — legacy state files keep
+      // presence-only semantics.
+      if (typeof state.phaseEnteredAt === "number") {
+        sessionPhaseMap.set(`${sessionID}:phaseEnteredAt`, state.phaseEnteredAt);
+      }
       // Record the in-memory restore timestamp on the first valid
       // restore per server instance — the advancement block uses it to flag
       // post-restart disk-evidence catch-up (RESTART_CATCH_UP, log-only).
@@ -3133,7 +3170,7 @@ async function protocolGateServer(input, options) {
       }
 
       const prevPhase = sessionPhaseMap.get(sessionID);
-      sessionPhaseMap.set(sessionID, targetPhase);
+      enterPhase(sessionPhaseMap, sessionID, targetPhase);
       // A backward transition clears the override marker — the
       // user chose to move back, so the previous override no longer applies.
       if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
@@ -3408,7 +3445,7 @@ async function protocolGateServer(input, options) {
         return false;
       }
       const newPhase = STATES.VERIFY;
-      sessionPhaseMap.set(candidate, newPhase);
+      enterPhase(sessionPhaseMap, candidate, newPhase);
       // This parent hand-off is fixed at SWARM → VERIFY; the override queue's
       // next-named-phase rule governs the disk-evidence advance path only, so a
       // plan naming SWARM then a phase other than VERIFY is not honored here.
@@ -3582,7 +3619,7 @@ async function protocolGateServer(input, options) {
             } else {
               sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
             }
-            sessionPhaseMap.set(sessionID, safePoint.phase);
+            enterPhase(sessionPhaseMap, sessionID, safePoint.phase);
             sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
             sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
             recordPhaseOverride(sessionPhaseMap, sessionID, { at, from: currentPhase, wedgedHop: marker.phases[0], rolledBackTo: wedgeError.safePoint });
@@ -3671,7 +3708,7 @@ async function protocolGateServer(input, options) {
         // stalled mid-walk (explicit error + rollback).
         sessionPhaseMap.set(`${sessionID}:overrideEvals`, 0);
       }
-      sessionPhaseMap.set(sessionID, n);
+      enterPhase(sessionPhaseMap, sessionID, n);
       // Every /phase invocation persists an override marker — the legacy
       // single-phase shape { phase, since } or the multi-phase queue
       // { phases, since }. While the current phase equals the target, only
@@ -3806,7 +3843,7 @@ async function protocolGateServer(input, options) {
             advanceTarget = origin !== null && origin > currentPhase ? origin : currentPhase + 1;
           }
         }
-        sessionPhaseMap.set(sessionID, advanceTarget);
+        enterPhase(sessionPhaseMap, sessionID, advanceTarget);
         // The phase advanced away from the override target on fresh evidence.
         // A multi-phase queue re-arms to the next named phase (pop the head) so
         // the plan survives the auto-advance; a single-phase marker (or an
@@ -4463,7 +4500,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                   saveState(sessionID);
                 } else {
                   debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → VERIFY after ${currentFailures} stuck failures (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
-                  sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                  enterPhase(sessionPhaseMap, sessionID, STATES.VERIFY);
                   diskCheckFailures.set(sessionID, 0);
                   phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
                   pendingVerification.delete(sessionID);
@@ -4510,7 +4547,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                     throw new ProtocolGateError("SAFETY_STUCK", `❌ SAFETY_STUCK: SWARM re-dispatch cap (${redispatches}) reached — milestone marked failed. Escalate to user or override with /phase`, "Escalate to user or use /phase to override");
                   }
                   debug(`SAFETY_OVERRIDE: REDISPATCH CAP — ${currentPhaseName} phase — ${redispatches} re-dispatches used. Advancing to VERIFY (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
-                  sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                  enterPhase(sessionPhaseMap, sessionID, STATES.VERIFY);
                   diskCheckFailures.set(sessionID, 0);
                   phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
                   pendingVerification.delete(sessionID);
@@ -4549,7 +4586,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                       debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
                       pendingVerification.delete(sessionID);
                       pendingVerificationToolCount.delete(sessionID);
-                      sessionPhaseMap.set(sessionID, STATES.VERIFY);
+                      enterPhase(sessionPhaseMap, sessionID, STATES.VERIFY);
                       diskCheckFailures.set(sessionID, 0);
                       inFlightDispatches.delete(sessionID);
                       saveState(sessionID);

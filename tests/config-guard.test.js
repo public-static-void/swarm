@@ -770,6 +770,14 @@ describe("agent permission allowlists", () => {
 // (the multi-region skill template shape) is out of scope by explicit decision,
 // so a second region is never folded in and never silently scanned.
 describe("agent metadata block purity", () => {
+  it("reports a comment line injected into the leading metadata region", () => {
+    // Non-vacuous: the predicate reports the offender at line 2 of an injected
+    // fixture, so the current-tree assertion below rests on observed reporting
+    // rather than on an empty result a `return []` regression would preserve.
+    const fixture = ["---", "# role rationale in prose", "name: x", "---", "Body."].join("\n");
+    expect(metadataCommentOffenders(fixture)).toEqual([2]);
+  });
+
   it("keeps agent metadata blocks free of comment lines", () => {
     const offenders = [];
     for (const f of agentFiles()) {
@@ -778,6 +786,15 @@ describe("agent metadata block purity", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("reads a leading metadata region for every agent file", () => {
+    // A file whose first line is not `---`, or which lacks a closing fence, has
+    // no region, and the purity predicate then returns []. Asserting the region
+    // is present keeps such a file reported rather than silently exempt.
+    for (const f of agentFiles()) {
+      expect(frontmatterRegion(readAgent(f)), `${f} carries a leading metadata region`).not.toBeNull();
+    }
   });
 });
 
@@ -1184,6 +1201,237 @@ describe("VERIFY evidence shape", () => {
   });
 });
 
+// The rules layer reaches its audience by injection — an agent definition to
+// that agent alone, a skill at the moment an agent loads it, AGENTS.md to every
+// agent. The reader does not open a sibling file at runtime, so a layer that
+// points at another layer strands the rule its reader never loads. Each layer
+// states its rule whole; this group fails on a pointer to another file or a
+// truncated statement.
+describe("rule layers state their rules self-containedly", () => {
+  // A pointer to a sibling rules-layer file, a section anchor into another
+  // document, or a "see <file>" clause. A hit means the layer defers its rule
+  // to a file its reader does not load.
+  const CROSS_FILE_REFERENCE =
+    /agents\/[a-z-]+\.md|skills\/[a-z-]+\/SKILL\.md|§|see\s+`?(?:agents|skills)\//i;
+
+  function headingRegion(content, startHeading, endHeading) {
+    const start = content.indexOf(startHeading);
+    if (start === -1) return "";
+    const end = content.indexOf(endHeading, start + startHeading.length);
+    return content.slice(start, end === -1 ? undefined : end);
+  }
+
+  function missingFacts(content, facts) {
+    return facts.filter((fact) => !content.includes(fact));
+  }
+
+  // The Artisan applies the redispatch choice to its own Committer dispatches,
+  // so its section carries the reuse-versus-fresh choice itself.
+  const REDISPATCH_FACTS = [
+    "`TASK ID`",
+    "Reuse the same `TASK ID`",
+    "Start a fresh instance",
+    "returned an empty result",
+    "exhausted its token budget",
+  ];
+
+  // The verdict semantics each loading agent needs: the erroneous-verdict
+  // posture, the uncited-FAIL malform, and the stale-PASS recency rule.
+  const VERDICT_FACTS = ["MALFORMED", "zero milestone citations", "stale PASS"];
+
+  const artisanRedispatch = headingRegion(
+    readAgent("artisan.md"),
+    "### Same-Instance Redispatch",
+    "\n### "
+  );
+  const gatesVerdicts = headingRegion(
+    readRoot(join("skills", "verification-gates", "SKILL.md")),
+    "### VERIFY Acceptance Proof",
+    "\n## Feedback Loop"
+  );
+  const reviewVerdicts = headingRegion(
+    readRoot(join("skills", "template-review", "SKILL.md")),
+    "## Verdict",
+    "\n## Review Findings"
+  );
+
+  it("states the Artisan redispatch choice in the Artisan layer alone", () => {
+    expect(artisanRedispatch, "artisan.md must carry the Same-Instance Redispatch section").not.toBe("");
+    expect(missingFacts(artisanRedispatch, REDISPATCH_FACTS)).toEqual([]);
+  });
+
+  it("states the verdict semantics in each layer that carries them", () => {
+    expect(missingFacts(gatesVerdicts, VERDICT_FACTS)).toEqual([]);
+    expect(missingFacts(reviewVerdicts, VERDICT_FACTS)).toEqual([]);
+  });
+
+  it("keeps each of the three layers free of cross-file references", () => {
+    for (const [layer, text] of [
+      ["artisan redispatch", artisanRedispatch],
+      ["verification-gates verdicts", gatesVerdicts],
+      ["review-template verdicts", reviewVerdicts],
+    ]) {
+      expect(text, `${layer} section present`).not.toBe("");
+      expect(CROSS_FILE_REFERENCE.test(text), `${layer} states its rule without a pointer`).toBe(false);
+    }
+  });
+
+  it("fails on an injected cross-file reference or a truncated section", () => {
+    // Injected offenders: a pointer strands the reader, a truncated section
+    // drops the facts its audience needs.
+    expect(CROSS_FILE_REFERENCE.test(`${artisanRedispatch}\nSee agents/overseer.md for the contract.`)).toBe(true);
+    expect(CROSS_FILE_REFERENCE.test(`${gatesVerdicts}\nThe rules live in agents/inspector.md.`)).toBe(true);
+    expect(CROSS_FILE_REFERENCE.test(`${reviewVerdicts}\nSee skills/verification-gates/SKILL.md.`)).toBe(true);
+    expect(
+      missingFacts("### Same-Instance Redispatch\n\nInclude the `TASK ID` field.\n", REDISPATCH_FACTS)
+    ).not.toEqual([]);
+    expect(missingFacts("## Verdict\n\nPASS / FAIL / FUNDAMENTAL\n", VERDICT_FACTS)).not.toEqual([]);
+  });
+
+  // A dispatch loads one committer mode skill, so a site that hands its rule to
+  // a sibling file strands the reader who loaded this one. The predicate also
+  // catches a sibling skill named as the rule's owner, which a path-only match
+  // would miss.
+  const SIBLING_OWNER_POINTER =
+    /agents\/[a-z-]+\.md|skills\/[a-z-]+\/SKILL\.md|§|see\s+`?(?:agents|skills)\/|committer-(?:checkpoint|cleanup|preflight)`?\s+skill|handoff step owns/i;
+
+  // The cleanup convention its loading agent applies: the type table, the
+  // scope rule, and the message format.
+  const CLEANUP_CONVENTION_FACTS = [
+    "| feat",
+    "| fix",
+    "| style",
+    "| refactor",
+    "| test",
+    "| chore",
+    "Scope required if ≥80% of representative commits use scope",
+    "imperative present tense",
+    "≤72 chars",
+    "<type>(<scope>): <description>",
+  ];
+
+  // The relay the committer definition's reader runs: capture the hook signal,
+  // record it, escalate, retry.
+  const COMMITTER_RELAY_FACTS = [
+    "exit code",
+    "stderr",
+    "CHECKPOINT KD friction record",
+    "escalate to Artisan",
+    "retries",
+  ];
+
+  // The staging constraints state their own behavior rather than naming the
+  // skill step that carries it.
+  const COMMITTER_CONSTRAINT_FACTS = [
+    "classify by dominant concern",
+    "coherent, independently verifiable change set",
+  ];
+
+  const cleanupConvention = headingRegion(
+    readRoot(join("skills", "committer-cleanup", "SKILL.md")),
+    "## Semantic Commit Convention",
+    "\n## Exit"
+  );
+  const committerPrinciples = headingRegion(readAgent("committer.md"), "## Principles", "\n## Constraints");
+  const committerConstraints = headingRegion(readAgent("committer.md"), "## Constraints", "\n## Context Marker");
+
+  it("states the semantic commit convention in the cleanup skill itself", () => {
+    expect(cleanupConvention, "committer-cleanup must carry the Semantic Commit Convention section").not.toBe("");
+    expect(missingFacts(cleanupConvention, CLEANUP_CONVENTION_FACTS)).toEqual([]);
+    expect(SIBLING_OWNER_POINTER.test(cleanupConvention), "cleanup convention states its rule without a pointer").toBe(
+      false
+    );
+  });
+
+  it("states the hook-failure relay whole in the committer definition", () => {
+    expect(committerPrinciples, "committer.md must carry a Principles section").not.toBe("");
+    expect(missingFacts(committerPrinciples, COMMITTER_RELAY_FACTS)).toEqual([]);
+    expect(SIBLING_OWNER_POINTER.test(committerPrinciples), "relay principle states its rule without a pointer").toBe(
+      false
+    );
+  });
+
+  it("states the committer staging constraints without deferring to a skill", () => {
+    expect(committerConstraints, "committer.md must carry a Constraints section").not.toBe("");
+    expect(missingFacts(committerConstraints, COMMITTER_CONSTRAINT_FACTS)).toEqual([]);
+    expect(SIBLING_OWNER_POINTER.test(committerConstraints), "staging constraints state their rule").toBe(false);
+  });
+
+  it("fails on an injected sibling-skill pointer or a truncated committer statement", () => {
+    // Injected offenders: the pre-rework pointer text for each site, plus
+    // statements stripped of the facts their reader needs.
+    expect(SIBLING_OWNER_POINTER.test("The convention is owned by the `committer-checkpoint` skill.")).toBe(true);
+    expect(SIBLING_OWNER_POINTER.test("The `committer-checkpoint` skill's hook-failure handoff step owns the relay.")).toBe(true);
+    expect(SIBLING_OWNER_POINTER.test("Reference the committer-checkpoint skill's concern-separation rule.")).toBe(true);
+    expect(missingFacts("## Semantic Commit Convention\n\nUse conventional commits.\n", CLEANUP_CONVENTION_FACTS)).not.toEqual([]);
+    expect(missingFacts("## Principles\n\n- **Hook-failure relay**: escalate when a hook fails.\n", COMMITTER_RELAY_FACTS)).not.toEqual([]);
+    expect(missingFacts("## Constraints\n\n- Stage the files this task changed.\n", COMMITTER_CONSTRAINT_FACTS)).not.toEqual([]);
+  });
+
+  // The auto-injected rule layers every agent's rule arrives in: AGENTS.md, each
+  // agent definition, and each skill. A rule reaches its audience by injection,
+  // so each file states its rules whole rather than handing them to a sibling
+  // config file the reader would have to open.
+  function sweptLayerFiles() {
+    const skillFiles = readdirSync(join(ROOT, "skills"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(ROOT, "skills", entry.name, "SKILL.md"))
+      .filter((path) => existsSync(path));
+    return [join(ROOT, "AGENTS.md"), ...agentFiles().map((name) => join(AGENTS_DIR, name)), ...skillFiles];
+  }
+
+  // A rule's authority or home deferred to a sibling config layer: a path into
+  // agents/ or skills/, a section anchor, or a "see <sibling> skill for <rule>"
+  // clause. A load instruction ("load the <name> skill") and a data path (a KD
+  // path or a template file name) name the mechanism or the artifact the reader
+  // handles directly, so the predicate leaves them alone.
+  const LAYER_DEFERRAL =
+    /agents\/[a-z-]+\.md|skills\/[a-z-]+\/SKILL\.md|§|see\s+(?:the\s+)?[a-z]+(?:-[a-z]+)*\s+skill\s+for\b/i;
+
+  it("keeps every swept config layer free of a cross-file rule reference", () => {
+    const offenders = sweptLayerFiles().filter((file) => LAYER_DEFERRAL.test(readFileSync(file, "utf8")));
+    expect(offenders, "these layers hand their rules to a sibling config file").toEqual([]);
+  });
+
+  it("fails on an injected cross-file rule reference or a truncated rule", () => {
+    // Offenders: an agent-definition path, a section anchor, and a "see
+    // <sibling> skill for <rule>" clause each defer a rule to a file the reader
+    // does not load.
+    expect(LAYER_DEFERRAL.test("Severity follows the rubric in `agents/habit-builder.md`.")).toBe(true);
+    expect(LAYER_DEFERRAL.test("See `agents/inspector.md` §Verdict Rules for the verdicts.")).toBe(true);
+    expect(LAYER_DEFERRAL.test("See verification-gates skill for the matrix format.")).toBe(true);
+    // Non-offenders: a load instruction and a data path state the mechanism or
+    // the artifact, so the predicate leaves them alone.
+    expect(LAYER_DEFERRAL.test("Load the escalation-protocol skill and escalate.")).toBe(false);
+    expect(LAYER_DEFERRAL.test("Write the KD at `knowledge/impl-M1-x-ses_1-gen0.md`.")).toBe(false);
+    expect(LAYER_DEFERRAL.test("Use the `template-checkpoint.md` template from the kd-system skill.")).toBe(false);
+    expect(missingFacts("### Step 5: Process Friction\n\n- [ ] Add a friction table.\n", ["low", "medium", "high"]))
+      .not.toEqual([]);
+  });
+
+  it("states the friction severity scale in the kd-system skill itself", () => {
+    const step = headingRegion(
+      readRoot(join("skills", "kd-system", "SKILL.md")),
+      "### Step 5: Process Friction",
+      "\n## Post-Creation Verification"
+    );
+    expect(step, "kd-system must carry the Process Friction step").not.toBe("");
+    expect(missingFacts(step, ["low", "medium", "high"])).toEqual([]);
+    expect(LAYER_DEFERRAL.test(step), "severity scale states its rule without a pointer").toBe(false);
+  });
+
+  it("states the traceability shape in the code-review skill itself", () => {
+    const region = headingRegion(
+      readRoot(join("skills", "code-review-skill", "SKILL.md")),
+      "### V-Model Traceability",
+      "\n### Review Decision Framework"
+    );
+    expect(region, "code-review-skill must carry the V-Model Traceability section").not.toBe("");
+    expect(missingFacts(region, ["Req ID", "Declared Gate", "Actually-Run Gate", "Status"])).toEqual([]);
+    expect(LAYER_DEFERRAL.test(region), "traceability shape states its rule without a pointer").toBe(false);
+  });
+});
+
 describe("inspector rebuild parity and overseer disk-check scope", () => {
   it("carries rebuild-class shell grants for the verifier role", () => {
     const patterns = new Map(bashEntries(readAgent("inspector.md")).map((e) => [e.pattern, e.mode]));
@@ -1538,6 +1786,27 @@ describe("INTENT stop-edit boundary (swarm/57)", () => {
     // intent KD advances regardless of mtime. Reintroducing a freshness gate
     // here would re-open the write→stop stall the advance was added to close.
     expect(gate).toContain("presence exemption (a session-matching intent KD advances regardless of");
+  });
+});
+
+// The Committer's remit at the CLEANUP authoring site: the CLEANUP dispatch
+// scope is Overseer-authored free text, so the remit clause lives in the
+// Overseer definition where that scope is written — the git closeout belongs to
+// the Committer, while gate and test execution belongs to the implementing and
+// verifying agents. The pin reads the agent file and asserts the clause text is
+// present, so a later edit that drops it fails the suite rather than silently
+// re-opening the defect the clause closes.
+describe("CLEANUP committer-remit clause (overseer scope authoring)", () => {
+  it("keeps the git-closeout remit clause in the overseer CLEANUP guidance", () => {
+    expect(readAgent("overseer.md"), "overseer.md must carry the committer-remit clause").toContain(
+      "The CLEANUP scope covers the git closeout"
+    );
+  });
+
+  it("keeps gate and test execution with the implementing and verifying agents", () => {
+    expect(readAgent("overseer.md")).toContain(
+      "gate and test execution stays with Artisan (implementation) and Inspector (verification)"
+    );
   });
 });
 

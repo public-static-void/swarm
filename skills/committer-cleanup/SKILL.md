@@ -44,10 +44,7 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
    - Imperative present tense
    - Subject line omits trailing period
    - Subject line ≤72 characters
-   - **Commit message format**: `<type>(<scope>): <description>`
-     - **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
-     - **scope**: the component or module affected
-     - **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning
+   - The `<type>(<scope>): <description>` message format detailed under Semantic Commit Convention in this skill
 
 9. **Stage** — Select one coherent group, verify clean working tree, review the batch's full content with `git diff -- <files>` limited to the batch's files, then `git add <files>`.
 

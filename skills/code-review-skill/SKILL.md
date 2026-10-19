@@ -86,7 +86,7 @@ Review comments follow a consistent format: location -> issue type -> descriptio
 
 ### V-Model Traceability
 
-See verification-gates skill for V-Model traceability matrix format.
+Trace every change to its originating requirement. The traceability matrix carries one row per requirement with Req ID → Plan Step → Artifact → Declared Gate → Actually-Run Gate → Test/Check → Status, so every artifact traces to at least one requirement and every requirement has a verification entry.
 
 ### Review Decision Framework
 

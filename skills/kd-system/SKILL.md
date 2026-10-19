@@ -117,7 +117,7 @@ Before creating any KD, verify each of these:
 
 - [ ] If friction was encountered during this work, append a `## Process Friction` section at the end of the body (after Content, before References)
 - [ ] Table columns: ID, Issue, Severity, Status, Fixed by
-- [ ] Severity follows the rubric in `agents/habit-builder.md` (low/medium/high)
+- [ ] Severity is `low` (a fix local to this agent's remit), `medium` (a change reaching other agents, or ambiguous requirements), or `high` (a wildcard permission, an identity/description change, or a model-config change)
 - [ ] Omit the section when friction is absent
 
 ## Post-Creation Verification
