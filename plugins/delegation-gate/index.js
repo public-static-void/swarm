@@ -842,9 +842,11 @@ async function delegationGateServer(input, options) {
 
       const fields = extractFieldsFromPrompt(prompt, subagentType, description);
 
-      // TASK ID passthrough — the task tool's task_id resumes the same
-      // subagent session. Extracted from the prompt (or description fallback)
-      // and forwarded untouched; absent field means no passthrough.
+      // TASK ID passthrough — this gate extracts the field from the prompt (or
+      // the description fallback) and forwards it untouched as the subagent
+      // call's task_id argument; an absent field means no passthrough. Whether
+      // the host then resumes the invoked subagent session is a harness-side
+      // property of the subagent tool, not an effect this plugin performs.
       // Resume-handle guard: a TASK ID equal to the dispatching SESSION ID is
       // the lifecycle session standing where the subagent resume handle
       // belongs. Reject with reuse guidance and forward nothing — unknown

@@ -578,7 +578,7 @@ The delegation-gate plugin extracts these fields from the prompt text and render
 
 ### Same-Instance Redispatch
 
-When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt so the task tool resumes the same instance via its `task_id` parameter. Reusing the same `TASK ID` preserves the agent's in-flight context and partial work.
+When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt: the delegation-gate extracts it and forwards it as the subagent call's `task_id` argument. Reuse is chosen for what the harness then does with that handle — resuming the invoked subagent session keeps its in-flight context and partial work — a harness-side effect of the subagent tool rather than something this layer performs.
 
 **Reuse the same `TASK ID`** when the prior dispatch:
 - returned an empty result;
@@ -592,7 +592,7 @@ When re-dispatching a subagent for the same task, include the `TASK ID` delegati
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance).
 
-Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). Note the two resume channels: `task_id` continuation (this section) resumes the subagent session, while compaction resume travels through a short-term memory note (`memory_note`).
+Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). Note the two resume channels: `task_id` continuation hands the handle through the passthrough above, and the subagent tool's harness performs the resume, while compaction resume travels through a short-term memory note (`memory_note`).
 
 ### Checkpoint Verification
 
