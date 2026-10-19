@@ -388,8 +388,141 @@ describe("SPEC-template git hygiene", () => {
     expect(acSection).not.toContain("staged");
   });
 
+  it("keeps the post-AC template sections free of git-state evidence", () => {
+    // The AC slice spans to end of file, so the sections added after it are
+    // read by the same guard; a git-state token in either one reddens it.
+    const postAc = skill.slice(
+      skill.indexOf("## Verification Methods"),
+      skill.indexOf("## Open Questions")
+    );
+    expect(postAc).not.toContain("git diff");
+    expect(postAc).not.toContain("staged");
+  });
+
   it("keeps knowledge/ gitignored in .gitignore", () => {
     expect(gitignore.split("\n")).toContain("knowledge/");
+  });
+});
+
+// The SPEC template shapes the artifact the Spec Weaver writes, so the template
+// section set and the body order the producing protocol declares are one
+// contract with two on-disk homes. A section the protocol requires without a
+// template home is dropped in practice; a template section the protocol never
+// assembles has no producer. Both sides are read from disk and compared, so a
+// drop on either side reddens.
+const SPEC_SECTION_ORDER = [
+  "Overview",
+  "Check Alignment",
+  "Functional Requirements",
+  "Non-Functional Requirements",
+  "Interface Contracts",
+  "Acceptance Criteria",
+  "Verification Methods",
+  "Edge Cases & Failure Modes",
+  "Open Questions",
+  "Process Friction",
+];
+
+// Level-two headings in document order. The template's first heading is the
+// level-one title, so only `##` sections enter the shape.
+function markdownSections(content) {
+  return [...content.matchAll(/^## +(.+?)\s*$/gm)].map((m) => m[1]);
+}
+
+// The section order the producing protocol declares, read from the sentence
+// that names it, so the guard follows the shipped contract rather than a second
+// hand-maintained list.
+function declaredSpecSections(weaver) {
+  const marker = "Assemble the SPEC KD body in this order:";
+  const line = weaver.split("\n").find((l) => l.includes(marker));
+  if (!line) return [];
+  return line
+    .slice(line.indexOf(marker) + marker.length)
+    .trim()
+    .replace(/\.$/, "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// Two-way section-set comparison: a section one side carries and the other
+// omits is a drop, and a reordering of the shared set is drift.
+function specSectionDrift(actual, required) {
+  const shared = actual.filter((s) => required.includes(s));
+  return {
+    missing: required.filter((s) => !actual.includes(s)),
+    extra: actual.filter((s) => !required.includes(s)),
+    misordered: shared.join(" | ") !== required.join(" | "),
+  };
+}
+
+describe("SPEC template and protocol section conformance", () => {
+  const template = readRoot(join("skills", "template-spec", "SKILL.md"));
+  const weaver = readAgent("spec-weaver.md");
+  const templateSections = markdownSections(template);
+  const declaredSections = declaredSpecSections(weaver);
+
+  it("declares the required section order in the producing protocol", () => {
+    expect(declaredSections).toEqual(SPEC_SECTION_ORDER);
+  });
+
+  it("shapes the template to the declared sections in order", () => {
+    expect(templateSections).toEqual(SPEC_SECTION_ORDER);
+    expect(specSectionDrift(templateSections, declaredSections)).toEqual({
+      missing: [],
+      extra: [],
+      misordered: false,
+    });
+  });
+
+  it("places the alignment section ahead of the requirements", () => {
+    const alignment = templateSections.indexOf("Check Alignment");
+    expect(alignment).toBeGreaterThan(templateSections.indexOf("Overview"));
+    expect(alignment).toBeLessThan(templateSections.indexOf("Functional Requirements"));
+  });
+
+  it("places the verification and failure sections after the acceptance criteria", () => {
+    const ac = templateSections.indexOf("Acceptance Criteria");
+    expect(templateSections.indexOf("Verification Methods")).toBe(ac + 1);
+    expect(templateSections.indexOf("Edge Cases & Failure Modes")).toBe(ac + 2);
+  });
+
+  it("requires a per-requirement observable check in the verification section", () => {
+    const section = template.slice(
+      template.indexOf("## Verification Methods"),
+      template.indexOf("## Edge Cases & Failure Modes")
+    );
+    expect(section).toMatch(/each functional requirement/i);
+    expect(section).toContain("observable check");
+  });
+
+  it("states the alignment step once in the producing protocol", () => {
+    const normative = weaver.match(/summarize your understanding/gi) || [];
+    expect(normative).toHaveLength(1);
+  });
+
+  it("keeps the authoring rule with the producing agent, not the template", () => {
+    expect(template).not.toContain("Spec-author requirement");
+    const principles = weaver.slice(weaver.indexOf("## Principles"), weaver.indexOf("## Constraints"));
+    expect(principles).toMatch(/positive framing/i);
+    expect(principles).toContain("expected action directly");
+  });
+
+  it("fails when either side drops a required section", () => {
+    // Injected offenders: a template that loses the alignment section, and a
+    // protocol that stops requiring the verification-methods section.
+    const templateDropped = templateSections.filter((s) => s !== "Check Alignment");
+    expect(specSectionDrift(templateDropped, declaredSections).missing).toEqual(["Check Alignment"]);
+    const declaredDropped = declaredSections.filter((s) => s !== "Verification Methods");
+    expect(specSectionDrift(templateSections, declaredDropped).extra).toEqual(["Verification Methods"]);
+  });
+
+  it("fails on a misordered section set", () => {
+    const swapped = [...templateSections];
+    const i = swapped.indexOf("Edge Cases & Failure Modes");
+    swapped[i] = swapped[i - 1];
+    swapped[i - 1] = "Edge Cases & Failure Modes";
+    expect(specSectionDrift(swapped, declaredSections).misordered).toBe(true);
   });
 });
 
@@ -1148,6 +1281,143 @@ describe("agents delegation dispatch docs", () => {
   });
 });
 
+// The overseer's field example is the grammar the dispatcher copies, and the
+// delegation-gate extractor is what reads that copy at dispatch time. A KEY
+// line the extractor does not recognize is dropped from the rendered dispatch
+// without an error, so the example's anchoring and its key set are one contract
+// with the shipped alternation. Both sides are read from disk and compared.
+//
+// The block's column zero sits at the fence's own indentation: Markdown strips
+// the fence prefix from the content, so the guard measures indentation relative
+// to it rather than to the raw line start.
+function fieldExampleLines(markdown) {
+  for (const m of markdown.matchAll(/^([ \t]*)```[^\n]*\n([\s\S]*?)^\1```/gm)) {
+    const indent = m[1];
+    const lines = m[2]
+      .split("\n")
+      .map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line));
+    if (lines.some((line) => /^MODE:\s/.test(line))) return lines;
+  }
+  return null;
+}
+
+// Keys as the example spells them: an uppercase KEY followed by `: `.
+function fieldExampleKeys(lines) {
+  return lines
+    .map((line) => line.match(/^([A-Z][A-Z ]*?):\s/))
+    .filter(Boolean)
+    .map((m) => m[1]);
+}
+
+// The extractor's recognized key alternation, read out of the plugin source so
+// the guard follows the shipped grammar instead of a second hand-kept list.
+function extractorFieldKeys() {
+  const source = readRoot(join("plugins", "delegation-gate", "index.js"));
+  const match = source.match(/\((MODE\|MILESTONE\[\. _\]ID\|[^)]*)\)/);
+  if (!match) return [];
+  return match[1]
+    .split("|")
+    .map((key) => key.replace(/\[\. _\]/g, " ").trim())
+    .filter(Boolean);
+}
+
+// Swarm-only recognized field: the dispatcher hint marks it "swarm mode only"
+// and the extractor's shared block is mode-agnostic, so its documentation lives
+// with the swarm dispatch path rather than in the shared example.
+const SWARM_ONLY_FIELDS = ["MILESTONE ID"];
+
+describe("delegation provenance field example", () => {
+  const overseer = readAgent("overseer.md");
+
+  it("anchors every KEY line of the field example at column zero", () => {
+    const lines = fieldExampleLines(overseer);
+    expect(lines, "overseer.md must carry the field example fenced block").toBeTruthy();
+    const indented = lines.filter((line) => /^[ \t]+[A-Z][A-Z ]*?:\s/.test(line));
+    expect(indented).toEqual([]);
+  });
+
+  it("keeps the example key set aligned with the extractor alternation", () => {
+    const lines = fieldExampleLines(overseer);
+    const exampleKeys = new Set(fieldExampleKeys(lines));
+    const extractorKeys = new Set(extractorFieldKeys());
+    expect(extractorKeys.size).toBeGreaterThan(0);
+
+    // A copied example line the extractor cannot match renders empty.
+    const unrecognized = [...exampleKeys].filter((key) => !extractorKeys.has(key));
+    expect(unrecognized).toEqual([]);
+
+    // A recognized shared field the example omits silently drops on copy.
+    const undocumented = [...extractorKeys].filter(
+      (key) => !exampleKeys.has(key) && !SWARM_ONLY_FIELDS.includes(key)
+    );
+    expect(undocumented).toEqual([]);
+  });
+
+  describe("leading-space provenance", () => {
+    let hooks;
+    let logDir;
+    let priorLogDir;
+
+    beforeAll(async () => {
+      priorLogDir = process.env.DELEGATION_GATE_LOG_DIR;
+      logDir = mkdtempSync(join(tmpdir(), "provenance-guard-"));
+      process.env.DELEGATION_GATE_LOG_DIR = logDir;
+      hooks = await pluginModule.server({}, {});
+    });
+
+    afterAll(() => {
+      if (priorLogDir === undefined) delete process.env.DELEGATION_GATE_LOG_DIR;
+      else process.env.DELEGATION_GATE_LOG_DIR = priorLogDir;
+      rmSync(logDir, { recursive: true, force: true });
+    });
+
+    it("carries provenance values into the rendered dispatch when the lines are indented", async () => {
+      // Provenance is optional, so an unextracted line renders as an empty
+      // header with no error — the silent drop this case pins.
+      const prompt = `DISPATCH TO: committer
+MODE: checkpoint
+SESSION DATE: 2026-10-19
+SESSION ID: ses_abc123
+GENERATION: 0
+ BASELINE BRANCH: fix/example-branch
+ HEAD SHA: 8a6fea9
+SCOPE: Checkpoint commit for the provenance guard
+RESULT KD: knowledge/checkpoint-provenance-ses_abc123-gen0.md`;
+
+      const output = { args: { prompt, subagent_type: "committer" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc123", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("BASELINE BRANCH: fix/example-branch");
+      expect(output.args.prompt).toContain("HEAD SHA: 8a6fea9");
+    });
+
+    it("states the swarm-only scope of the exempt field in the dispatcher hint", async () => {
+      // The guard exempts MILESTONE ID from the shared mode-agnostic example on
+      // the ground that the dispatcher hint marks it swarm-only, so the hint is
+      // where that exemption is anchored.
+      const output = { description: "Delegate work to another agent." };
+      await hooks["tool.definition"]({ toolID: "task" }, output);
+      expect(output.description).toMatch(/MILESTONE ID:[^\n]*swarm mode only/);
+    });
+
+    it("keeps the swarm dispatch contract intact for an indented milestone field", async () => {
+      const prompt = `DISPATCH TO: artisan
+MODE: swarm
+ MILESTONE ID: M3
+INTENT KD: knowledge/intent-example-ses_abc123-gen0.md
+SESSION DATE: 2026-10-19
+SESSION ID: ses_abc123
+GENERATION: 0
+SCOPE: Execute milestone M3
+RESULT KD: knowledge/impl-M3-example-ses_abc123-gen0.md`;
+
+      const output = { args: { prompt, subagent_type: "artisan" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc123", callID: "c2" }, output);
+      expect(output.args.prompt).toContain("MILESTONE ID: M3");
+      expect(output.args.prompt).toContain("RESULT KD: knowledge/impl-M3-example-ses_abc123-gen0.md");
+    });
+  });
+});
+
 describe("planning shape and scribe composition discipline", () => {
   const scribe = readAgent("scribe.md");
 
@@ -1756,6 +2026,69 @@ describe("protocol-gate tool-identity single source of truth", () => {
     expect(gate).not.toContain(`tool !== "subagent" && !allowedTools.includes(tool)`);
     expect(gate).not.toContain(`if (toolID === "subagent") return;`);
     expect(gate).not.toContain(`canonicalToolName(toolID) === "subagent"`);
+  });
+});
+
+// The short-term note family is the durable carrier for in-flight state, and
+// the knowledge-gate advertises its resume read to every agent on every call.
+// The phase table and the gate's tool contract are separate surfaces, so this
+// group binds them: a phase that admits the write but not the read strands the
+// note, and a resume hint naming a channel no phase admits strands the agent.
+describe("short-term memory family phase legality (swarm/67)", () => {
+  const PHASE_NAMES = Object.keys(protocolPhases.STATES);
+  const MEMORY_FAMILY = [
+    "memory_note",
+    "memory_note_read",
+    "memory_notes_list",
+    "memory_note_delete",
+    "memory_search",
+  ];
+
+  function readKnowledgeGateSource() {
+    return readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
+  }
+
+  function phasesMissing(family, allowlist) {
+    return PHASE_NAMES.filter((p) => family.some((tool) => !(allowlist[p] || []).includes(tool)));
+  }
+
+  it("registers every family member against its schema in the knowledge-gate contract", () => {
+    const source = readKnowledgeGateSource();
+    const missing = MEMORY_FAMILY.filter((name) => !source.includes(`args: V2_SCHEMAS.${name}`));
+    expect(missing).toEqual([]);
+  });
+
+  it("admits the whole family in every phase", () => {
+    expect(phasesMissing(MEMORY_FAMILY, protocolPhases.TOOL_ALLOWLIST)).toEqual([]);
+  });
+
+  it("keeps the resume read phase-legal for the Overseer in every phase", () => {
+    const notLegal = PHASE_NAMES.filter((p) => !protocolPhases.admitTool(p, "memory_note_read"));
+    expect(notLegal).toEqual([]);
+    // The hint names memory_note_read, so the phase table must admit the name
+    // the hint instructs the agent to call.
+    expect(readKnowledgeGateSource()).toContain("Read them with memory_note_read to resume in-flight state");
+  });
+
+  it("keeps SWARM able to write, read, and list a note — the cross-phase carrier", () => {
+    for (const tool of ["memory_note", "memory_note_read", "memory_notes_list"]) {
+      expect(protocolPhases.TOOL_ALLOWLIST.SWARM).toContain(tool);
+    }
+  });
+
+  it("fails on the pre-fix state where no phase admitted the family", () => {
+    const preFix = Object.fromEntries(
+      PHASE_NAMES.map((p) => [p, (protocolPhases.TOOL_ALLOWLIST[p] || []).filter((t) => !MEMORY_FAMILY.includes(t))])
+    );
+    expect(phasesMissing(MEMORY_FAMILY, preFix)).toEqual(PHASE_NAMES);
+  });
+
+  it("fails when a single phase drops one family member", () => {
+    const dropped = {
+      ...protocolPhases.TOOL_ALLOWLIST,
+      SWARM: protocolPhases.TOOL_ALLOWLIST.SWARM.filter((t) => t !== "memory_note_read"),
+    };
+    expect(phasesMissing(MEMORY_FAMILY, dropped)).toEqual(["SWARM"]);
   });
 });
 

@@ -23,6 +23,10 @@ superseded_by: null
 
 {{One-paragraph description of the feature}}
 
+## Check Alignment
+
+{{Summarize your understanding of the intent: the problem, the audience, and the constraints. Record every assumption the requirements rest on and the uncertainties that remain open. Where the evidence leaves a gap, proceed with the best interpretation and name it here.}}
+
 ## Functional Requirements
 
 - **R001**: {{requirement}}
@@ -31,8 +35,6 @@ superseded_by: null
 ## Non-Functional Requirements
 
 - **NFR001**: {{performance, security, UX constraint}}
-
-Spec-author requirement: state every behavioral requirement with positive framing — describe the expected action directly (limiter words belong to structural enforcement layers such as permission denies and lint rules).
 
 ## Interface Contracts
 
@@ -44,6 +46,19 @@ Spec-author requirement: state every behavioral requirement with positive framin
 - [ ] AC002: {{verifiable criterion referencing R002}}
 
 Acceptance criteria for gitignored artifacts (`knowledge/`, `knowledge/issues/`, `knowledge/memory/`) are verified from disk via `read`/`glob`/`grep`. Stage the files this task changed; use the standard git workflow. Rewrite any AC that cannot be verified from disk so it verifies from disk.
+
+## Verification Methods
+
+{{For each functional requirement, name the observable check that proves it: a disk read, grep, or glob over the artifact; a test command naming the suite or file it runs; or a hook test. A requirement with no stated method is unverified.}}
+
+| Requirement | Verification method |
+| --- | --- |
+| R001 | {{observable check}} |
+| R002 | {{observable check}} |
+
+## Edge Cases & Failure Modes
+
+- {{Boundary condition, failure path, or degraded mode the requirements must handle}}
 
 ## Open Questions
 

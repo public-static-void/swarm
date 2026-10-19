@@ -7032,6 +7032,175 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     });
   });
 
+  describe("terminal-hop override origin-return and refusal diagnostics (swarm/66)", () => {
+    // Ages a KD so its mtime predates a subsequent /phase override — the stale
+    // registry anchor whose absence the terminal-hop rule proves.
+    function ageKD(filename, msBack = 10000) {
+      const when = new Date(Date.now() - msBack);
+      utimesSync(join(knowledgeDir, filename), when, when);
+    }
+
+    it("completes a terminal SWARM hop on the ordinary all-checked-off gate, then returns to the origin with the marker cleared ([1,7] from CLEANUP)", async () => {
+      const s = sid("terminal-swarm-origin");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.CLEANUP);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+      // 7/7 checked-off registry whose mtime predates the override, each row
+      // backed by its milestone-scoped impl KD on disk.
+      const rows = Array.from({ length: 7 }, (_, i) => [`M${i + 1}`, "checked-off"]);
+      createRegistry(s, rows);
+      for (let i = 1; i <= 7; i++) createKD(`impl-M${i}-${s}.md`);
+      ageKD(`milestones-feature-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "1,7" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([1, 7]);
+
+      // The fresh intent KD advances the head hop to the queue's terminal SWARM
+      // hop, which re-arms to the one-element queue [7] — the marker SHAPE that
+      // distinguishes a terminal hop from a genuine single-phase pin.
+      createKD(`intent-fresh-${s}.md`);
+      await tick(s, "t1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([7]);
+
+      // The terminal hop completes on the ordinary gate — the predated registry
+      // mtime is not applied — then returns to the origin CLEANUP (11) with the
+      // marker cleared.
+      await tick(s, "t2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.CLEANUP);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
+    });
+
+    it("keeps a single-phase SWARM pin under the registry freshness anchor until an explicit clear", async () => {
+      const s = sid("single-phase-pin-swarm");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-${s}.md`);
+      ageKD(`milestones-feature-${s}.md`);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "SWARM" }, out);
+      const marker = hooks.sessionPhaseMap.get(`${s}:overrideUntil`);
+      expect(marker.phase).toBe(hooks.STATES.SWARM);
+      expect(marker.phases).toBeUndefined();
+
+      // The ordinary gate is satisfied but the registry predates `since` — a
+      // genuine single-phase pin keeps the freshness anchor (contract #5).
+      await tick(s, "p1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(true);
+
+      // The pin clears through the explicit path without moving the phase.
+      const clearOut = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "clear" }, clearOut);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+    });
+
+    it("does not auto-clear an exhausted-but-unsatisfied queue — the marker holds until an explicit clear", async () => {
+      const s = sid("no-auto-clear");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3,2" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([3, 2]);
+
+      // Fresh exploration evidence exhausts the queue to its terminal PREFLIGHT
+      // hop. No fresh PASS preflight KD follows, so the verdict gate stays
+      // closed — the marker must hold, never auto-clear on exhaustion.
+      createKD(`exploration-exhaust-${s}.md`);
+      await tick(s, "e1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([2]);
+
+      await tick(s, "e2");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([2]);
+
+      const clearOut = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "clear" }, clearOut);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    it("names the override queue state in a refusal instead of returning only WRONG_AGENT", async () => {
+      const s = sid("override-refusal");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3,5" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+
+      // A committer dispatch in EXPLORE is the expected agent mismatch. The
+      // refusal must name the active override, its target, and the remaining
+      // hop queue alongside the agent expectation.
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID: "ov1" },
+          { args: { prompt: "DISPATCH TO: committer\nMODE: preflight", subagent_type: "committer" } }
+        )
+      ).rejects.toThrow(/Override active: target EXPLORE \(3\), queue \[3,5\] — 2 hops remaining/);
+
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID: "ov2" },
+          { args: { prompt: "DISPATCH TO: committer", subagent_type: "committer" } }
+        );
+        throw new Error("expected a WRONG_AGENT refusal");
+      } catch (e) {
+        expect(e.code).toBe("WRONG_AGENT");
+        expect(e.message).toContain("Override active");
+      }
+    });
+
+    it("names the terminal status of a one-element override queue in a refusal", async () => {
+      const s = sid("override-refusal-terminal");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3,5" }, { parts: [] });
+      createKD(`exploration-refuse-${s}.md`);
+      await tick(s, "ov3");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5]);
+
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "task", sessionID: s, callID: "ov4" },
+          { args: { prompt: "DISPATCH TO: inspector", subagent_type: "inspector" } }
+        )
+      ).rejects.toThrow(/Override active: target ALIGN \(5\), queue \[5\] — terminal hop — 1 remaining \(queue exhausted after this hop\)/);
+    });
+
+    it("keeps every override-marker clear path explicit — origin-return, explicit clear, backward transition, or REPORT reset", () => {
+      const src = readFileSync(join(process.cwd(), "plugins", "protocol-gate", "index.js"), "utf8");
+      // The advancement check is a pure query: it never deletes the marker on
+      // exhaustion. Clearing happens only in the post-advance block
+      // (origin-return), the explicit /phase clear block, the
+      // backward-transition block, and the REPORT reset.
+      const checkDiskStart = src.indexOf("function checkDiskAdvancement(");
+      const checkDiskEnd = src.indexOf("function checkPhaseStateConsistency(", checkDiskStart);
+      expect(checkDiskStart).toBeGreaterThan(-1);
+      expect(checkDiskEnd).toBeGreaterThan(checkDiskStart);
+      const checkDiskBody = src.slice(checkDiskStart, checkDiskEnd);
+      expect(checkDiskBody).not.toContain("sessionPhaseMap.delete");
+      expect(checkDiskBody).not.toContain("sessionPhaseMap.set");
+      // The terminal-hop exemption is spelled out in the gate body it governs.
+      expect(checkDiskBody).toContain("registry-mtime freshness anchor not applied");
+    });
+  });
+
   describe("/phase generation suffix, explicit clear, and override record", () => {
     it("strips a trailing generation suffix while leaving plain args untouched", () => {
       expect(hooks.stripGenerationSuffix("align gen1")).toEqual({ rest: "align", generation: 1 });

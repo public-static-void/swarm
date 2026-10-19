@@ -206,7 +206,7 @@ const ERROR_TEMPLATES = {
   CYCLE_LIMIT_EXCEEDED: { code: "CYCLE_LIMIT_EXCEEDED", message: "❌ ERROR: Backward transition cycle limit exceeded. Escalate to user", guidance: "Escalate to user" },
   FABRICATED_SECTION: { code: "FABRICATED_SECTION", message: "❌ FABRICATED: Intent KD contains fabricated section. Follow the intent template exactly", guidance: "Follow the intent template exactly — Raw Request, Triage Notes, Next Steps, Process Friction only" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
-  GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, commands/, opencode.json) or `git add .` to stage all non-ignored changes" },
+  GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, opencode.json) or `git add .` to stage all non-ignored changes" },
   SHELL_DENIED_ATTRIBUTED: { code: "SHELL_DENIED_ATTRIBUTED", message: "SHELL DENIED (attributed — see message)", guidance: "Follow the Try next line in the message" },
   INTENT_BOUNDARY_CLOSED: { code: "INTENT_BOUNDARY_CLOSED", message: "❌ INTENT BOUNDARY CLOSED: write/edit of intent-*.md outside INTENT", guidance: "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md" }
 };
@@ -2354,6 +2354,49 @@ function getOverrideTargetPhase(overrideUntil) {
   return null;
 }
 
+// True when the active override is the terminal hop of a multi-phase queue —
+// a one-element `phases` array. The marker SHAPE is the distinction from a
+// genuine single-phase pin: a plan re-armed to its last hop still carries
+// `phases`, while a user pin carries `phase`. Conflating them either parks the
+// lifecycle behind an anchor SWARM never satisfies or auto-clears a pin the
+// user owns (contract #5).
+function isTerminalOverrideHop(overrideUntil) {
+  return !!overrideUntil && Array.isArray(overrideUntil.phases) && overrideUntil.phases.length === 1;
+}
+
+// Names the override/queue state for a refusal: the phase the override pins,
+// the remaining hop queue, and whether this is the terminal hop of a plan or a
+// single-phase pin. Returns null when no override pins the given phase, so
+// non-override refusals keep their unchanged message.
+function describeOverrideState(sessionPhaseMap, sessionID, phase) {
+  const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
+  if (!overrideUntil || getOverrideTargetPhase(overrideUntil) !== phase) return null;
+  const target = `${getPhaseName(phase)} (${phase})`;
+  if (Array.isArray(overrideUntil.phases)) {
+    const hops = overrideUntil.phases.length;
+    const status = hops > 1
+      ? `${hops} hops remaining`
+      : "terminal hop — 1 remaining (queue exhausted after this hop)";
+    return `Override active: target ${target}, queue [${overrideUntil.phases.join(",")}] — ${status}.`;
+  }
+  return `Override active: single-phase pin at target ${target} — clears on fresh evidence or an explicit /phase clear.`;
+}
+
+// WRONG_AGENT refusal augmented with the override state when an override pins
+// the current phase. A parked lifecycle therefore names its own cause (active
+// override, target phase, remaining hops or terminal status) instead of
+// returning an undifferentiated wrong-agent error.
+function wrongAgentRefusal(sessionPhaseMap, sessionID, phase, expectedAgent) {
+  const template = ERROR_TEMPLATES.WRONG_AGENT(expectedAgent);
+  const overrideState = describeOverrideState(sessionPhaseMap, sessionID, phase);
+  if (!overrideState) return template;
+  return {
+    code: template.code,
+    message: `${template.message}. ${overrideState}`,
+    guidance: `${template.guidance} — ${overrideState}`
+  };
+}
+
 // Bounded stat — returns the file's mtimeMs or -1 on failure. Only candidate
 // files that already match the phase prefix are stat'd, so the override
 // freshness check stays within the bounded-work budget (single readdir +
@@ -2523,11 +2566,19 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     const gate = checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap);
     let result = gate.ok;
     let overrideNote = "";
-    if (result && overrideActive) {
+    if (result && overrideActive && !isTerminalOverrideHop(overrideUntil)) {
       const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
       const registryMtime = registry ? getFileMtimeMs(registry.path) : -1;
       result = registryMtime >= overrideUntil.since;
       overrideNote = `, override fresh-evidence: registry mtime=${registryMtime} >= since=${overrideUntil.since} → ${result}`;
+    } else if (overrideActive && isTerminalOverrideHop(overrideUntil)) {
+      // A terminal override hop completes on its ordinary advancement gate.
+      // SWARM does not author the registry (a checked-off row is never
+      // rewritten), so the registry-mtime anchor can never be satisfied at a
+      // terminal SWARM hop — applying it would park the documented
+      // origin-return permanently. A genuine single-phase pin keeps the anchor
+      // (contract #5), handled by the branch above.
+      overrideNote = ", terminal override hop — registry-mtime freshness anchor not applied";
     }
     debug(`Disk check SWARM: all-checked-off gate → ${gate.ok} (${gate.checkedOff}/${gate.total})${overrideNote}`);
     return result;
@@ -4736,7 +4787,8 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                 const expectedAgent = currentPhaseAgent || phaseName;
                 debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent}) — BACKWARD: true required for backward transition`);
                 watchBlockedSwarmDispatch(sessionID, phase);
-                throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+                const refusal = wrongAgentRefusal(sessionPhaseMap, sessionID, phase, expectedAgent);
+                throw new ProtocolGateError(refusal.code, refusal.message, refusal.guidance);
               }
             } else {
               // Wrong agent — not current phase, not a valid backward target
@@ -4749,7 +4801,8 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
               const expectedAgent = currentPhaseAgent || phaseName;
               debug(`task: BLOCKED wrong agent=${agentName} in phase=${phaseName} (expected: ${expectedAgent})`);
               watchBlockedSwarmDispatch(sessionID, phase);
-              throw new ProtocolGateError(ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).code, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).message, ERROR_TEMPLATES.WRONG_AGENT(expectedAgent).guidance);
+              const refusal = wrongAgentRefusal(sessionPhaseMap, sessionID, phase, expectedAgent);
+              throw new ProtocolGateError(refusal.code, refusal.message, refusal.guidance);
             }
           }
         }

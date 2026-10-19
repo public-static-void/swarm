@@ -103,7 +103,7 @@ Overall acceptance criteria pass rate.
 
 - **Passed**: X / Y criteria
 - **Percentage**: XX%
-- **Blocking failures**: list any ACs that failed with REJECT verdict
+- **Blocking failures**: list any ACs that failed with FAIL verdict
 
 ## Process Friction
 

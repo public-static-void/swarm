@@ -29,3 +29,9 @@ superseded_by: null
 - **Domain familiarity**: TBD — filled by Overseer at creation.
 - **Clarity**: TBD — filled by Overseer at creation.
 - **Estimated scope**: TBD — Explorer will assess after dispatch.
+
+### Injected issues (Knowledge Gate)
+
+_Include this subsection when the Knowledge Gate injects open issues; omit it otherwise._
+
+- `{{store/id}}` — {{issue summary}}. Recommendation: {{address in this session / defer}}.

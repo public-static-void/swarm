@@ -393,7 +393,10 @@ function extractFromText(text, fields, override = false) {
     // underscore/lowercase variants (intent_kd, session_date). The alternation
     // lists every recognized field; the key is normalized (lowercase,
     // spaces/dots → underscores) so SESSION ID → session_id.
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|TASK[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BASELINE[. _]BRANCH|HEAD[. _]SHA|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    // Leading indentation is tolerated: optional fields carry no required-field
+    // check, so a line the extractor skips renders as an empty header with no
+    // error at all. Indentation must not cost a field silently.
+    const match = line.match(/^[ \t]*(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|TASK[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BASELINE[. _]BRANCH|HEAD[. _]SHA|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       let key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       const assigned = override || !fields[key];
@@ -619,11 +622,13 @@ function isBareKDPath(prompt) {
 // Mirrors protocol-gate's collectMilestoneIds so both gates agree on
 // cardinality. A comma inside a single value means multiple milestones were
 // crammed into one field; both cases are rejected as MULTI_MILESTONE.
+// Leading indentation is tolerated for the same reason the field extractor
+// tolerates it: the cardinality check and the field matcher read one grammar.
 function collectMilestoneIds(prompt) {
   if (typeof prompt !== "string") return [];
   const ids = [];
   for (const line of prompt.split("\n")) {
-    const match = line.match(/^(?:#{1,6}\s*)?(?:\*\*)?MILESTONE[. _]ID(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^[ \t]*(?:#{1,6}\s*)?(?:\*\*)?MILESTONE[. _]ID(?:\*\*)?:\s*(.*)/i);
     if (match) {
       const value = match[1].trim().replace(/\*\*/g, "").trim();
       if (value) ids.push(value);

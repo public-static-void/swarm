@@ -104,13 +104,6 @@ Phase Output ──► Gate ──► Next Phase
 - [ ] Checkpoint commits exist per step
 - [ ] IMPLEMENTATION SUMMARY KD documents deviations
 
-### Integration Gate (after INTEGRATE)
-
-- [ ] All parallel branches merged
-- [ ] Conflicts resolved
-- [ ] Integration tests pass
-- [ ] No regressions detected
-
 ## Verification Process
 
 1. Inspector reads SPEC (requirements) + PLAN (steps) + artifact
@@ -145,7 +138,7 @@ VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the ful
 
 | Verdict     | Meaning                 | Machine behavior                                                                                                                      |
 | ----------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| PASS        | All criteria met, clean | VERIFY advances to the next phase (presence-based)                                                                                    |
+| PASS        | All criteria met, clean | VERIFY advances under the fresh-PASS rule — the review KD must be newer than the newest impl KD; a stale PASS blocks |
 | FAIL        | Specific fixable issues | The gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; the producer fixes the findings and re-submits |
 | FUNDAMENTAL | Design-level flaw       | The gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
 

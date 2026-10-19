@@ -10,7 +10,7 @@ version: 1.0.0
 status: draft
 type: analysis
 session_id: "{{session_id}}"
-author: Explorer/Analyzer
+author: Analyzer
 superseded_by: null
 ---
 

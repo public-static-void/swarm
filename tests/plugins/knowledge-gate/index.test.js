@@ -20,8 +20,10 @@ let tempRoot;
 let MEMORY_DIR;
 let ISSUES_DIR;
 let SHORT_TERM_DIR;
+let PHASE_STATE_DIR;
 let kgLogDir;
 let priorKgLogDir;
+let priorPhaseStateDir;
 let pluginModule;
 let hooks;
 
@@ -77,6 +79,13 @@ describe("Knowledge-Gate Plugin", () => {
     process.env.KNOWLEDGE_GATE_MEMORY_DIR = MEMORY_DIR;
     process.env.KNOWLEDGE_GATE_ISSUES_DIR = ISSUES_DIR;
     process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR = SHORT_TERM_DIR;
+    // Phase state seam: the plugin reads the protocol-gate session file
+    // through PROTOCOL_GATE_STATE_DIR at transform call time. A per-run temp
+    // dir keeps phase-scoping tests off the real lifecycle state.
+    PHASE_STATE_DIR = join(tempRoot, "protocol-state");
+    mkdirSync(PHASE_STATE_DIR, { recursive: true });
+    priorPhaseStateDir = process.env.PROTOCOL_GATE_STATE_DIR;
+    process.env.PROTOCOL_GATE_STATE_DIR = PHASE_STATE_DIR;
     // Log isolation: point KNOWLEDGE_GATE_LOG_DIR at a per-run temp dir so
     // debug writes never append to the real log file on disk.
     // The module-level _logFile cache binds to the temp path on first use —
@@ -99,6 +108,11 @@ describe("Knowledge-Gate Plugin", () => {
     mkdirSync(MEMORY_DIR, { recursive: true });
     mkdirSync(ISSUES_DIR, { recursive: true });
     mkdirSync(SHORT_TERM_DIR, { recursive: true });
+    // Phase state starts unknown each test; a test that needs INTENT or a
+    // non-INTENT phase writes its own state file.
+    rmSync(PHASE_STATE_DIR, { recursive: true, force: true });
+    mkdirSync(PHASE_STATE_DIR, { recursive: true });
+    process.env.PROTOCOL_GATE_STATE_DIR = PHASE_STATE_DIR;
     // Env overrides are read at transform call time — reset them
     // per test so no cap/audience leaks between tests. The dir overrides set
     // in beforeAll are deliberately left untouched.
@@ -115,6 +129,8 @@ describe("Knowledge-Gate Plugin", () => {
     delete process.env.KNOWLEDGE_GATE_MEMORY_DIR;
     delete process.env.KNOWLEDGE_GATE_ISSUES_DIR;
     delete process.env.KNOWLEDGE_GATE_SHORT_TERM_DIR;
+    if (priorPhaseStateDir === undefined) delete process.env.PROTOCOL_GATE_STATE_DIR;
+    else process.env.PROTOCOL_GATE_STATE_DIR = priorPhaseStateDir;
     if (priorKgLogDir === undefined) delete process.env.KNOWLEDGE_GATE_LOG_DIR;
     else process.env.KNOWLEDGE_GATE_LOG_DIR = priorKgLogDir;
     rmSync(tempRoot, { recursive: true, force: true });
@@ -705,6 +721,15 @@ Body`;
       const intentHint = output =>
         output.system.find(s => s.includes("Open issues from all stores detected"));
 
+      // The directive is phase-scoped, so a test that asserts it or its
+      // absence writes the persisted lifecycle state the plugin reads.
+      function writePhaseState(sessionID, phase) {
+        writeFileSync(
+          join(PHASE_STATE_DIR, `.protocol-state-${sessionID}.json`),
+          JSON.stringify({ phase, generation: 0, timestamp: Date.now() })
+        );
+      }
+
       it("injects open issues in the stable line format for the overseer", async () => {
         writeEntries(ISSUES_DIR, [
           addIssueFile(2, { severity: "medium", title: "Format check issue", assigned_to: "inspector" })
@@ -719,7 +744,53 @@ Body`;
         const hint = intentHint(output);
         expect(hint).toBeTruthy();
         expect(hint).toContain("- [swarm/ISSUE-002] (medium) Format check issue — assigned to inspector");
-        expect(hint).toContain("Triage Notes");
+        // No phase state for this session: the snapshot lands, the directive
+        // stays suppressed because the phase is unknown.
+        expect(hint).not.toContain("Triage Notes");
+      });
+
+      it("emits the directive at INTENT and omits it at a non-INTENT phase", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(4, { severity: "high", title: "Phase-scoped issue" })
+        ]);
+
+        writePhaseState("intent-session", 1);
+        const intentOutput = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "intent-session", agent: "overseer" },
+          intentOutput
+        );
+        const intentBlock = intentHint(intentOutput);
+        expect(intentBlock).toContain("<!-- issues-snapshot v1: 2 open, stable order -->");
+        expect(intentBlock).toContain("Include these in the Triage Notes section of your intent KD.");
+
+        writePhaseState("swarm-session", 7);
+        const swarmOutput = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "swarm-session", agent: "overseer" },
+          swarmOutput
+        );
+        const swarmBlock = intentHint(swarmOutput);
+        expect(swarmBlock).toContain("<!-- issues-snapshot v1: 2 open, stable order -->");
+        expect(swarmBlock).not.toContain("Include these");
+        expect(swarmBlock).not.toContain("Triage Notes");
+      });
+
+      it("keeps the snapshot and suppresses the directive when phase state is unreadable", async () => {
+        writeEntries(ISSUES_DIR, [
+          addIssueFile(5, { severity: "medium", title: "Corrupt state issue" })
+        ]);
+        writeFileSync(join(PHASE_STATE_DIR, ".protocol-state-corrupt-session.json"), "{not json");
+
+        const output = { system: [] };
+        await hooks["experimental.chat.system.transform"](
+          { sessionID: "corrupt-session", agent: "overseer" },
+          output
+        );
+
+        const hint = intentHint(output);
+        expect(hint).toContain("<!-- issues-snapshot v1: 2 open, stable order -->");
+        expect(hint).not.toContain("Triage Notes");
       });
 
       it("excludes resolved and closed issues from overseer injection", async () => {

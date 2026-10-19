@@ -39,19 +39,26 @@ export const PHASE_INSTRUCTIONS = {
   REPORT: "Write a report KD summarizing lifecycle results. Include any corrections and amendments from the lifecycle (e.g., Correction sections) in the report content."
 };
 
+// The short-term note family is phase-agnostic on purpose. The short-term store
+// is the durable carrier for state that must survive a compaction, and the
+// knowledge-gate advertises its resume read (`memory_note_read`) to every agent
+// on every call — so a phase that admits the write without the read would leave
+// a note no phase can retrieve. Admit the whole family everywhere; the store's
+// own ownership rules (owner-only reads, Scribe's promotion scan) stay with the
+// knowledge-gate, not the phase layer.
 export const TOOL_ALLOWLIST = {
-  INTENT: ["write", "edit", "read", "skill", "shell", "memory_search"],
-  PREFLIGHT: ["subagent", "glob", "shell", "memory_search", "skill"],
-  EXPLORE: ["subagent", "glob", "memory_search", "skill"],
-  INVESTIGATE: ["subagent", "glob", "memory_search", "skill"],
-  ALIGN: ["subagent", "glob", "memory_search", "skill"],
-  DECOMPOSE: ["subagent", "glob", "read", "memory_search", "skill"],
-  SWARM: ["subagent", "glob", "read", "skill", "memory_search"],
-  VERIFY: ["subagent", "glob", "read", "memory_search", "skill"],
-  EXTRACT: ["subagent", "glob", "memory_search", "skill"],
-  EVOLVE: ["subagent", "glob", "memory_search", "skill"],
-  CLEANUP: ["subagent", "glob", "shell", "memory_search", "skill"],
-  REPORT: ["edit", "read", "write", "skill", "memory_search"]
+  INTENT: ["write", "edit", "read", "skill", "shell", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search"],
+  PREFLIGHT: ["subagent", "glob", "shell", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  EXPLORE: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  INVESTIGATE: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  ALIGN: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  DECOMPOSE: ["subagent", "glob", "read", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  SWARM: ["subagent", "glob", "read", "skill", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search"],
+  VERIFY: ["subagent", "glob", "read", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  EXTRACT: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  EVOLVE: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  CLEANUP: ["subagent", "glob", "shell", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  REPORT: ["edit", "read", "write", "skill", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search"]
 };
 
 // Tools that are never phase-blocked because they carry or delegate work: the
