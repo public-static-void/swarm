@@ -1390,6 +1390,15 @@ RESULT KD: knowledge/checkpoint-provenance-ses_abc123-gen0.md`;
       expect(output.args.prompt).toContain("HEAD SHA: 8a6fea9");
     });
 
+    it("states the swarm-only scope of the exempt field in the dispatcher hint", async () => {
+      // The guard exempts MILESTONE ID from the shared mode-agnostic example on
+      // the ground that the dispatcher hint marks it swarm-only, so the hint is
+      // where that exemption is anchored.
+      const output = { description: "Delegate work to another agent." };
+      await hooks["tool.definition"]({ toolID: "task" }, output);
+      expect(output.description).toMatch(/MILESTONE ID:[^\n]*swarm mode only/);
+    });
+
     it("keeps the swarm dispatch contract intact for an indented milestone field", async () => {
       const prompt = `DISPATCH TO: artisan
 MODE: swarm
