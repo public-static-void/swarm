@@ -9,8 +9,8 @@
 // 1. memory_search tool — agents query knowledge/memory/ for prior insights
 // 2. Issue scanning — detects high-severity open issues during EVOLVE phase,
 //    triggers backward transitions via protocol-gate
-// 3. INTENT phase issue surfacing — scans knowledge/issues/ for open items
-//    and injects them into the Overseer's system prompt for Triage Notes
+// 3. Issue surfacing — scans knowledge/issues/ for open items in every phase
+//    and appends the Triage-Notes directive only while the phase is INTENT
 //
 // Debug enablement (sentinel-first): set KNOWLEDGE_GATE_DEBUG=1 in the
 // environment to enable, or create the `.debug` sentinel file next to the
@@ -761,7 +761,7 @@ function parseQuotedValue(raw) {
 
 /**
  * Scans knowledge/issues/ for ALL open issues (any severity).
- * Used during INTENT phase to surface prior-session issues to the Overseer.
+ * Feeds the Overseer's cross-phase issue snapshot and the EVOLVE close loop.
  *
  * @param {object} [options]
  * @param {number} [options.cap] - positive integer → return at most `cap`
@@ -812,6 +812,29 @@ function envOpenIssueCap() {
   if (raw === "0") return 0;
   const n = Number(raw);
   return Number.isInteger(n) && n > 0 ? n : 10;
+}
+
+// INTENT is phase 1 in the protocol-gate STATES enum — the intent KD is the
+// only artifact the Triage-Notes directive asks the Overseer to write.
+const INTENT_PHASE = 1;
+
+// The knowledge-gate owns no lifecycle state, so the persisted protocol-gate
+// session file is read read-only at transform time. Any missing, unreadable,
+// or unparsable state leaves the phase unknown (null); callers treat null as
+// non-INTENT rather than guessing from a file's presence.
+function readLifecyclePhase(sessionID) {
+  const safe = sanitizeToken(sessionID);
+  if (!safe) return null;
+  const stateDir = process.env.PROTOCOL_GATE_STATE_DIR
+    ? resolve(process.env.PROTOCOL_GATE_STATE_DIR)
+    : join(PLUGIN_DIR, "..", "protocol-gate", ".state");
+  try {
+    const state = JSON.parse(readFileSync(join(stateDir, `.protocol-state-${safe}.json`), "utf8"));
+    return typeof state?.phase === "number" ? state.phase : null;
+  } catch (e) {
+    debug(`readLifecyclePhase: phase unknown for session="${sessionID}": ${e.message}`);
+    return null;
+  }
 }
 
 // Opt-in audience routing for the overseer INTENT injection, read at
@@ -2800,10 +2823,12 @@ async function knowledgeGateServer(input, options) {
         }
       }
 
-      // On every Overseer systemTransform (not phase-gated), scan for open issues from
-      // workspace-relevant stores and surface them in Triage Notes. The guard is
-      // agent === "overseer" only — injection is intentionally NOT phase-gated,
-      // so issues stay visible across the whole lifecycle. Workspace-aware: config
+      // On every Overseer systemTransform, scan for open issues from
+      // workspace-relevant stores and surface them. The snapshot stays
+      // visible across the whole lifecycle so prior findings are never lost
+      // mid-lifecycle; the Triage-Notes directive is phase-scoped because the
+      // intent KD is writable only at INTENT. An unreadable phase suppresses
+      // the directive while preserving the snapshot. Workspace-aware: config
       // dir sees swarm+generic; other project sees generic+project.
       // The injected set is bounded (KNOWLEDGE_GATE_MAX_OPEN_ISSUES cap,
       // default 10) and optionally routed (KNOWLEDGE_GATE_ISSUE_AUDIENCE filter);
@@ -2814,7 +2839,8 @@ async function knowledgeGateServer(input, options) {
         const filtered = filterByAudience(scanned, process.env.KNOWLEDGE_GATE_ISSUE_AUDIENCE);
         const capped = applyCap(filtered, envOpenIssueCap());
         const injected = capped.length;
-        debug(`systemTransform: Overseer issue scan — scanned=${scanned.length} filtered=${filtered.length} capped=${capped.length} injected=${injected}`);
+        const phase = readLifecyclePhase(sessionID);
+        debug(`systemTransform: Overseer issue scan — scanned=${scanned.length} filtered=${filtered.length} capped=${capped.length} injected=${injected} phase=${phase ?? "unknown"}`);
         if (injected > 0) {
           const issueSummary = capped.map(i =>
             `- [${i.scope}/${i.id}] (${i.severity}) ${i.title} — assigned to ${i.assigned_to || "unassigned"}`
@@ -2823,13 +2849,16 @@ async function knowledgeGateServer(input, options) {
           // {count} equals the number of lines actually injected (post
           // audience-filter/cap) so an INTENT KD transcription can be verified
           // against the issue registry.
+          const directive = phase === INTENT_PHASE
+            ? `\nInclude these in the Triage Notes section of your intent KD. ` +
+              `Reference the issue IDs and recommend which ones to address in this session.`
+            : "";
           output.system.push(
             `[Knowledge Gate] Open issues from all stores detected:\n` +
-            `<!-- issues-snapshot v1: ${injected} open, stable order -->\n${issueSummary}\n` +
-            `Include these in the Triage Notes section of your intent KD. ` +
-            `Reference the issue IDs and recommend which ones to address in this session.`
+            `<!-- issues-snapshot v1: ${injected} open, stable order -->\n${issueSummary}` +
+            directive
           );
-          debug(`INTENT: surfaced ${injected} open issues to Overseer`);
+          debug(`issue snapshot: surfaced ${injected} open issues to Overseer (directive ${directive ? "included" : "suppressed"})`);
         }
       }
     }
