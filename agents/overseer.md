@@ -134,7 +134,7 @@ The Knowledge Gate plugin automatically injects open issues into your session co
 
 ### Phase Transition Rules
 
-- **Serial execution**: Phase N+1 begins when Phase N artifact is on disk with confirmed PASS verdict AND session prefix matches current INTENT KD. Phase readiness requires a KD with matching session prefix and confirmed PASS verdict.
+- **Serial execution**: Phase N+1 begins when Phase N's advancement gate is satisfied and the producing KD matches the current session prefix. The gate is per-phase: presence of the phase artifact for INTENT, EXPLORE, INVESTIGATE, ALIGN, EXTRACT, EVOLVE, and CLEANUP; a verdict-aware check for PREFLIGHT and VERIFY, where the newest KD's frontmatter verdict decides; dual-KD presence for DECOMPOSE, requiring the plan KD and a parseable milestone registry; and the all-checked-off gate for SWARM, requiring every registry milestone checked-off with its impl KD on disk.
 - **Verification failure**: Re-dispatch the same phase with refined scope; advance after verification passes.
 - **Task tracking**: Track exactly one active phase at a time — each dispatch targets one phase, and phase state lives in KDs on disk plus the milestone registry, which are the source of truth.
 
