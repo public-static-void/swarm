@@ -1281,6 +1281,134 @@ describe("agents delegation dispatch docs", () => {
   });
 });
 
+// The overseer's field example is the grammar the dispatcher copies, and the
+// delegation-gate extractor is what reads that copy at dispatch time. A KEY
+// line the extractor does not recognize is dropped from the rendered dispatch
+// without an error, so the example's anchoring and its key set are one contract
+// with the shipped alternation. Both sides are read from disk and compared.
+//
+// The block's column zero sits at the fence's own indentation: Markdown strips
+// the fence prefix from the content, so the guard measures indentation relative
+// to it rather than to the raw line start.
+function fieldExampleLines(markdown) {
+  for (const m of markdown.matchAll(/^([ \t]*)```[^\n]*\n([\s\S]*?)^\1```/gm)) {
+    const indent = m[1];
+    const lines = m[2]
+      .split("\n")
+      .map((line) => (line.startsWith(indent) ? line.slice(indent.length) : line));
+    if (lines.some((line) => /^MODE:\s/.test(line))) return lines;
+  }
+  return null;
+}
+
+// Keys as the example spells them: an uppercase KEY followed by `: `.
+function fieldExampleKeys(lines) {
+  return lines
+    .map((line) => line.match(/^([A-Z][A-Z ]*?):\s/))
+    .filter(Boolean)
+    .map((m) => m[1]);
+}
+
+// The extractor's recognized key alternation, read out of the plugin source so
+// the guard follows the shipped grammar instead of a second hand-kept list.
+function extractorFieldKeys() {
+  const source = readRoot(join("plugins", "delegation-gate", "index.js"));
+  const match = source.match(/\((MODE\|MILESTONE\[\. _\]ID\|[^)]*)\)/);
+  if (!match) return [];
+  return match[1]
+    .split("|")
+    .map((key) => key.replace(/\[\. _\]/g, " ").trim())
+    .filter(Boolean);
+}
+
+// Swarm-only recognized field: the dispatcher hint marks it "swarm mode only"
+// and the extractor's shared block is mode-agnostic, so its documentation lives
+// with the swarm dispatch path rather than in the shared example.
+const SWARM_ONLY_FIELDS = ["MILESTONE ID"];
+
+describe("delegation provenance field example", () => {
+  const overseer = readAgent("overseer.md");
+
+  it("anchors every KEY line of the field example at column zero", () => {
+    const lines = fieldExampleLines(overseer);
+    expect(lines, "overseer.md must carry the field example fenced block").toBeTruthy();
+    const indented = lines.filter((line) => /^[ \t]+[A-Z][A-Z ]*?:\s/.test(line));
+    expect(indented).toEqual([]);
+  });
+
+  it("keeps the example key set aligned with the extractor alternation", () => {
+    const lines = fieldExampleLines(overseer);
+    const exampleKeys = new Set(fieldExampleKeys(lines));
+    const extractorKeys = new Set(extractorFieldKeys());
+    expect(extractorKeys.size).toBeGreaterThan(0);
+
+    // A copied example line the extractor cannot match renders empty.
+    const unrecognized = [...exampleKeys].filter((key) => !extractorKeys.has(key));
+    expect(unrecognized).toEqual([]);
+
+    // A recognized shared field the example omits silently drops on copy.
+    const undocumented = [...extractorKeys].filter(
+      (key) => !exampleKeys.has(key) && !SWARM_ONLY_FIELDS.includes(key)
+    );
+    expect(undocumented).toEqual([]);
+  });
+
+  describe("leading-space provenance", () => {
+    let hooks;
+    let logDir;
+    let priorLogDir;
+
+    beforeAll(async () => {
+      priorLogDir = process.env.DELEGATION_GATE_LOG_DIR;
+      logDir = mkdtempSync(join(tmpdir(), "provenance-guard-"));
+      process.env.DELEGATION_GATE_LOG_DIR = logDir;
+      hooks = await pluginModule.server({}, {});
+    });
+
+    afterAll(() => {
+      if (priorLogDir === undefined) delete process.env.DELEGATION_GATE_LOG_DIR;
+      else process.env.DELEGATION_GATE_LOG_DIR = priorLogDir;
+      rmSync(logDir, { recursive: true, force: true });
+    });
+
+    it("carries provenance values into the rendered dispatch when the lines are indented", async () => {
+      // Provenance is optional, so an unextracted line renders as an empty
+      // header with no error — the silent drop this case pins.
+      const prompt = `DISPATCH TO: committer
+MODE: checkpoint
+SESSION DATE: 2026-10-19
+SESSION ID: ses_abc123
+GENERATION: 0
+ BASELINE BRANCH: fix/example-branch
+ HEAD SHA: 8a6fea9
+SCOPE: Checkpoint commit for the provenance guard
+RESULT KD: knowledge/checkpoint-provenance-ses_abc123-gen0.md`;
+
+      const output = { args: { prompt, subagent_type: "committer" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc123", callID: "c1" }, output);
+      expect(output.args.prompt).toContain("BASELINE BRANCH: fix/example-branch");
+      expect(output.args.prompt).toContain("HEAD SHA: 8a6fea9");
+    });
+
+    it("keeps the swarm dispatch contract intact for an indented milestone field", async () => {
+      const prompt = `DISPATCH TO: artisan
+MODE: swarm
+ MILESTONE ID: M3
+INTENT KD: knowledge/intent-example-ses_abc123-gen0.md
+SESSION DATE: 2026-10-19
+SESSION ID: ses_abc123
+GENERATION: 0
+SCOPE: Execute milestone M3
+RESULT KD: knowledge/impl-M3-example-ses_abc123-gen0.md`;
+
+      const output = { args: { prompt, subagent_type: "artisan" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc123", callID: "c2" }, output);
+      expect(output.args.prompt).toContain("MILESTONE ID: M3");
+      expect(output.args.prompt).toContain("RESULT KD: knowledge/impl-M3-example-ses_abc123-gen0.md");
+    });
+  });
+});
+
 describe("planning shape and scribe composition discipline", () => {
   const scribe = readAgent("scribe.md");
 
