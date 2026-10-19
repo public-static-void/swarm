@@ -73,7 +73,7 @@ Ground rules live in `AGENTS.md`; agent-specific knowledge lives in the agent fi
 
 ## Running the Tests
 
-The suite runs via `npx vitest run` from the repository root — the canonical invocation. package.json ships with an `audit` script only; the vitest config pins collection to `tests/**` and excludes the vendored `references/` tree, so a root-level run collects exactly the swarm suite and reports its true signal.
+The suite runs via `npx vitest run` from the repository root — the canonical invocation. package.json ships with an `audit` script only; the vitest config pins collection to `tests/**`, so a root-level run collects exactly the swarm suite and reports its true signal.
 
 ## Running the Security Gate
 
@@ -105,4 +105,4 @@ Point a `*_LOG_DIR` variable at any directory to redirect that plugin's log ther
 
 ## The Git Contract
 
-git tracks swarm config: `AGENTS.md`, `agents/`, `skills/`, `plugins/`, `tests/`, `commands/`, `opencode.json`. `knowledge/` is workflow meta and stays gitignored. Verification is tree-level — working tree and tracked diffs — using the standard git workflow with hooks enabled. A version-controlled pre-commit hook (`.githooks/pre-commit`, wired via `core.hooksPath` set by the `prepare` script on `npm install`) runs the repo gates — `npx vitest run` + `npx eslint -c eslint.security.config.mjs` — automatically at commit time and fails the commit when a gate fails. The Committer stays git-only; manual gate runs are the Artisan's job.
+git tracks swarm config: `AGENTS.md`, `agents/`, `skills/`, `plugins/`, `tests/`, `opencode.json`. `knowledge/` is workflow meta and stays gitignored. Verification is tree-level — working tree and tracked diffs — using the standard git workflow with hooks enabled. A version-controlled pre-commit hook (`.githooks/pre-commit`, wired via `core.hooksPath` set by the `prepare` script on `npm install`) runs the repo gates — `npx vitest run` + `npx eslint -c eslint.security.config.mjs` — automatically at commit time and fails the commit when a gate fails. The Committer stays git-only; manual gate runs are the Artisan's job.
