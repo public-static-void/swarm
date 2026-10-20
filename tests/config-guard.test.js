@@ -1154,6 +1154,49 @@ describe("memory tool ownership", () => {
   });
 });
 
+// The read side of the memory family is a grant every agent holds: the
+// knowledge-gate advertises memory_search to all agents, so a missing or
+// duplicated allow in any definition is a layer disagreement that would only
+// surface later as an unexplained absent tool.
+describe("memory_search reachability", () => {
+  const files = agentFiles();
+
+  function memorySearchAllows(content) {
+    return permissionRules(content).filter((r) => r.action === "memory_search" && r.effect === "allow");
+  }
+
+  it("grants memory_search exactly once in every agent definition", () => {
+    expect(files).toEqual([
+      "analyzer.md",
+      "artisan.md",
+      "committer.md",
+      "explorer.md",
+      "habit-builder.md",
+      "inspector.md",
+      "overseer.md",
+      "pathfinder.md",
+      "scribe.md",
+      "spec-weaver.md",
+    ]);
+    for (const file of files) {
+      expect(memorySearchAllows(readAgent(file)), file).toHaveLength(1);
+    }
+  });
+
+  it("fails when the grant is removed or duplicated", () => {
+    const content = readAgent("artisan.md");
+    const match = content.match(/- action: memory_search\n\s*resource: [^\n]*\n\s*effect: allow\n/);
+    expect(match).toBeTruthy();
+
+    const removed = content.replace(match[0], "");
+    expect(removed).not.toBe(content);
+    expect(memorySearchAllows(removed)).toHaveLength(0);
+
+    const duplicated = content.replace(match[0], match[0] + match[0]);
+    expect(memorySearchAllows(duplicated)).toHaveLength(2);
+  });
+});
+
 describe("agents delegation dispatch docs", () => {
   const files = agentFiles();
 
