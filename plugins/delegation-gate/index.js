@@ -78,8 +78,7 @@ const ERRORS = {
   MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
   INVALID_MILESTONE_ID: { code: "INVALID_MILESTONE_ID", message: "Invalid MILESTONE ID format", guidance: "MILESTONE ID must match /^[A-Za-z0-9][A-Za-z0-9_-]*$/" },
-  INVALID_TASK_ID: { code: "INVALID_TASK_ID", message: "TASK ID equals the dispatching SESSION ID", guidance: "TASK ID is a subagent resume handle set on the subagent call's sessionID argument, and SESSION ID is the lifecycle session — reuse the prior artisan handle or omit TASK ID for a fresh instance" },
-  CONFLICTING_RESUME_HANDLE: { code: "CONFLICTING_RESUME_HANDLE", message: "TASK ID conflicts with the sessionID already set on the subagent call", guidance: "Pass one resume handle: either drop the preset sessionID or make it equal the TASK ID — the gate never overwrites an explicit sessionID" },
+  INVALID_TASK_ID: { code: "INVALID_TASK_ID", message: "Resume handle equals the dispatching SESSION ID", guidance: "The subagent call's sessionID argument is the resume handle and SESSION ID is the lifecycle session — pass the prior call's sessionID to reuse the same instance, or omit it for a fresh one" },
 
   RESULT_KD_MILESTONE_MISMATCH: { code: "RESULT_KD_MILESTONE_MISMATCH", message: "Swarm result KD does not match the MILESTONE ID", guidance: "Name the impl KD knowledge/impl-<milestone-id>-<name>-<session-id>[-gen{N}].md with the dispatched MILESTONE ID as the first token after impl-" }
 };
@@ -351,7 +350,7 @@ function loadTemplates(config) {
     const intentKdLine = mode === "cleanup" || mode === "checkpoint" ? "" : "INTENT KD: {intent_kd}\n";
     const milestoneLine = mode === "swarm" ? "MILESTONE ID: {milestone_id}\n" : "";
     const kdPathsLine = mode === "explore" ? "" : "KD PATHS: {kd_paths}\n";
-    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${milestoneLine}${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nBASELINE BRANCH: {baseline_branch}\nHEAD SHA: {head_sha}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n${kdPathsLine}TASK ID: {task_id}\n\n---\n\n`;
+    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${milestoneLine}${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nBASELINE BRANCH: {baseline_branch}\nHEAD SHA: {head_sha}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n${kdPathsLine}\n---\n\n`;
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
@@ -397,7 +396,7 @@ function extractFromText(text, fields, override = false) {
     // Leading indentation is tolerated: optional fields carry no required-field
     // check, so a line the extractor skips renders as an empty header with no
     // error at all. Indentation must not cost a field silently.
-    const match = line.match(/^[ \t]*(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|TASK[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BASELINE[. _]BRANCH|HEAD[. _]SHA|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^[ \t]*(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BASELINE[. _]BRANCH|HEAD[. _]SHA|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       let key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       const assigned = override || !fields[key];
@@ -592,7 +591,7 @@ function detectForeignPaths(prompt) {
   const lines = prompt.split("\n");
   for (const line of lines) {
     const trimmed = line.trim().replace(/\\/g, "/");
-    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|TASK[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
+    if (!trimmed || /^(?:\*\*)?(AGENT|DISPATCH TO|MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:/i.test(trimmed)) continue;
     if (/^knowledge\/[a-zA-Z0-9][a-zA-Z0-9_.+-]*\.md$/i.test(trimmed)) continue;
     if (/^\//.test(trimmed)) return true;
     // Drive-letter paths are normalized to forward slashes above (C:\Windows →
@@ -692,17 +691,6 @@ function renderTemplate(template, fields) {
     result = result.replace(/^KD PATHS:.*$/m, "");
     result = result.replace(/Read [^.]*KD PATHS[^.]*\./g, "");
   }
-  // TASK ID is optional — when task_id is falsy, drop the `TASK ID:` header
-  // line so dispatches without a redispatch identifier render no empty header.
-  // Render-path note: every mode template carries a TASK ID line so a reopened
-  // row in any mode renders the resume handle the same way, and the drop above
-  // keeps the line out when the field is empty. The tool-doc TASK ID hint stays
-  // swarm-scoped because the same-instance resume preference applies to reopened
-  // milestone rows, while other modes discover the field through the
-  // mode-agnostic dispatcher hint.
-  if (!fields.task_id) {
-    result = result.replace(/^TASK ID:.*$/m, "");
-  }
   return result;
 }
 
@@ -736,8 +724,7 @@ GENERATION: the lifecycle generation number
 SCOPE: optional context
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
-TASK ID: subagent resume handle (optional) — the delegation-gate sets it as the subagent call's sessionID argument; reuse the prior handle for a same-artifact redispatch
-SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance), carried to the subagent call as its sessionID argument — the host's resume behavior is a harness-side property of the subagent tool.
+SESSION ID is the lifecycle session (auto-fallback); the subagent call's \`sessionID\` argument is the resume handle — pass the prior call's \`sessionID\` to reuse an instance, or omit it for a fresh one. The tool's use of that handle is harness-side.
 `;
 }
 
@@ -768,25 +755,17 @@ function injectToolDocs(output, agentName, mode, generation) {
   // protocol-gate registry transition keys on. Only injected for swarm
   // so other modes don't see a field they must not include.
   const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: (exactly one, required for swarm)\n" : "";
-  // TASK ID carries a subagent resume handle: the gate sets it on the subagent
-  // call's sessionID argument — the argument the tool resumes from — and the
-  // host's resume behavior belongs to the subagent tool, a harness-side property
-  // not something in-tree code proves. Swarm-only like MILESTONE ID — the
-  // same-artifact redispatch preference is exercised on reopened milestone rows,
-  // so other modes meet the field through the mode-agnostic dispatcher hint
-  // instead.
-  const taskIdLine = displayMode === "swarm" ? "TASK ID: (optional — resume handle set on the subagent call's sessionID argument)\n" : "";
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
 MODE: ${displayMode}
-${milestoneLine}${taskIdLine}INTENT KD: knowledge/intent-(name).md
+${milestoneLine}INTENT KD: knowledge/intent-(name).md
 SESSION DATE: ${today}
 SESSION ID: (your session id)
 GENERATION: (the lifecycle generation number)
 SCOPE: (optional context)
 RESULT KD: ${resultKdExamples} (when subagent produces a KD)
-SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance), carried to the subagent call as its sessionID argument — the host's resume behavior is a harness-side property of the subagent tool.
+SESSION ID is the lifecycle session (auto-fallback); the subagent call's \`sessionID\` argument is the resume handle — pass the prior call's \`sessionID\` to reuse an instance, or omit it for a fresh one. The tool's use of that handle is harness-side.
 
 RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
 - ${displayMode}: ${resultKdExamples}
@@ -849,33 +828,18 @@ async function delegationGateServer(input, options) {
 
       const fields = extractFieldsFromPrompt(prompt, subagentType, description);
 
-      // TASK ID resume-handle passthrough — this gate extracts the field from the
-      // prompt (or the description fallback) and sets it on the subagent call's
-      // `sessionID` argument, the one the tool resumes from; an absent field means
-      // no handle is set. Whether the host then resumes the invoked subagent
-      // session is a harness-side property of the subagent tool, not an effect this
-      // plugin performs.
-      // Resume-handle guard: a TASK ID equal to the dispatching SESSION ID is
-      // the lifecycle session standing where the subagent resume handle
-      // belongs. Reject with reuse guidance and forward nothing — unknown
-      // handles still pass through verbatim; the self-session mixup stops here.
-      // The hook sessionID covers prompts that omit the SESSION ID line (the
-      // same fallback applied below), so the mixup stops in both spellings.
-      if (fields.task_id && (fields.session_id || sessionID) && fields.task_id === (fields.session_id || sessionID)) {
-        debug(`VALIDATION FAILED: TASK ID equals dispatching SESSION ID`);
-        throw new DelegationGateError(ERRORS.INVALID_TASK_ID.code, `${ERRORS.INVALID_TASK_ID.message} (SESSION ID ${fields.session_id || sessionID}) — ${ERRORS.INVALID_TASK_ID.guidance}`, ERRORS.INVALID_TASK_ID.guidance);
-      }
-      // An explicit sessionID belongs to the caller: the gate completes it from
-      // TASK ID when absent, accepts it when it matches, and refuses a mismatch
-      // rather than silently resuming the wrong conversation.
-      if (fields.task_id) {
-        const presetSessionId = output.args?.sessionID;
-        if (presetSessionId && presetSessionId !== fields.task_id) {
-          debug(`VALIDATION FAILED: TASK ID ${fields.task_id} conflicts with preset sessionID ${presetSessionId}`);
-          throw new DelegationGateError(ERRORS.CONFLICTING_RESUME_HANDLE.code, `${ERRORS.CONFLICTING_RESUME_HANDLE.message} (preset sessionID ${presetSessionId}, TASK ID ${fields.task_id})`, ERRORS.CONFLICTING_RESUME_HANDLE.guidance);
-        }
-        if (!output.args) output.args = {};
-        output.args.sessionID = fields.task_id;
+      // Resume-handle guard: the handle lives only on the subagent call's
+      // `sessionID` argument, and a handle equal to the dispatching SESSION ID
+      // is the lifecycle session standing where a resume handle belongs.
+      // Reject with reuse guidance and forward nothing — unknown handles still
+      // pass through verbatim; the self-session mixup stops here. The hook
+      // sessionID covers prompts that omit the SESSION ID line, so the mixup
+      // stops in both spellings.
+      const resumeHandle = output.args?.sessionID;
+      const dispatchSessionId = fields.session_id || sessionID;
+      if (resumeHandle && dispatchSessionId && resumeHandle === dispatchSessionId) {
+        debug(`VALIDATION FAILED: resume handle equals dispatching SESSION ID`);
+        throw new DelegationGateError(ERRORS.INVALID_TASK_ID.code, `${ERRORS.INVALID_TASK_ID.message} (SESSION ID ${dispatchSessionId}, resume handle ${resumeHandle}) — ${ERRORS.INVALID_TASK_ID.guidance}`, ERRORS.INVALID_TASK_ID.guidance);
       }
 
       // session_id from opencode hook input — fills {session_id} when prompt omits SESSION ID:

@@ -578,21 +578,22 @@ The delegation-gate plugin extracts these fields from the prompt text and render
 
 ### Same-Instance Redispatch
 
-When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt: the delegation-gate extracts it and sets it on the subagent call's `sessionID` argument — the argument the tool resumes from. Reuse is chosen for what the harness then does with that handle — resuming the invoked subagent session keeps its in-flight context and partial work — a harness-side effect of the subagent tool rather than something this layer performs.
+The resume handle travels as the subagent call's `sessionID` argument: pass the prior call's `sessionID` to resume that instance, or omit the argument for a fresh one. The tool's use of the handle — resuming the invoked subagent session with its in-flight context and partial work — is harness-side; no prompt field carries a handle, and nothing in this layer writes a prompt value into the argument.
 
-**Reuse the same `TASK ID`** when the prior dispatch:
+**Reuse the same instance** (pass the prior call's `sessionID`) when the re-dispatch targets the same artifact — same RESULT KD path, same milestone row, or same KD artifact amendment — including when the prior dispatch:
 - returned an empty result;
 - stopped mid-task before completing;
-- exhausted its token budget.
+- exhausted its token budget;
+- worked a milestone that a VERIFY FAIL verdict reopened.
 
-**Start a fresh instance** (omit `TASK ID` or use a new one) when the prior dispatch:
+**Start a fresh instance** (omit `sessionID`) for a genuinely new task, including when the prior dispatch:
 - is looping or repeating the same action without progress;
 - is misbehaving or producing unreliable output;
 - has a prior session that is stale or evicted.
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance).
 
-Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). Note the two resume channels: the `sessionID` argument hands the handle through the mapping above, and the subagent tool's harness performs the resume, while compaction resume travels through a short-term memory note (`memory_note`).
+Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries `same` or `fresh: <reason>` — record the decision itself rather than the handle value. A same-artifact re-dispatch that records neither is a dispatcher-discipline finding. Compaction resume is a separate channel: it travels through a short-term memory note (`memory_note`).
 
 **Unresumable handle** — a handle the host cannot resume answers `session not found`, which reaches you as a dispatch failure; the gate adds no fallback. Recover by re-dispatching fresh and recording `fresh: session-not-found` in the dispatch SCOPE, so the continuity record names why the instance changed.
 
