@@ -172,7 +172,7 @@ GENERATION: (the lifecycle generation number)
 SCOPE: (optional context)
 RESULT KD: knowledge/exploration-<name>-<session_id>.md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
-TASK ID: subagent resume handle (optional) — the delegation-gate forwards it as the subagent call's task_id argument; reuse the prior handle for a same-artifact redispatch`;
+TASK ID: subagent resume handle (optional) — the delegation-gate sets it as the subagent call's sessionID argument; reuse the prior handle for a same-artifact redispatch`;
       const output = { args: { prompt: "", description, subagent_type: "explorer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
       // The hint's instructional lines must not leak into the rendered prompt.
@@ -1503,9 +1503,10 @@ RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
       return Object.keys(output.args).find((k) => output.args[k] === probe);
     };
 
-    it("extracts TASK ID from the prompt and passes it through to output.args.task_id", async () => {
+    it("extracts TASK ID from the prompt and emits it as output.args.sessionID", async () => {
       const output = await emitTaskId("ses_abc_task_42");
-      expect(output.args.task_id).toBe("ses_abc_task_42");
+      expect(output.args.sessionID).toBe("ses_abc_task_42");
+      expect(output.args).not.toHaveProperty("task_id");
       expect(output.args.prompt).toContain("TASK ID: ses_abc_task_42");
     });
 
@@ -1520,7 +1521,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      expect(output.args.task_id).toBe("ses_underscore");
+      expect(output.args.sessionID).toBe("ses_underscore");
+      expect(output.args).not.toHaveProperty("task_id");
       expect(output.args.prompt).toContain("TASK ID: ses_underscore");
     });
 
@@ -1537,7 +1539,7 @@ RESULT KD: knowledge/exploration-foo.md`,
         }
       };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, descriptionOnly);
-      expect(descriptionOnly.args.task_id).toBe("ses_from_description");
+      expect(descriptionOnly.args.sessionID).toBe("ses_from_description");
 
       const both = {
         args: {
@@ -1552,10 +1554,10 @@ RESULT KD: knowledge/exploration-foo.md`,
         }
       };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c2" }, both);
-      expect(both.args.task_id).toBe("ses_from_prompt");
+      expect(both.args.sessionID).toBe("ses_from_prompt");
     });
 
-    it("renders no TASK ID line and no task_id passthrough when the field is omitted", async () => {
+    it("renders no TASK ID line and no resume-handle argument when the field is omitted", async () => {
       const prompt = `AGENT: artisan
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
@@ -1565,7 +1567,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, output);
-      expect(output.args.task_id).toBeUndefined();
+      expect(output.args.sessionID).toBeUndefined();
+      expect(output.args).not.toHaveProperty("task_id");
       expect(output.args.prompt).not.toMatch(/^TASK ID:/m);
     });
 
@@ -1639,7 +1642,65 @@ RESULT KD: knowledge/impl-M1-foo-ses_same_task-gen1.md`;
       expect(err.code).toBe("INVALID_TASK_ID");
       expect(err.message).toMatch(/SESSION ID/);
       expect(err.message).toMatch(/TASK ID/);
-      expect(output.args.task_id).toBeUndefined();
+      expect(output.args.sessionID).toBeUndefined();
+      expect(output.args).not.toHaveProperty("task_id");
+    });
+
+    it("refuses a preset sessionID that differs from the dispatched TASK ID", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_abc
+GENERATION: 1
+MILESTONE ID: M1
+TASK ID: ses_task_42
+SCOPE: Continue milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
+
+      const output = { args: { prompt, sessionID: "ses_preset_other" } };
+      const err = await hooks["tool.execute.before"](
+        { tool: "task", sessionID: "ses_abc", callID: "c1" },
+        output
+      ).catch((e) => e);
+      expect(err.code).toBe("CONFLICTING_RESUME_HANDLE");
+      expect(err.message).toContain("ses_preset_other");
+      expect(err.message).toContain("ses_task_42");
+      expect(output.args.sessionID).toBe("ses_preset_other");
+    });
+
+    it("passes a preset sessionID equal to the dispatched TASK ID unchanged", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_abc
+GENERATION: 1
+MILESTONE ID: M1
+TASK ID: ses_task_42
+SCOPE: Continue milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
+
+      const output = { args: { prompt, sessionID: "ses_task_42" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output);
+      expect(output.args.sessionID).toBe("ses_task_42");
+      expect(output.args).not.toHaveProperty("task_id");
+    });
+
+    it("leaves a preset sessionID untouched when no TASK ID was dispatched", async () => {
+      const prompt = `AGENT: artisan
+MODE: swarm
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-09-08
+SESSION ID: ses_abc
+GENERATION: 1
+MILESTONE ID: M1
+SCOPE: Fresh milestone M1
+RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
+
+      const output = { args: { prompt, sessionID: "ses_preset_other" } };
+      await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output);
+      expect(output.args.sessionID).toBe("ses_preset_other");
     });
 
     it("forwards an unknown resume handle verbatim without validating it", async () => {
@@ -1656,7 +1717,8 @@ RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output);
-      expect(output.args.task_id).toBe("ses_unknown_handle_zzz");
+      expect(output.args.sessionID).toBe("ses_unknown_handle_zzz");
+      expect(output.args).not.toHaveProperty("task_id");
       expect(output.args.prompt).toContain("TASK ID: ses_unknown_handle_zzz");
     });
 
@@ -1674,7 +1736,8 @@ RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
 
       const output = { args: { prompt } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc", callID: "c1" }, output);
-      expect(output.args.task_id).toBeUndefined();
+      expect(output.args.sessionID).toBeUndefined();
+      expect(output.args).not.toHaveProperty("task_id");
       expect(output.args.prompt).not.toMatch(/^TASK ID:/m);
     });
 

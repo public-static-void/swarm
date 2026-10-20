@@ -578,7 +578,7 @@ The delegation-gate plugin extracts these fields from the prompt text and render
 
 ### Same-Instance Redispatch
 
-When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt: the delegation-gate extracts it and forwards it as the subagent call's `task_id` argument. Reuse is chosen for what the harness then does with that handle — resuming the invoked subagent session keeps its in-flight context and partial work — a harness-side effect of the subagent tool rather than something this layer performs.
+When re-dispatching a subagent for the same task, include the `TASK ID` delegation field in the prompt: the delegation-gate extracts it and sets it on the subagent call's `sessionID` argument — the argument the tool resumes from. Reuse is chosen for what the harness then does with that handle — resuming the invoked subagent session keeps its in-flight context and partial work — a harness-side effect of the subagent tool rather than something this layer performs.
 
 **Reuse the same `TASK ID`** when the prior dispatch:
 - returned an empty result;
@@ -592,7 +592,9 @@ When re-dispatching a subagent for the same task, include the `TASK ID` delegati
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance).
 
-Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). Note the two resume channels: `task_id` continuation hands the handle through the passthrough above, and the subagent tool's harness performs the resume, while compaction resume travels through a short-term memory note (`memory_note`).
+Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries the reused handle (`same` + prior `TASK ID`) or the fresh-instance reason (`fresh: <reason>`). Note the two resume channels: the `sessionID` argument hands the handle through the mapping above, and the subagent tool's harness performs the resume, while compaction resume travels through a short-term memory note (`memory_note`).
+
+**Unresumable handle** — a handle the host cannot resume answers `session not found`, which reaches you as a dispatch failure; the gate adds no fallback. Recover by re-dispatching fresh and recording `fresh: session-not-found` in the dispatch SCOPE, so the continuity record names why the instance changed.
 
 ### Checkpoint Verification
 
