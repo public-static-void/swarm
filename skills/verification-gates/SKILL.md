@@ -49,7 +49,7 @@ Every REVIEW KD must include a traceability matrix like this:
 1. **Every acceptance criterion** in the SPEC KD must have at least one PASS or FAIL entry in the traceability matrix
 2. **Every code artifact** must trace to at least one requirement — orphan code is a FAIL
 3. **Every plan step** must map to at least one requirement — unplanned work is a FAIL
-4. If any row in the matrix has **unchecked requirements** (neither PASS nor FAIL), the verdict is REJECT
+4. If any row in the matrix has **unchecked requirements** (neither PASS nor FAIL), the verdict is FAIL
 5. The Inspector must verify the matrix is complete before issuing a verdict
 
 ## Gate Locations
@@ -65,7 +65,7 @@ Phase Output ──► Gate ──► Next Phase
          └──────────┘
               │
          ┌────▼─────┐
-         │ REJECT   │──► Back to producer or Happy to Delete
+         │ FAIL     │──► Back to producer or Happy to Delete
          └──────────┘
 ```
 
@@ -125,10 +125,10 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 2. Inspector iterates through each acceptance criterion
 3. For each criterion, record PASS or FAIL with evidence
 4. If FAIL, trace to the specific requirement code and plan-step code (code plus file:line)
-5. Write the verdict into the REVIEW KD frontmatter (`verdict: PASS | FAIL | FUNDAMENTAL`) — the single machine source for the VERIFY gate
+5. Write the verdict into the REVIEW KD frontmatter (`verdict: PASS | FAIL`) — the single machine source for the VERIFY gate
 6. Produce ONE REVIEW KD containing the Review Findings (with traceability matrix) and the Audit section (Scope, Risk Summary, Security Findings)
 7. On FAIL, the gate regresses VERIFY→SWARM automatically: the producer fixes the findings, re-submits, and the Inspector re-reviews — repeat until PASS or diminishing returns
-8. On stalled progress (2-3 cycles without improvement), the Inspector issues a FUNDAMENTAL verdict, which blocks VERIFY advancement and escalates to the user (Happy to Delete)
+8. On stalled progress (2-3 cycles without improvement), the Inspector issues a `FAIL` with zero milestone citations and a non-empty `Escalation` section, which blocks VERIFY advancement and escalates to the user (Happy to Delete)
 
 ### VERIFY Acceptance Proof
 
@@ -140,11 +140,13 @@ VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the ful
 | ----------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | PASS        | All criteria met, clean | VERIFY advances under the fresh-PASS rule — the review KD must be newer than the newest impl KD; a stale PASS blocks |
 | FAIL        | Specific fixable issues | The gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; the producer fixes the findings and re-submits |
-| FUNDAMENTAL | Design-level flaw       | The gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
+| FAIL + `Escalation` section | Design-level flaw | The gate blocks VERIFY advancement with `ESCALATION_BLOCKED`, regresses nothing and reopens nothing; the phase stays at VERIFY for a user decision — Happy to Delete |
 
-A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). Every FAIL finding MUST cite at least one milestone token (`M\d+` or `impl-<id>-`); a FAIL verdict with zero milestone citations is MALFORMED — the gate blocks, regresses nothing, and reopens nothing (re-dispatch the review with citations). A `FUNDAMENTAL` verdict blocks advancement and escalates; the phase stays at VERIFY.
+A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). Every FAIL finding MUST cite at least one milestone token (`M\d+` or `impl-<id>-`); a FAIL verdict with zero milestone citations is MALFORMED — the gate blocks, regresses nothing, and reopens nothing (re-dispatch the review with citations).
 
-FUNDAMENTAL-labeled lines in test output are asserted test output. Verify the line against the test source before treating it as a lifecycle anomaly.
+Escalation marker: a `FAIL` carrying a level-2 section titled `Escalation` with at least one non-empty line before the next level-2 heading escalates instead of requesting a fix. With zero milestone citations it blocks as `ESCALATION_BLOCKED`; with citations it blocks as `VERDICT_AMBIGUOUS` because the review states a fix request and an escalation at once. Neither regresses nor reopens. An empty section counts as absent, a heading inside a fenced code block does not count, and `PASS` ignores the section.
+
+`FUNDAMENTAL_RETIRED` lines in test output are asserted test output. Verify the line against the test source before treating it as a lifecycle anomaly.
 
 ## Feedback Loop
 

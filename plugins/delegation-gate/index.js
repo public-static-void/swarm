@@ -78,7 +78,8 @@ const ERRORS = {
   MISSING_RESULT_KD: { code: "MISSING_RESULT_KD", message: "KD-producing mode requires result_kd field", guidance: "Include result_kd: knowledge/<type>-<name>.md" },
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
   INVALID_MILESTONE_ID: { code: "INVALID_MILESTONE_ID", message: "Invalid MILESTONE ID format", guidance: "MILESTONE ID must match /^[A-Za-z0-9][A-Za-z0-9_-]*$/" },
-  INVALID_TASK_ID: { code: "INVALID_TASK_ID", message: "TASK ID equals the dispatching SESSION ID", guidance: "TASK ID is a subagent resume handle and SESSION ID is the lifecycle session — reuse the prior artisan handle or omit TASK ID for a fresh instance" },
+  INVALID_TASK_ID: { code: "INVALID_TASK_ID", message: "TASK ID equals the dispatching SESSION ID", guidance: "TASK ID is a subagent resume handle set on the subagent call's sessionID argument, and SESSION ID is the lifecycle session — reuse the prior artisan handle or omit TASK ID for a fresh instance" },
+  CONFLICTING_RESUME_HANDLE: { code: "CONFLICTING_RESUME_HANDLE", message: "TASK ID conflicts with the sessionID already set on the subagent call", guidance: "Pass one resume handle: either drop the preset sessionID or make it equal the TASK ID — the gate never overwrites an explicit sessionID" },
 
   RESULT_KD_MILESTONE_MISMATCH: { code: "RESULT_KD_MILESTONE_MISMATCH", message: "Swarm result KD does not match the MILESTONE ID", guidance: "Name the impl KD knowledge/impl-<milestone-id>-<name>-<session-id>[-gen{N}].md with the dispatched MILESTONE ID as the first token after impl-" }
 };
@@ -735,8 +736,8 @@ GENERATION: the lifecycle generation number
 SCOPE: optional context
 RESULT KD: knowledge/<type>-<name>-<session_id>[-gen<N>].md (when subagent produces a KD)
 KD PATHS: upstream KD paths, comma-separated (optional)
-TASK ID: subagent resume handle (optional) — the delegation-gate forwards it as the subagent call's task_id argument; reuse the prior handle for a same-artifact redispatch
-SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance), passed through as the subagent call's task_id argument — the host's resume behavior is a harness-side property of the subagent tool.
+TASK ID: subagent resume handle (optional) — the delegation-gate sets it as the subagent call's sessionID argument; reuse the prior handle for a same-artifact redispatch
+SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance), carried to the subagent call as its sessionID argument — the host's resume behavior is a harness-side property of the subagent tool.
 `;
 }
 
@@ -767,13 +768,14 @@ function injectToolDocs(output, agentName, mode, generation) {
   // protocol-gate registry transition keys on. Only injected for swarm
   // so other modes don't see a field they must not include.
   const milestoneLine = displayMode === "swarm" ? "MILESTONE ID: (exactly one, required for swarm)\n" : "";
-  // TASK ID carries a subagent resume handle: the gate forwards it as the
-  // subagent call's task_id argument, and the host's resume behavior belongs to
-  // the subagent tool — a harness-side property, not something in-tree code
-  // proves. Swarm-only like MILESTONE ID — the same-artifact redispatch
-  // preference is exercised on reopened milestone rows, so other modes meet the
-  // field through the mode-agnostic dispatcher hint instead.
-  const taskIdLine = displayMode === "swarm" ? "TASK ID: (optional — resume handle forwarded to the subagent call as its task_id argument)\n" : "";
+  // TASK ID carries a subagent resume handle: the gate sets it on the subagent
+  // call's sessionID argument — the argument the tool resumes from — and the
+  // host's resume behavior belongs to the subagent tool, a harness-side property
+  // not something in-tree code proves. Swarm-only like MILESTONE ID — the
+  // same-artifact redispatch preference is exercised on reopened milestone rows,
+  // so other modes meet the field through the mode-agnostic dispatcher hint
+  // instead.
+  const taskIdLine = displayMode === "swarm" ? "TASK ID: (optional — resume handle set on the subagent call's sessionID argument)\n" : "";
   const formatHint = `
 Delegation Prompt Format:
 DISPATCH TO: ${displayAgent}
@@ -784,7 +786,7 @@ SESSION ID: (your session id)
 GENERATION: (the lifecycle generation number)
 SCOPE: (optional context)
 RESULT KD: ${resultKdExamples} (when subagent produces a KD)
-SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance), passed through as the subagent call's task_id argument — the host's resume behavior is a harness-side property of the subagent tool.
+SESSION ID is the lifecycle session (auto-fallback); TASK ID is the subagent resume handle (reuse the prior handle or omit for a fresh instance), carried to the subagent call as its sessionID argument — the host's resume behavior is a harness-side property of the subagent tool.
 
 RESULT KD Naming Convention${modePrefixes.length > 1 ? "s" : ""}:
 - ${displayMode}: ${resultKdExamples}
@@ -847,11 +849,12 @@ async function delegationGateServer(input, options) {
 
       const fields = extractFieldsFromPrompt(prompt, subagentType, description);
 
-      // TASK ID passthrough — this gate extracts the field from the prompt (or
-      // the description fallback) and forwards it untouched as the subagent
-      // call's task_id argument; an absent field means no passthrough. Whether
-      // the host then resumes the invoked subagent session is a harness-side
-      // property of the subagent tool, not an effect this plugin performs.
+      // TASK ID resume-handle passthrough — this gate extracts the field from the
+      // prompt (or the description fallback) and sets it on the subagent call's
+      // `sessionID` argument, the one the tool resumes from; an absent field means
+      // no handle is set. Whether the host then resumes the invoked subagent
+      // session is a harness-side property of the subagent tool, not an effect this
+      // plugin performs.
       // Resume-handle guard: a TASK ID equal to the dispatching SESSION ID is
       // the lifecycle session standing where the subagent resume handle
       // belongs. Reject with reuse guidance and forward nothing — unknown
@@ -862,7 +865,18 @@ async function delegationGateServer(input, options) {
         debug(`VALIDATION FAILED: TASK ID equals dispatching SESSION ID`);
         throw new DelegationGateError(ERRORS.INVALID_TASK_ID.code, `${ERRORS.INVALID_TASK_ID.message} (SESSION ID ${fields.session_id || sessionID}) — ${ERRORS.INVALID_TASK_ID.guidance}`, ERRORS.INVALID_TASK_ID.guidance);
       }
-      if (fields.task_id) output.args.task_id = fields.task_id;
+      // An explicit sessionID belongs to the caller: the gate completes it from
+      // TASK ID when absent, accepts it when it matches, and refuses a mismatch
+      // rather than silently resuming the wrong conversation.
+      if (fields.task_id) {
+        const presetSessionId = output.args?.sessionID;
+        if (presetSessionId && presetSessionId !== fields.task_id) {
+          debug(`VALIDATION FAILED: TASK ID ${fields.task_id} conflicts with preset sessionID ${presetSessionId}`);
+          throw new DelegationGateError(ERRORS.CONFLICTING_RESUME_HANDLE.code, `${ERRORS.CONFLICTING_RESUME_HANDLE.message} (preset sessionID ${presetSessionId}, TASK ID ${fields.task_id})`, ERRORS.CONFLICTING_RESUME_HANDLE.guidance);
+        }
+        if (!output.args) output.args = {};
+        output.args.sessionID = fields.task_id;
+      }
 
       // session_id from opencode hook input — fills {session_id} when prompt omits SESSION ID:
       if (!fields["session_id"] && sessionID) {

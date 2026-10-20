@@ -133,7 +133,7 @@ ${table}
   // (Status: FAIL + Milestone citation) because the citation parser is
   // FAIL-context-only (swarm/99): prose tokens outside FAIL-status findings are
   // provenance, not citations, and would yield zero citations → MALFORMED.
-  function reviewKD(verdict, findings = "") {
+  function reviewKD(verdict, findings = "", extraBody = "") {
     const body = verdict === "FAIL" && findings
       ? `### F001: defect\n\n- **Milestone citation**: ${findings}\n- **Status**: FAIL\n`
       : findings;
@@ -157,7 +157,7 @@ ${verdict}
 ## Review Findings
 
 ${body}
-`;
+${extraBody}`;
   }
 
   function removeKD(filename) {
@@ -2760,6 +2760,10 @@ Amendment body.
       expect(caught.message).toContain("INTENT BOUNDARY CLOSED");
       expect(caught.message).toContain("PREFLIGHT");
       expect(caught.message).toContain("/phase INTENT");
+      // A split amendment strands content: the refusal names where it belongs
+      // instead of leaving the caller to guess.
+      expect(caught.message).toContain("INTENT amendment");
+      expect(caught.message).toContain("Correction");
       // Distinct from the generic unlisted-tool refusal text.
       expect(caught.message).not.toContain("Available tools in PREFLIGHT");
       // The presence-based advance itself is unchanged.
@@ -4578,8 +4582,8 @@ milestones:
   describe("verdict-aware VERIFY gate", () => {
     // Delegates to the shared reviewKD builder — FAIL fixtures pass milestone
     // citations in the Findings section (the scoped-reopen provenance).
-    function verdictKD(verdict, findings = "") {
-      return reviewKD(verdict, findings);
+    function verdictKD(verdict, findings = "", extraBody = "") {
+      return reviewKD(verdict, findings, extraBody);
     }
 
     it("a FAIL review KD auto-regresses VERIFY→SWARM without BACKWARD: true", async () => {
@@ -4661,14 +4665,14 @@ milestones:
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
     });
 
-    it("a FUNDAMENTAL verdict blocks VERIFY advancement and escalates without regressing", async () => {
+    it("a retired verdict token blocks VERIFY advancement and names its replacement", async () => {
       const s = sid("f1-ac104");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      // TEST-ONLY: the FUNDAMENTAL_ESCALATION line below is asserted test output for the
-      // review-fund-<sid>.md fixture — verify against the test source before treating it
-      // as a lifecycle anomaly.
+      createRegistry(s, [["M1", "checked-off"]]);
+      // The retired literal is invalid, never aliased to FAIL — the fixture
+      // carries it verbatim so the straggler path is what runs.
       createKD(`review-fund-${s}.md`, verdictKD("FUNDAMENTAL"));
 
       try { rmSync(logPath); } catch (_) {}
@@ -4678,17 +4682,107 @@ milestones:
           { tool: "glob", sessionID: s, callID: "c1" },
           { args: { pattern: "knowledge/*.md" } }
         );
-        // Blocked — stays in VERIFY, never regresses.
+        // Blocked — stays in VERIFY, never regresses and never reopens.
         expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
         expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
-        // Escalation signal names the KD.
+        const registry = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(registry).toContain("  M1: checked-off");
+        // The diagnostic names the retired token, the replacement verdict, and
+        // the replacement escalation carrier.
         const log = readFileSync(logPath, "utf8");
-        expect(log).toContain("FUNDAMENTAL_ESCALATION");
+        expect(log).toContain("FUNDAMENTAL_RETIRED");
         expect(log).toContain(`review-fund-${s}.md`);
+        expect(log).toContain("FUNDAMENTAL");
+        expect(log).toContain("FAIL");
+        expect(log).toContain("## Escalation");
+        expect(log).not.toContain("FUNDAMENTAL_ESCALATION");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
+    });
+
+    it("a citation-less FAIL carrying an escalation section blocks without regressing (ESCALATION_BLOCKED)", async () => {
+      const s = sid("f1-ac107");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      const escalation = "\n## Escalation\n\nThe design premise is wrong — delete the branch and re-plan.\n";
+      createKD(`review-esc-${s}.md`, verdictKD("FAIL", "", escalation));
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Design-level failure: blocked for a human decision, not routed into
+        // the fix loop and not reopened as a fixable row.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
+        const registry = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(registry).toContain("  M1: checked-off");
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("ESCALATION_BLOCKED");
+        expect(log).not.toContain("MALFORMED_FAIL");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("a citable FAIL carrying an escalation section blocks as ambiguous (VERDICT_AMBIGUOUS)", async () => {
+      const s = sid("f1-ac108");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      const escalation = "\n## Escalation\n\nUnclear whether M1 is fixable at all.\n";
+      createKD(`review-amb-${s}.md`, verdictKD("FAIL", "impl-M1-short-term-store is broken", escalation));
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Two intents in one verdict: a fix loop would guess which one was meant.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
+        const registry = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(registry).toContain("  M1: checked-off");
+        expect(readFileSync(logPath, "utf8")).toContain("VERDICT_AMBIGUOUS");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("an empty or fenced escalation heading does not count as a marker", async () => {
+      // Empty section: the heading alone carries no escalation content.
+      expect(hooks.hasEscalationMarker("## Verdict\n\nFAIL\n\n## Escalation\n\n## Next\n\nbody\n")).toBe(false);
+      // Fenced example: a quoted grammar sample is not a marker.
+      expect(hooks.hasEscalationMarker("## Verdict\n\nFAIL\n\n```\n## Escalation\n\nbecause\n```\n")).toBe(false);
+      // Non-empty section before the next level-2 heading is a marker.
+      expect(hooks.hasEscalationMarker("## Verdict\n\nFAIL\n\n## Escalation\n\nbecause\n\n## Next\n")).toBe(true);
+      // End of file also terminates the section.
+      expect(hooks.hasEscalationMarker("## Escalation\n\nbecause\n")).toBe(true);
+    });
+
+    it("a PASS ignores the escalation marker and advances on the fresh-PASS rule", async () => {
+      const s = sid("f1-ac109");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`review-pass-esc-${s}.md`, verdictKD("PASS", "", "\n## Escalation\n\nleft over from an earlier draft\n"));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
     });
 
     it("a fresh PASS review KD advances on the merged surface; a MISSING verdict blocks", async () => {
@@ -4780,7 +4874,7 @@ milestones:
 
     it("the REVIEW template carries the verdict frontmatter field", async () => {
       const tpl = readFileSync(join(process.cwd(), "skills/template-review/SKILL.md"), "utf8");
-      expect(tpl).toMatch(/^verdict\s*:\s*\{\{PASS \| FAIL \| FUNDAMENTAL\}\}\s*$/m);
+      expect(tpl).toMatch(/^verdict\s*:\s*\{\{PASS \| FAIL\}\}\s*$/m);
     });
   });
 
@@ -7523,7 +7617,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(readdirSync(knowledgeDir)).toEqual([]);
     });
 
-    it("the per-session capture is bounded at RAW_INTENT_MAX_MESSAGES, dropping the oldest", async () => {
+    it("the per-session capture is bounded at RAW_INTENT_MAX_MESSAGES and keeps the opening message", async () => {
       const s = sid("f4-ac018");
       for (let i = 1; i <= 11; i++) {
         await hooks["chat.message"](
@@ -7533,8 +7627,70 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       }
       const entries = hooks.rawIntentCapture.get(s);
       expect(entries.length).toBe(hooks.RAW_INTENT_MAX_MESSAGES);
-      expect(entries[0]).toEqual({ messageID: "m2", text: "message 2" });
+      // Entry 0 opened the lifecycle, so overflow drops follow-ups from index
+      // 1 upward: the newest nine survive alongside the opening request.
+      expect(entries[0]).toEqual({ messageID: "m1", text: "message 1" });
+      expect(entries[1]).toEqual({ messageID: "m3", text: "message 3" });
       expect(entries[entries.length - 1]).toEqual({ messageID: "m11", text: "message 11" });
+    });
+
+    it("keeps the opening request across twelve messages and labels it apart from the follow-ups", async () => {
+      const s = sid("f4-ac018b");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+      for (let i = 1; i <= 12; i++) {
+        await hooks["chat.message"](
+          { sessionID: s, agent: "overseer", messageID: `m${i}` },
+          { message: {}, parts: [{ type: "text", text: `message ${i}` }] }
+        );
+      }
+
+      const entries = hooks.rawIntentCapture.get(s);
+      expect(entries.length).toBe(hooks.RAW_INTENT_MAX_MESSAGES);
+      expect(entries[0]).toEqual({ messageID: "m1", text: "message 1" });
+      expect(entries[1]).toEqual({ messageID: "m4", text: "message 4" });
+      expect(entries[entries.length - 1]).toEqual({ messageID: "m12", text: "message 12" });
+
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({}, output);
+      const lines = output.system.filter(
+        (line) => line.includes("[Protocol Gate] Raw user request") || line.includes("[Protocol Gate] Follow-up")
+      );
+      // One injected line per captured entry — the block mirrors the capture.
+      expect(lines).toHaveLength(hooks.RAW_INTENT_MAX_MESSAGES);
+
+      // Entry 0 is the opening request and carries the verbatim-copy directive.
+      expect(lines[0]).toContain("opening request");
+      expect(lines[0]).toContain("copy exactly");
+      expect(lines[0]).toContain("Raw Request");
+      expect(lines[0]).toContain("message 1");
+
+      // Later entries are follow-ups routed to the Triage Notes; the verbatim
+      // directive is scoped to entry 0 only.
+      for (const line of lines.slice(1)) {
+        expect(line).not.toContain("Raw user request");
+        expect(line).toContain("follow-up");
+        expect(line).toContain("Triage Notes");
+        expect(line).not.toContain("copy exactly");
+      }
+      expect(lines[9]).toContain("message 12");
+    });
+
+    it("the INTENT instruction asks for one complete write and names the opening request", async () => {
+      const instruction = hooks.PHASE_INSTRUCTIONS.INTENT;
+      expect(instruction).toContain("assemble");
+      expect(instruction).toContain("opening request");
+      expect(instruction).toContain("Triage Notes");
+    });
+
+    it("the overseer entry point mirrors the opening-request definition and the follow-up dispositions", () => {
+      const overseer = readFileSync(join(process.cwd(), "agents", "overseer.md"), "utf8");
+      expect(overseer).toContain("opening request");
+      expect(overseer).toContain("Triage Notes");
+      // The evicted-follow-up case and the request-changing case are both
+      // recorded in the layer that acts on them.
+      expect(overseer).toMatch(/oldest (captured )?follow-up/i);
+      expect(overseer).toContain("/phase INTENT");
     });
   });
 

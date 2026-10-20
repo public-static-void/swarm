@@ -143,8 +143,9 @@ function learnKnowledgeDirFromArgs(sessionID, args) {
 // and re-exported by reference in the test-access block below.
 
 // Retention cap for the per-session verbatim raw-intent capture. The
-// chat.message hook keeps only the latest RAW_INTENT_MAX_MESSAGES overseer
-// messages so the INTENT-phase systemTransform injection stays bounded.
+// chat.message hook keeps the opening request plus the newest follow-ups, up
+// to RAW_INTENT_MAX_MESSAGES overseer messages, so the INTENT-phase
+// systemTransform injection stays bounded.
 // Named constant, exported as a test-access property.
 const RAW_INTENT_MAX_MESSAGES = 10;
 
@@ -1975,32 +1976,79 @@ function canonicalToolName(t) {
   return name;
 }
 
+// The document-level verdict vocabulary is binary: a review either passes or
+// fails. Severity and blocking intent live in the KD body, never in a third
+// document-level token.
+const ACCEPTED_REVIEW_VERDICTS = ["PASS", "FAIL"];
+// Tokens retired from the vocabulary. They are not aliases: a review carrying
+// one is invalid (it blocks) and is detected only so the diagnostic can name
+// what replaced it.
+const RETIRED_REVIEW_VERDICTS = ["FUNDAMENTAL"];
+
 // Reads the `verdict` field from a KD file's YAML frontmatter — the machine
 // source for the verdict-aware VERIFY gate. Only the first frontmatter block
 // (between the leading `---` and the next `---` line) is inspected; a body
-// Verdict section is human-readable and never read. Returns "PASS", "FAIL", or
-// "FUNDAMENTAL", or null when the field is absent or its value is not one of
-// the three valid verdicts (missing/invalid blocks advancement — the MISSING
-// rule in evaluateVerifyVerdict, never treated as PASS).
+// Verdict section is human-readable and never read. Returns "PASS" or "FAIL",
+// or null when the field is absent or carries any other literal (invalid
+// blocks advancement — the MISSING rule in evaluateVerifyVerdict, never
+// treated as PASS).
 function readVerdictFrontmatter(filePath) {
+  const literal = readVerdictLiteral(filePath);
+  return ACCEPTED_REVIEW_VERDICTS.includes(literal) ? literal : null;
+}
+
+// Reads the raw `verdict` literal upper-cased, or null when absent/unreadable.
+// Separate from readVerdictFrontmatter so the accepted set stays binary while
+// the retired-token diagnostic can still name what the author wrote.
+function readVerdictLiteral(filePath) {
   try {
     const content = readFileSync(filePath, "utf8");
     const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
     if (!frontmatter) return null;
     const verdictMatch = frontmatter[1].match(/^verdict\s*:\s*([A-Za-z]+)\s*$/m);
-    if (!verdictMatch) return null;
-    const verdict = verdictMatch[1].toUpperCase();
-    return ["PASS", "FAIL", "FUNDAMENTAL"].includes(verdict) ? verdict : null;
+    return verdictMatch ? verdictMatch[1].toUpperCase() : null;
   } catch (_) {
     return null;
   }
 }
 
+// The retired literal this KD carries, or null. Used only for the diagnostic
+// that tells the author which token left the vocabulary and what to write
+// instead.
+function readRetiredVerdictToken(filePath) {
+  const literal = readVerdictLiteral(filePath);
+  return RETIRED_REVIEW_VERDICTS.includes(literal) ? literal : null;
+}
+
+// Detects the escalation marker in a review KD body: a level-2 heading reading
+// `Escalation` outside a fenced code block, followed by at least one non-empty
+// line before the next level-2 heading or end of file. An empty section and a
+// fenced example both mean "no marker" — the marker must carry the author's
+// actual escalation text to count.
+function hasEscalationMarker(content) {
+  if (typeof content !== "string" || content.length === 0) return false;
+  const lines = content.split(/\r?\n/);
+  let inFence = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence || !/^## Escalation\s*$/.test(line)) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (/^## \S/.test(lines[j])) break;
+      if (lines[j].trim().length > 0) return true;
+    }
+  }
+  return false;
+}
+
 // Finds the newest review KD among the session's KDs. "Newest" is
 // deterministic: greatest file mtime, tie-break by greatest filename. Returns
-// { filename, verdict } (verdict read from the newest KD's frontmatter) or
-// null when no review KD exists — the caller then falls back to the
-// presence-based result (false). Legacy audit- KDs are inert: the merged
+// { filename, verdict, retiredToken } (both fields read from the newest KD's
+// frontmatter) or null when no review KD exists — the caller then falls back to
+// the presence-based result (false). Legacy audit- KDs are inert: the merged
 // review+audit surface reads verdicts from review- only.
 function findNewestVerdictKD(sessionFiles, sessionID = undefined) {
   const reviewFiles = sessionFiles.filter(f => /^review-/i.test(f));
@@ -2013,7 +2061,11 @@ function findNewestVerdictKD(sessionFiles, sessionID = undefined) {
     return b > a ? 1 : b < a ? -1 : 0;
   });
   const filename = reviewFiles[0];
-  return { filename, verdict: readVerdictFrontmatter(join(knowledgeDir, filename)) };
+  return {
+    filename,
+    verdict: readVerdictFrontmatter(join(knowledgeDir, filename)),
+    retiredToken: readRetiredVerdictToken(join(knowledgeDir, filename))
+  };
 }
 
 // Re-derives the evidence KD for a phase's disk-advancement pattern.
@@ -2222,15 +2274,35 @@ function regressVerifyOnFail(sessionID, kdFilename, sessionFiles, sessionPhaseMa
 function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options) {
   const hasReview = sessionFiles.some(f => /^review-/i.test(f));
   const verdictInfo = findNewestVerdictKD(sessionFiles, sessionID);
+  if (verdictInfo && verdictInfo.retiredToken) {
+    // Fail closed on a token that left the vocabulary, and tell the author
+    // what to write instead: a FAIL plus a non-empty `## Escalation` section
+    // carries the same block-and-escalate intent.
+    debug(`FUNDAMENTAL_RETIRED: review KD ${verdictInfo.filename} carries retired verdict ${verdictInfo.retiredToken} — VERIFY advancement blocked; issue FAIL with a non-empty ## Escalation section instead`);
+    return false;
+  }
   if (verdictInfo && verdictInfo.verdict === "FAIL") {
-    // OQ-4 malformed-FAIL rule: a FAIL review must cite at least one
-    // registry-resolvable milestone token in its Findings section, or it is
-    // malformed — blocked with NO regression and NO reopen. A citation-less
-    // FAIL never enters the state machine (no regress, and forward advance is
-    // impossible while the newest verdict is FAIL), so it cannot deadlock.
     const resolvable = registryResolvableMilestones(sessionID, sessionPhaseMap, extractMilestoneCitationsFromReviewKD(readReviewKdContent(verdictInfo.filename, sessionID)));
+    const escalated = hasEscalationMarker(readReviewKdContent(verdictInfo.filename, sessionID));
     if (resolvable.length === 0) {
+      // OQ-4 malformed-FAIL rule, escalation form: a citation-less FAIL that
+      // carries escalation content is a design-level failure — blocked with NO
+      // regression and NO reopen, because the fix loop cannot act on it. A
+      // citation-less FAIL without the marker is malformed.
+      if (escalated) {
+        debug(`ESCALATION_BLOCKED: FAIL review KD ${verdictInfo.filename} cites no resolvable milestone and carries a non-empty ## Escalation section — blocked, no regression, no reopen; escalate to the user (Happy to Delete)`);
+        return false;
+      }
+      // A citation-less FAIL never enters the state machine (no regress, and
+      // forward advance is impossible while the newest verdict is FAIL), so it
+      // cannot deadlock.
       debug(`MALFORMED_FAIL: FAIL review KD ${verdictInfo.filename} carries no registry-resolvable milestone citations — blocked, no regression, no reopen`);
+      return false;
+    }
+    if (escalated) {
+      // Both intents in one verdict: a fix loop would have to guess which one
+      // the reviewer meant, so fail closed and let a re-review pick one.
+      debug(`VERDICT_AMBIGUOUS: FAIL review KD ${verdictInfo.filename} cites ${resolvable.length} resolvable milestone(s) and carries a non-empty ## Escalation section — blocked, no regression, no reopen; re-issue the review as a fixable FAIL without the marker or as an escalation FAIL with no citations`);
       return false;
     }
     let regressed = false;
@@ -2238,12 +2310,6 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
       regressed = regressVerifyOnFail(sessionID, verdictInfo.filename, sessionFiles, sessionPhaseMap, resolvable, f1Options.verdictRegressedKDs, f1Options.backwardTransition);
     }
     debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} verdict=FAIL → ${regressed ? "regressed to SWARM" : "blocked (fix-cycle guard or no regression handler)"}`);
-    return false;
-  }
-  if (verdictInfo && verdictInfo.verdict === "FUNDAMENTAL") {
-    const escalation = `FUNDAMENTAL_ESCALATION: review KD ${verdictInfo.filename} carries verdict FUNDAMENTAL — VERIFY advancement blocked; escalate to user (Happy to Delete) or override with /phase`;
-    debug(escalation);
-    debug(`Disk check VERIFY: blocked by FUNDAMENTAL verdict on ${verdictInfo.filename}`);
     return false;
   }
   if (!verdictInfo || !verdictInfo.verdict) {
@@ -3570,7 +3636,8 @@ async function protocolGateServer(input, options) {
     // because the model may summarize or omit. Read-only discipline:
     // no KD writes, no mutation of output.message; subagent messages and
     // non-text parts are skipped; the per-session capture is
-    // capped at RAW_INTENT_MAX_MESSAGES by dropping the oldest entries.
+    // capped at RAW_INTENT_MAX_MESSAGES, and overflow drops follow-ups from
+    // index 1 upward so the message that opened the lifecycle survives.
     async function chatMessage(input, output) {
       const { sessionID, agent, messageID } = input || {};
       if (!sessionID) return;
@@ -3585,7 +3652,7 @@ async function protocolGateServer(input, options) {
       const list = rawIntentCapture.get(sessionID) || [];
       list.push(entry);
       if (list.length > RAW_INTENT_MAX_MESSAGES) {
-        list.splice(0, list.length - RAW_INTENT_MAX_MESSAGES);
+        list.splice(1, list.length - RAW_INTENT_MAX_MESSAGES);
       }
       rawIntentCapture.set(sessionID, list);
       debug(`chat.message: captured ${texts.length} text part(s) for session ${sessionID} (${list.length}/${RAW_INTENT_MAX_MESSAGES})`);
@@ -4160,7 +4227,7 @@ async function protocolGateServer(input, options) {
           debug(`tool.execute.before: INTENT BOUNDARY refusal — ${tool} of ${boundaryRel} in phase=${phaseName}`);
           throw new ProtocolGateError(
             ERROR_TEMPLATES.INTENT_BOUNDARY_CLOSED.code,
-            `❌ INTENT BOUNDARY CLOSED: ${tool} of intent-*.md is refused in ${phaseName}. The INTENT edit window closed on the first successful write of this session's intent KD. To amend the intent KD, run /phase INTENT (user-initiated) first — the corrected KD must carry an mtime at or after the override.`,
+            `❌ INTENT BOUNDARY CLOSED: ${tool} of intent-*.md is refused in ${phaseName}. The INTENT edit window closed on the first successful write of this session's intent KD. To amend the intent KD, run /phase INTENT (user-initiated) first — the corrected KD must carry an mtime at or after the override. Content stranded by a split amendment is carried into the next INTENT amendment, or recorded under the REPORT KD's Correction section.`,
             "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md"
           );
         }
@@ -4997,7 +5064,10 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
 
         // INTENT-phase verbatim raw-intent injection. The captured
         // user text is relayed word-for-word into the Raw Request authoring
-        // flow, removing model discretion over the verbatim copy. Read-only:
+        // flow, removing model discretion over the verbatim copy. Only entry 0
+        // opened the lifecycle, so only its line carries the copy directive:
+        // later entries stay in the block as the audit trail of what the user
+        // said, labelled as follow-ups and routed to the Triage Notes. Read-only:
         // the directive instructs a copy, never an auto-write — the
         // Overseer remains the KD author. Fires only while phase stays INTENT
         // (may repeat on subsequent turns; stops automatically on advance).
@@ -5007,7 +5077,11 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
           const captured = rawIntentCapture.get(sessionID);
           if (captured && captured.length > 0) {
             captured.forEach((entry, i) => {
-              output.system.push(`[Protocol Gate] Raw user request (verbatim) — copy exactly, word for word, into the Raw Request section of the intent KD. Do not paraphrase or summarize. — Message ${i + 1}: ${entry.text}`);
+              if (i === 0) {
+                output.system.push(`[Protocol Gate] Raw user request (verbatim) — the opening request: copy exactly, word for word, into the Raw Request section of the intent KD. Do not paraphrase or summarize. — Message ${i + 1}: ${entry.text}`);
+              } else {
+                output.system.push(`[Protocol Gate] Follow-up message — this follow-up arrived after the opening request. Distill it into the Triage Notes section of the intent KD with its disposition. — Message ${i + 1}: ${entry.text}`);
+              }
             });
           }
         }
@@ -5091,6 +5165,8 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       setServerProjectRoot,
       markStuckMilestonesFailed,
       readVerdictFrontmatter,
+      readRetiredVerdictToken,
+      hasEscalationMarker,
       findNewestVerdictKD,
       readPreflightVerdictFrontmatter,
       findNewestPreflightKD,

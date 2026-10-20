@@ -169,6 +169,20 @@ describe("compound-command attribution", () => {
     expect(nonEmptyLineCount(advice.message)).toBeLessThanOrEqual(5);
   });
 
+  it("lets a commit-role ignore probe compound pass on every segment", () => {
+    // The ignore probe and the porcelain status read are both part of
+    // preflight/checkpoint evidence gathering, so the compound is the shape
+    // the role actually issues rather than a single-verb probe.
+    const advice = adviseDenial({
+      agent: "committer",
+      rawCommand: "git check-ignore -v knowledge/ && git status --porcelain",
+      patterns: realPatterns("committer"),
+    });
+    expect(advice.allowed).toBe(true);
+    expect(advice.result.deniedSegments).toEqual([]);
+    expect(advice.message).toBeNull();
+  });
+
   it("names only the unlisted stage of a pipeline under a fixture allowlist", () => {
     // No shipped agent grants shell search while withholding file reads,
     // so this split is proven against an injected allowlist; the case

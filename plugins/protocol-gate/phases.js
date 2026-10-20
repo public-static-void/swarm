@@ -25,7 +25,7 @@ export const STATES = {
 export const PHASE_INSTRUCTIONS = {
   // Absolute single-action directive: names the tool and content, no reasoning gap.
   // Positive framing per AGENTS.md — no negative "do NOT" instructions.
-  INTENT: "Call write to create an intent KD with the user's exact words as the Raw Request. The Explorer handles all codebase details after dispatch.",
+  INTENT: "Call write to create an intent KD in one complete write — assemble every section and every amendment or correction before the first write, because the INTENT edit window closes on that successful write. Use the opening request's exact words as the Raw Request, and distill later follow-up messages into Triage Notes with their disposition. The Explorer handles all codebase details after dispatch.",
   PREFLIGHT: "Dispatch the Committer agent.",
   EXPLORE: "Dispatch the Explorer agent.",
   INVESTIGATE: "Dispatch the Analyzer agent.",
