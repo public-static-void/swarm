@@ -4530,4 +4530,137 @@ Body`;
       expect(output.description).toContain("tools.memory_note");
     });
   });
+
+  // A tool whose `editor.add` throws is absent from the agent's callable
+  // surface even though every grant layer allows it, so the advertisement may
+  // only claim access this process actually registered — and a failure has to
+  // be readable rather than swallowed.
+  describe("V2 setup — registration outcomes and advertisement", () => {
+    const REGISTERED_TOOL_NAMES = [
+      "memory_search",
+      "memory_write",
+      "memory_update",
+      "memory_delete",
+      "memory_note",
+      "memory_note_read",
+      "memory_notes_list",
+      "memory_note_delete",
+      "issue_read",
+      "issue_write",
+      "issue_update",
+      "issue_move",
+    ];
+
+    // Minimal V2 context: location/options feed the V1 closure, session.hook
+    // records the host handlers, and tool.transform applies the plugin's
+    // callback to an editor that records each registration — or throws for
+    // the tool named in failTool, which is what a real registry rejection
+    // looks like to the plugin.
+    function makeSetupCtx({ failTool } = {}) {
+      const added = [];
+      const handlers = [];
+      const ctx = {
+        location: { directory: tempRoot },
+        options: {},
+        session: {
+          hook: async (name, handler) => {
+            handlers.push({ name, handler });
+          },
+        },
+        tool: {
+          transform: async (apply) => {
+            const editor = {
+              add: (def) => {
+                if (failTool && def.name === failTool) throw new Error(`registry rejected ${def.name}`);
+                added.push(def.name);
+              },
+            };
+            await apply(editor);
+          },
+        },
+      };
+      return { ctx, added, handlers };
+    }
+
+    async function runContextHandler(handlers, event) {
+      const entry = handlers.find((h) => h.name === "context");
+      expect(entry).toBeTruthy();
+      await entry.handler(event);
+    }
+
+    beforeEach(() => {
+      // Outcomes live at module scope so the advertisement can read them on
+      // the next turn; clear them so one case cannot satisfy the next.
+      hooks.resetRegistrationOutcomes?.();
+    });
+
+    it("registers every knowledge-gate tool through the V2 tool transform", async () => {
+      const { ctx, added } = makeSetupCtx();
+      await pluginModule.default.setup(ctx);
+      expect(added.sort()).toEqual([...REGISTERED_TOOL_NAMES].sort());
+    });
+
+    it("records a failed registration by tool name and keeps registering the rest", async () => {
+      const priorDebug = process.env.KNOWLEDGE_GATE_DEBUG;
+      process.env.KNOWLEDGE_GATE_DEBUG = "1";
+      try {
+        const { ctx, added } = makeSetupCtx({ failTool: "memory_search" });
+        await pluginModule.default.setup(ctx);
+
+        // Per-tool isolation: one rejection does not abort the loop.
+        expect(added).toHaveLength(REGISTERED_TOOL_NAMES.length - 1);
+        expect(added).not.toContain("memory_search");
+        expect(added).toContain("issue_move");
+
+        const log = readFileSync(KG_TEMP_LOG_FILE, "utf8");
+        expect(log).toContain("memory_search");
+        expect(log).toContain("registry rejected memory_search");
+        expect(hooks.getRegistrationOutcomes().memory_search).toMatch(/^failed:/);
+      } finally {
+        if (priorDebug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+        else process.env.KNOWLEDGE_GATE_DEBUG = priorDebug;
+      }
+    });
+
+    it("withholds the memory_search claim when this process recorded a failure", async () => {
+      const priorDebug = process.env.KNOWLEDGE_GATE_DEBUG;
+      process.env.KNOWLEDGE_GATE_DEBUG = "1";
+      try {
+        const { ctx, handlers } = makeSetupCtx({ failTool: "memory_search" });
+        await pluginModule.default.setup(ctx);
+
+        const event = { sessionID: "v2-failed", agent: "artisan", system: [] };
+        await runContextHandler(handlers, event);
+        const injected = event.system.join("\n");
+        expect(injected).not.toContain("memory_search tool");
+        expect(injected).not.toContain("access to the memory_search");
+
+        // The suppression names its reason, so the absent claim is diagnosable.
+        const log = readFileSync(KG_TEMP_LOG_FILE, "utf8");
+        expect(log).toContain("memory_search");
+        expect(log).toMatch(/suppressed/i);
+        expect(log).toContain("failed:");
+      } finally {
+        if (priorDebug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+        else process.env.KNOWLEDGE_GATE_DEBUG = priorDebug;
+      }
+    });
+
+    it("emits the memory_search claim when this process recorded a success", async () => {
+      const { ctx, handlers } = makeSetupCtx();
+      await pluginModule.default.setup(ctx);
+
+      const event = { sessionID: "v2-registered", agent: "artisan", system: [] };
+      await runContextHandler(handlers, event);
+      expect(event.system.join("\n")).toContain("memory_search tool");
+    });
+
+    it("keeps the claim on the V1 path where no registration was attempted", async () => {
+      const outcome = hooks.getRegistrationOutcomes?.() || {};
+      expect(outcome.memory_search).toBeUndefined();
+      const output = { system: [] };
+      await hooks["experimental.chat.system.transform"]({ sessionID: "v1-path", agent: "artisan" }, output);
+      expect(output.system.join("\n")).toContain("memory_search tool");
+    });
+  });
 });
