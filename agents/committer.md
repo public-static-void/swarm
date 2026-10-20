@@ -170,6 +170,12 @@ permissions:
     resource: "git rev-parse*"
     effect: allow
   - action: shell
+    resource: "git check-ignore*"
+    effect: allow
+  - action: shell
+    resource: "git ls-files*"
+    effect: allow
+  - action: shell
     resource: "git symbolic-ref*"
     effect: allow
   - action: shell

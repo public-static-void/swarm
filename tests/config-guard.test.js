@@ -160,7 +160,7 @@ const ANALYZER_READ_BASELINE_COMMANDS = [
   "ls*", "find*", "cat*", "head*", "tail*", "wc*", "sort*", "uniq*",
   "diff*", "tree*", "which*", "type*", "stat*", "du*", "df*",
 ];
-const COMMITTER_LIST_COMMANDS = ["ls*"];
+const COMMITTER_LIST_COMMANDS = ["ls*", "git ls-files*"];
 const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
 const SCAN_COMMANDS = ["npm audit*", "npm run audit*", "pip audit*"];
 // Per-command owners: the python scan probe is a scanner-role grant (the
@@ -596,7 +596,7 @@ describe("agent permission allowlists", () => {
     expect(missing).toEqual([]);
   });
 
-  it("keeps directory listing for the committer", () => {
+  it("keeps directory listing and file inventory for the committer", () => {
     const patterns = entriesByFile.get("committer.md").map((e) => e.pattern);
     const missing = COMMITTER_LIST_COMMANDS.filter((cmd) => !patterns.includes(cmd));
     expect(missing).toEqual([]);
@@ -1870,14 +1870,19 @@ describe("short-term note deletion scope", () => {
 // Verification verbs stay routed to the role that owns them: doc-lint and
 // format-check verbs never landed as grants, the dependency scan sits with
 // the reviewer, supply-chain mutation is denied everywhere, and the ignore
-// probe stays with the read roles.
+// probe stays with the holders that verify ignore status as part of their
+// remit (the three read roles plus the git-lifecycle agent).
 describe("verification verb routing", () => {
   const DOC_LINT_PATTERN = "make lint-docs*";
   const FORMAT_CHECK_PATTERN = "make fmt-check*";
   const REVIEW_SCAN_PATTERN = "cargo audit*";
   const SUPPLY_MUTATION_PATTERN = "cargo update*";
   const IGNORE_PROBE_PATTERN = "git check-ignore*";
-  const READ_ROLE_FILES = ["analyzer.md", "explorer.md", "inspector.md"];
+  const IGNORE_PROBE_HOLDERS = ["analyzer.md", "committer.md", "explorer.md", "inspector.md"];
+  // Reading arbitrary source and echoing text are outside the commit role's
+  // remit: source reads belong to a read role, and echo carries no filesystem
+  // semantics of its own.
+  const COMMITTER_WITHHELD_PATTERNS = ["cat", "echo"];
 
   function shellAllows(content) {
     return permissionRules(content).filter((r) => r.action === "shell" && r.effect === "allow");
@@ -1914,11 +1919,21 @@ describe("verification verb routing", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("keeps the ignore probe with the read roles", () => {
+  it("keeps the ignore probe with its holders", () => {
     const holders = agentFiles().filter((file) =>
       shellAllows(readAgent(file)).some((r) => r.resource === IGNORE_PROBE_PATTERN)
     );
-    expect(holders.sort()).toEqual(READ_ROLE_FILES);
+    expect(holders.sort()).toEqual(IGNORE_PROBE_HOLDERS);
+  });
+
+  it("keeps withheld read and echo verbs off the committer grant", () => {
+    const granted = shellAllows(readAgent("committer.md")).map((r) => r.resource);
+    const offenders = granted.filter((resource) =>
+      COMMITTER_WITHHELD_PATTERNS.some(
+        (prefix) => resource.replace(/\*+$/, "") === prefix || resource.startsWith(`${prefix} `)
+      )
+    );
+    expect(offenders).toEqual([]);
   });
 });
 
