@@ -133,7 +133,7 @@ ${table}
   // (Status: FAIL + Milestone citation) because the citation parser is
   // FAIL-context-only (swarm/99): prose tokens outside FAIL-status findings are
   // provenance, not citations, and would yield zero citations → MALFORMED.
-  function reviewKD(verdict, findings = "") {
+  function reviewKD(verdict, findings = "", extraBody = "") {
     const body = verdict === "FAIL" && findings
       ? `### F001: defect\n\n- **Milestone citation**: ${findings}\n- **Status**: FAIL\n`
       : findings;
@@ -157,7 +157,7 @@ ${verdict}
 ## Review Findings
 
 ${body}
-`;
+${extraBody}`;
   }
 
   function removeKD(filename) {
@@ -4578,8 +4578,8 @@ milestones:
   describe("verdict-aware VERIFY gate", () => {
     // Delegates to the shared reviewKD builder — FAIL fixtures pass milestone
     // citations in the Findings section (the scoped-reopen provenance).
-    function verdictKD(verdict, findings = "") {
-      return reviewKD(verdict, findings);
+    function verdictKD(verdict, findings = "", extraBody = "") {
+      return reviewKD(verdict, findings, extraBody);
     }
 
     it("a FAIL review KD auto-regresses VERIFY→SWARM without BACKWARD: true", async () => {
@@ -4661,14 +4661,14 @@ milestones:
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
     });
 
-    it("a FUNDAMENTAL verdict blocks VERIFY advancement and escalates without regressing", async () => {
+    it("a retired verdict token blocks VERIFY advancement and names its replacement", async () => {
       const s = sid("f1-ac104");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
-      // TEST-ONLY: the FUNDAMENTAL_ESCALATION line below is asserted test output for the
-      // review-fund-<sid>.md fixture — verify against the test source before treating it
-      // as a lifecycle anomaly.
+      createRegistry(s, [["M1", "checked-off"]]);
+      // The retired literal is invalid, never aliased to FAIL — the fixture
+      // carries it verbatim so the straggler path is what runs.
       createKD(`review-fund-${s}.md`, verdictKD("FUNDAMENTAL"));
 
       try { rmSync(logPath); } catch (_) {}
@@ -4678,17 +4678,107 @@ milestones:
           { tool: "glob", sessionID: s, callID: "c1" },
           { args: { pattern: "knowledge/*.md" } }
         );
-        // Blocked — stays in VERIFY, never regresses.
+        // Blocked — stays in VERIFY, never regresses and never reopens.
         expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
         expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
-        // Escalation signal names the KD.
+        const registry = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(registry).toContain("  M1: checked-off");
+        // The diagnostic names the retired token, the replacement verdict, and
+        // the replacement escalation carrier.
         const log = readFileSync(logPath, "utf8");
-        expect(log).toContain("FUNDAMENTAL_ESCALATION");
+        expect(log).toContain("FUNDAMENTAL_RETIRED");
         expect(log).toContain(`review-fund-${s}.md`);
+        expect(log).toContain("FUNDAMENTAL");
+        expect(log).toContain("FAIL");
+        expect(log).toContain("## Escalation");
+        expect(log).not.toContain("FUNDAMENTAL_ESCALATION");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
+    });
+
+    it("a citation-less FAIL carrying an escalation section blocks without regressing (ESCALATION_BLOCKED)", async () => {
+      const s = sid("f1-ac107");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      const escalation = "\n## Escalation\n\nThe design premise is wrong — delete the branch and re-plan.\n";
+      createKD(`review-esc-${s}.md`, verdictKD("FAIL", "", escalation));
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Design-level failure: blocked for a human decision, not routed into
+        // the fix loop and not reopened as a fixable row.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
+        const registry = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(registry).toContain("  M1: checked-off");
+        const log = readFileSync(logPath, "utf8");
+        expect(log).toContain("ESCALATION_BLOCKED");
+        expect(log).not.toContain("MALFORMED_FAIL");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("a citable FAIL carrying an escalation section blocks as ambiguous (VERDICT_AMBIGUOUS)", async () => {
+      const s = sid("f1-ac108");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      const escalation = "\n## Escalation\n\nUnclear whether M1 is fixable at all.\n";
+      createKD(`review-amb-${s}.md`, verdictKD("FAIL", "impl-M1-short-term-store is broken", escalation));
+
+      try { rmSync(logPath); } catch (_) {}
+      process.env.PROTOCOL_GATE_DEBUG = "1";
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        );
+        // Two intents in one verdict: a fix loop would guess which one was meant.
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+        expect(hooks.verdictRegressedKDs.has(s)).toBe(false);
+        const registry = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
+        expect(registry).toContain("  M1: checked-off");
+        expect(readFileSync(logPath, "utf8")).toContain("VERDICT_AMBIGUOUS");
+      } finally {
+        delete process.env.PROTOCOL_GATE_DEBUG;
+        try { rmSync(logPath); } catch (_) {}
+      }
+    });
+
+    it("an empty or fenced escalation heading does not count as a marker", async () => {
+      // Empty section: the heading alone carries no escalation content.
+      expect(hooks.hasEscalationMarker("## Verdict\n\nFAIL\n\n## Escalation\n\n## Next\n\nbody\n")).toBe(false);
+      // Fenced example: a quoted grammar sample is not a marker.
+      expect(hooks.hasEscalationMarker("## Verdict\n\nFAIL\n\n```\n## Escalation\n\nbecause\n```\n")).toBe(false);
+      // Non-empty section before the next level-2 heading is a marker.
+      expect(hooks.hasEscalationMarker("## Verdict\n\nFAIL\n\n## Escalation\n\nbecause\n\n## Next\n")).toBe(true);
+      // End of file also terminates the section.
+      expect(hooks.hasEscalationMarker("## Escalation\n\nbecause\n")).toBe(true);
+    });
+
+    it("a PASS ignores the escalation marker and advances on the fresh-PASS rule", async () => {
+      const s = sid("f1-ac109");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`review-pass-esc-${s}.md`, verdictKD("PASS", "", "\n## Escalation\n\nleft over from an earlier draft\n"));
+      await hooks["tool.execute.before"](
+        { tool: "glob", sessionID: s, callID: "c1" },
+        { args: { pattern: "knowledge/*.md" } }
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
     });
 
     it("a fresh PASS review KD advances on the merged surface; a MISSING verdict blocks", async () => {
@@ -4780,7 +4870,7 @@ milestones:
 
     it("the REVIEW template carries the verdict frontmatter field", async () => {
       const tpl = readFileSync(join(process.cwd(), "skills/template-review/SKILL.md"), "utf8");
-      expect(tpl).toMatch(/^verdict\s*:\s*\{\{PASS \| FAIL \| FUNDAMENTAL\}\}\s*$/m);
+      expect(tpl).toMatch(/^verdict\s*:\s*\{\{PASS \| FAIL\}\}\s*$/m);
     });
   });
 

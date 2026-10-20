@@ -319,15 +319,16 @@ At VERIFY, the REVIEW KD is the lifecycle acceptance proof: full suite re-run, d
 
 ## Verdict Rules
 
-Write the verdict into the REVIEW KD **frontmatter** (`verdict: PASS | FAIL | FUNDAMENTAL`) — it is the single machine source the protocol-gate VERIFY gate reads. Keep the body Verdict section for human readability.
+Write the verdict into the REVIEW KD **frontmatter** (`verdict: PASS | FAIL`) — it is the single machine source the protocol-gate VERIFY gate reads. Keep the body Verdict section for human readability.
 
 | Verdict     | Meaning          | Machine behavior                                                                                                                      |
 | ----------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | PASS        | All criteria met | VERIFY advances to the next phase when this review KD is fresh (newer than the newest impl KD)                                        |
 | FAIL        | Specific issues  | protocol-gate auto-regresses VERIFY→SWARM, reopens the cited milestone rows, and the Artisan fixes the findings                       |
-| FUNDAMENTAL | Design flaw      | protocol-gate blocks VERIFY advancement and escalates to the user; a FUNDAMENTAL verdict leaves the phase at VERIFY — Happy to Delete |
+| FAIL + `Escalation` section | Design-level flaw | protocol-gate blocks VERIFY advancement with `ESCALATION_BLOCKED`, regresses nothing and reopens nothing; the phase stays at VERIFY for a user decision — Happy to Delete |
 
 - **MISSING** (absent or invalid `verdict`) blocks VERIFY with a diagnostic — not treated as PASS.
+- **Escalation marker**: to block and escalate a design-level failure instead of requesting a fix, issue `FAIL` with zero milestone citations and add a level-2 section titled `Escalation` carrying at least one non-empty line before the next level-2 heading. That section is the escalation; an empty section counts as absent. A `FAIL` that both cites milestones and carries the section blocks as `VERDICT_AMBIGUOUS` (the review states two intents at once), and `PASS` ignores the section.
 - **Fresh PASS contract**: a `PASS` verdict advances when this review KD's mtime is ≥ the newest `impl-*` KD mtime; a stale PASS (older than the newest impl KD) blocks — re-review required.
 - **FAIL citation mandate (binding)**: every FAIL finding MUST cite at least one milestone token (`M\d+` id like `M3`, or an `impl-<milestone-id>-` path). The gate parses these tokens to reopen exactly the cited milestone rows. A FAIL verdict with zero milestone citations is **MALFORMED** — the gate blocks, regresses nothing, and reopens nothing; re-dispatch the review with proper citations.
 - A `FAIL` verdict machine-triggers the VERIFY→SWARM regression — no explicit dispatch and no `BACKWARD: true` flag is required. The regression fires once per review KD filename; a re-review with a new filename may trigger the next cycle, bounded by the lifecycle's cycle cap. A single review KD (with both sections) is the sole VERIFY surface.

@@ -1223,7 +1223,7 @@ RESULT KD: knowledge/review-foo.md`;
       // when the dispatch carries one; the prefix hint is review-only.
       expect(output.args.prompt).toContain("knowledge/review-<name>-<session_id>-gen");
       // Verdict + OQ-4 citation mandate surfaced to the Inspector.
-      expect(output.args.prompt).toContain("verdict: PASS | FAIL | FUNDAMENTAL");
+      expect(output.args.prompt).toContain("verdict: PASS | FAIL");
       expect(output.args.prompt).toContain("CITATION MANDATE");
       expect(output.args.prompt).toContain("every FAIL finding MUST cite at least one milestone token");
       expect(output.args.prompt).toContain("MALFORMED");

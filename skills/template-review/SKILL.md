@@ -12,7 +12,7 @@ type: review
 session_id: "{{session_id}}"
 author: Inspector
 superseded_by: null
-verdict: {{PASS | FAIL | FUNDAMENTAL}}
+verdict: {{PASS | FAIL}}
 ---
 
 <!-- Filename: knowledge/review-{{artifact}}-{{session_id}}-gen{{generation}}.md -->
@@ -22,14 +22,23 @@ verdict: {{PASS | FAIL | FUNDAMENTAL}}
 
 ## Verdict
 
-{{PASS / FAIL / FUNDAMENTAL}}
+{{PASS / FAIL}}
 
 The `verdict` frontmatter field above is the single machine source — protocol-gate
 reads it during VERIFY, and the REVIEW KD carries the lifecycle acceptance proof (full suite re-run, dependency and SAST scans, traceability matrix). `MISSING` (absent or invalid) blocks VERIFY with a
 diagnostic and is not treated as PASS; `PASS` advances when this review KD is
 newer than the newest `impl-*` KD (fresh PASS after the last fix — a stale PASS
 blocks); `FAIL` auto-regresses VERIFY→SWARM and reopens exactly the milestone
-row(s) its findings cite; `FUNDAMENTAL` blocks advancement and escalates.
+row(s) its findings cite.
+
+**Escalation.** To block advancement and escalate a design-level failure instead of
+requesting a fix, issue `FAIL` with zero milestone citations and add a level-2
+section titled `Escalation` carrying at least one non-empty line before the next
+level-2 heading. That section is the escalation: the gate blocks with
+`ESCALATION_BLOCKED`, regresses nothing, and reopens nothing, leaving the phase at
+VERIFY for a user decision. A `FAIL` that both cites milestones and carries the
+section is `VERDICT_AMBIGUOUS` and blocks; a `FAIL` with neither is MALFORMED and
+blocks. An empty section counts as absent, and `PASS` ignores the section.
 
 ## Verdict Rules (citation mandate)
 

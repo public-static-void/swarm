@@ -1441,7 +1441,7 @@ describe("VERIFY evidence shape", () => {
       expect(content).toContain("traceability matrix");
       expect(content).toContain("full suite");
     }
-    expect(reviewTemplate).toContain("verdict: {{PASS | FAIL | FUNDAMENTAL}}");
+    expect(reviewTemplate).toContain("verdict: {{PASS | FAIL}}");
     for (const content of [inspector, gates]) {
       expect(content).toContain("single machine source");
     }
