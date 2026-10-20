@@ -380,13 +380,13 @@ describe("SPEC-template git hygiene", () => {
   const skill = readRoot(join("skills", "template-spec", "SKILL.md"));
   const gitignore = readRoot(".gitignore");
 
-  it("requires disk-tool evidence and task-scoped staging in the AC template", () => {
+  it("requires disk-tool evidence in the AC template", () => {
     const acSection = skill.slice(skill.indexOf("## Acceptance Criteria"));
     const tools = ["`read`", "`glob`", "`grep`"].filter((t) => acSection.includes(t));
     expect(tools.length).toBeGreaterThanOrEqual(2);
-    const stagingLine = acSection.split("\n").find((l) => l.includes("Stage"));
-    expect(stagingLine, "AC template must carry a task-scoped staging rule").toBeTruthy();
-    expect(stagingLine).toMatch(/changed/);
+    // Staging guidance belongs to the Committer that stages: the template's
+    // acceptance section carries the disk-verification rule alone.
+    expect(acSection).not.toMatch(/stage/i);
   });
 
   it("requires no git-diff or staged-state evidence in the AC template", () => {
