@@ -143,8 +143,9 @@ function learnKnowledgeDirFromArgs(sessionID, args) {
 // and re-exported by reference in the test-access block below.
 
 // Retention cap for the per-session verbatim raw-intent capture. The
-// chat.message hook keeps only the latest RAW_INTENT_MAX_MESSAGES overseer
-// messages so the INTENT-phase systemTransform injection stays bounded.
+// chat.message hook keeps the opening request plus the newest follow-ups, up
+// to RAW_INTENT_MAX_MESSAGES overseer messages, so the INTENT-phase
+// systemTransform injection stays bounded.
 // Named constant, exported as a test-access property.
 const RAW_INTENT_MAX_MESSAGES = 10;
 
@@ -3635,7 +3636,8 @@ async function protocolGateServer(input, options) {
     // because the model may summarize or omit. Read-only discipline:
     // no KD writes, no mutation of output.message; subagent messages and
     // non-text parts are skipped; the per-session capture is
-    // capped at RAW_INTENT_MAX_MESSAGES by dropping the oldest entries.
+    // capped at RAW_INTENT_MAX_MESSAGES, and overflow drops follow-ups from
+    // index 1 upward so the message that opened the lifecycle survives.
     async function chatMessage(input, output) {
       const { sessionID, agent, messageID } = input || {};
       if (!sessionID) return;
@@ -3650,7 +3652,7 @@ async function protocolGateServer(input, options) {
       const list = rawIntentCapture.get(sessionID) || [];
       list.push(entry);
       if (list.length > RAW_INTENT_MAX_MESSAGES) {
-        list.splice(0, list.length - RAW_INTENT_MAX_MESSAGES);
+        list.splice(1, list.length - RAW_INTENT_MAX_MESSAGES);
       }
       rawIntentCapture.set(sessionID, list);
       debug(`chat.message: captured ${texts.length} text part(s) for session ${sessionID} (${list.length}/${RAW_INTENT_MAX_MESSAGES})`);
@@ -4225,7 +4227,7 @@ async function protocolGateServer(input, options) {
           debug(`tool.execute.before: INTENT BOUNDARY refusal — ${tool} of ${boundaryRel} in phase=${phaseName}`);
           throw new ProtocolGateError(
             ERROR_TEMPLATES.INTENT_BOUNDARY_CLOSED.code,
-            `❌ INTENT BOUNDARY CLOSED: ${tool} of intent-*.md is refused in ${phaseName}. The INTENT edit window closed on the first successful write of this session's intent KD. To amend the intent KD, run /phase INTENT (user-initiated) first — the corrected KD must carry an mtime at or after the override.`,
+            `❌ INTENT BOUNDARY CLOSED: ${tool} of intent-*.md is refused in ${phaseName}. The INTENT edit window closed on the first successful write of this session's intent KD. To amend the intent KD, run /phase INTENT (user-initiated) first — the corrected KD must carry an mtime at or after the override. Content stranded by a split amendment is carried into the next INTENT amendment, or recorded under the REPORT KD's Correction section.`,
             "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md"
           );
         }
@@ -5062,7 +5064,10 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
 
         // INTENT-phase verbatim raw-intent injection. The captured
         // user text is relayed word-for-word into the Raw Request authoring
-        // flow, removing model discretion over the verbatim copy. Read-only:
+        // flow, removing model discretion over the verbatim copy. Only entry 0
+        // opened the lifecycle, so only its line carries the copy directive:
+        // later entries stay in the block as the audit trail of what the user
+        // said, labelled as follow-ups and routed to the Triage Notes. Read-only:
         // the directive instructs a copy, never an auto-write — the
         // Overseer remains the KD author. Fires only while phase stays INTENT
         // (may repeat on subsequent turns; stops automatically on advance).
@@ -5072,7 +5077,11 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
           const captured = rawIntentCapture.get(sessionID);
           if (captured && captured.length > 0) {
             captured.forEach((entry, i) => {
-              output.system.push(`[Protocol Gate] Raw user request (verbatim) — copy exactly, word for word, into the Raw Request section of the intent KD. Do not paraphrase or summarize. — Message ${i + 1}: ${entry.text}`);
+              if (i === 0) {
+                output.system.push(`[Protocol Gate] Raw user request (verbatim) — the opening request: copy exactly, word for word, into the Raw Request section of the intent KD. Do not paraphrase or summarize. — Message ${i + 1}: ${entry.text}`);
+              } else {
+                output.system.push(`[Protocol Gate] Follow-up message — this follow-up arrived after the opening request. Distill it into the Triage Notes section of the intent KD with its disposition. — Message ${i + 1}: ${entry.text}`);
+              }
             });
           }
         }
