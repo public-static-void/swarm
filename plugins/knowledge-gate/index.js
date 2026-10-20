@@ -380,6 +380,23 @@ function resetLogCollapse() {
   for (const k of Object.keys(_collapseCounts)) delete _collapseCounts[k];
 }
 
+// Per-tool V2 registration outcomes, keyed by tool name and scoped to the
+// process: the V2 adapter adds each tool through `editor.add`, and a throw
+// there leaves the tool absent from the agent's callable surface while every
+// grant layer still allows it. Recording the outcome lets the advertisement
+// claim only what this process actually registered, and gives an operator a
+// name to search for when a tool is missing. An absent entry is "not
+// attempted", not "failed" — the V1 server() path registers nothing.
+const _registrationOutcomes = new Map();
+
+function getRegistrationOutcomes() {
+  return Object.fromEntries(_registrationOutcomes);
+}
+
+function resetRegistrationOutcomes() {
+  _registrationOutcomes.clear();
+}
+
 // Structured enablement snapshot: one object carrying every input the
 // load-signal reports, so tests and operators read a single source instead
 // of re-deriving precedence. Either signal switches on; env is reported
@@ -2737,14 +2754,22 @@ async function knowledgeGateServer(input, options) {
       const sessionID = input.sessionID;
       const agent = sessionAgentMap.get(sessionID) || input.agent?.toLowerCase();
 
-      // All agents get memory_search read access to query prior session insights
-      output.system.push(
-        `[Knowledge Gate] You have access to the memory_search tool. ` +
-        `Call it with tags (array), topic (string), or limit (integer) to query ` +
-        `prior session insights from knowledge/memory/. Results are store-tagged ` +
-        `(store: project|generic|swarm) and may come from any store.`
-      );
-      debug(`systemTransform: memory_search tool hint injected for session="${sessionID}" agent="${agent || "unknown"}"`);
+      // All agents hold the memory_search grant, but a grant is not a
+      // registration: the V2 adapter records whether this process actually
+      // added the tool. A recorded failure withholds the claim; an absent
+      // record (the V1 server() path registers nothing) keeps the hint.
+      const memorySearchOutcome = _registrationOutcomes.get("memory_search");
+      if (memorySearchOutcome === undefined || memorySearchOutcome.startsWith("registered")) {
+        output.system.push(
+          `[Knowledge Gate] You have access to the memory_search tool. ` +
+          `Call it with tags (array), topic (string), or limit (integer) to query ` +
+          `prior session insights from knowledge/memory/. Results are store-tagged ` +
+          `(store: project|generic|swarm) and may come from any store.`
+        );
+        debug(`systemTransform: memory_search tool hint injected for session="${sessionID}" agent="${agent || "unknown"}"`);
+      } else {
+        debug(`systemTransform: memory_search tool hint suppressed for session="${sessionID}" agent="${agent || "unknown"}" — registration ${memorySearchOutcome}`);
+      }
 
       // Short-term resume hint — the mechanical compaction-amnesia mitigation.
       // Regenerated on every LLM call, so a post-compaction model can
@@ -2917,7 +2942,12 @@ async function knowledgeGateServer(input, options) {
       getStatusFile,
       probeLogDirWritable,
       getDroppedLogCount,
-      resetDroppedLogCount
+      resetDroppedLogCount,
+      // Registration introspection: the V2 adapter's per-tool outcome
+      // ("registered" | "failed:<message>") is module-scope, so reading it
+      // here observes the same record the advertisement reads.
+      getRegistrationOutcomes,
+      resetRegistrationOutcomes
     };
   }
 
@@ -2992,7 +3022,12 @@ async function knowledgeGateServer(input, options) {
               return { content: text };
             },
           });
-        } catch {}
+          _registrationOutcomes.set(name, "registered");
+        } catch (e) {
+          const reason = e && e.message ? e.message : String(e);
+          _registrationOutcomes.set(name, `failed:${reason}`);
+          debug(`tool registration failed for "${name}": ${reason}`);
+        }
       }
     });
   }
