@@ -1771,6 +1771,45 @@ describe("rule layers state their rules self-containedly", () => {
   });
 });
 
+// The escalation route names the skill the Overseer reaches for, so the
+// instruction and the skill allow list are one contract: an instruction the
+// grant does not admit strands the role at the block it is told to handle, and
+// a grant with no instruction admits a skill nothing tells the role to load.
+// The grant is read from the permission block; the instruction is read from
+// the delegation-step section that carries it.
+describe("Overseer escalation skill grant", () => {
+  const overseer = readAgent("overseer.md");
+  const allowedSkills = actionEntries(overseer, "skill")
+    .filter((entry) => entry.mode === "allow")
+    .map((entry) => entry.pattern);
+
+  function delegationSteps(content) {
+    const start = content.indexOf("### Delegation Steps");
+    if (start === -1) return "";
+    const end = content.indexOf("### Redispatch Preference Rules", start);
+    return content.slice(start, end === -1 ? undefined : end);
+  }
+
+  it("admits the escalation protocol skill to the Overseer role", () => {
+    expect(allowedSkills).toContain("escalation-protocol");
+  });
+
+  it("instructs loading that skill with the procedure it reaches for", () => {
+    const steps = delegationSteps(overseer);
+    expect(steps, "overseer.md must carry the delegation steps").not.toBe("");
+    expect(steps).toContain("load the `escalation-protocol` skill");
+    expect(steps).toContain("Blocked Path Procedure");
+  });
+
+  it("fails on a dropped grant or a pointer that names no skill to load", () => {
+    const withoutGrant = allowedSkills.filter((name) => name !== "escalation-protocol");
+    expect(withoutGrant).not.toContain("escalation-protocol");
+    const pointer =
+      "### Delegation Steps\n\n7. **On escalation** — follow the Blocked Path Procedure in the escalation protocol.\n";
+    expect(delegationSteps(pointer)).not.toContain("load the `escalation-protocol` skill");
+  });
+});
+
 // The resume handle travels only as the subagent call's `sessionID` argument.
 // Every layer that used to teach a prompt-level resume field now teaches the
 // argument instead, and a later edit that reintroduces the field would pass

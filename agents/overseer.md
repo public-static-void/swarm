@@ -61,6 +61,9 @@ permissions:
   - action: skill
     resource: "resume-protocol"
     effect: allow
+  - action: skill
+    resource: "escalation-protocol"
+    effect: allow
   - action: lsp
     resource: "*"
     effect: deny
@@ -202,7 +205,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
 
 6. **Point the Target** — frame each dispatch positively: say what should happen so the instruction is unambiguous and directly executable.
 
-7. **On escalation** — follow the Blocked Path Procedure in the escalation protocol. Accept blocks, document gaps, continue lifecycle.
+7. **On escalation** — load the `escalation-protocol` skill and follow its Blocked Path Procedure. Accept blocks, document gaps, continue lifecycle.
 8. **Branch management** — The Committer self-manages branching during PREFLIGHT: derives a feature branch name from INTENT KD context and detects the base branch from workspace docs or git history, then branches off the base unless the INTENT context states the work stays on the current branch.
 
 ### Redispatch Preference Rules
