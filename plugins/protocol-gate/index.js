@@ -928,6 +928,19 @@ function warn(msg) {
   }
 }
 
+// Always-on gate record. Unlike debug()/loud()/warn(), this writes with the
+// debug flag unset: a lifecycle wedged on a rejected artifact must be
+// diagnosable from the log alone, and a normal run carries no flag — the
+// 2026-10-21 CLEANUP non-advance left no trace for exactly that reason. Callers
+// emit one line per verdict, never per tool call.
+function gateRecord(msg) {
+  try {
+    appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
+  } catch (_) {
+    _droppedLogCount++;
+  }
+}
+
 // Git-repo bootstrap guard — guarantees the workspace is a git repo before any
 // lifecycle phase runs, so the lifecycle's first git-dependent operation
 // (PREFLIGHT branch creation) always has a repo to work in. Runs at server()
@@ -2493,6 +2506,93 @@ function enterPhase(sessionPhaseMap, sessionID, phase) {
   sessionPhaseMap.set(`${sessionID}:phaseEnteredAt`, Date.now());
 }
 
+// CLEANUP artifact validity — the single predicate behind the CLEANUP → REPORT
+// verdict, the rejection record, and the phase refusal. Identity alone decides:
+// a cleanup artifact carrying this session and the persisted lifecycle
+// generation, parseable frontmatter, `type: cleanup`, and the owning
+// `session_id`. No timestamp is read, so a wall-clock rollover cannot invert
+// the verdict, and each rejection names its own reason so a lifecycle wedged in
+// CLEANUP is diagnosable from the log alone.
+//
+// Reasons: `missing` (no cleanup artifact for this session at all),
+// `wrong-generation` (only another generation's artifact exists),
+// `unparsable` (no leading frontmatter block), `wrong-type`, `wrong-session`.
+// Returns { ok, reason, filename, path, generation, fileGeneration }; `path` is
+// the artifact's own path, or the expected pattern when nothing matched.
+function evaluateCleanupArtifact(sessionID, sessionPhaseMap) {
+  const storedSID = sessionPhaseMap.get(`${sessionID}:sid`) || sessionID;
+  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const expectedPath = generation > 0
+    ? `knowledge/cleanup-*-${storedSID}-gen${generation}.md`
+    : `knowledge/cleanup-*-${storedSID}.md`;
+  const verdict = (ok, reason, filename, path, fileGeneration) => ({
+    ok,
+    reason,
+    filename: filename ?? null,
+    path: path ?? expectedPath,
+    generation,
+    fileGeneration: fileGeneration ?? generation
+  });
+
+  const knowledgeDir = getKnowledgeDir(sessionID);
+  let files = [];
+  try {
+    files = readdirSync(knowledgeDir);
+  } catch (_) {
+    return verdict(false, "missing");
+  }
+
+  // Same-session candidates across generations: a wrong-generation artifact is
+  // reported as such rather than as missing — the difference between "the
+  // Committer never wrote it" and "a prior lifecycle's artifact is all that
+  // exists".
+  const candidates = files.filter(f => /^cleanup-/i.test(f) && matchesSessionKDAnyGeneration(f, storedSID));
+  if (candidates.length === 0) return verdict(false, "missing");
+
+  const live = candidates.filter(f => matchesSessionKD(f, storedSID, generation));
+  if (live.length === 0) {
+    const newest = candidates
+      .map(f => ({ f, gen: extractImplKDGeneration(f, storedSID) }))
+      .sort((a, b) => (b.gen ?? -1) - (a.gen ?? -1))[0];
+    return verdict(false, "wrong-generation", newest.f, `knowledge/${newest.f}`, newest.gen);
+  }
+
+  // A valid artifact wins over an invalid sibling: the first live candidate
+  // that satisfies every identity field advances, and the first failure is
+  // reported only when none does.
+  let firstFailure = null;
+  for (const filename of live) {
+    const path = `knowledge/${filename}`;
+    let content = null;
+    try {
+      content = readFileSync(join(knowledgeDir, filename), "utf8");
+    } catch (_) {
+      content = null;
+    }
+    const frontmatter = typeof content === "string" ? content.match(/^---\r?\n([\s\S]*?)\r?\n---/) : null;
+    if (!frontmatter) {
+      firstFailure = firstFailure || verdict(false, "unparsable", filename, path);
+      continue;
+    }
+    const field = (name) => {
+      const m = frontmatter[1].match(new RegExp(`^${name}\\s*:\\s*(.+?)\\s*$`, "m"));
+      return m ? m[1].replace(/^["']|["']$/g, "").trim() : null;
+    };
+    const type = field("type");
+    if (!type || type.toLowerCase() !== "cleanup") {
+      firstFailure = firstFailure || verdict(false, "wrong-type", filename, path);
+      continue;
+    }
+    const artifactSession = field("session_id");
+    if (!artifactSession || artifactSession !== storedSID) {
+      firstFailure = firstFailure || verdict(false, "wrong-session", filename, path);
+      continue;
+    }
+    return verdict(true, null, filename, path);
+  }
+  return firstFailure;
+}
+
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCount, f1Options) {
   if (phase === undefined) return false;
 
@@ -2657,6 +2757,23 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // non-override paths route through it alike.
   if (phase === STATES.PREFLIGHT) {
     return evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap);
+  }
+
+  // The identity-based CLEANUP gate — see evaluateCleanupArtifact. Validity is
+  // stated once there and decides advancement from identity alone (type,
+  // session, generation, parseable frontmatter). No mtime is read on this path,
+  // so the override freshness anchor does not apply: a clock rollover cannot
+  // invert a verdict that never consults the clock. Fail-closed — every
+  // rejection blocks the advance and records its reason on the always-on
+  // channel so a stranded lifecycle is diagnosable from the log alone.
+  if (phase === STATES.CLEANUP) {
+    const verdict = evaluateCleanupArtifact(sessionID, sessionPhaseMap);
+    if (!verdict.ok) {
+      gateRecord(`CLEANUP_ADVANCE_BLOCKED: session=${sessionID} path=${verdict.path} generation=${verdict.generation} reason=${verdict.reason} — CLEANUP → REPORT needs a cleanup artifact whose frontmatter declares type: cleanup and session_id: ${sessionID}, at the current generation, under knowledge/.`);
+      return false;
+    }
+    debug(`Disk check CLEANUP: artifact=${verdict.filename} identity verdict ok (generation=${verdict.generation})`);
+    return true;
   }
 
   let result;
@@ -4241,10 +4358,23 @@ async function protocolGateServer(input, options) {
       if (!admitTool(phaseName, tool)) {
         const allowedTools = TOOL_ALLOWLIST[phaseName] || [];
         debug(`tool.execute.before: BLOCKED tool=${tool} in phase=${phaseName} (allowed: ${allowedTools.join(", ")})`);
+        let refusal = `❌ BLOCKED: Wrong phase. Tool "${tool}" is not available in ${phaseName}. Available tools in ${phaseName}: ${allowedTools.join(", ")}`;
+        let refusalGuidance = `Allowed tools: ${allowedTools.join(", ")}`;
+        // CLEANUP names what the phase is waiting for. Without this the refusal
+        // reads as a tool-list complaint while the only deliverable still owed
+        // is the one the phase refuses to allow.
+        if (phase === STATES.CLEANUP) {
+          const verdict = evaluateCleanupArtifact(sessionID, sessionPhaseMap);
+          const status = verdict.ok
+            ? `CLEANUP artifact ${verdict.path} is valid — the advance to REPORT is due on the next disk check`
+            : `CLEANUP artifact ${verdict.path} — reason=${verdict.reason}`;
+          refusal += `. ${status}.`;
+          refusalGuidance += ` — ${status}`;
+        }
         throw new ProtocolGateError(
           ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
-          `❌ BLOCKED: Wrong phase. Tool "${tool}" is not available in ${phaseName}. Available tools in ${phaseName}: ${allowedTools.join(", ")}`,
-          `Allowed tools: ${allowedTools.join(", ")}`
+          refusal,
+          refusalGuidance
         );
       }
 
@@ -4954,6 +5084,18 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         }
       }
 
+      // CLEANUP delivers its artifact through a subagent dispatch, so this hook
+      // is the post-delivery evaluation point: the Committer's write lands
+      // inside the dispatch, before the after-hook runs. Without it the phase
+      // advances only on the Overseer's NEXT disk-check tool call — and the
+      // only call the Overseer reaches for in CLEANUP is the report write,
+      // which the phase refuses before any disk check runs. Scoped to CLEANUP:
+      // every other phase keeps its existing advancement site.
+      if (isOverseerSession(sessionID) && tool === "subagent") {
+        const postPhase = sessionPhaseMap.get(sessionID);
+        if (postPhase === STATES.CLEANUP) await advanceFromDiskEvidence(sessionID);
+      }
+
       // Mirror the :1779 gate — only overseer task dispatches touch the
       // overseer's redispatch counter; subagent→subagent task calls never do.
       if (tool !== "subagent" || !isOverseerSession(sessionID)) return;
@@ -5169,6 +5311,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       hasEscalationMarker,
       findNewestVerdictKD,
       readPreflightVerdictFrontmatter,
+      evaluateCleanupArtifact,
       findNewestPreflightKD,
       evaluatePreflightVerdict,
       reopenCheckedOffMilestones,
