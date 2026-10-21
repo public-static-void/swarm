@@ -15,6 +15,13 @@ import * as protocolPhases from "../plugins/protocol-gate/phases.js";
 const ROOT = process.cwd();
 const AGENTS_DIR = join(ROOT, "agents");
 
+// The retired prompt-level resume field. A prohibition has to name what it
+// forbids, so the literal lives in this pin and nowhere else on the
+// configuration surface: the handle travels as the subagent call's
+// `sessionID` argument, and a prompt field re-taught in any layer is the
+// regression this regex catches.
+const RETIRED_RESUME_FIELD = /\bTASK ID\b|\btask_id\b/;
+
 function readRoot(name) {
   return readFileSync(join(ROOT, name), "utf8");
 }
@@ -373,13 +380,13 @@ describe("SPEC-template git hygiene", () => {
   const skill = readRoot(join("skills", "template-spec", "SKILL.md"));
   const gitignore = readRoot(".gitignore");
 
-  it("requires disk-tool evidence and task-scoped staging in the AC template", () => {
+  it("requires disk-tool evidence in the AC template", () => {
     const acSection = skill.slice(skill.indexOf("## Acceptance Criteria"));
     const tools = ["`read`", "`glob`", "`grep`"].filter((t) => acSection.includes(t));
     expect(tools.length).toBeGreaterThanOrEqual(2);
-    const stagingLine = acSection.split("\n").find((l) => l.includes("Stage"));
-    expect(stagingLine, "AC template must carry a task-scoped staging rule").toBeTruthy();
-    expect(stagingLine).toMatch(/changed/);
+    // Staging guidance belongs to the Committer that stages: the template's
+    // acceptance section carries the disk-verification rule alone.
+    expect(acSection).not.toMatch(/stage/i);
   });
 
   it("requires no git-diff or staged-state evidence in the AC template", () => {
@@ -1214,7 +1221,7 @@ describe("agents delegation dispatch docs", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("embeds no literal brace placeholders in task() examples", () => {
+  it("embeds no literal brace placeholders in dispatch examples", () => {
     const offenders = [];
     for (const f of files) {
       const content = readAgent(f);
@@ -1222,9 +1229,9 @@ describe("agents delegation dispatch docs", () => {
       let m;
       while ((m = fence.exec(content)) !== null) {
         const block = m[1];
-        if (!block.includes("task(")) continue;
+        if (!block.includes("task(") && !block.includes("subagent(")) continue;
         const brace = block.match(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/);
-        if (brace) offenders.push(`${f}: ${brace[0]} inside a task( example`);
+        if (brace) offenders.push(`${f}: ${brace[0]} inside a dispatch example`);
       }
     }
     expect(offenders).toEqual([]);
@@ -1539,10 +1546,13 @@ describe("rule layers state their rules self-containedly", () => {
   }
 
   // The Artisan applies the redispatch choice to its own Committer dispatches,
-  // so its section carries the reuse-versus-fresh choice itself.
+  // so its section carries the reuse-versus-fresh choice itself; the Overseer's
+  // section states the same choice for its own dispatches. The handle travels
+  // as the subagent call's `sessionID` argument, and the continuity record
+  // names the decision rather than the handle value.
   const REDISPATCH_FACTS = [
-    "`TASK ID`",
-    "Reuse the same `TASK ID`",
+    "`sessionID`",
+    "Reuse the same instance",
     "Start a fresh instance",
     "returned an empty result",
     "exhausted its token budget",
@@ -1557,6 +1567,11 @@ describe("rule layers state their rules self-containedly", () => {
     "### Same-Instance Redispatch",
     "\n### "
   );
+  const overseerRedispatch = headingRegion(
+    readAgent("overseer.md"),
+    "### Redispatch Preference Rules",
+    "\n### "
+  );
   const gatesVerdicts = headingRegion(
     readRoot(join("skills", "verification-gates", "SKILL.md")),
     "### VERIFY Acceptance Proof",
@@ -1568,9 +1583,20 @@ describe("rule layers state their rules self-containedly", () => {
     "\n## Review Findings"
   );
 
-  it("states the Artisan redispatch choice in the Artisan layer alone", () => {
+  it("states the redispatch choice on the live channel in the Artisan layer", () => {
     expect(artisanRedispatch, "artisan.md must carry the Same-Instance Redispatch section").not.toBe("");
     expect(missingFacts(artisanRedispatch, REDISPATCH_FACTS)).toEqual([]);
+  });
+
+  it("keeps the retired resume field out of both dispatcher layers", () => {
+    expect(overseerRedispatch, "overseer.md must carry the Redispatch Preference Rules section").not.toBe("");
+    for (const [layer, text] of [
+      ["artisan", artisanRedispatch],
+      ["overseer", overseerRedispatch],
+    ]) {
+      expect(text, `${layer} redispatch section present`).not.toBe("");
+      expect(RETIRED_RESUME_FIELD.test(text), `${layer} section names the retired resume field`).toBe(false);
+    }
   });
 
   it("states the verdict semantics in each layer that carries them", () => {
@@ -1596,7 +1622,7 @@ describe("rule layers state their rules self-containedly", () => {
     expect(CROSS_FILE_REFERENCE.test(`${gatesVerdicts}\nThe rules live in agents/inspector.md.`)).toBe(true);
     expect(CROSS_FILE_REFERENCE.test(`${reviewVerdicts}\nSee skills/verification-gates/SKILL.md.`)).toBe(true);
     expect(
-      missingFacts("### Same-Instance Redispatch\n\nInclude the `TASK ID` field.\n", REDISPATCH_FACTS)
+      missingFacts("### Same-Instance Redispatch\n\nPass the prior call's `sessionID`.\n", REDISPATCH_FACTS)
     ).not.toEqual([]);
     expect(missingFacts("## Verdict\n\nPASS / FAIL / FUNDAMENTAL\n", VERDICT_FACTS)).not.toEqual([]);
   });
@@ -1742,6 +1768,83 @@ describe("rule layers state their rules self-containedly", () => {
     expect(region, "code-review-skill must carry the V-Model Traceability section").not.toBe("");
     expect(missingFacts(region, ["Req ID", "Declared Gate", "Actually-Run Gate", "Status"])).toEqual([]);
     expect(LAYER_DEFERRAL.test(region), "traceability shape states its rule without a pointer").toBe(false);
+  });
+});
+
+// The escalation route names the skill the Overseer reaches for, so the
+// instruction and the skill allow list are one contract: an instruction the
+// grant does not admit strands the role at the block it is told to handle, and
+// a grant with no instruction admits a skill nothing tells the role to load.
+// The grant is read from the permission block; the instruction is read from
+// the delegation-step section that carries it.
+describe("Overseer escalation skill grant", () => {
+  const overseer = readAgent("overseer.md");
+  const allowedSkills = actionEntries(overseer, "skill")
+    .filter((entry) => entry.mode === "allow")
+    .map((entry) => entry.pattern);
+
+  function delegationSteps(content) {
+    const start = content.indexOf("### Delegation Steps");
+    if (start === -1) return "";
+    const end = content.indexOf("### Redispatch Preference Rules", start);
+    return content.slice(start, end === -1 ? undefined : end);
+  }
+
+  it("admits the escalation protocol skill to the Overseer role", () => {
+    expect(allowedSkills).toContain("escalation-protocol");
+  });
+
+  it("instructs loading that skill with the procedure it reaches for", () => {
+    const steps = delegationSteps(overseer);
+    expect(steps, "overseer.md must carry the delegation steps").not.toBe("");
+    expect(steps).toContain("load the `escalation-protocol` skill");
+    expect(steps).toContain("Blocked Path Procedure");
+  });
+
+  it("fails on a dropped grant or a pointer that names no skill to load", () => {
+    const withoutGrant = allowedSkills.filter((name) => name !== "escalation-protocol");
+    expect(withoutGrant).not.toContain("escalation-protocol");
+    const pointer =
+      "### Delegation Steps\n\n7. **On escalation** — follow the Blocked Path Procedure in the escalation protocol.\n";
+    expect(delegationSteps(pointer)).not.toContain("load the `escalation-protocol` skill");
+  });
+});
+
+// The resume handle travels only as the subagent call's `sessionID` argument.
+// Every layer that used to teach a prompt-level resume field now teaches the
+// argument instead, and a later edit that reintroduces the field would pass
+// every other guard in this file — no template, hint, or section pin reads the
+// retired key. This sweep is that pin.
+describe("retired prompt-level resume field", () => {
+  const TEMPLATES_DIR = join(ROOT, "plugins", "delegation-gate", "templates");
+
+  function sweptSurface() {
+    const skillFiles = readdirSync(join(ROOT, "skills"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(ROOT, "skills", entry.name, "SKILL.md"))
+      .filter((path) => existsSync(path));
+    const templateFiles = readdirSync(TEMPLATES_DIR)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => join(TEMPLATES_DIR, name));
+    return [
+      ...agentFiles().map((name) => join(AGENTS_DIR, name)),
+      ...skillFiles,
+      join(ROOT, "plugins", "delegation-gate", "index.js"),
+      ...templateFiles,
+    ];
+  }
+
+  it("appears nowhere on the configuration surface", () => {
+    const offenders = sweptSurface().filter((file) => RETIRED_RESUME_FIELD.test(readFileSync(file, "utf8")));
+    expect(offenders, "these files teach the retired prompt-level resume field").toEqual([]);
+  });
+
+  it("recognizes each field form a later edit would reintroduce", () => {
+    // A predicate that cannot match the old text would make the sweep vacuous.
+    for (const line of ["TASK ID: ses_prior_handle", "task_id: ses_prior_handle", "TASK ID: {task_id}"]) {
+      expect(RETIRED_RESUME_FIELD.test(line), `unmatched form: ${line}`).toBe(true);
+    }
+    expect(RETIRED_RESUME_FIELD.test("SESSION ID is the lifecycle session")).toBe(false);
   });
 });
 

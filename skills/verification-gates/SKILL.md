@@ -158,16 +158,9 @@ On FAIL with clear cause:
 4. Same Inspector re-reviews (consistency)
 5. Loop until PASS; abort on diminishing returns (2-3 cycles without progress) → escalate to fundamental flaw
 
-## Manual Override Escape and Counter Semantics
+## Identical-Verdict Brake
 
-A manual override is the user-facing escape hatch from a stuck SWARM phase — the automatic safety mechanisms keep the phase at SWARM while the escape is recorded. Its effect on redispatch budgets:
-
-- **Resets per-milestone redispatch budgets.** Escaping SWARM to another phase restarts each milestone with a fresh budget instead of inheriting stale pre-escape caps.
-- **Preserves phase dispatch counts.** The phase's own dispatch count is not reset by the escape.
-- **Same-phase override is a no-op.** A manual override naming the current phase fires nothing; budgets and counters are preserved.
-- Other manual transitions (into or between non-SWARM phases) leave redispatch counters unchanged.
-
-Identical-verdict brake: 2 consecutive identical gate verdicts on one milestone and session engage the brake, and a manual backward override follows a recorded diagnosis plus escalation-protocol invocation. An escape resets per-milestone budgets; a diagnosed override clears the brake count as the recorded recovery.
+2 consecutive identical gate verdicts on one milestone and session engage the brake, and the manual backward override that follows carries a recorded diagnosis plus an escalation-protocol invocation.
 
 ## Security Audits
 

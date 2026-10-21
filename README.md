@@ -46,7 +46,7 @@ The swarm divides the work of a software lifecycle into focused roles. Each resp
 
 ## Permissions Are Limited by Design
 
-Permissions are limited by design. Only the Overseer and the Artisan hold the task tool — delegation is a fixed lifecycle channel, not a general capability. When a denial blocks a task, the affected agent stops, documents the gap, and escalates to the Overseer, who re-dispatches the correct owner. Permissions are the enforcement of the division of labor, not a gap to be widened: keeping permissions tight is what makes the architecture verifiable.
+Permissions are limited by design. Only the Overseer and the Artisan hold the `subagent` tool — delegation is a fixed lifecycle channel, not a general capability. When a denial blocks a task, the affected agent stops, documents the gap, and escalates to the Overseer, who re-dispatches the correct owner. Permissions are the enforcement of the division of labor, not a gap to be widened: keeping permissions tight is what makes the architecture verifiable.
 
 ## Plugins Enforce the Architecture Structurally
 

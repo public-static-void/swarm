@@ -45,7 +45,7 @@ superseded_by: null
 - [ ] AC001: {{verifiable criterion referencing R001}}
 - [ ] AC002: {{verifiable criterion referencing R002}}
 
-Acceptance criteria for gitignored artifacts (`knowledge/`, `knowledge/issues/`, `knowledge/memory/`) are verified from disk via `read`/`glob`/`grep`. Stage the files this task changed; use the standard git workflow. Rewrite any AC that cannot be verified from disk so it verifies from disk.
+Acceptance criteria for gitignored artifacts (`knowledge/`, `knowledge/issues/`, `knowledge/memory/`) are verified from disk via `read`/`glob`/`grep`. Rewrite any AC that cannot be verified from disk so it verifies from disk.
 
 ## Verification Methods
 
