@@ -8073,19 +8073,28 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
         await dispatchCommitter(sIdentity, "acf2-identity-session");
         expect(hooks.sessionPhaseMap.get(sIdentity)).toBe(hooks.STATES.CLEANUP);
 
-        // Every rejection is on the always-on log channel with its own reason,
-        // its artifact path, and the persisted generation.
-        const log = readGateLog();
-        expect(log).toContain(`CLEANUP_ADVANCE_BLOCKED`);
-        expect(log).toContain(`path=knowledge/cleanup-*-${sMissing}-gen2.md`);
-        expect(log).toContain(`path=knowledge/${unparsableFile}`);
-        expect(log).toContain(`path=knowledge/${wrongGenFile}`);
-        expect(log).toContain(`reason=missing`);
-        expect(log).toContain(`reason=unparsable`);
-        expect(log).toContain(`reason=wrong-generation`);
-        expect(log).toContain(`reason=wrong-type`);
-        expect(log).toContain(`reason=wrong-session`);
-        expect(log).toContain(`generation=2`);
+        // Every rejection is on the always-on log channel, and each record pairs
+        // its own session, artifact path, persisted generation and reason — a
+        // record that lost any field cannot be satisfied by another record's.
+        const records = readGateLog()
+          .split("\n")
+          .filter(l => l.includes("CLEANUP_ADVANCE_BLOCKED:"));
+        const paired = (sessionID, path, reason) => records.some(l =>
+          l.includes(`session=${sessionID} `) &&
+          l.includes(`path=${path} `) &&
+          l.includes(`generation=2 `) &&
+          l.includes(`reason=${reason} `)
+        );
+        expect(paired(sMissing, `knowledge/cleanup-*-${sMissing}-gen2.md`, "missing"),
+          "no single record pairs the absent-artifact session with its expected path and reason").toBe(true);
+        expect(paired(sUnparsable, `knowledge/${unparsableFile}`, "unparsable"),
+          "no single record pairs the unparsable artifact with its path and reason").toBe(true);
+        expect(paired(sWrongGen, `knowledge/${wrongGenFile}`, "wrong-generation"),
+          "no single record pairs the wrong-generation artifact with its path and reason").toBe(true);
+        expect(paired(sIdentity, `knowledge/${identityFile}`, "wrong-type"),
+          "no single record pairs the wrong-type artifact with its path and reason").toBe(true);
+        expect(paired(sIdentity, `knowledge/${identityFile}`, "wrong-session"),
+          "no single record pairs the wrong-session artifact with its path and reason").toBe(true);
       } finally {
         process.env.PROTOCOL_GATE_DEBUG = "1";
       }
@@ -8117,6 +8126,67 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       );
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.REPORT);
       expect(hooks.evaluateCleanupArtifact(s, hooks.sessionPhaseMap)).toMatchObject({ ok: true, reason: null });
+    });
+
+    // The agent-facing rule and the verdict vocabulary are one contract: the
+    // predicate's reasons come from the exported enumeration, and the Overseer
+    // definition must name each of them, so a new or retired reason cannot land
+    // in the plugin while the description keeps stating the old set.
+    it("names every CLEANUP rejection reason the predicate emits in the Overseer's rule", async () => {
+      const s = sid("m4-vocab-pin");
+      await initOverseer(s);
+      const file = seedCleanup(s);
+      const verdictFor = () => hooks.evaluateCleanupArtifact(s, hooks.sessionPhaseMap);
+      const observed = new Set();
+
+      observed.add(verdictFor().reason);
+      createKD(file, "plain body with no frontmatter fence");
+      observed.add(verdictFor().reason);
+      createKD(file, cleanupKD(s).replace("type: cleanup", "type: report"));
+      observed.add(verdictFor().reason);
+      createKD(file, cleanupKD("someone-else"));
+      observed.add(verdictFor().reason);
+
+      // A prior generation's artifact is all that may exist for wrong-generation
+      // to be the reported reason.
+      rmSync(join(knowledgeDir, file));
+      createKD(`cleanup-m4-${s}-gen1.md`, cleanupKD(s));
+      observed.add(verdictFor().reason);
+
+      expect(observed.size).toBe(Object.keys(hooks.CLEANUP_REJECTION_REASONS).length);
+      const vocabulary = Object.values(hooks.CLEANUP_REJECTION_REASONS).sort();
+      expect([...observed].sort()).toEqual(vocabulary);
+
+      const overseer = readFileSync(new URL("../../../agents/overseer.md", import.meta.url), "utf8");
+      for (const reason of vocabulary) {
+        expect(overseer, `the Overseer definition does not name the CLEANUP rejection reason "${reason}"`)
+          .toContain(`\`${reason}\``);
+      }
+    });
+
+    // A hop re-entered with an artifact from an earlier pass: the before-hook's
+    // disk check advances on that artifact before the dispatch is validated, so
+    // the phase ends up REPORT and the Committer dispatch is refused against the
+    // post-advancement phase rather than running.
+    it("a re-entered CLEANUP hop advances on the earlier artifact and refuses the Committer dispatch", async () => {
+      const s = sid("m4-reenter");
+      await initOverseer(s);
+      const file = seedCleanup(s);
+      createKD(file, cleanupKD(s));
+
+      let refusal = null;
+      try {
+        await hooks["tool.execute.before"](
+          { tool: "subagent", sessionID: s, callID: "reenter-a" },
+          { args: { subagent_type: "committer", prompt: "AGENT: committer\nMODE: cleanup" } }
+        );
+      } catch (e) {
+        refusal = e;
+      }
+
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.REPORT);
+      expect(refusal, "the dispatch ran instead of being refused after the phase advanced").toBeTruthy();
+      expect(refusal.code).toBe("BLOCKED_WRONG_PHASE");
     });
 
     it("AC-F4: the CLEANUP refusal names the artifact and the reason; other phases keep their text", async () => {

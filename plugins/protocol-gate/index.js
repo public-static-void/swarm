@@ -2506,6 +2506,18 @@ function enterPhase(sessionPhaseMap, sessionID, phase) {
   sessionPhaseMap.set(`${sessionID}:phaseEnteredAt`, Date.now());
 }
 
+// The CLEANUP rejection vocabulary — every reason the identity verdict can
+// return. Exported so the Overseer's description of the CLEANUP gate names the
+// same tokens this predicate emits: one source keeps the two from drifting when
+// a reason is added or retired.
+export const CLEANUP_REJECTION_REASONS = Object.freeze({
+  MISSING: "missing",
+  UNPARSABLE: "unparsable",
+  WRONG_TYPE: "wrong-type",
+  WRONG_SESSION: "wrong-session",
+  WRONG_GENERATION: "wrong-generation"
+});
+
 // CLEANUP artifact validity — the single predicate behind the CLEANUP → REPORT
 // verdict, the rejection record, and the phase refusal. Identity alone decides:
 // a cleanup artifact carrying this session and the persisted lifecycle
@@ -2516,7 +2528,8 @@ function enterPhase(sessionPhaseMap, sessionID, phase) {
 //
 // Reasons: `missing` (no cleanup artifact for this session at all),
 // `wrong-generation` (only another generation's artifact exists),
-// `unparsable` (no leading frontmatter block), `wrong-type`, `wrong-session`.
+// `unparsable` (no leading frontmatter block), `wrong-type`, `wrong-session`,
+// all taken from CLEANUP_REJECTION_REASONS above.
 // Returns { ok, reason, filename, path, generation, fileGeneration }; `path` is
 // the artifact's own path, or the expected pattern when nothing matched.
 function evaluateCleanupArtifact(sessionID, sessionPhaseMap) {
@@ -2539,7 +2552,7 @@ function evaluateCleanupArtifact(sessionID, sessionPhaseMap) {
   try {
     files = readdirSync(knowledgeDir);
   } catch (_) {
-    return verdict(false, "missing");
+    return verdict(false, CLEANUP_REJECTION_REASONS.MISSING);
   }
 
   // Same-session candidates across generations: a wrong-generation artifact is
@@ -2547,14 +2560,14 @@ function evaluateCleanupArtifact(sessionID, sessionPhaseMap) {
   // Committer never wrote it" and "a prior lifecycle's artifact is all that
   // exists".
   const candidates = files.filter(f => /^cleanup-/i.test(f) && matchesSessionKDAnyGeneration(f, storedSID));
-  if (candidates.length === 0) return verdict(false, "missing");
+  if (candidates.length === 0) return verdict(false, CLEANUP_REJECTION_REASONS.MISSING);
 
   const live = candidates.filter(f => matchesSessionKD(f, storedSID, generation));
   if (live.length === 0) {
     const newest = candidates
       .map(f => ({ f, gen: extractImplKDGeneration(f, storedSID) }))
       .sort((a, b) => (b.gen ?? -1) - (a.gen ?? -1))[0];
-    return verdict(false, "wrong-generation", newest.f, `knowledge/${newest.f}`, newest.gen);
+    return verdict(false, CLEANUP_REJECTION_REASONS.WRONG_GENERATION, newest.f, `knowledge/${newest.f}`, newest.gen);
   }
 
   // A valid artifact wins over an invalid sibling: the first live candidate
@@ -2571,7 +2584,7 @@ function evaluateCleanupArtifact(sessionID, sessionPhaseMap) {
     }
     const frontmatter = typeof content === "string" ? content.match(/^---\r?\n([\s\S]*?)\r?\n---/) : null;
     if (!frontmatter) {
-      firstFailure = firstFailure || verdict(false, "unparsable", filename, path);
+      firstFailure = firstFailure || verdict(false, CLEANUP_REJECTION_REASONS.UNPARSABLE, filename, path);
       continue;
     }
     const field = (name) => {
@@ -2580,12 +2593,12 @@ function evaluateCleanupArtifact(sessionID, sessionPhaseMap) {
     };
     const type = field("type");
     if (!type || type.toLowerCase() !== "cleanup") {
-      firstFailure = firstFailure || verdict(false, "wrong-type", filename, path);
+      firstFailure = firstFailure || verdict(false, CLEANUP_REJECTION_REASONS.WRONG_TYPE, filename, path);
       continue;
     }
     const artifactSession = field("session_id");
     if (!artifactSession || artifactSession !== storedSID) {
-      firstFailure = firstFailure || verdict(false, "wrong-session", filename, path);
+      firstFailure = firstFailure || verdict(false, CLEANUP_REJECTION_REASONS.WRONG_SESSION, filename, path);
       continue;
     }
     return verdict(true, null, filename, path);
@@ -5312,6 +5325,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       findNewestVerdictKD,
       readPreflightVerdictFrontmatter,
       evaluateCleanupArtifact,
+      CLEANUP_REJECTION_REASONS,
       findNewestPreflightKD,
       evaluatePreflightVerdict,
       reopenCheckedOffMilestones,
