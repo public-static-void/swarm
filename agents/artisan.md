@@ -557,11 +557,11 @@ Read the specification and plan, implement each step, write tests, produce an im
 
    ### Dispatching Committer
 
-   Delegate to the Committer with the delegation fields as `KEY: value` lines **inside the `prompt` parameter**, one per line, matching the checkpoint field set. The `task` call itself carries `subagent_type`, `description`, and `prompt` — every delegation field lives in the prompt text. Follow the **Point the Target** pattern: frame the dispatch positively — say what should happen so the prompt is unambiguous and directly executable.
+   Delegate to the Committer with the delegation fields as `KEY: value` lines **inside the `prompt` parameter**, one per line, matching the checkpoint field set. The `subagent` call itself carries `agent`, `description`, and `prompt` — every delegation field lives in the prompt text. Follow the **Point the Target** pattern: frame the dispatch positively — say what should happen so the prompt is unambiguous and directly executable.
 
    ```
-   task({
-     subagent_type: "committer",
+   subagent({
+     agent: "committer",
      description: "Checkpoint commit for plan step 1",
      prompt: `DISPATCH TO: committer
 MODE: checkpoint
@@ -574,7 +574,7 @@ RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
 
 ```
 
-The delegation-gate plugin extracts these fields from the prompt text and renders the checkpoint dispatch from its template; it does not read structured fields from top-level `task()` arguments. `intent_kd` is not part of the checkpoint field set — the checkpoint template renders no INTENT KD reference, so omit it for committer-owned modes. `description` and `prompt` carry real values; placeholder text is rejected by the delegation-gate.
+The delegation-gate plugin extracts these fields from the prompt text and renders the checkpoint dispatch from its template; it does not read structured fields from top-level `subagent()` arguments. `intent_kd` is not part of the checkpoint field set — the checkpoint template renders no INTENT KD reference, so omit it for committer-owned modes. `description` and `prompt` carry real values; placeholder text is rejected by the delegation-gate.
 
 ### Same-Instance Redispatch
 

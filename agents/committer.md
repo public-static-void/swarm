@@ -249,7 +249,6 @@ Stage and commit changes as the sole operation. Execute one git-lifecycle mode p
 ## Constraints
 
 - Stage each file in its entirety per batch — each file goes entirely into one batch. Use `git add <file>` for whole-file staging. If a file contains mixed types, classify by dominant concern. Each batch must form a coherent, independently verifiable change set.
-- Stage the files this task changed — one file per batch with `git add <file>`.
 
 ## Context Marker
 
