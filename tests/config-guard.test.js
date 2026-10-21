@@ -1221,7 +1221,7 @@ describe("agents delegation dispatch docs", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("embeds no literal brace placeholders in task() examples", () => {
+  it("embeds no literal brace placeholders in dispatch examples", () => {
     const offenders = [];
     for (const f of files) {
       const content = readAgent(f);
@@ -1229,9 +1229,9 @@ describe("agents delegation dispatch docs", () => {
       let m;
       while ((m = fence.exec(content)) !== null) {
         const block = m[1];
-        if (!block.includes("task(")) continue;
+        if (!block.includes("task(") && !block.includes("subagent(")) continue;
         const brace = block.match(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/);
-        if (brace) offenders.push(`${f}: ${brace[0]} inside a task( example`);
+        if (brace) offenders.push(`${f}: ${brace[0]} inside a dispatch example`);
       }
     }
     expect(offenders).toEqual([]);
