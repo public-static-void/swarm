@@ -941,6 +941,52 @@ function gateRecord(msg) {
   }
 }
 
+// Structured gate record: `<TOKEN>: key=value … cause=<free text>` — one line
+// per event, values space-free except the trailing free-text cause, so an
+// operator greps a token and reads its fields without parsing prose.
+// `dedupeKey` makes the emission once-per-event instead of once-per-evaluation:
+// the gate re-runs promotion and stamp settlement on every tool call, and a
+// repeated evaluation of unchanged state must add no line. Keys are released
+// when the milestone row re-closes (releaseGateRecordKeys), so a later
+// reopen → fix cycle is recorded again rather than silenced by the earlier one.
+const _gateRecordKeys = new Set();
+
+// Milestone tag shared by every dedupe key, case-normalized so a row id and the
+// token parsed out of an impl-KD filename ("m-obs" vs "M-obs") release each
+// other's keys.
+function gateRecordMilestoneTag(milestoneId) {
+  return `m:${String(milestoneId).toUpperCase()}|`;
+}
+
+function gateRecordEvent(token, fields, cause, dedupeKey) {
+  if (dedupeKey) {
+    if (_gateRecordKeys.has(dedupeKey)) return false;
+    _gateRecordKeys.add(dedupeKey);
+  }
+  const rendered = fields.map(([k, v]) => `${k}=${v}`).join(" ");
+  gateRecord(cause ? `${token}: ${rendered} cause=${cause}` : `${token}: ${rendered}`);
+  return true;
+}
+
+function releaseGateRecordKeys(milestoneId) {
+  const tag = gateRecordMilestoneTag(milestoneId);
+  for (const key of [..._gateRecordKeys]) {
+    if (key.includes(tag)) _gateRecordKeys.delete(key);
+  }
+}
+
+// Prose-record variant of gateRecord: same human-readable line, emitted once per
+// (token, milestone, artifact set). The stale/superseded probes and the
+// remediation path re-run on every tool call, so an unchanged stuck row would
+// otherwise repeat its diagnosis once per call; the key carries the milestone
+// tag so a successful re-close releases it (releaseGateRecordKeys).
+function gateRecordOnce(msg, dedupeKey) {
+  if (_gateRecordKeys.has(dedupeKey)) return false;
+  _gateRecordKeys.add(dedupeKey);
+  gateRecord(msg);
+  return true;
+}
+
 // Git-repo bootstrap guard — guarantees the workspace is a git repo before any
 // lifecycle phase runs, so the lifecycle's first git-dependent operation
 // (PREFLIGHT branch creation) always has a repo to work in. Runs at server()
@@ -1140,13 +1186,21 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
     // evaluation would instantly re-check-off the row from the stale impl KD
     // the Inspector just found deficient.
     if (opts.reopen && current === "checked-off") {
-      supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId);
-      // Attributable reopen: every genuine checked-off → in-progress
-      // reopen is announced loudly with its trigger — the citing review KD for
-      // citation-driven reopens, the dispatch event for SWARM re-dispatches —
-      // so mid-cycle registry changes are explainable in the transcript.
-      loud(`REOPEN: milestone ${milestoneId} checked-off → in-progress — trigger: ${opts.trigger || "unattributed"}`);
+      const invalidated = supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId);
+      // Always-on reopen record: milestone, the artifacts this reopen
+      // invalidated, and the cause. The record carries the stamped set the
+      // supersede call just produced — recomputing it here would report a
+      // different (already-stamped) set.
+      gateRecordEvent("REOPEN", [
+        ["session", sessionID],
+        ["milestone", milestoneId],
+        ["artifact", invalidated.length > 0 ? invalidated.join(",") : "none"]
+      ], opts.trigger || "unattributed");
     }
+    // A row returning to checked-off starts a fresh record epoch: the
+    // settlement/promotion keys from the previous pass belong to that pass, and
+    // a later reopen → fix cycle must be recorded rather than deduped.
+    if (finalState === "checked-off") releaseGateRecordKeys(milestoneId);
     debug(`Registry ${located.path}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
     return { ok: true, path: located.path, changed: true };
   } catch (e) {
@@ -1440,13 +1494,16 @@ function clearSupersededStampContent(content, pointer) {
 // evaluation. Staleness is recorded ON DISK by stamping the milestone's
 // same-session impl KDs (any embedded generation) as superseded in their
 // frontmatter — filenames stay canonical, so the evidence linkage keyed on
-// stable names cannot orphan. Stamps survive restarts — plugins load once per
+// Stable names cannot orphan. Stamps survive restarts — plugins load once per
 // process, so no in-memory epoch marker would. Best-effort: a failed stamp
 // leaves the file in place and is logged.
+// Returns the canonical filenames this call stamped, so the caller can record
+// exactly which artifacts it invalidated instead of re-deriving the set.
 function supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId) {
   const knowledgeDir = getKnowledgeDir(sessionID);
+  const stamped = [];
   let files = [];
-  try { files = readdirSync(knowledgeDir); } catch (_) { return; }
+  try { files = readdirSync(knowledgeDir); } catch (_) { return stamped; }
   const prefix = `impl-${milestoneId}-`;
   for (const f of files) {
     if (!f.toLowerCase().startsWith(prefix.toLowerCase())) continue;
@@ -1454,10 +1511,12 @@ function supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId) {
     if (isSupersededByFrontmatter(knowledgeDir, f)) continue;
     try {
       stampImplKDSuperseded(knowledgeDir, f, milestoneId);
+      stamped.push(f);
     } catch (e) {
       debug(`supersede: stamp failed for ${f}: ${e.message}`);
     }
   }
+  return stamped;
 }
 
 // Scoped stale-KD removal predicate and operator (swarm/50 C-SCOPED-DELETE).
@@ -1691,7 +1750,7 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
         return matchesSessionKDAnyGeneration(f.slice(0, -".superseded.md".length), sessionID);
       });
       if (superseded.length > 0) {
-        loud(`SUPERSEDED_EVIDENCE: milestone ${row.id} stays ${row.state} — same-session impl evidence exists solely as superseded file(s): ${superseded.join(", ")}. Remediation options: (a) restore a canonical-path impl KD for milestone ${row.id}, or (b) invoke the remediation path to advance the row to checked-off citing the superseded impl KD(s) as evidence.`);
+        gateRecordOnce(`SUPERSEDED_EVIDENCE: milestone ${row.id} stays ${row.state} — same-session impl evidence exists solely as superseded file(s): ${superseded.join(", ")}. Remediation options: (a) restore a canonical-path impl KD for milestone ${row.id}, or (b) invoke the remediation path to advance the row to checked-off citing the superseded impl KD(s) as evidence.`, `SUPERSEDED_EVIDENCE|${gateRecordMilestoneTag(row.id)}a:${[...superseded].sort().join(",")}`);
       }
       // Frontmatter-stamped stale evidence: canonical files whose frontmatter
       // carries a superseded status are invisible to the predicate above by
@@ -1704,7 +1763,7 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
         return isSupersededByFrontmatter(knowledgeDir, f);
       });
       if (stamped.length > 0) {
-        loud(`STALE_EVIDENCE: milestone ${row.id} stays ${row.state} — prior completion evidence is frontmatter-superseded (stale, canonical names kept): ${stamped.join(", ")}. Write fresh fix evidence at a canonical impl path for milestone ${row.id} to re-complete.`);
+        gateRecordOnce(`STALE_EVIDENCE: milestone ${row.id} stays ${row.state} — prior completion evidence is frontmatter-superseded (stale, canonical names kept): ${stamped.join(", ")}. Write fresh fix evidence at a canonical impl path for milestone ${row.id} to re-complete.`, `STALE_EVIDENCE|${gateRecordMilestoneTag(row.id)}a:${[...stamped].sort().join(",")}`);
       }
       continue;
     }
@@ -1718,7 +1777,7 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
       warn(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile in-progress → checked-off) — ${result.reason}`);
       continue;
     }
-    loud(`RECONCILE_CHECKOFF: milestone ${row.id} promoted ${row.state} → checked-off (impl KD ${evidence})`);
+    gateRecord(`RECONCILE_CHECKOFF: milestone ${row.id} promoted ${row.state} → checked-off (impl KD ${evidence})`);
     promoted++;
   }
   return promoted;
@@ -1783,7 +1842,7 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
       return isSupersededByFrontmatter(knowledgeDir, f);
     });
     if (stamped.length > 0) {
-      loud(`STAMPED_EVIDENCE: milestone ${milestoneId} stays ${current} — same-session impl evidence is frontmatter-superseded (stale, canonical names kept): ${stamped.join(", ")}. Only a genuine fix-up rewrite re-completes this row: write new fix evidence over the stamped file (the gate clears the stamp on landing) or at a fresh canonical impl path for milestone ${milestoneId}.`);
+      gateRecordOnce(`STAMPED_EVIDENCE: milestone ${milestoneId} stays ${current} — same-session impl evidence is frontmatter-superseded (stale, canonical names kept): ${stamped.join(", ")}. Only a genuine fix-up rewrite re-completes this row: write new fix evidence over the stamped file (the gate clears the stamp on landing) or at a fresh canonical impl path for milestone ${milestoneId}.`, `STAMPED_EVIDENCE|${gateRecordMilestoneTag(milestoneId)}a:${[...stamped].sort().join(",")}`);
       return { ok: false, reason: "frontmatter-stamped-evidence", milestoneId, evidence: stamped };
     }
     return { ok: false, reason: "no-superseded-evidence", milestoneId };
@@ -3420,10 +3479,21 @@ async function protocolGateServer(input, options) {
       enterPhase(sessionPhaseMap, sessionID, targetPhase);
       // A backward transition clears the override marker — the
       // user chose to move back, so the previous override no longer applies.
+      // The clear is recorded always-on with its cause: the plan a regression
+      // discards is exactly what an operator needs to see when a lifecycle
+      // stops following the queue it was given.
       if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
+        const dropped = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
         sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
         sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
         sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+        gateRecordEvent("WALK_CLEARED", [
+          ["session", sessionID],
+          ["reason", "backward-pin"],
+          ["from", String(prevPhase)],
+          ["to", String(targetPhase)],
+          ["queue", `[${(Array.isArray(dropped?.phases) ? dropped.phases : [dropped?.phase]).filter(v => typeof v === "number").join(",")}]`]
+        ], `backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
         debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
       }
       // A backward transition also supersedes any pending auto-advance
@@ -3548,13 +3618,17 @@ async function protocolGateServer(input, options) {
       // precedes live evidence. A byte-identical re-write carries no new work
       // and still declines loudly, leaving the reopened row open.
       const diskSnapshot = readImplKDSnapshot(relPath, writerSessionID);
+      const artifactBase = relPath.replace(/\\/g, "/").split("/").pop();
       if (typeof incomingContent === "string" && isStaleImplKDContent(incomingContent)) {
         if (diskSnapshot !== null && diskSnapshot.stale && diskSnapshot.content !== incomingContent) {
           pendingStampClear.set(writerSessionID, { relPath, base: diskSnapshot.base, dir: diskSnapshot.dir, snapshot: diskSnapshot.content });
-          loud(`STAMP_CLEAR_PENDING: milestone ${milestoneId} genuine fix-up rewrite detected at ${relPath} — incoming bytes differ from the frontmatter-stamped snapshot, so the stamp clears on landing (draft + superseded_by) and the row promotes then.`);
+          gateRecordEvent("STAMP_CLEAR_PENDING", [
+            ["milestone", milestoneId],
+            ["artifact", artifactBase]
+          ], `milestone ${milestoneId} genuine fix-up rewrite detected at ${relPath} — incoming bytes differ from the frontmatter-stamped snapshot, so the stamp clears on landing (draft + superseded_by) and the row promotes then`, `STAMP_CLEAR_PENDING|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}`);
           return;
         }
-        loud(`STALE_CHECKOFF_DECLINED: milestone ${milestoneId} keeps its registry state — incoming impl KD carries a superseded status (stale fix-up write at ${relPath}). Write fresh fix evidence with a live status to re-complete.`);
+        gateRecord(`STALE_CHECKOFF_DECLINED: milestone ${milestoneId} keeps its registry state — incoming impl KD carries a superseded status (stale fix-up write at ${relPath}). Write fresh fix evidence with a live status to re-complete.`);
         return;
       }
       // A live write over a stamped file with new bytes is genuine post-stamp
@@ -3606,6 +3680,16 @@ async function protocolGateServer(input, options) {
         const resolvedId = resolveMilestoneRowId(registry, relPath, milestoneId);
         const result = updateMilestoneRegistry(candidate, sessionPhaseMap, resolvedId, ["checked-off"]);
         debug(`auto check-off: impl KD for milestone ${resolvedId} (parent ${candidate}) → ${JSON.stringify(result)}`);
+        // Always-on promotion record: one line per evaluation, naming the
+        // artifact and the outcome. Without it a row that stays open after a
+        // write is indistinguishable from a write the gate never saw.
+        const promoted = result.ok && result.changed;
+        gateRecordEvent("CHECKOFF", [
+          ["milestone", resolvedId],
+          ["artifact", artifactBase],
+          ["promoted", promoted ? "true" : "false"],
+          ["reason", promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)]
+        ], null, `CHECKOFF|${gateRecordMilestoneTag(resolvedId)}a:${artifactBase}|p:${promoted ? "true" : "false"}|r:${promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)}`);
         // Only a SUCCESSFUL check-off resets the per-milestone
         // redispatch budget. A failed registry update keeps the counter so
         // retries still count toward the cap; a re-opened milestone
@@ -3635,11 +3719,13 @@ async function protocolGateServer(input, options) {
     // work arrived and the row stays open), clears the frontmatter stamp in
     // place (status: draft, superseded_by naming the invalidated pass at its
     // canonical path), then promotes through the normal check-off path so
-    // promotion never precedes live evidence. Loud at every outcome,
-    // following the audited diagnostic pattern used across this gate.
+    // promotion never precedes live evidence. Always-on at every outcome: the
+    // clear, the lineage record and each decline carry their own line, so a
+    // reopened row's settlement is diagnosable with no debug flag set.
     function settleStampClear(pending, writerSessionID) {
       const milestoneId = extractMilestoneIdFromImplKD(pending.relPath);
       if (!milestoneId) return;
+      const artifactBase = pending.base;
       let landed = null;
       try {
         landed = readFileSync(join(pending.dir, pending.base), "utf8");
@@ -3647,7 +3733,14 @@ async function protocolGateServer(input, options) {
         landed = null;
       }
       if (typeof landed !== "string" || landed === pending.snapshot) {
-        loud(`STAMP_CLEAR_ABORTED: milestone ${milestoneId} keeps its registry state — post-write bytes at ${pending.relPath} carry no new work past the frontmatter-stamped snapshot. Write genuine fix evidence to re-complete.`);
+        // Settlement decline: the landed bytes carry no work past the stamp.
+        // Always-on with its reason token — a reopened row that never closes is
+        // otherwise indistinguishable from a row the gate never looked at.
+        gateRecordEvent("STAMP_DECLINED", [
+          ["milestone", milestoneId],
+          ["artifact", artifactBase],
+          ["reason", "byte-identical"]
+        ], `milestone ${milestoneId} keeps its registry state — post-write bytes at ${pending.relPath} carry no new work past the frontmatter-stamped snapshot. Write genuine fix evidence to re-complete`, `STAMP_DECLINED|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}|r:byte-identical`);
         return;
       }
       const pointer = pending.base;
@@ -3655,15 +3748,22 @@ async function protocolGateServer(input, options) {
       try {
         atomicWriteFileSync(join(pending.dir, pending.base), rewrite.content);
       } catch (e) {
-        warn(`STAMP_CLEAR_FAILED: milestone ${milestoneId} stamp clear at ${pending.relPath} failed (${e.message}) — row stays open.`);
+        gateRecordEvent("STAMP_DECLINED", [
+          ["milestone", milestoneId],
+          ["artifact", artifactBase],
+          ["reason", "write-failed"]
+        ], `milestone ${milestoneId} stamp clear at ${pending.relPath} failed (${e.message}) — row stays open`, `STAMP_DECLINED|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}|r:write-failed`);
         return;
       }
       if (rewrite.cleared) {
-        loud(`STAMP_CLEARED: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — frontmatter stamp cleared in place (status: draft, superseded_by: ${pointer}); the row re-completes on the landed evidence.`);
+        gateRecordEvent("STAMP_CLEARED", [
+          ["milestone", milestoneId],
+          ["artifact", artifactBase]
+        ], `milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — frontmatter stamp cleared in place (status: draft, superseded_by: ${pointer}); the row re-completes on the landed evidence`, `STAMP_CLEARED|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}`);
       } else if (rewrite.lineageSet) {
-        loud(`STAMP_LINEAGE_RECORDED: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — landed frontmatter already live, superseded_by lineage recorded (${pointer}); the row re-completes on the landed evidence.`);
+        gateRecord(`STAMP_LINEAGE_RECORDED: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — landed frontmatter already live, superseded_by lineage recorded (${pointer}); the row re-completes on the landed evidence.`);
       } else {
-        loud(`STAMP_CLEAR_NO_FRONTMATTER: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — landed bytes carry no frontmatter stamp, promoting on the landed evidence as a fresh write.`);
+        gateRecord(`STAMP_CLEAR_NO_FRONTMATTER: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — landed bytes carry no frontmatter stamp, promoting on the landed evidence as a fresh write.`);
       }
       autoCheckOffMilestone(pending.relPath, rewrite.content, writerSessionID);
     }
@@ -3704,11 +3804,24 @@ async function protocolGateServer(input, options) {
         if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 1) {
           const remaining = overrideUntil.phases.slice(1);
           sessionPhaseMap.set(`${candidate}:overrideUntil`, { phases: remaining, since: overrideUntil.since });
+          gateRecordEvent("WALK_HOP", [
+            ["session", candidate],
+            ["from", String(currentPhase)],
+            ["to", String(newPhase)],
+            ["queue", `[${remaining.join(",")}]`]
+          ]);
           debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
         } else {
           sessionPhaseMap.delete(`${candidate}:overrideUntil`);
           sessionPhaseMap.delete(`${candidate}:overrideSafePoint`);
           sessionPhaseMap.delete(`${candidate}:overrideEvals`);
+          gateRecordEvent("WALK_CLEARED", [
+            ["session", candidate],
+            ["reason", "exhausted"],
+            ["from", String(currentPhase)],
+            ["to", String(newPhase)],
+            ["queue", `[${(Array.isArray(overrideUntil.phases) ? overrideUntil.phases : [overrideUntil.phase]).join(",")}]`]
+          ]);
           debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence`);
         }
       }
@@ -3870,6 +3983,13 @@ async function protocolGateServer(input, options) {
             enterPhase(sessionPhaseMap, sessionID, safePoint.phase);
             sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
             sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+            gateRecordEvent("WALK_CLEARED", [
+              ["session", sessionID],
+              ["reason", "explicit"],
+              ["from", String(currentPhase)],
+              ["to", String(safePoint.phase)],
+              ["queue", `[${marker.phases.join(",")}]`]
+            ], "wedged-queue-rollback");
             recordPhaseOverride(sessionPhaseMap, sessionID, { at, from: currentPhase, wedgedHop: marker.phases[0], rolledBackTo: wedgeError.safePoint });
             saveState(sessionID);
             debug(`Wedged queue: head ${getPhaseName(marker.phases[0])} earned no fresh evidence — rolled back to ${getPhaseName(safePoint.phase)} for session ${sessionID}`);
@@ -3880,6 +4000,13 @@ async function protocolGateServer(input, options) {
           sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
           sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
           sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+          gateRecordEvent("WALK_CLEARED", [
+            ["session", sessionID],
+            ["reason", "explicit"],
+            ["from", String(currentPhase)],
+            ["to", String(currentPhase)],
+            ["queue", `[${(Array.isArray(marker?.phases) ? marker.phases : [marker?.phase]).filter(v => typeof v === "number").join(",")}]`]
+          ]);
           recordPhaseOverride(sessionPhaseMap, sessionID, { at, from: currentPhase, to: currentPhase, cleared: true, ...(generationSuffix !== null ? { gen: generationSuffix } : {}) });
           saveState(sessionID);
           debug(`Override cleared: explicit /phase clear at ${getPhaseName(currentPhase)} for session ${sessionID}`);
@@ -3966,11 +4093,32 @@ async function protocolGateServer(input, options) {
       // origin phase carried in `overrideSafePoint`. A new /phase replaces any
       // prior marker (clear-on-new-override); the marker also clears on a
       // backward transition or REPORT reset.
+      // A commit that replaces a live marker clears it first, so the record
+      // order reads as the two events it is.
+      if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
+        const replaced = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
+        gateRecordEvent("WALK_CLEARED", [
+          ["session", sessionID],
+          ["reason", "replaced"],
+          ["from", String(prevPhase)],
+          ["to", String(n)],
+          ["queue", `[${(Array.isArray(replaced?.phases) ? replaced.phases : [replaced?.phase]).filter(v => typeof v === "number").join(",")}]`]
+        ]);
+      }
       if (isMulti) {
         sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases, since: Date.now() });
       } else {
         sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since: Date.now() });
       }
+      // Always-on walk commit: the marker every later hop is judged against,
+      // readable with no debug flag set.
+      gateRecordEvent("WALK_COMMIT", [
+        ["session", sessionID],
+        ["from", String(prevPhase)],
+        ["to", String(n)],
+        ["queue", `[${phases.join(",")}]`],
+        ["kind", isMulti ? "walk" : "pin"]
+      ]);
       // The one-line override record: the walk lands in lifecycle state
       // (overrideHistory, persisted by the saveState below) and is echoed in
       // the confirmation so lifecycle KDs can cite it without reading logs.
@@ -4101,12 +4249,26 @@ async function protocolGateServer(input, options) {
           if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 1) {
             const remaining = overrideUntil.phases.slice(1);
             sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: remaining, since: overrideUntil.since });
+            gateRecordEvent("WALK_HOP", [
+              ["session", sessionID],
+              ["from", String(currentPhase)],
+              ["to", String(advanceTarget)],
+              ["queue", `[${remaining.join(",")}]`]
+            ]);
             debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(advanceTarget)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
           } else {
+            const originReturn = advanceTarget !== currentPhase + 1;
             sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
             sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
             sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
-            debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(advanceTarget)} on fresh evidence${advanceTarget !== currentPhase + 1 ? " (origin return)" : ""}`);
+            gateRecordEvent("WALK_CLEARED", [
+              ["session", sessionID],
+              ["reason", originReturn ? "origin-return" : "exhausted"],
+              ["from", String(currentPhase)],
+              ["to", String(advanceTarget)],
+              ["queue", `[${(Array.isArray(overrideUntil.phases) ? overrideUntil.phases : [overrideUntil.phase]).join(",")}]`]
+            ]);
+            debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(advanceTarget)} on fresh evidence${originReturn ? " (origin return)" : ""}`);
           }
         }
         diskCheckFailures.set(sessionID, 0);
@@ -4901,8 +5063,25 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       if (tool === "subagent") {
         // Task is only allowed during delegation phases (PREFLIGHT through CLEANUP)
         if (phase < STATES.PREFLIGHT || phase > STATES.CLEANUP) {
+          // The refusal names the phase the gate is actually in. A hardcoded
+          // phase name told the operator the lifecycle was in INTENT no matter
+          // where it stood, so a lifecycle parked at REPORT read as a stalled
+          // INTENT run and the recovery for the real phase was invisible.
+          const terminal = phase === STATES.REPORT
+            ? ` ${phaseName} is the terminal phase — write the report KD; no dispatch is needed.`
+            : " Task is only available in PREFLIGHT through CLEANUP phases";
+          gateRecordEvent("DISPATCH_REFUSED", [
+            ["session", sessionID],
+            ["phase", phaseName],
+            ["number", String(phase)],
+            ["reason", "phase-restriction"]
+          ], `task dispatch refused — ${phaseName} (${phase}) is outside PREFLIGHT through CLEANUP`);
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Task dispatch not allowed in INTENT phase. Task is only available in PREFLIGHT through CLEANUP phases", "Wait for delegation phase");
+          throw new ProtocolGateError(
+            ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
+            `❌ BLOCKED: Task dispatch not allowed in ${phaseName} (${phase}) phase.${terminal}`,
+            phase === STATES.REPORT ? "Write the report KD — REPORT takes no dispatch" : "Wait for delegation phase"
+          );
         }
 
         const prompt = args?.prompt || "";
