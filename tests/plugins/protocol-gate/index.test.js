@@ -6826,7 +6826,12 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await initOverseer(s);
       const out = { parts: [] };
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "REPORT" }, out);
-      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.REPORT);
+      // A pin onto REPORT completes the walk on arrival, so the marker never
+      // survives the commit. The lifecycle-end reset still owns marker clearing
+      // for a walk that reaches REPORT any other way — seed one to cover it.
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.REPORT);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+      hooks.sessionPhaseMap.set(`${s}:overrideUntil`, { phase: hooks.STATES.REPORT, since: Date.now() });
 
       await hooks["tool.execute.before"](
         { tool: "write", sessionID: s, callID: "r1" },

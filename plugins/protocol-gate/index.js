@@ -641,26 +641,44 @@ function evaluatePhaseOverrideBrake(sessionID, argText) {
   }
   return { allowed: true, engaged: true, consecutiveCount: first.count, milestoneId: first.milestoneId, fingerprint: first.fingerprint, diagnosis, escalation };
 }
-// Full-walk pre-validation for a /phase override queue. Checks two classes in
+// Phase hops that are producible without a subagent dispatch: INTENT is
+// written by the Overseer itself, and REPORT is the terminal hop — nothing
+// follows it. Every other live phase must be reachable through a subagent
+// dispatch or the walk would commit a hop no agent can ever satisfy.
+const WALK_PRODUCER_PATHS = Object.freeze({
+  [STATES.INTENT]: "overseer-write",
+  [STATES.REPORT]: "lifecycle-end"
+});
+
+// Full-walk pre-validation for a /phase override queue. Checks four classes in
 // order and reports the first unsatisfiable hop:
+//   0. hop-after-terminal — REPORT is the last hop a walk may name;
 //   1. scope — every hop resolves to a phase carrying a tool-scope entry, so
 //      the walk never lands where no tool contract is documented;
 //   2. gate-type — every hop resolves to a phase with a known advancement
 //      gate (KD prefix, dual-KD, or verdict gate), so the walk never lands
-//      where no evidence check can run.
+//      where no evidence check can run;
+//   3. not-producible — every hop is reachable by an agent (a subagent dispatch
+//      or one of the two documented producer paths), so the walk never names a
+//      hop nothing can complete.
 // Connectivity is deliberately NOT checked: a multi-phase argument is a
 // forward plan, and the user's ordering wins — an ordered list is traversed as
 // given, so the walk is never rejected for being "not backward". Returns null
 // when the whole walk is committable, or { from, to, reason } with reason one
-// of "scope" | "gate-type". The second parameter is retained so the
-// test-access signature stays stable; the walk no longer consults the
-// backward-transition graph. The scope/gate tables are injectable for unit
-// tests; defaults are the live gate tables.
+// of "hop-after-terminal" | "scope" | "gate-type" | "not-producible". The
+// second parameter is retained so the test-access signature stays stable; the
+// walk no longer consults the backward-transition graph. The scope/gate tables
+// are injectable for unit tests; defaults are the live gate tables.
 function validateMultiPhaseWalk(phases, currentPhase, _backwardTransitions, overrides) {
   const tables = overrides || {};
   const allowlist = tables.toolAllowlist || TOOL_ALLOWLIST;
   const prefixes = tables.gatePrefixes || KD_TYPE_PREFIXES;
   const hops = Array.isArray(phases) ? phases : [phases];
+  // REPORT ends the lifecycle — no hop may follow it.
+  const reportAt = hops.indexOf(STATES.REPORT);
+  if (reportAt !== -1 && reportAt !== hops.length - 1) {
+    return { from: hops[reportAt], to: hops[reportAt + 1], reason: "hop-after-terminal" };
+  }
   for (let i = 0; i < hops.length; i++) {
     if (!allowlist[getPhaseName(hops[i])]) {
       return { from: i === 0 ? currentPhase : hops[i - 1], to: hops[i], reason: "scope" };
@@ -675,18 +693,32 @@ function validateMultiPhaseWalk(phases, currentPhase, _backwardTransitions, over
       return { from: i === 0 ? currentPhase : hops[i - 1], to: hops[i], reason: "gate-type" };
     }
   }
+  for (let i = 0; i < hops.length; i++) {
+    const tools = allowlist[getPhaseName(hops[i])] || [];
+    if (tools.includes("subagent")) continue;
+    if (WALK_PRODUCER_PATHS[hops[i]]) continue;
+    return { from: i === 0 ? currentPhase : hops[i - 1], to: hops[i], reason: "not-producible" };
+  }
   return null;
 }
 
-// Renders a rejected walk as a fail-closed error string. Scope and gate-type
-// rejections name the hop and the reason class; any unrecognized reason class
-// fails closed with a generic message (the walk is never silently committed).
+// Renders a rejected walk as a fail-closed error string. Scope, gate-type,
+// structural and producibility rejections each name the hop and the reason
+// class; any unrecognized reason class fails closed with a generic message (the
+// walk is never silently committed).
 function describeRejectedWalk(rejected) {
   const name = (p) => `${getPhaseName(p)} (${p})`;
+  if (rejected.reason === "hop-after-terminal") {
+    return `Error: phase ${name(rejected.to)} follows REPORT — REPORT is the terminal hop and ends the walk.`;
+  }
   if (rejected.reason === "scope") return `Error: phase ${name(rejected.to)} carries no tool scope — the walk cannot be committed.`;
   if (rejected.reason === "gate-type") return `Error: phase ${name(rejected.to)} has no advancement gate — the walk cannot be committed.`;
+  if (rejected.reason === "not-producible") {
+    return `Error: phase ${name(rejected.to)} is not producible — no agent writes its evidence, so the hop can never complete.`;
+  }
   return `Error: the override walk is not committable — phase ${name(rejected.to)} was rejected (${rejected.reason}).`;
 }
+
 
 // Stall probe: whether the head hop of a committed multi-phase queue has
 // earned any fresh KD evidence (a session- and generation-matching file under
@@ -695,7 +727,8 @@ function describeRejectedWalk(rejected) {
 // nothing was abandoned, never advanced through.
 function queueHeadHasFreshEvidence(sessionPhaseMap, sessionID, marker) {
   if (!marker || !Array.isArray(marker.phases) || marker.phases.length === 0) return false;
-  if (typeof marker.since !== "number") return false;
+  const anchor = typeof marker.hopSince === "number" ? marker.hopSince : marker.since;
+  if (typeof anchor !== "number") return false;
   const prefixes = getPrefixes(marker.phases[0]);
   if (prefixes.length === 0) return false;
   let files = [];
@@ -711,7 +744,7 @@ function queueHeadHasFreshEvidence(sessionPhaseMap, sessionID, marker) {
     if (!matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation)) return false;
     const fl = f.toLowerCase();
     if (!lowered.some((p) => fl.startsWith(`${p}-`))) return false;
-    return getFileMtimeMs(join(knowledgeDir, f)) >= marker.since;
+    return getFileMtimeMs(join(knowledgeDir, f)) >= anchor;
   });
 }
 
@@ -2448,20 +2481,26 @@ function findNewestPreflightKD(sessionFiles, sessionID = undefined) {
 // advancement here in the override and non-override paths alike. Advancement
 // needs the newest session-generation preflight KD to carry PASS; an
 // escalation verdict, a missing field, or an unreadable value blocks the
-// phase (fail closed). Under an active override at PREFLIGHT the newest KD
-// carries fresh evidence as well (mtime >= since) — stale KDs leave the
-// manual override in place. Emits one debug line per evaluation naming the
-// newest KD, its parsed verdict, and the advance/block decision.
-function evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap) {
+// phase (fail closed). While an override governs PREFLIGHT the newest KD must
+// also carry fresh evidence (mtime >= the hop anchor) — stale KDs leave the
+// manual override in place. The anchor is passed in by the caller when the
+// caller already resolved it (a re-entered hop anchors at `hopSince`); the
+// fallback recomputes the marker's own `since`. Emits one debug line per
+// evaluation naming the newest KD, its parsed verdict, and the advance/block
+// decision.
+function evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap, anchorOverride) {
   const info = findNewestPreflightKD(sessionFiles, sessionID);
   const newest = info ? info.filename : "(none)";
   const verdictLabel = info ? (info.verdict ?? "MISSING") : "MISSING";
   const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
   const overrideActive = overrideUntil && getOverrideTargetPhase(overrideUntil) === STATES.PREFLIGHT;
-  if (overrideActive && info) {
+  const anchor = typeof anchorOverride === "number"
+    ? anchorOverride
+    : (overrideActive ? overrideUntil.since : null);
+  if (anchor !== null && info) {
     const mtime = getFileMtimeMs(join(getKnowledgeDir(sessionID), info.filename));
-    if (mtime < overrideUntil.since) {
-      debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → false (stale under override since=${overrideUntil.since})`);
+    if (mtime < anchor) {
+      debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → false (stale under override since=${anchor})`);
       return false;
     }
   }
@@ -2502,13 +2541,124 @@ function isTerminalOverrideHop(overrideUntil) {
   return !!overrideUntil && Array.isArray(overrideUntil.phases) && overrideUntil.phases.length === 1;
 }
 
+// --- Override walk model (IC-4) ---
+//
+// A committed multi-phase /phase argument is a walk: `phases` is the remaining
+// plan and `phases[0]` is the head. `walkExists` is the SHAPE test and excludes
+// the legacy single-phase pin, whose documented semantics are unchanged — a pin
+// is a one-hop plan the user owns.
+//
+// Behind/at/ahead are NUMERIC comparisons, never queue membership. A plan that
+// skips SWARM (e.g. [1,7,10] walked from VERIFY) and a FAIL regression into
+// SWARM must both read as "behind the head" and resume; testing membership
+// instead would manufacture a divergence the walk can never leave.
+function walkExists(sessionPhaseMap, sessionID) {
+  const marker = getOverrideUntil(sessionPhaseMap, sessionID);
+  return !!marker && Array.isArray(marker.phases) && marker.phases.length > 0;
+}
+
+// The remaining plan for any marker shape — a walk's queue, or a legacy pin
+// read as a one-hop plan. Null when no marker governs anything.
+function walkPlanOf(marker) {
+  if (!marker) return null;
+  if (Array.isArray(marker.phases) && marker.phases.length > 0) return [...marker.phases];
+  if (typeof marker.phase === "number") return [marker.phase];
+  return null;
+}
+
+// The anchor a hop's evidence must reach: `hopSince` when the hop was re-entered
+// after a suspension, else the walk's own commit instant. While a walk is
+// suspended, the phase it regressed into is anchored the same way — a resume
+// must never be driven by pre-walk evidence. Returns null where the marker does
+// not govern the phase: no marker, a legacy pin whose phase has moved on, or a
+// phase ahead of the head (divergence, refused before any gate is read).
+function gateFreshnessAnchor(sessionPhaseMap, sessionID, phase) {
+  const marker = getOverrideUntil(sessionPhaseMap, sessionID);
+  if (!marker || typeof phase !== "number") return null;
+  const plan = walkPlanOf(marker);
+  if (!plan) return null;
+  const head = plan[0];
+  if (!Array.isArray(marker.phases)) return phase === head ? marker.since : null;
+  if (phase > head) return null;
+  return typeof marker.hopSince === "number" ? marker.hopSince : marker.since;
+}
+
+// How a walk leaves the last hop.
+const WALK_CLEAR_REASON = Object.freeze({
+  ORIGIN: "origin-return",
+  EXHAUSTED: "exhausted"
+});
+
+// IC-5 — the ONE next-hop decision every forward-advance site uses. Callers
+// supply only their own serial fallback; the queue decides everything else, so
+// no site can compute a forward target inline.
+//   no-walk          no marker, or a pin whose phase has moved on: the fallback
+//   hop              at the head with hops left: the next named hop
+//   terminal-report  that next hop is the last one and is REPORT
+//   resume           behind the head (a regression suspended the walk): the head
+//   origin-return    at the last hop, gate passed: the pre-walk origin, else the
+//                    fallback; the marker clears with a reason
+//   diverged         ahead of the head: target null — the caller must not
+//                    advance and must not fall through to presence
+//   blocked          defensive: a governed hop that yields no target
+function nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, fallbackTarget) {
+  const marker = getOverrideUntil(sessionPhaseMap, sessionID);
+  const plan = walkPlanOf(marker);
+  const isWalk = !!marker && Array.isArray(marker.phases);
+  const head = plan ? plan[0] : null;
+  const base = { target: fallbackTarget, outcome: "no-walk", head, queue: plan || [] };
+  if (!plan || typeof currentPhase !== "number") return base;
+  // A legacy pin governs only its own phase; anywhere else it is inert, exactly
+  // as before the walk existed.
+  if (!isWalk && currentPhase !== head) return base;
+  if (currentPhase === head) {
+    if (plan.length > 1) {
+      const next = plan[1];
+      const terminal = next === STATES.REPORT && plan.length === 2;
+      return { target: next, outcome: terminal ? "terminal-report" : "hop", head, queue: plan };
+    }
+    const safePoint = sessionPhaseMap.get(`${sessionID}:overrideSafePoint`);
+    const origin = safePoint && typeof safePoint.phase === "number" ? safePoint.phase : null;
+    const returnsToOrigin = origin !== null && origin > currentPhase;
+    return {
+      target: returnsToOrigin ? origin : fallbackTarget,
+      outcome: "origin-return",
+      head,
+      queue: plan,
+      clearReason: returnsToOrigin ? WALK_CLEAR_REASON.ORIGIN : WALK_CLEAR_REASON.EXHAUSTED
+    };
+  }
+  if (!isWalk) return base;
+  if (currentPhase < head) return { target: head, outcome: "resume", head, queue: plan };
+  return { target: null, outcome: "diverged", head, queue: plan };
+}
+
+// The no-walk fallback each forward-advance site supplies (FR-15): the serial
+// next phase, or VERIFY where a force-advance has always pushed forward. Named
+// here so no site spells a forward target of its own.
+function noWalkFallback(currentPhase, forceToVerify = false) {
+  return forceToVerify ? STATES.VERIFY : currentPhase + 1;
+}
+
 // Names the override/queue state for a refusal: the phase the override pins,
 // the remaining hop queue, and whether this is the terminal hop of a plan or a
 // single-phase pin. Returns null when no override pins the given phase, so
-// non-override refusals keep their unchanged message.
+// non-override refusals keep their unchanged message. A walk that is not at its
+// head names the off-head state instead: divergence (with the two documented
+// recoveries) or suspension (with the re-entry evidence rule).
 function describeOverrideState(sessionPhaseMap, sessionID, phase) {
   const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
-  if (!overrideUntil || getOverrideTargetPhase(overrideUntil) !== phase) return null;
+  if (!overrideUntil) return null;
+  const plan = walkPlanOf(overrideUntil);
+  const head = plan ? plan[0] : null;
+  if (Array.isArray(overrideUntil.phases) && head !== null && phase !== head) {
+    const queue = `[${overrideUntil.phases.join(",")}]`;
+    if (phase > head) {
+      return `override divergence: phase=${phase} head=${head} queue=${queue} — /phase clear or re-issue the walk to recover.`;
+    }
+    return `Override active: walk suspended — phase ${getPhaseName(phase)} (${phase}), head ${getPhaseName(head)} (${head}), queue ${queue} — re-entry requires evidence written at or after re-entry.`;
+  }
+  if (head !== phase) return null;
   const target = `${getPhaseName(phase)} (${phase})`;
   if (Array.isArray(overrideUntil.phases)) {
     const hops = overrideUntil.phases.length;
@@ -2668,6 +2818,19 @@ function evaluateCleanupArtifact(sessionID, sessionPhaseMap) {
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCount, f1Options) {
   if (phase === undefined) return false;
 
+  // A walk whose head sits behind the current phase cannot advance: evidence is
+  // irrelevant, because the phase the lifecycle stands in is not a hop of its
+  // plan. The callers record WALK_DIVERGED and refuse; this is the backstop for
+  // every other evaluation path.
+  {
+    const walkMarker = getOverrideUntil(sessionPhaseMap, sessionID);
+    if (walkMarker && Array.isArray(walkMarker.phases) && walkMarker.phases.length > 0
+      && typeof phase === "number" && phase > walkMarker.phases[0]) {
+      debug(`Disk check: walk divergence — phase=${phase} head=${walkMarker.phases[0]} queue=${JSON.stringify(walkMarker.phases)} — refusing to advance`);
+      return false;
+    }
+  }
+
   // Session ID is required to filter out stale KDs from prior sessions.
   // KD filenames embed the session ID (e.g. intent-foo-ses_abc123.md).
   // Without this, a plan KD from a different session instantly advances PREFLIGHT.
@@ -2732,13 +2895,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   const pattern = patterns[phase];
 
-  // While the override is active at this phase, only fresh evidence
-  // (KD mtime >= since) advances — pre-existing/stale KDs never undo the
-  // manual override (interface contract #5). KDs written before `since` are
-  // skipped; the marker clears on advance-away, restoring normal
+  // While an override governs this phase, only fresh evidence
+  // (KD mtime >= the hop anchor) advances — pre-existing/stale KDs never undo
+  // the manual override (interface contract #5). The anchor is `hopSince` for a
+  // hop re-entered after a suspension and `since` otherwise, so a resume is
+  // never driven by evidence that predates the regression. KDs written before
+  // the anchor are skipped; the marker clears on advance-away, restoring normal
   // advancement semantics for later phases.
-  const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
-  const overrideActive = overrideUntil && phase === getOverrideTargetPhase(overrideUntil);
+  const overrideAnchor = gateFreshnessAnchor(sessionPhaseMap, sessionID, phase);
+  const overrideActive = overrideAnchor !== null;
 
   // DECOMPOSE advancement requires BOTH the plan KD and a parseable milestone
   // registry (dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM
@@ -2753,7 +2918,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // direct map seeding — keeps presence-only semantics.
   if (phase === STATES.DECOMPOSE) {
     const phaseEnteredAt = getPhaseEnteredAt(sessionPhaseMap, sessionID);
-    const freshnessAnchor = overrideActive ? overrideUntil.since : phaseEnteredAt;
+    const freshnessAnchor = overrideActive ? overrideAnchor : phaseEnteredAt;
     const isFresh = (f) => freshnessAnchor === null || getFileMtimeMs(join(knowledgeDir, f)) >= freshnessAnchor;
     const hasPlan = sessionFiles.some(f => /^plan-/i.test(f) && isFresh(f));
     const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f) && isFresh(f));
@@ -2763,7 +2928,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     // two gates can never disagree on what a valid registry is.
     const registryParses = hasMilestones && locateMilestoneRegistry(sessionID, sessionPhaseMap) !== null;
     const result = hasPlan && registryParses;
-    const anchorNote = overrideActive ? `override fresh-evidence since ${overrideUntil.since}` : `phase-entry anchor ${freshnessAnchor}`;
+    const anchorNote = overrideActive ? `override fresh-evidence since ${overrideAnchor}` : `phase-entry anchor ${freshnessAnchor}`;
     debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones}, registry-parses=${registryParses} → ${result} (${anchorNote})`);
     return result;
   }
@@ -2779,15 +2944,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     if (overrideActive) {
       const verdictInfo = findNewestVerdictKD(sessionFiles, sessionID);
       if (!verdictInfo) {
-        debug(`Disk check VERIFY: no review KD — cannot advance under override (since=${overrideUntil.since})`);
+        debug(`Disk check VERIFY: no review KD — cannot advance under override (since=${overrideAnchor})`);
         return false;
       }
       const mtime = getFileMtimeMs(join(knowledgeDir, verdictInfo.filename));
-      if (mtime < overrideUntil.since) {
-        debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} mtime=${mtime} < since=${overrideUntil.since} — not fresh (override)`);
+      if (mtime < overrideAnchor) {
+        debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} mtime=${mtime} < since=${overrideAnchor} — not fresh (override)`);
         return false;
       }
-      debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} is fresh (mtime=${mtime} >= since=${overrideUntil.since}) — evaluating verdict`);
+      debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} is fresh (mtime=${mtime} >= since=${overrideAnchor}) — evaluating verdict`);
       return evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options);
     }
     return evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options);
@@ -2804,12 +2969,13 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     const gate = checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap);
     let result = gate.ok;
     let overrideNote = "";
-    if (result && overrideActive && !isTerminalOverrideHop(overrideUntil)) {
+    const terminalHop = isTerminalOverrideHop(getOverrideUntil(sessionPhaseMap, sessionID));
+    if (result && overrideActive && !terminalHop) {
       const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
       const registryMtime = registry ? getFileMtimeMs(registry.path) : -1;
-      result = registryMtime >= overrideUntil.since;
-      overrideNote = `, override fresh-evidence: registry mtime=${registryMtime} >= since=${overrideUntil.since} → ${result}`;
-    } else if (overrideActive && isTerminalOverrideHop(overrideUntil)) {
+      result = registryMtime >= overrideAnchor;
+      overrideNote = `, override fresh-evidence: registry mtime=${registryMtime} >= since=${overrideAnchor} → ${result}`;
+    } else if (overrideActive && terminalHop) {
       // A terminal override hop completes on its ordinary advancement gate.
       // SWARM does not author the registry (a checked-off row is never
       // rewritten), so the registry-mtime anchor can never be satisfied at a
@@ -2828,7 +2994,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // freshness is evaluated inside the helper, so the override and
   // non-override paths route through it alike.
   if (phase === STATES.PREFLIGHT) {
-    return evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap);
+    return evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap, overrideAnchor);
   }
 
   // The identity-based CLEANUP gate — see evaluateCleanupArtifact. Validity is
@@ -2850,16 +3016,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   let result;
   if (overrideActive) {
-    // Every override target requires fresh evidence (KD mtime >= since) —
-    // including INTENT. A pre-existing intent KD (e.g. the old KD the Overseer
-    // reads right after a /phase INTENT override) must never count as evidence
-    // and undo the override before the corrected KD is written. The in-place
-    // intent-correction path is the NON-override branch below, which keeps the
+    // Every override-governed phase requires fresh evidence (KD mtime >= the
+    // hop anchor) — including INTENT. A pre-existing intent KD (e.g. the old KD
+    // the Overseer reads right after a /phase INTENT override) must never count
+    // as evidence and undo the override before the corrected KD is written. The
+    // in-place intent-correction path is the NON-override branch below, whose
     // presence exemption (a session-matching intent KD advances regardless of
-    // mtime).
-    const freshnessRequired = true;
-    result = sessionFiles.some(f => pattern.test(f) && getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since);
-    debug(`Disk check ${getPhaseName(phase)}: override fresh-evidence (since=${overrideUntil.since}) → ${result}`);
+    // mtime) stays in force.
+    result = sessionFiles.some(f => pattern.test(f) && getFileMtimeMs(join(knowledgeDir, f)) >= overrideAnchor);
+    debug(`Disk check ${getPhaseName(phase)}: override fresh-evidence (since=${overrideAnchor}) → ${result}`);
   } else {
     result = sessionFiles.some(f => pattern.test(f));
     debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID}, lookupSIDs=${JSON.stringify(lookupSIDs)} → ${result}`);
@@ -3194,7 +3359,14 @@ async function protocolGateServer(input, options) {
           if (typeof overrideUntil.phase === "number") {
             state.overrideUntil = { phase: overrideUntil.phase, since: overrideUntil.since };
           } else if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 0) {
+            // A live walk carries its re-entry anchor and its suspension with
+            // it across a restart, so a resumed hop keeps demanding evidence
+            // written after re-entry. A fresh walk persists exactly
+            // { phases, since } — the optional fields appear only when set.
             state.overrideUntil = { phases: overrideUntil.phases, since: overrideUntil.since };
+            if (typeof overrideUntil.hopSince === "number") state.overrideUntil.hopSince = overrideUntil.hopSince;
+            if (overrideUntil.state === "suspended") state.overrideUntil.state = "suspended";
+            if (typeof overrideUntil.suspendedAt === "number") state.overrideUntil.suspendedAt = overrideUntil.suspendedAt;
           }
         }
         // Serialize the pre-walk snapshot so a wedged queue stays
@@ -3402,8 +3574,15 @@ async function protocolGateServer(input, options) {
           sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: state.overrideUntil.phase, since: state.overrideUntil.since });
           debug(`reconcile: restored overrideUntil phase=${getPhaseName(state.overrideUntil.phase)} since=${state.overrideUntil.since} for ${sessionID}`);
         } else if (Array.isArray(state.overrideUntil.phases) && state.overrideUntil.phases.length > 0) {
-          sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: state.overrideUntil.phases, since: state.overrideUntil.since });
-          debug(`reconcile: restored overrideUntil queue=${JSON.stringify(state.overrideUntil.phases)} since=${state.overrideUntil.since} for ${sessionID}`);
+          const restoredMarker = { phases: state.overrideUntil.phases, since: state.overrideUntil.since };
+          // Suspension and the re-entry anchor survive a restart with the plan
+          // they belong to; both are optional, so a fresh walk restores exactly
+          // { phases, since }.
+          if (typeof state.overrideUntil.hopSince === "number") restoredMarker.hopSince = state.overrideUntil.hopSince;
+          if (state.overrideUntil.state === "suspended") restoredMarker.state = "suspended";
+          if (typeof state.overrideUntil.suspendedAt === "number") restoredMarker.suspendedAt = state.overrideUntil.suspendedAt;
+          sessionPhaseMap.set(`${sessionID}:overrideUntil`, restoredMarker);
+          debug(`reconcile: restored overrideUntil queue=${JSON.stringify(state.overrideUntil.phases)} since=${state.overrideUntil.since}${restoredMarker.state === "suspended" ? " (suspended)" : ""} for ${sessionID}`);
         }
       }
       // Restore the pre-walk snapshot alongside the marker it documents.
@@ -3477,24 +3656,47 @@ async function protocolGateServer(input, options) {
 
       const prevPhase = sessionPhaseMap.get(sessionID);
       enterPhase(sessionPhaseMap, sessionID, targetPhase);
-      // A backward transition clears the override marker — the
-      // user chose to move back, so the previous override no longer applies.
-      // The clear is recorded always-on with its cause: the plan a regression
-      // discards is exactly what an operator needs to see when a lifecycle
-      // stops following the queue it was given.
+      // A backward transition clears a legacy single-phase pin — the user chose
+      // to move back, so the pin no longer applies — and the clear is recorded
+      // always-on with its cause. A committed queue is the user's *plan*, so a
+      // regression SUSPENDS it instead: the plan, the walk anchor and the safe
+      // point survive, because the detour is not a changed mind. The head is
+      // re-entered with a re-entry anchor on the way back (FR-22), so evidence
+      // written before the regression can never satisfy the re-entered hop.
       if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
         const dropped = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
-        sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
-        sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
-        sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
-        gateRecordEvent("WALK_CLEARED", [
-          ["session", sessionID],
-          ["reason", "backward-pin"],
-          ["from", String(prevPhase)],
-          ["to", String(targetPhase)],
-          ["queue", `[${(Array.isArray(dropped?.phases) ? dropped.phases : [dropped?.phase]).filter(v => typeof v === "number").join(",")}]`]
-        ], `backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
-        debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
+        if (Array.isArray(dropped.phases) && dropped.phases.length > 0) {
+          const alreadySuspended = dropped.state === "suspended";
+          if (!alreadySuspended) {
+            sessionPhaseMap.set(`${sessionID}:overrideUntil`, {
+              ...dropped,
+              state: "suspended",
+              suspendedAt: Date.now()
+            });
+          }
+          // One line per regression, even when the walk is already suspended:
+          // the backward transition is the event, and an operator reading the
+          // log must see every detour the plan took.
+          gateRecordEvent("WALK_SUSPENDED", [
+            ["session", sessionID],
+            ["from", String(prevPhase)],
+            ["to", String(targetPhase)],
+            ["queue", `[${dropped.phases.join(",")}]`]
+          ]);
+          debug(`Override suspended: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)} — queue ${JSON.stringify(dropped.phases)} survives`);
+        } else {
+          sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+          sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+          sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+          gateRecordEvent("WALK_CLEARED", [
+            ["session", sessionID],
+            ["reason", "backward-pin"],
+            ["from", String(prevPhase)],
+            ["to", String(targetPhase)],
+            ["queue", `[${(Array.isArray(dropped?.phases) ? dropped.phases : [dropped?.phase]).filter(v => typeof v === "number").join(",")}]`]
+          ], `backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
+          debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
+        }
       }
       // A backward transition also supersedes any pending auto-advance
       // — the one-shot announcement is stale the moment the user moves back.
@@ -3779,6 +3981,13 @@ async function protocolGateServer(input, options) {
     function advanceParentSessionFromSwarm(candidate) {
       const currentPhase = sessionPhaseMap.get(candidate);
       if (currentPhase !== STATES.SWARM) return false;
+      // The queue decides the next hop here too: a walk naming SWARM followed by
+      // EVOLVE hand the parent to EVOLVE, and a walk still behind SWARM resumes.
+      const decision = nextForwardPhase(sessionPhaseMap, candidate, currentPhase, noWalkFallback(currentPhase));
+      if (decision.outcome === "diverged") {
+        applyForwardAdvance(candidate, currentPhase, decision);
+        return false;
+      }
       // checkDiskAdvancement applies the full SWARM gate including the
       // override fresh-evidence requirement (registry mtime >= since).
       if (!checkDiskAdvancement(candidate, STATES.SWARM, sessionPhaseMap, swarmDispatchCount)) {
@@ -3791,40 +4000,11 @@ async function protocolGateServer(input, options) {
         }
         return false;
       }
-      const newPhase = STATES.VERIFY;
-      enterPhase(sessionPhaseMap, candidate, newPhase);
-      // This parent hand-off is fixed at SWARM → VERIFY; the override queue's
-      // next-named-phase rule governs the disk-evidence advance path only, so a
-      // plan naming SWARM then a phase other than VERIFY is not honored here.
-      // The phase advanced away from the override target on fresh evidence —
-      // re-arm a multi-phase queue or clear a single-phase marker so normal
-      // advancement semantics resume.
-      const overrideUntil = getOverrideUntil(sessionPhaseMap, candidate);
-      if (overrideUntil && currentPhase === getOverrideTargetPhase(overrideUntil)) {
-        if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 1) {
-          const remaining = overrideUntil.phases.slice(1);
-          sessionPhaseMap.set(`${candidate}:overrideUntil`, { phases: remaining, since: overrideUntil.since });
-          gateRecordEvent("WALK_HOP", [
-            ["session", candidate],
-            ["from", String(currentPhase)],
-            ["to", String(newPhase)],
-            ["queue", `[${remaining.join(",")}]`]
-          ]);
-          debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
-        } else {
-          sessionPhaseMap.delete(`${candidate}:overrideUntil`);
-          sessionPhaseMap.delete(`${candidate}:overrideSafePoint`);
-          sessionPhaseMap.delete(`${candidate}:overrideEvals`);
-          gateRecordEvent("WALK_CLEARED", [
-            ["session", candidate],
-            ["reason", "exhausted"],
-            ["from", String(currentPhase)],
-            ["to", String(newPhase)],
-            ["queue", `[${(Array.isArray(overrideUntil.phases) ? overrideUntil.phases : [overrideUntil.phase]).join(",")}]`]
-          ]);
-          debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence`);
-        }
-      }
+      // The one transition commit owns the phase entry, the marker settle and
+      // the record — the queue is authoritative here as at every other site.
+      const applied = applyForwardAdvance(candidate, currentPhase, decision);
+      if (applied.entered === null) return false;
+      const newPhase = applied.entered;
       diskCheckFailures.set(candidate, 0);
       inFlightDispatches.delete(candidate);
       pendingVerification.delete(candidate);
@@ -3842,7 +4022,6 @@ async function protocolGateServer(input, options) {
         to: getPhaseName(newPhase),
         reason
       });
-      saveState(candidate);
       debug(`POST_WRITE_ADVANCE: ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} for parent session ${candidate} (${reason})`);
       return true;
     }
@@ -4048,6 +4227,14 @@ async function protocolGateServer(input, options) {
         const rejected = validateMultiPhaseWalk(phases, currentPhase, BACKWARD_TRANSITIONS);
         if (rejected) {
           output.phaseError = { from: rejected.from, to: rejected.to, reason: rejected.reason };
+          // Always-on rejection record: the walk was not committed, and the log
+          // names the hop and the class that refused it, so a user whose queue
+          // was silently shortened can read why from the log alone.
+          gateRecordEvent("WALK_REJECTED", [
+            ["session", sessionID],
+            ["hop", String(rejected.to)],
+            ["reason", rejected.reason]
+          ], `commit-time validation refused hop ${getPhaseName(rejected.to)} (${rejected.to})`);
           output.parts = [{ type: "text", text: describeRejectedWalk(rejected) }];
           return;
         }
@@ -4105,10 +4292,11 @@ async function protocolGateServer(input, options) {
           ["queue", `[${(Array.isArray(replaced?.phases) ? replaced.phases : [replaced?.phase]).filter(v => typeof v === "number").join(",")}]`]
         ]);
       }
+      const since = Date.now();
       if (isMulti) {
-        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases, since: Date.now() });
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases, since });
       } else {
-        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since: Date.now() });
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since });
       }
       // Always-on walk commit: the marker every later hop is judged against,
       // readable with no debug flag set.
@@ -4132,6 +4320,21 @@ async function protocolGateServer(input, options) {
         ...(walkSafePoint ? { safePoint: { phase: walkSafePoint.phase, marker: walkSafePoint.marker } } : {}),
         ...(generationSuffix !== null ? { gen: generationSuffix } : {})
       });
+      // A commit whose target is REPORT has already reached the terminal hop:
+      // the report is written there, so the walk ends on arrival and the marker
+      // never outlives it. This is the one completion the commit itself owns —
+      // every other terminal arrival goes through applyForwardAdvance.
+      if (n === STATES.REPORT) {
+        sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+        sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+        sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+        gateRecordEvent("WALK_COMPLETE", [
+          ["session", sessionID],
+          ["terminal", "REPORT"],
+          ["kind", isMulti ? "hop" : "pin"]
+        ]);
+        debug(`WALK_COMPLETE: session ${sessionID} reached terminal REPORT by /phase commit`);
+      }
       // A manual /phase override supersedes any pending auto-advance.
       // The one-shot announcement must not leak into the next systemTransform —
       // e.g. a stale "auto-advanced EXPLORE → INVESTIGATE" after a redispatch to
@@ -4155,7 +4358,9 @@ async function protocolGateServer(input, options) {
         clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       }
       const marker = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
-      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — overrideUntil set (${isMulti ? `queue ${JSON.stringify(phases)}` : `phase ${n}`}, since ${marker.since})`);
+      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — ${marker
+        ? `overrideUntil set (${isMulti ? `queue ${JSON.stringify(phases)}` : `phase ${n}`}, since ${since})`
+        : `terminal REPORT reached, marker cleared on arrival (since ${since})`}`);
       const walk = isMulti ? `, queue ${JSON.stringify(phases)}` : "";
       output.parts = [{ type: "text", text: isMulti
         ? `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID} — override queue ${JSON.stringify(phases)}.${genNote} Override record: ${getPhaseName(prevPhase)} (${prevPhase}) → ${getPhaseName(n)} (${n})${walk} at ${at} — persisted in lifecycle state (overrideHistory).`
@@ -4193,6 +4398,118 @@ async function protocolGateServer(input, options) {
       return overseerSessions.has(sid);
     }
 
+    // The ONE transition commit (IC-5). Every forward-advance site decides its
+    // next phase with nextForwardPhase and lands it here: the phase entry, the
+    // marker settle (pop / suspend-clear / resume re-anchor / clear / complete),
+    // the safe-point drop and the single always-on transition record exist in
+    // this one place, and no site mutates the marker inline. The site keeps its
+    // own counters, announcements and bookkeeping.
+    // A `diverged` decision never advances and never falls through to presence
+    // evidence: it records the divergence and returns entered: null, so every
+    // caller reads "refuse" the same way it reads a closed gate.
+    function applyForwardAdvance(sessionID, fromPhase, decision) {
+      const marker = getOverrideUntil(sessionPhaseMap, sessionID);
+      if (decision.outcome === "diverged") {
+        gateRecordEvent("WALK_DIVERGED", [
+          ["session", sessionID],
+          ["phase", String(fromPhase)],
+          ["head", String(decision.head)],
+          ["queue", `[${decision.queue.join(",")}]`]
+        ], `phase ${getPhaseName(fromPhase)} (${fromPhase}) is ahead of the walk head`, `WALK_DIVERGED|${sessionID}|${fromPhase}|${decision.head}|${decision.queue.join(",")}`);
+        debug(`WALK_DIVERGED: session ${sessionID} phase=${fromPhase} head=${decision.head} queue=${JSON.stringify(decision.queue)} — refusing to advance`);
+        return { entered: null, walk: "unchanged" };
+      }
+      const target = decision.target;
+      if (typeof target !== "number") {
+        // Defensive: a governed hop yielding no target. Recorded rather than
+        // silently treated as a closed gate, so a walk that parks is diagnosable.
+        gateRecordEvent("WALK_BLOCKED", [
+          ["session", sessionID],
+          ["phase", String(fromPhase)],
+          ["outcome", decision.outcome],
+          ["queue", `[${decision.queue.join(",")}]`]
+        ], `walk outcome ${decision.outcome} produced no forward target`);
+        debug(`WALK_BLOCKED: session ${sessionID} phase=${fromPhase} outcome=${decision.outcome} — no forward target`);
+        return { entered: null, walk: "unchanged" };
+      }
+
+      enterPhase(sessionPhaseMap, sessionID, target);
+      let walk = "unchanged";
+      const queueOf = (m) => `[${(Array.isArray(m?.phases) ? m.phases : [m?.phase]).filter(v => typeof v === "number").join(",")}]`;
+
+      if (decision.outcome === "hop") {
+        // Consuming the head pops it: the next hop becomes the head and the
+        // re-entry anchor, if this hop carried one, is cleared with the hop it
+        // anchored — later hops are anchored to the walk's own `since` again.
+        const remaining = decision.queue.slice(1);
+        const rearmed = { phases: remaining, since: marker.since };
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, rearmed);
+        sessionPhaseMap.set(`${sessionID}:overrideEvals`, 0);
+        gateRecordEvent("WALK_HOP", [
+          ["session", sessionID],
+          ["from", String(fromPhase)],
+          ["to", String(target)],
+          ["queue", `[${remaining.join(",")}]`]
+        ]);
+        debug(`WALK_HOP: ${getPhaseName(fromPhase)} → ${getPhaseName(target)} — queue now ${JSON.stringify(remaining)}`);
+        walk = "popped";
+      } else if (decision.outcome === "resume") {
+        // Re-entering the suspended head stamps the re-entry instant: the hop
+        // now demands evidence written at or after this moment, so nothing from
+        // before the regression can satisfy it.
+        const hopSince = Date.now();
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: decision.queue, since: marker.since, hopSince });
+        sessionPhaseMap.set(`${sessionID}:overrideEvals`, 0);
+        gateRecordEvent("WALK_RESUMED", [
+          ["session", sessionID],
+          ["phase", String(target)],
+          ["hopSince", String(hopSince)]
+        ]);
+        debug(`WALK_RESUMED: session ${sessionID} re-entered ${getPhaseName(target)} (${target}) with hopSince=${hopSince}`);
+        walk = "resumed";
+      } else if (decision.outcome === "terminal-report") {
+        // REPORT is the terminal hop — the walk ends where the report is
+        // written, so the marker never outlives the arrival.
+        sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+        sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+        sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+        gateRecordEvent("WALK_COMPLETE", [
+          ["session", sessionID],
+          ["terminal", "REPORT"],
+          ["kind", "hop"]
+        ]);
+        debug(`WALK_COMPLETE: session ${sessionID} reached terminal REPORT by hop`);
+        walk = "completed";
+      } else if (decision.outcome === "origin-return") {
+        const kind = Array.isArray(marker?.phases) ? "hop" : "pin";
+        sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+        sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+        sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+        if (target === STATES.REPORT) {
+          gateRecordEvent("WALK_COMPLETE", [
+            ["session", sessionID],
+            ["terminal", "REPORT"],
+            ["kind", kind]
+          ]);
+          debug(`WALK_COMPLETE: session ${sessionID} reached terminal REPORT by ${kind}`);
+          walk = "completed";
+        } else {
+          gateRecordEvent("WALK_CLEARED", [
+            ["session", sessionID],
+            ["reason", decision.clearReason || WALK_CLEAR_REASON.EXHAUSTED],
+            ["from", String(fromPhase)],
+            ["to", String(target)],
+            ["queue", queueOf(marker)]
+          ]);
+          debug(`WALK_CLEARED: reason=${decision.clearReason} — ${getPhaseName(fromPhase)} → ${getPhaseName(target)}`);
+          walk = "cleared";
+        }
+      }
+
+      saveState(sessionID);
+      return { entered: target, walk };
+    }
+
     // Shared disk-evidence advancement. Evaluates checkDiskAdvancement for
     // the session's current phase and performs the full transition
     // bookkeeping on positive evidence (override re-arm/clear, failure
@@ -4205,6 +4522,13 @@ async function protocolGateServer(input, options) {
     async function advanceFromDiskEvidence(sessionID) {
       const currentPhase = sessionPhaseMap.get(sessionID);
       const currentPhaseName = getPhaseName(currentPhase);
+      // The next hop is decided before any gate is read: a walk whose head sits
+      // behind the current phase refuses regardless of what the evidence says.
+      const decision = nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, noWalkFallback(currentPhase));
+      if (decision.outcome === "diverged") {
+        applyForwardAdvance(sessionID, currentPhase, decision);
+        return false;
+      }
       if (!(await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount, { verdictRegressedKDs, backwardTransition: handleBackwardTransition }))) {
         // Stall accounting — see advanceParentSessionFromSwarm above.
         const stalledMarker = getOverrideUntil(sessionPhaseMap, sessionID);
@@ -4214,63 +4538,12 @@ async function protocolGateServer(input, options) {
         return false;
       }
 
-        // Advance target. The default machine steps serially, but an active
-        // override queue at its head redirects the step: the queue is a forward
-        // plan of target phases, so on fresh evidence the lifecycle moves to the
-        // next NAMED phase (phases[1]) — a skipped hop (e.g. 1 → 3, preflight
-        // already done) is never re-entered. When the plan is exhausted (the
-        // last named hop, or a single-phase marker) the lifecycle returns to the
-        // phase the override started from — the walk safe point — so a detour
-        // re-enters the default machine where it left it instead of drifting
-        // forward past the origin. Origin return applies only when that phase
-        // lies ahead of the plan's end; an origin behind it (e.g. /phase PREFLIGHT
-        // issued from INTENT) would be a backward jump the serial machine never
-        // makes, so the serial step stands.
-        const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
-        const overrideAtHead = !!overrideUntil && currentPhase === getOverrideTargetPhase(overrideUntil);
-        let advanceTarget = currentPhase + 1;
-        if (overrideUntil && overrideAtHead) {
-          const named = Array.isArray(overrideUntil.phases) ? overrideUntil.phases : [overrideUntil.phase];
-          if (named.length > 1) {
-            advanceTarget = named[1];
-          } else {
-            const safePoint = sessionPhaseMap.get(`${sessionID}:overrideSafePoint`);
-            const origin = safePoint && typeof safePoint.phase === "number" ? safePoint.phase : null;
-            advanceTarget = origin !== null && origin > currentPhase ? origin : currentPhase + 1;
-          }
-        }
-        enterPhase(sessionPhaseMap, sessionID, advanceTarget);
-        // The phase advanced away from the override target on fresh evidence.
-        // A multi-phase queue re-arms to the next named phase (pop the head) so
-        // the plan survives the auto-advance; a single-phase marker (or an
-        // exhausted queue) clears once the origin has been restored, so normal
-        // advancement semantics resume.
-        if (overrideUntil && overrideAtHead) {
-          if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 1) {
-            const remaining = overrideUntil.phases.slice(1);
-            sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: remaining, since: overrideUntil.since });
-            gateRecordEvent("WALK_HOP", [
-              ["session", sessionID],
-              ["from", String(currentPhase)],
-              ["to", String(advanceTarget)],
-              ["queue", `[${remaining.join(",")}]`]
-            ]);
-            debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(advanceTarget)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
-          } else {
-            const originReturn = advanceTarget !== currentPhase + 1;
-            sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
-            sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
-            sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
-            gateRecordEvent("WALK_CLEARED", [
-              ["session", sessionID],
-              ["reason", originReturn ? "origin-return" : "exhausted"],
-              ["from", String(currentPhase)],
-              ["to", String(advanceTarget)],
-              ["queue", `[${(Array.isArray(overrideUntil.phases) ? overrideUntil.phases : [overrideUntil.phase]).join(",")}]`]
-            ]);
-            debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(advanceTarget)} on fresh evidence${originReturn ? " (origin return)" : ""}`);
-          }
-        }
+        // The one transition commit owns enterPhase, the marker settle, the
+        // record and the save — see applyForwardAdvance. The sites keep only
+        // their own counters and announcements.
+        const applied = applyForwardAdvance(sessionID, currentPhase, decision);
+        if (applied.entered === null) return false;
+        const advanceTarget = applied.entered;
         diskCheckFailures.set(sessionID, 0);
         // Clear in-flight tracking — KD appeared on disk, dispatch is complete
         inFlightDispatches.delete(sessionID);
@@ -4347,7 +4620,6 @@ async function protocolGateServer(input, options) {
           to: getPhaseName(newPhase),
           reason: advancementGateEvidence || null
         });
-        saveState(sessionID);
         // When entering PREFLIGHT, skip the next disk check to give the Overseer
         // time to dispatch the committer before advancement to EXPLORE.
         if (newPhase === STATES.PREFLIGHT) {
@@ -4922,14 +5194,18 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                   inFlightDispatches.delete(sessionID);
                   saveState(sessionID);
                 } else {
-                  debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → VERIFY after ${currentFailures} stuck failures (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
-                  enterPhase(sessionPhaseMap, sessionID, STATES.VERIFY);
+                  // The force-advance is a forward-advance site like any other:
+                  // at a walk head it takes the next named hop, behind the head
+                  // it re-enters the head, and ahead of it it refuses. VERIFY is
+                  // only the no-walk fallback.
+                  const forced = nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, noWalkFallback(currentPhase, true));
+                  debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → ${getPhaseName(forced.target)} after ${currentFailures} stuck failures (outcome=${forced.outcome}, pendingVerification active=${!!pendingVerification.get(sessionID)})`);
+                  applyForwardAdvance(sessionID, currentPhase, forced);
                   diskCheckFailures.set(sessionID, 0);
                   phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
                   pendingVerification.delete(sessionID);
                   pendingVerificationToolCount.delete(sessionID);
                   inFlightDispatches.delete(sessionID);
-                  saveState(sessionID);
                 }
                 safetyTriggered = true;
               } else {
@@ -4969,14 +5245,14 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                     saveState(sessionID);
                     throw new ProtocolGateError("SAFETY_STUCK", `❌ SAFETY_STUCK: SWARM re-dispatch cap (${redispatches}) reached — milestone marked failed. Escalate to user or override with /phase`, "Escalate to user or use /phase to override");
                   }
-                  debug(`SAFETY_OVERRIDE: REDISPATCH CAP — ${currentPhaseName} phase — ${redispatches} re-dispatches used. Advancing to VERIFY (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
-                  enterPhase(sessionPhaseMap, sessionID, STATES.VERIFY);
+                  const capped = nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, noWalkFallback(currentPhase, true));
+                  debug(`SAFETY_OVERRIDE: REDISPATCH CAP — ${currentPhaseName} phase — ${redispatches} re-dispatches used. Advancing to ${getPhaseName(capped.target)} (outcome=${capped.outcome}, pendingVerification active=${!!pendingVerification.get(sessionID)})`);
+                  applyForwardAdvance(sessionID, currentPhase, capped);
                   diskCheckFailures.set(sessionID, 0);
                   phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
                   pendingVerification.delete(sessionID);
                   pendingVerificationToolCount.delete(sessionID);
                   inFlightDispatches.delete(sessionID);
-                  saveState(sessionID);
                   safetyTriggered = true;
                 }
               }
@@ -5006,13 +5282,13 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                       inFlightDispatches.delete(sessionID);
                       saveState(sessionID);
                     } else {
-                      debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
+                      const timedOut = nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, noWalkFallback(currentPhase, true));
+                      debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — advancing to ${getPhaseName(timedOut.target)} (outcome=${timedOut.outcome}) — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
                       pendingVerification.delete(sessionID);
                       pendingVerificationToolCount.delete(sessionID);
-                      enterPhase(sessionPhaseMap, sessionID, STATES.VERIFY);
+                      applyForwardAdvance(sessionID, currentPhase, timedOut);
                       diskCheckFailures.set(sessionID, 0);
                       inFlightDispatches.delete(sessionID);
-                      saveState(sessionID);
                     }
                   } else if (toolCalls >= 10) {
                     debug(`pendingVerification WARNING: ${toolCalls} tool calls without expected KD — clearing pendingVerification (expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
@@ -5070,6 +5346,11 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
           const terminal = phase === STATES.REPORT
             ? ` ${phaseName} is the terminal phase — write the report KD; no dispatch is needed.`
             : " Task is only available in PREFLIGHT through CLEANUP phases";
+          // A refusal while an override governs the phase names that state too:
+          // the walk's head, remaining hops, suspension or divergence sentence —
+          // one formatter, so the refusal and the wrong-agent refusal can never
+          // describe the same walk differently.
+          const walkState = describeOverrideState(sessionPhaseMap, sessionID, phase);
           gateRecordEvent("DISPATCH_REFUSED", [
             ["session", sessionID],
             ["phase", phaseName],
@@ -5079,7 +5360,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
           throw new ProtocolGateError(
             ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
-            `❌ BLOCKED: Task dispatch not allowed in ${phaseName} (${phase}) phase.${terminal}`,
+            `❌ BLOCKED: Task dispatch not allowed in ${phaseName} (${phase}) phase.${terminal}${walkState ? ` ${walkState}` : ""}`,
             phase === STATES.REPORT ? "Write the report KD — REPORT takes no dispatch" : "Wait for delegation phase"
           );
         }
@@ -5532,6 +5813,12 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       validateMultiPhaseWalk,
       describeRejectedWalk,
       queueHeadHasFreshEvidence,
+      // IC-4/IC-5 public seams: the walk shape test and the one next-hop
+      // decision, bound to this server's session map so the standing suite
+      // reads them off the public surface with the documented arity.
+      walkExists: (sessionID) => walkExists(sessionPhaseMap, sessionID),
+      nextForwardPhase: (sessionID, currentPhase, fallbackTarget) =>
+        nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, fallbackTarget),
       argsFromPrompt,
       saveState,
       loadState,
