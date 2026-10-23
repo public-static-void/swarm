@@ -549,6 +549,68 @@ ${escalationSection}`;
       expect(readRegistry(s)).toContain("  M6: checked-off");
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
     });
+
+    // A basename is not an identity: a copy that happens to share the stamped
+    // artifact's name is not that artifact. Settlement promotes a row only from
+    // the file the SWARM gate reads back, so a collide-with-a-copy write must
+    // promote nothing and must leave the digest that lets the canonical file
+    // settle later.
+    it("a same-basename write outside the knowledge directory promotes nothing", async () => {
+      const s = "reclose-copy-e";
+      const artisan = "reclose-copy-e-artisan";
+      const base = `impl-M6-first-${s}-gen0.md`;
+      const canonicalPath = join(knowledgeDir, base);
+      await reopenWithStamp(s, base);
+      const canonicalBefore = readFileSync(canonicalPath, "utf8");
+      clearLog();
+
+      // A scratch copy of the artifact, same basename, outside the session's
+      // knowledge directory — and already carrying the sanctioned live status,
+      // so nothing but the path distinguishes it from real fix evidence.
+      const outsideDir = mkdtempSync(join(tmpdir(), "pg-decoy-"));
+      const outsidePath = join(outsideDir, base);
+      const decoyBody = `${implKD(s, "amended")}\n# Fix evidence: decoy copy\n`;
+      writeFileSync(outsidePath, decoyBody);
+
+      await artisanWrite(artisan, outsidePath, decoyBody, "c-e");
+      await hooks["tool.execute.after"]({ tool: "write", sessionID: artisan, callID: "c-e" }, {});
+
+      // 1. The digest survives — the whole point, since dropping it would leave
+      // the canonical stamp unsettleable and the exit a hand edit.
+      const snapshots = hooks.getStampSnapshots(hooks.sessionPhaseMap, s);
+      expect(snapshots?.[`M6|${base}`], "the stamp digest was dropped for an unsettled artifact").toBeTruthy();
+      // 2. Nothing is promoted: the row stays open and no CHECKOFF claims it.
+      expect(readRegistry(s), "the copy promoted the row").toContain("  M6: in-progress");
+      const promotions = records("CHECKOFF").map(parseRecord).filter((r) => r.fields.promoted === "true");
+      expect(promotions, "a CHECKOFF promoted from the copy").toHaveLength(0);
+      // 3. The canonical artifact still declares itself invalidated, and the
+      // copy the gate does not own is left exactly as the writer wrote it.
+      expect(readFileSync(canonicalPath, "utf8"), "the canonical artifact was amended from a copy").toBe(canonicalBefore);
+      expect(readFileSync(outsidePath, "utf8"), "the gate rewrote a file outside the knowledge directory").toBe(decoyBody);
+
+      // The boundary itself: settlement asked to read another directory declines
+      // and keeps the row open, digest intact.
+      const redirected = hooks.settleStampClearForArtifact(s, hooks.sessionPhaseMap, {
+        dir: outsideDir,
+        base,
+        milestoneId: "M6"
+      });
+      expect(redirected.settled, "settlement ran against a directory that is not the canonical one").toBe(false);
+      expect(redirected.reason).toBe("not-cited-artifact");
+      expect(readRegistry(s)).toContain("  M6: in-progress");
+
+      // 4. The ordinary route still works afterwards: amend the canonical file.
+      const relPath = `knowledge/${base}`;
+      const amendedBody = `${implKD(s, "amended")}\n# Fix evidence: canonical\n`;
+      await artisanWrite(artisan, relPath, amendedBody, "c-e2");
+      await landAndSettle(artisan, relPath, amendedBody, "c-e2");
+      expect(readRegistry(s), "a legitimate amendment could no longer settle").toContain("  M6: checked-off");
+      const landed = readFileSync(canonicalPath, "utf8");
+      expect(landed).toContain("status: amended");
+      expect(landed).toContain("# Fix evidence: canonical");
+
+      rmSync(outsideDir, { recursive: true, force: true });
+    });
   });
 
   // The reopen target lives in the review frontmatter and nowhere else: the

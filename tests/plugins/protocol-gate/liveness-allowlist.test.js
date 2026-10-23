@@ -126,6 +126,15 @@ ${table}
         expect(verdict.declared, name).toBe("superseded");
         expect(verdict.raw, name).toBe(value.trim());
       }
+      // The key is matched case-insensitively, so the stamp is refused however
+      // the author spells the key — a live-branch-only proof would leave the
+      // refusal path's key handling unpinned.
+      for (const [name, line] of [["capitalized key", "Status: superseded"], ["uppercase key", "STATUS: superseded"]]) {
+        const verdict = hooks.evaluateLiveness(kd(`${line}\n`));
+        expect(verdict.live, `${name} must not be live`).toBe(false);
+        expect(verdict.reason, name).toBe("stale-status");
+        expect(verdict.declared, name).toBe("superseded");
+      }
     });
 
     it("names every other status word unknown — the allowlist is exhaustive", () => {

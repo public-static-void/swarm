@@ -1872,20 +1872,14 @@ function isImplKDArtifactPath(filePath) {
   return /^impl-/i.test(filePath.replace(/\\/g, "/").split("/").pop());
 }
 
-// Resolves the directory an artifact lives in. Settlement is an evaluation of
-// disk state, so the observed write path is a hint, never a gate: an absolute
-// path that exists wins, a knowledge/-relative path resolves against the
-// session's knowledge dir, and anything else falls back to that dir. This is
-// what retires the old `^knowledge/impl-` guard — a `./` prefix, a nested
-// directory or an absolute path all settle.
-function resolveArtifactDir(sessionID, artifactPath) {
-  if (typeof artifactPath === "string" && artifactPath.length > 0) {
-    try {
-      const abs = resolve(artifactPath);
-      if (existsSync(abs) && statSync(abs).isFile()) return dirname(abs);
-    } catch (_) {}
-    if (/(^|\/)knowledge\//i.test(artifactPath)) return getKnowledgeDir(sessionID);
-  }
+// Resolves the directory settlement reads an artifact from. It is the session's
+// knowledge dir and nothing else: that is the directory the SWARM gate reads the
+// evidence back from (findMilestoneImplKD), so a settlement performed anywhere
+// else would promote a row over a file the gate never opens. A write path is a
+// hint about which artifact the writer meant, never a licence to settle a copy —
+// an absolute path, a `./` prefix and a nested directory all resolve here, and a
+// path that names a same-basename file elsewhere resolves here too.
+function resolveArtifactDir(sessionID) {
   return getKnowledgeDir(sessionID);
 }
 
@@ -1908,8 +1902,17 @@ function settleStampDeclined(milestoneId, base, dir, reason) {
 // Returns { settled, reason, content?, promoted? }.
 function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, milestoneId }) {
   if (typeof base !== "string" || base.length === 0) return { settled: false, reason: "not-cited-artifact" };
-  const artifactDir = dir || getKnowledgeDir(sessionID);
+  const artifactDir = resolveArtifactDir(sessionID);
   const rowId = milestoneId || extractMilestoneIdFromImplKD(base);
+  // (0) Only the canonical artifact is settleable. A caller naming another
+  // directory is asking the gate to amend and promote from a file that the
+  // registry check-off cross-check never reads — the wedge this guards: the copy
+  // settles, the digest is dropped, and the canonical artifact's own stamp can
+  // no longer be cleared by anything but a hand edit.
+  if (typeof dir === "string" && dir.length > 0 && resolve(dir) !== resolve(artifactDir)) {
+    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-cited-artifact");
+    return { settled: false, reason: "not-cited-artifact" };
+  }
   // (1) Only a reopened row has a stamp to clear.
   const state = rowId ? readMilestoneState(sessionID, sessionPhaseMap, rowId) : null;
   if (state !== "in-progress") {
@@ -2006,27 +2009,23 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
 }
 
 // Drives settlement over every artifact stamped in this session, so a gate
-// evaluation and the after-write fast path run the same loop. `hintPath` is the
-// observed write path when the caller has one; it only steers directory
-// resolution for the artifact it names.
-function settleStampClearsForSession(sessionID, sessionPhaseMap, hintPath) {
+// evaluation and the after-write fast path run the same loop. No observed write
+// path steers it: the canonical artifact is the only thing either loop settles,
+// so a write that merely shares a stamped artifact's basename cannot settle (or
+// silently unsnapshot) the row it names.
+function settleStampClearsForSession(sessionID, sessionPhaseMap) {
   const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
   if (!snapshots) return 0;
   const keys = Object.keys(snapshots);
   if (keys.length === 0) return 0;
-  const hintBase = typeof hintPath === "string" && hintPath.length > 0
-    ? hintPath.replace(/\\/g, "/").split("/").pop()
-    : null;
+  const artifactDir = resolveArtifactDir(sessionID);
   let settled = 0;
   for (const key of keys) {
     const sep = key.indexOf("|");
     if (sep <= 0) continue;
     const milestoneId = key.slice(0, sep);
     const base = key.slice(sep + 1);
-    const dir = hintBase && hintBase === base
-      ? resolveArtifactDir(sessionID, hintPath)
-      : getKnowledgeDir(sessionID);
-    if (settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, milestoneId }).settled) settled++;
+    if (settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir: artifactDir, base, milestoneId }).settled) settled++;
   }
   return settled;
 }
@@ -4279,7 +4278,10 @@ async function protocolGateServer(input, options) {
       const incomingVerdict = typeof incomingContent === "string" ? evaluateLiveness(incomingContent) : null;
       if (diskSnapshot !== null && diskSnapshot.stale) {
         if (typeof incomingContent === "string" && diskSnapshot.content !== incomingContent) {
-          pendingStampClear.set(writerSessionID, { relPath, base: diskSnapshot.base, dir: diskSnapshot.dir, snapshot: diskSnapshot.content });
+          // A marker that a stamp clear is owed, not a claim about the target:
+          // settlement re-derives the canonical artifact from disk, so this
+          // record cannot redirect it at the path the writer happened to use.
+          pendingStampClear.set(writerSessionID, { relPath, base: diskSnapshot.base });
           gateRecordEvent("STAMP_CLEAR_PENDING", [
             ["milestone", milestoneId],
             ["artifact", artifactBase]
@@ -4375,11 +4377,12 @@ async function protocolGateServer(input, options) {
     // this is the after-write fast path sharing one implementation with the
     // SWARM gate and stuck-row reconciliation. Each attempt, decline and
     // promotion carries its own always-on line, so a reopened row that never
-    // closes is diagnosable with no debug flag set.
-    function settlePendingStampClears(pending, relPath) {
-      const hintPath = pending ? pending.relPath : relPath;
+    // closes is diagnosable with no debug flag set. The observed write path is
+    // not handed in: settlement reads the canonical artifact, so a write aimed
+    // at a same-basename copy settles nothing here.
+    function settlePendingStampClears() {
       for (const candidate of collectParentSessionCandidates()) {
-        settleStampClearsForSession(candidate, sessionPhaseMap, hintPath);
+        settleStampClearsForSession(candidate, sessionPhaseMap);
       }
     }
 
@@ -5945,7 +5948,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         const pending = pendingStampClear.get(sessionID);
         pendingStampClear.delete(sessionID);
         const isImplWrite = isImplKDArtifactPath(relPath);
-        if (pending || isImplWrite) settlePendingStampClears(pending, relPath);
+        if (pending || isImplWrite) settlePendingStampClears();
         if (isImplWrite) {
           for (const candidate of collectParentSessionCandidates()) {
             advanceParentSessionFromSwarm(candidate);

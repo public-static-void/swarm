@@ -458,6 +458,45 @@ describe("Protocol-Gate override walk unification", () => {
     expect(h.marker(s), "the exhausted queue did not clear").toBeFalsy();
   });
 
+  it("AC-22's queued walk lands the PASS at VERIFY on the named hop", async () => {
+    // The reported crossing, instantiated literally: a walk queued from INTENT
+    // naming SWARM, VERIFY, EVOLVE, CLEANUP and REPORT — EXTRACT (9) is absent
+    // from the queue, so the PASS at VERIFY must take EVOLVE (10).
+    const s = await swarmSession("walk-ac22");
+    await h.commit(s, "{1,6,7,8,10,11,12}");
+    expect(h.marker(s).phases, "the queue was not committed as given").toEqual([1, 6, 7, 8, 10, 11, 12]);
+
+    // INTENT → DECOMPOSE on a fresh intent KD.
+    h.createKD(`intent-ac22-${s}.md`);
+    await h.tick(s, "ac22-1");
+    expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.DECOMPOSE);
+    expect(h.marker(s).phases).toEqual([6, 7, 8, 10, 11, 12]);
+
+    // DECOMPOSE → SWARM on a fresh plan KD and the milestone registry (the
+    // dual-KD gate).
+    h.createKD(`plan-ac22-${s}.md`);
+    swarmEvidence(s);
+    await h.tick(s, "ac22-2");
+    expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.SWARM);
+
+    // SWARM → VERIFY on the all-checked-off gate, on evidence written after the
+    // SWARM entry anchor.
+    swarmEvidence(s);
+    await h.tick(s, "ac22-3");
+    expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.VERIFY);
+    expect(h.marker(s).phases).toEqual([8, 10, 11, 12]);
+    h.clearLog();
+
+    // The fresh PASS at VERIFY takes the named hop.
+    h.createKD(`review-pass-${s}.md`, h.reviewKD("PASS"));
+    await h.tick(s, "ac22-4");
+    expect(h.hooks.sessionPhaseMap.get(s), "the PASS landed on the serial EXTRACT instead of the named hop").toBe(h.hooks.STATES.EVOLVE);
+    expect(h.marker(s).phases).toEqual([10, 11, 12]);
+    const hops = walkHopRecords(s);
+    expect(hops, "no always-on WALK_HOP record for the PASS crossing").toHaveLength(1);
+    expect(hops[0].fields).toMatchObject({ from: "8", to: "10", queue: "[10,11,12]" });
+  });
+
   it("REPORT terminal hop completes on arrival", async () => {
     // REPORT gains no KD prefix and no advancement predicate (FR-24 / AC-32).
     expect(h.hooks.KD_TYPE_PREFIXES[h.hooks.STATES.REPORT]).toBeUndefined();
