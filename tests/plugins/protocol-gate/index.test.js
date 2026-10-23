@@ -7167,6 +7167,17 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
   });
 
   describe("verbatim raw-intent capture at plugin level", () => {
+    // A verbatim demand is lawful only when the same sentence names the class
+    // it applies to: the pin reads emitted text sentence by sentence so a
+    // directive that copies whatever arrived cannot pass beside a correct rule.
+    const VERBATIM_DEMAND = /verbatim|word for word|copy exactly/i;
+    const TASK_SPECIFICATION = /task specification/i;
+    const unqualifiedCopySentences = (text) =>
+      text
+        .split(/(?<=[.!?])\s+|\n+/)
+        .map((sentence) => sentence.trim())
+        .filter((sentence) => sentence && VERBATIM_DEMAND.test(sentence) && !TASK_SPECIFICATION.test(sentence));
+
     it("chat.message captures overseer text parts verbatim with no transformation", async () => {
       const s = sid("f4-ac012");
       await hooks["chat.message"](
@@ -7194,7 +7205,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.rawIntentCapture.has(s)).toBe(false);
     });
 
-    it("INTENT-phase systemTransform injects the verbatim text and the copy-exactly directive", async () => {
+    it("the entry-0 injection labels the earliest message and states both branches", async () => {
       const s = sid("f4-ac015");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
@@ -7206,11 +7217,23 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       const output = { system: [] };
       await hooks["experimental.chat.system.transform"]({}, output);
       const system = output.system.join("\n");
-      expect(system).toContain("[Protocol Gate] Raw user request (verbatim)");
-      expect(system).toContain("copy exactly");
-      expect(system).toContain("Do not paraphrase or summarize");
-      expect(system).toContain("Raw request text");
-      expect(system).toContain("Message 1:");
+      const entry0 = output.system.find((line) => line.includes("Earliest user message"));
+      expect(entry0).toBeDefined();
+      // Entry 0 is labelled as the earliest message, not as the request: its
+      // position decides nothing about what belongs in the Raw Request.
+      expect(entry0).toContain("task specification");
+      expect(entry0).toContain("verbatim");
+      expect(entry0).toContain("discussion");
+      expect(entry0).toContain("gist");
+      expect(entry0).toContain("Triage Notes");
+      expect(entry0).toContain("disposition");
+      expect(entry0).toContain("would a downstream agent need these exact words");
+      expect(entry0).toContain("tie-breaker");
+      expect(entry0).toContain("Raw request text");
+      expect(entry0).toContain("Message 1:");
+      expect(system).not.toContain("Raw user request (verbatim)");
+      expect(system).not.toContain("Do not paraphrase or summarize");
+      expect(unqualifiedCopySentences(entry0)).toEqual([]);
     });
 
     it("a non-INTENT phase carries no raw-intent injection for the same session", async () => {
@@ -7225,7 +7248,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       const output = { system: [] };
       await hooks["experimental.chat.system.transform"]({}, output);
       const system = output.system.join("\n");
-      expect(system).not.toContain("Raw user request (verbatim)");
+      expect(system).not.toContain("Earliest user message");
       expect(system).not.toContain("copy exactly");
       expect(system).not.toContain("Raw request text");
     });
@@ -7264,7 +7287,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(entries[entries.length - 1]).toEqual({ messageID: "m11", text: "message 11" });
     });
 
-    it("keeps the opening request across twelve messages and labels it apart from the follow-ups", async () => {
+    it("keeps the earliest message across twelve messages and labels it apart from the follow-ups", async () => {
       const s = sid("f4-ac018b");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
@@ -7284,43 +7307,60 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       const output = { system: [] };
       await hooks["experimental.chat.system.transform"]({}, output);
       const lines = output.system.filter(
-        (line) => line.includes("[Protocol Gate] Raw user request") || line.includes("[Protocol Gate] Follow-up")
+        (line) => line.includes("Earliest user message") || line.includes("Follow-up message")
       );
       // One injected line per captured entry — the block mirrors the capture.
       expect(lines).toHaveLength(hooks.RAW_INTENT_MAX_MESSAGES);
 
-      // Entry 0 is the opening request and carries the verbatim-copy directive.
-      expect(lines[0]).toContain("opening request");
-      expect(lines[0]).toContain("copy exactly");
+      // Entry 0 is the earliest message and carries the classification test.
+      expect(lines[0]).toContain("Earliest user message");
+      expect(lines[0]).toContain("task specification");
       expect(lines[0]).toContain("Raw Request");
       expect(lines[0]).toContain("message 1");
+      expect(unqualifiedCopySentences(lines[0])).toEqual([]);
 
-      // Later entries are follow-ups routed to the Triage Notes; the verbatim
-      // directive is scoped to entry 0 only.
+      // Later entries keep the promotion path and route to the Triage Notes;
+      // no line copies whatever arrived.
       for (const line of lines.slice(1)) {
-        expect(line).not.toContain("Raw user request");
-        expect(line).toContain("follow-up");
+        expect(line).not.toContain("Earliest user message");
+        expect(line).toContain("Follow-up message");
+        expect(line).toContain("task specification");
         expect(line).toContain("Triage Notes");
-        expect(line).not.toContain("copy exactly");
+        expect(unqualifiedCopySentences(line)).toEqual([]);
       }
       expect(lines[9]).toContain("message 12");
     });
 
-    it("the INTENT instruction asks for one complete write and names the opening request", async () => {
+    it("the INTENT instruction asks for one complete write and carries the discriminator", async () => {
       const instruction = hooks.PHASE_INSTRUCTIONS.INTENT;
       expect(instruction).toContain("assemble");
-      expect(instruction).toContain("opening request");
+      expect(instruction).toContain("task specification");
+      expect(instruction).toContain("gist");
       expect(instruction).toContain("Triage Notes");
+      expect(instruction).toContain("would a downstream agent need these exact words");
+      expect(instruction).not.toContain("opening request");
+      expect(unqualifiedCopySentences(instruction)).toEqual([]);
     });
 
-    it("the overseer entry point mirrors the opening-request definition and the follow-up dispositions", () => {
+    it("the overseer entry point mirrors the discriminator and the follow-up dispositions", () => {
       const overseer = readFileSync(join(process.cwd(), "agents", "overseer.md"), "utf8");
-      expect(overseer).toContain("opening request");
-      expect(overseer).toContain("Triage Notes");
+      const start = overseer.indexOf("### Entry Point");
+      const end = overseer.indexOf("### Knowledge Gate Auto-Injection");
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const entryPoint = overseer.slice(start, end);
+      expect(entryPoint).toContain("task specification");
+      expect(entryPoint).toContain("verbatim");
+      expect(entryPoint).toContain("gist");
+      expect(entryPoint).toContain("Triage Notes");
+      expect(entryPoint).toContain("disposition");
+      expect(entryPoint).toContain("would a downstream agent need these exact words");
+      expect(entryPoint).not.toContain("opening request");
       // The evicted-follow-up case and the request-changing case are both
       // recorded in the layer that acts on them.
       expect(overseer).toMatch(/oldest (captured )?follow-up/i);
       expect(overseer).toContain("/phase INTENT");
+      expect(unqualifiedCopySentences(entryPoint)).toEqual([]);
     });
   });
 

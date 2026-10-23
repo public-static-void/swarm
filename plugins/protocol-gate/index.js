@@ -6088,25 +6088,32 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
           debug(`systemTransform: announced phase auto-advance ${announcement.from} → ${announcement.to} for session ${sessionID}`);
         }
 
-        // INTENT-phase verbatim raw-intent injection. The captured
-        // user text is relayed word-for-word into the Raw Request authoring
-        // flow, removing model discretion over the verbatim copy. Only entry 0
-        // opened the lifecycle, so only its line carries the copy directive:
-        // later entries stay in the block as the audit trail of what the user
-        // said, labelled as follow-ups and routed to the Triage Notes. Read-only:
-        // the directive instructs a copy, never an auto-write — the
-        // Overseer remains the KD author. Fires only while phase stays INTENT
-        // (may repeat on subsequent turns; stops automatically on advance).
-        // Overseer-only: this block is inside the isOverseerSession
-        // gate at the top of systemTransform.
+        // INTENT-phase raw-intent injection. The captured user text is relayed
+        // into the Raw Request authoring flow so downstream agents receive the
+        // words they must execute; the axis is the kind of message, not its
+        // position. A task specification addressed to the swarm is copied
+        // verbatim, because a paraphrase mangles what downstream agents must
+        // execute. A discussion with the Overseer about process is summarized,
+        // and its gist — what is to be done — becomes the request, with the
+        // message listed in Triage Notes beside its disposition; a message
+        // about the Overseer's conduct or the process state is a disposition
+        // only, never request material. Discriminating test: would a
+        // downstream agent need these exact words to do its job? Position is a
+        // tie-breaker, not the rule — a later message carrying the task
+        // specification becomes the Raw Request verbatim. Read-only: the
+        // directive instructs a copy, never an auto-write — the Overseer
+        // remains the KD author. Fires only while phase stays INTENT (may
+        // repeat on subsequent turns; stops automatically on advance).
+        // Overseer-only: this block is inside the isOverseerSession gate at the
+        // top of systemTransform.
         if (phase === STATES.INTENT && sessionID) {
           const captured = rawIntentCapture.get(sessionID);
           if (captured && captured.length > 0) {
             captured.forEach((entry, i) => {
               if (i === 0) {
-                output.system.push(`[Protocol Gate] Raw user request (verbatim) — the opening request: copy exactly, word for word, into the Raw Request section of the intent KD. Do not paraphrase or summarize. — Message ${i + 1}: ${entry.text}`);
+                output.system.push(`[Protocol Gate] Earliest user message — Message ${i + 1}: ${entry.text} — Classify this message before writing the Raw Request. If it is a task specification addressed to the swarm, copy it verbatim into the Raw Request section of the intent KD, because a paraphrase mangles what downstream agents must execute. If it is a discussion with the Overseer about process, summarize its gist — what is to be done — as the Raw Request and list the message in Triage Notes beside its disposition. A message about the Overseer's conduct or the process state is a disposition only, never request material. Discriminating test: would a downstream agent need these exact words to do its job? Position is a tie-breaker, not the rule — a later message carrying the task specification becomes the Raw Request verbatim and this discussion is triaged.`);
               } else {
-                output.system.push(`[Protocol Gate] Follow-up message — this follow-up arrived after the opening request. Distill it into the Triage Notes section of the intent KD with its disposition. — Message ${i + 1}: ${entry.text}`);
+                output.system.push(`[Protocol Gate] Follow-up message — Message ${i + 1}: ${entry.text} — If this follow-up carries the task specification, that message becomes the Raw Request verbatim; if it is a discussion with the Overseer about process, summarize its gist — what is to be done — as the request and route the message to Triage Notes with its disposition; a message about the Overseer's conduct or the process state is a disposition only, never request material. Discriminating test: would a downstream agent need these exact words to do its job? Position is a tie-breaker, not the rule.`);
               }
             });
           }
