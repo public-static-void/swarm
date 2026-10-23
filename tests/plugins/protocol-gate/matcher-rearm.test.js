@@ -88,13 +88,17 @@ ${table}
   // registry fixture stays legacy-named (generation 0, as the
   // generation-scoped registry lookup expects); only the evidence filename
   // diverges — exactly the skew the strict live-hook matcher choked on.
-  async function writeImplKD(artisan, filePath) {
+  async function writeImplKD(artisan, filePath, content) {
     await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
     await hooks["tool.execute.before"](
       { tool: "write", sessionID: artisan, callID: `c-${Date.now()}` },
-      { args: { filePath, content: "# IMPLEMENTATION SUMMARY (fix)" } }
+      { args: { filePath, content } }
     );
-    createKD(filePath.split("/").pop());
+    createKD(filePath.split("/").pop(), content);
+  }
+
+  function implKD(sessionID, status = "draft") {
+    return `---\ntitle: "IMPLEMENTATION SUMMARY: test"\nversion: 1.0.0\nstatus: ${status}\ntype: impl\nsession_id: "${sessionID}"\nauthor: Artisan\nsuperseded_by: null\n---\n\n# IMPLEMENTATION SUMMARY: test\n`;
   }
 
   it("reopen → canonical rewrite with skewed generation stays open — a pinned rewrite re-checks off with no /phase override", async () => {
@@ -108,7 +112,7 @@ ${table}
     // Canonical rewrite whose embedded generation (gen1) diverges from the
     // persisted lifecycle generation (gen0): the pinned predicate refuses —
     // the row stays in-progress and no phase override is installed.
-    await writeImplKD("m5-rearm-1-art", `knowledge/impl-M5-fix-${s}-gen1.md`);
+    await writeImplKD("m5-rearm-1-art", `knowledge/impl-M5-fix-${s}-gen1.md`, implKD(s));
 
     const refused = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
     expect(refused).toContain("  M5: in-progress");
@@ -117,7 +121,7 @@ ${table}
     expect(readFileSync(join(protocolLogDir, "protocol-gate.log"), "utf8")).toContain("GEN_MISMATCH_SKIP");
 
     // Paired positive: a rewrite at the persisted generation re-checks off.
-    await writeImplKD("m5-rearm-1-art", `knowledge/impl-M5-fix-${s}-gen0.md`);
+    await writeImplKD("m5-rearm-1-art", `knowledge/impl-M5-fix-${s}-gen0.md`, implKD(s));
 
     const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
     expect(content).toContain("  M5: checked-off");
@@ -131,7 +135,7 @@ ${table}
     hooks.sessionPhaseMap.set(`${s}:sid`, s);
     createKD(`milestones-feature-${s}.md`, registryContent([["M5", "in-progress"]]));
 
-    await writeImplKD("m5-rearm-2-art", "knowledge/impl-M5-fix-ses_foreign-gen0.md");
+    await writeImplKD("m5-rearm-2-art", "knowledge/impl-M5-fix-ses_foreign-gen0.md", implKD("ses_foreign"));
 
     const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
     expect(content).toContain("  M5: in-progress");
@@ -144,7 +148,7 @@ ${table}
     hooks.sessionPhaseMap.set(`${s}:sid`, s);
     createKD(`milestones-feature-${s}.md`, registryContent([["M5", "planned"]]));
 
-    await writeImplKD("m5-rearm-3-art", `knowledge/impl-M5-fix-${s}-gen0.md`);
+    await writeImplKD("m5-rearm-3-art", `knowledge/impl-M5-fix-${s}-gen0.md`, implKD(s));
 
     const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
     expect(content).toContain("  M5: planned");
@@ -158,7 +162,7 @@ ${table}
     createKD(`milestones-feature-${s}.md`, registryContent([["M5", "checked-off"]]));
     const draftImpl = `---\ntitle: "IMPLEMENTATION SUMMARY: test"\nversion: 3.0.0\nstatus: draft\ntype: impl\nsession_id: "ses_test"\nauthor: Artisan\nsuperseded_by: null\n---\n\n# IMPLEMENTATION SUMMARY: test\n`;
     const reviewName = `review-fail-${s}.md`;
-    createKD(reviewName, `---\ntitle: "REVIEW: test"\nversion: 1.0.0\nstatus: draft\ntype: review\nsession_id: "ses_test"\nauthor: Inspector\nsuperseded_by: null\nverdict: FAIL\n---\n\n# REVIEW: test\n\n## Verdict\n\nFAIL\n\n## Review Findings\n\n### F001: defect\n\n- **Milestone citation**: impl-M5 defect\n- **Status**: FAIL\n`);
+    createKD(reviewName, `---\ntitle: "REVIEW: test"\nversion: 1.0.0\nstatus: draft\ntype: review\nsession_id: "ses_test"\nauthor: Inspector\nsuperseded_by: null\nverdict: FAIL\nreopen_target: [M5]\n---\n\n# REVIEW: test\n\n## Verdict\n\nFAIL\n\n## Review Findings\n\n### F001: defect\n\n- **Milestone**: M5\n- **Status**: FAIL\n`);
     createKD(`impl-M5-fix-${s}-gen0.md`, draftImpl);
 
     // The FAIL verdict regresses VERIFY→SWARM, reopens M5, and stamps the
@@ -170,14 +174,15 @@ ${table}
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
     expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: in-progress");
 
-    // The fix cycle rewrites canonical draft evidence — the live hook
-    // re-fires and checks the row off.
+    // The fix cycle rewrites canonical draft evidence: the write hook defers,
+    // and the landed bytes promote the row — promotion never precedes landing.
     await hooks["chat.params"]({ sessionID: `${s}-art`, agent: "artisan" }, {});
     await hooks["tool.execute.before"](
       { tool: "write", sessionID: `${s}-art`, callID: "c2" },
       { args: { filePath: `knowledge/impl-M5-fix-${s}-gen0.md`, content: draftImpl } }
     );
     createKD(`impl-M5-fix-${s}-gen0.md`, draftImpl);
+    await hooks["tool.execute.after"]({ tool: "write", sessionID: `${s}-art`, callID: "c2" }, {});
     expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: checked-off");
 
     // Back in VERIFY with the SAME unchanged FAIL verdict: the consumed

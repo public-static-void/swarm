@@ -1504,11 +1504,21 @@ describe("VERIFY evidence shape", () => {
     }
   });
 
-  it("malforms uncited FAIL findings under the stale-PASS recency rule", () => {
+  it("refuses a FAIL with an unusable reopen target under the stale-PASS recency rule", () => {
     for (const content of [inspector, gates, reviewTemplate]) {
-      expect(content).toContain("MALFORMED");
-      expect(content).toMatch(/zero milestone citations/);
+      expect(content).toContain("REOPEN_TARGET_INVALID");
+      expect(content).toMatch(/no-reopen-target/);
       expect(content).toContain("stale PASS");
+    }
+  });
+
+  it("retires the citation mandate from every rule layer that carried it", () => {
+    // The field replaced the prose scan, so a surviving citation demand tells an
+    // Inspector to satisfy a rule the gate no longer reads.
+    for (const content of [inspector, gates, reviewTemplate]) {
+      expect(content).not.toContain("zero milestone citations");
+      expect(content).not.toContain("Milestone citation");
+      expect(content).not.toMatch(/\bMALFORMED\b/);
     }
   });
 
@@ -1559,8 +1569,8 @@ describe("rule layers state their rules self-containedly", () => {
   ];
 
   // The verdict semantics each loading agent needs: the erroneous-verdict
-  // posture, the uncited-FAIL malform, and the stale-PASS recency rule.
-  const VERDICT_FACTS = ["MALFORMED", "zero milestone citations", "stale PASS"];
+  // posture, the refused-target malform, and the stale-PASS recency rule.
+  const VERDICT_FACTS = ["reopen_target", "REOPEN_TARGET_INVALID", "stale PASS"];
 
   const artisanRedispatch = headingRegion(
     readAgent("artisan.md"),
@@ -2106,6 +2116,181 @@ describe("overseer dispatch-discipline anchors", () => {
     const overseer = readAgent("overseer.md");
     expect(overseer).not.toContain("swarm/11");
     expect(overseer).not.toContain("swarm/12");
+  });
+});
+
+// The raw-request rule's axis is the kind of message, not its position: a task
+// specification addressed to the swarm is copied verbatim, a discussion about
+// process becomes its gist, and conduct or status messages are dispositions.
+// Every site is read by section marker rather than by line number, so wording
+// can move while the guard keeps holding. The issue-text rule (`exact-issue-
+// verbatim`) is a different rule and lives outside these sections.
+const VERBATIM_DEMAND = /verbatim|word for word|copy exactly/i;
+const TASK_SPECIFICATION = /task specification/i;
+
+function rawRequestSentences(text) {
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function unqualifiedCopySentences(text) {
+  return rawRequestSentences(text).filter(
+    (sentence) => VERBATIM_DEMAND.test(sentence) && !TASK_SPECIFICATION.test(sentence)
+  );
+}
+
+function sectionBetween(text, startMarker, endMarker) {
+  const start = text.indexOf(startMarker);
+  if (start === -1) return "";
+  if (!endMarker) return text.slice(start);
+  const end = text.indexOf(endMarker, start + startMarker.length);
+  return end === -1 ? text.slice(start) : text.slice(start, end);
+}
+
+// The rationale comment immediately above a code anchor. A code anchor can
+// repeat in the file, so a `preferMarker` selects the block that names the
+// behaviour under guard.
+function commentAbove(text, codeMarker, preferMarker) {
+  const lines = text.split("\n");
+  const isComment = (line) => line.trimStart().startsWith("//");
+  const blocks = [];
+  for (let anchor = 0; anchor < lines.length; anchor++) {
+    if (!lines[anchor].includes(codeMarker)) continue;
+    let start = anchor;
+    while (start > 0 && isComment(lines[start - 1])) start--;
+    const block = lines
+      .slice(start, anchor)
+      .filter(isComment)
+      .map((line) => line.replace(/^\s*\/\/\s?/, ""))
+      .join(" ")
+      .trim();
+    if (block) blocks.push(block);
+  }
+  if (preferMarker) {
+    const preferred = blocks.find((block) => block.includes(preferMarker));
+    if (preferred) return preferred;
+  }
+  return blocks[blocks.length - 1] || "";
+}
+
+function protocolGateSource() {
+  return readRoot(join("plugins", "protocol-gate", "index.js"));
+}
+
+function rawIntentInjectionStrings() {
+  return [...protocolGateSource().matchAll(/`(\[Protocol Gate\][^`]*)`/g)].map((match) => match[1]);
+}
+
+const RAW_REQUEST_SITES = [
+  {
+    id: "S1",
+    file: "skills/template-intent/SKILL.md",
+    text: () =>
+      sectionBetween(readRoot(join("skills", "template-intent", "SKILL.md")), "<!-- Template has no decision points", "-->"),
+  },
+  {
+    id: "S2",
+    file: "skills/template-intent/SKILL.md",
+    text: () =>
+      sectionBetween(readRoot(join("skills", "template-intent", "SKILL.md")), "## Raw Request", "## Triage Notes"),
+  },
+  {
+    id: "S3",
+    file: "agents/overseer.md",
+    text: () => sectionBetween(readAgent("overseer.md"), "### Entry Point", "### Knowledge Gate Auto-Injection"),
+  },
+  {
+    id: "S4",
+    file: "plugins/protocol-gate/phases.js",
+    text: () => protocolPhases.PHASE_INSTRUCTIONS.INTENT,
+  },
+  {
+    id: "S5",
+    file: "plugins/protocol-gate/index.js",
+    text: () => rawIntentInjectionStrings().find((string) => string.includes("Earliest user message")) || "",
+  },
+  {
+    id: "S6",
+    file: "plugins/protocol-gate/index.js",
+    text: () =>
+      rawIntentInjectionStrings().find((string) => string.includes("[Protocol Gate] Follow-up message")) || "",
+  },
+];
+
+describe("raw-request discriminator", () => {
+  it("states the three classes and the discriminating test at every site", () => {
+    for (const site of RAW_REQUEST_SITES) {
+      const text = site.text();
+      expect(text, `${site.id} not found in ${site.file}`).not.toBe("");
+      expect(text, site.id).toMatch(TASK_SPECIFICATION);
+      expect(text, site.id).toMatch(/discussion with (?:the Overseer|you) about process|discussion about process/i);
+      expect(text, site.id).toContain("Triage Notes");
+      expect(text, site.id).toMatch(/disposition/i);
+      expect(text, site.id).toContain("would a downstream agent need these exact words to do its job");
+    }
+  });
+
+  it("demands a copy only inside the task-specification branch", () => {
+    for (const site of RAW_REQUEST_SITES) {
+      const text = site.text();
+      expect(text, site.id).toMatch(VERBATIM_DEMAND);
+      expect(unqualifiedCopySentences(text), site.id).toEqual([]);
+      expect(text, site.id).not.toContain("Raw user request (verbatim)");
+      expect(text, site.id).not.toContain("Do not paraphrase or summarize");
+    }
+  });
+
+  it("keeps position a tie-breaker and lets a later message become the request", () => {
+    for (const site of RAW_REQUEST_SITES) {
+      expect(site.text(), site.id).toMatch(/tie-breaker/i);
+    }
+  });
+
+  it("S7 states the semantic rule and carries no positional copy demand", () => {
+    const rationale = commentAbove(protocolGateSource(), "if (phase === STATES.INTENT && sessionID)", "raw-intent injection");
+    expect(rationale).not.toBe("");
+    expect(rationale).toMatch(TASK_SPECIFICATION);
+    expect(rationale).toMatch(/not its position|tie-breaker/i);
+    expect(rationale).toContain("Triage Notes");
+    expect(rationale).not.toMatch(/only entry 0/i);
+    expect(unqualifiedCopySentences(rationale)).toEqual([]);
+  });
+});
+
+// The issue-text rule is a different rule: a dispatch quotes the triggering
+// issue word for word. It and its anchor stay byte-identical, so a global
+// verbatim sweep can never be mistaken for the raw-request guard.
+describe("issue-text verbatim anchor untouched", () => {
+  const ISSUE_TEXT_SENTENCE =
+    "Quote the triggering issue in exact-issue-verbatim form and cite it by title rather than number, so the scope carries the requester's words with no store-number close hazard.";
+
+  it("keeps the issue-text sentence byte-identical", () => {
+    expect(readAgent("overseer.md")).toContain(ISSUE_TEXT_SENTENCE);
+  });
+
+  it("keeps the dispatch-discipline anchor list byte-identical", () => {
+    // Read the anchor array out of the guard that owns it, so the expected
+    // list below cannot satisfy itself from this file's own text.
+    const source = readRoot(join("tests", "config-guard.test.js"));
+    const block = sectionBetween(source, 'it("carries the dispatch-shape and phrasing anchors"', "});");
+    expect(block).not.toBe("");
+    const match = block.match(/for \(const anchor of (\[[^\]]*\])\)/);
+    expect(match).not.toBeNull();
+    expect(match[1]).toBe(
+      '["WHAT-only", "diagnose-first", "cleanup-if-required", "expert-tone", "exact-issue-verbatim"]'
+    );
+  });
+
+  it("scopes the raw-request guard away from the issue-text rule", () => {
+    // The sentence carries a verbatim demand and no task-specification token,
+    // so only the section scope keeps the raw-request guard off it.
+    expect(ISSUE_TEXT_SENTENCE).toMatch(/verbatim/i);
+    expect(ISSUE_TEXT_SENTENCE).not.toMatch(TASK_SPECIFICATION);
+    for (const site of RAW_REQUEST_SITES) {
+      expect(site.text(), site.id).not.toContain("exact-issue-verbatim");
+    }
   });
 });
 

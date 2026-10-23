@@ -29,6 +29,7 @@
 // the log. Write/mkdir failures are counted via getDroppedLogCount() and
 // surfaced in the enablement state — never silently dropped, never stderr.
 import { execFileSync } from "child_process";
+import { createHash } from "crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -641,26 +642,44 @@ function evaluatePhaseOverrideBrake(sessionID, argText) {
   }
   return { allowed: true, engaged: true, consecutiveCount: first.count, milestoneId: first.milestoneId, fingerprint: first.fingerprint, diagnosis, escalation };
 }
-// Full-walk pre-validation for a /phase override queue. Checks two classes in
+// Phase hops that are producible without a subagent dispatch: INTENT is
+// written by the Overseer itself, and REPORT is the terminal hop — nothing
+// follows it. Every other live phase must be reachable through a subagent
+// dispatch or the walk would commit a hop no agent can ever satisfy.
+const WALK_PRODUCER_PATHS = Object.freeze({
+  [STATES.INTENT]: "overseer-write",
+  [STATES.REPORT]: "lifecycle-end"
+});
+
+// Full-walk pre-validation for a /phase override queue. Checks four classes in
 // order and reports the first unsatisfiable hop:
+//   0. hop-after-terminal — REPORT is the last hop a walk may name;
 //   1. scope — every hop resolves to a phase carrying a tool-scope entry, so
 //      the walk never lands where no tool contract is documented;
 //   2. gate-type — every hop resolves to a phase with a known advancement
 //      gate (KD prefix, dual-KD, or verdict gate), so the walk never lands
-//      where no evidence check can run.
+//      where no evidence check can run;
+//   3. not-producible — every hop is reachable by an agent (a subagent dispatch
+//      or one of the two documented producer paths), so the walk never names a
+//      hop nothing can complete.
 // Connectivity is deliberately NOT checked: a multi-phase argument is a
 // forward plan, and the user's ordering wins — an ordered list is traversed as
 // given, so the walk is never rejected for being "not backward". Returns null
 // when the whole walk is committable, or { from, to, reason } with reason one
-// of "scope" | "gate-type". The second parameter is retained so the
-// test-access signature stays stable; the walk no longer consults the
-// backward-transition graph. The scope/gate tables are injectable for unit
-// tests; defaults are the live gate tables.
+// of "hop-after-terminal" | "scope" | "gate-type" | "not-producible". The
+// second parameter is retained so the test-access signature stays stable; the
+// walk no longer consults the backward-transition graph. The scope/gate tables
+// are injectable for unit tests; defaults are the live gate tables.
 function validateMultiPhaseWalk(phases, currentPhase, _backwardTransitions, overrides) {
   const tables = overrides || {};
   const allowlist = tables.toolAllowlist || TOOL_ALLOWLIST;
   const prefixes = tables.gatePrefixes || KD_TYPE_PREFIXES;
   const hops = Array.isArray(phases) ? phases : [phases];
+  // REPORT ends the lifecycle — no hop may follow it.
+  const reportAt = hops.indexOf(STATES.REPORT);
+  if (reportAt !== -1 && reportAt !== hops.length - 1) {
+    return { from: hops[reportAt], to: hops[reportAt + 1], reason: "hop-after-terminal" };
+  }
   for (let i = 0; i < hops.length; i++) {
     if (!allowlist[getPhaseName(hops[i])]) {
       return { from: i === 0 ? currentPhase : hops[i - 1], to: hops[i], reason: "scope" };
@@ -675,18 +694,32 @@ function validateMultiPhaseWalk(phases, currentPhase, _backwardTransitions, over
       return { from: i === 0 ? currentPhase : hops[i - 1], to: hops[i], reason: "gate-type" };
     }
   }
+  for (let i = 0; i < hops.length; i++) {
+    const tools = allowlist[getPhaseName(hops[i])] || [];
+    if (tools.includes("subagent")) continue;
+    if (WALK_PRODUCER_PATHS[hops[i]]) continue;
+    return { from: i === 0 ? currentPhase : hops[i - 1], to: hops[i], reason: "not-producible" };
+  }
   return null;
 }
 
-// Renders a rejected walk as a fail-closed error string. Scope and gate-type
-// rejections name the hop and the reason class; any unrecognized reason class
-// fails closed with a generic message (the walk is never silently committed).
+// Renders a rejected walk as a fail-closed error string. Scope, gate-type,
+// structural and producibility rejections each name the hop and the reason
+// class; any unrecognized reason class fails closed with a generic message (the
+// walk is never silently committed).
 function describeRejectedWalk(rejected) {
   const name = (p) => `${getPhaseName(p)} (${p})`;
+  if (rejected.reason === "hop-after-terminal") {
+    return `Error: phase ${name(rejected.to)} follows REPORT — REPORT is the terminal hop and ends the walk.`;
+  }
   if (rejected.reason === "scope") return `Error: phase ${name(rejected.to)} carries no tool scope — the walk cannot be committed.`;
   if (rejected.reason === "gate-type") return `Error: phase ${name(rejected.to)} has no advancement gate — the walk cannot be committed.`;
+  if (rejected.reason === "not-producible") {
+    return `Error: phase ${name(rejected.to)} is not producible — no agent writes its evidence, so the hop can never complete.`;
+  }
   return `Error: the override walk is not committable — phase ${name(rejected.to)} was rejected (${rejected.reason}).`;
 }
+
 
 // Stall probe: whether the head hop of a committed multi-phase queue has
 // earned any fresh KD evidence (a session- and generation-matching file under
@@ -695,7 +728,8 @@ function describeRejectedWalk(rejected) {
 // nothing was abandoned, never advanced through.
 function queueHeadHasFreshEvidence(sessionPhaseMap, sessionID, marker) {
   if (!marker || !Array.isArray(marker.phases) || marker.phases.length === 0) return false;
-  if (typeof marker.since !== "number") return false;
+  const anchor = typeof marker.hopSince === "number" ? marker.hopSince : marker.since;
+  if (typeof anchor !== "number") return false;
   const prefixes = getPrefixes(marker.phases[0]);
   if (prefixes.length === 0) return false;
   let files = [];
@@ -711,7 +745,7 @@ function queueHeadHasFreshEvidence(sessionPhaseMap, sessionID, marker) {
     if (!matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation)) return false;
     const fl = f.toLowerCase();
     if (!lowered.some((p) => fl.startsWith(`${p}-`))) return false;
-    return getFileMtimeMs(join(knowledgeDir, f)) >= marker.since;
+    return getFileMtimeMs(join(knowledgeDir, f)) >= anchor;
   });
 }
 
@@ -941,6 +975,52 @@ function gateRecord(msg) {
   }
 }
 
+// Structured gate record: `<TOKEN>: key=value … cause=<free text>` — one line
+// per event, values space-free except the trailing free-text cause, so an
+// operator greps a token and reads its fields without parsing prose.
+// `dedupeKey` makes the emission once-per-event instead of once-per-evaluation:
+// the gate re-runs promotion and stamp settlement on every tool call, and a
+// repeated evaluation of unchanged state must add no line. Keys are released
+// when the milestone row re-closes (releaseGateRecordKeys), so a later
+// reopen → fix cycle is recorded again rather than silenced by the earlier one.
+const _gateRecordKeys = new Set();
+
+// Milestone tag shared by every dedupe key, case-normalized so a row id and the
+// token parsed out of an impl-KD filename ("m-obs" vs "M-obs") release each
+// other's keys.
+function gateRecordMilestoneTag(milestoneId) {
+  return `m:${String(milestoneId).toUpperCase()}|`;
+}
+
+function gateRecordEvent(token, fields, cause, dedupeKey) {
+  if (dedupeKey) {
+    if (_gateRecordKeys.has(dedupeKey)) return false;
+    _gateRecordKeys.add(dedupeKey);
+  }
+  const rendered = fields.map(([k, v]) => `${k}=${v}`).join(" ");
+  gateRecord(cause ? `${token}: ${rendered} cause=${cause}` : `${token}: ${rendered}`);
+  return true;
+}
+
+function releaseGateRecordKeys(milestoneId) {
+  const tag = gateRecordMilestoneTag(milestoneId);
+  for (const key of [..._gateRecordKeys]) {
+    if (key.includes(tag)) _gateRecordKeys.delete(key);
+  }
+}
+
+// Prose-record variant of gateRecord: same human-readable line, emitted once per
+// (token, milestone, artifact set). The stale/superseded probes and the
+// remediation path re-run on every tool call, so an unchanged stuck row would
+// otherwise repeat its diagnosis once per call; the key carries the milestone
+// tag so a successful re-close releases it (releaseGateRecordKeys).
+function gateRecordOnce(msg, dedupeKey) {
+  if (_gateRecordKeys.has(dedupeKey)) return false;
+  _gateRecordKeys.add(dedupeKey);
+  gateRecord(msg);
+  return true;
+}
+
 // Git-repo bootstrap guard — guarantees the workspace is a git repo before any
 // lifecycle phase runs, so the lifecycle's first git-dependent operation
 // (PREFLIGHT branch creation) always has a repo to work in. Runs at server()
@@ -1140,12 +1220,25 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
     // evaluation would instantly re-check-off the row from the stale impl KD
     // the Inspector just found deficient.
     if (opts.reopen && current === "checked-off") {
-      supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId);
-      // Attributable reopen: every genuine checked-off → in-progress
-      // reopen is announced loudly with its trigger — the citing review KD for
-      // citation-driven reopens, the dispatch event for SWARM re-dispatches —
-      // so mid-cycle registry changes are explainable in the transcript.
-      loud(`REOPEN: milestone ${milestoneId} checked-off → in-progress — trigger: ${opts.trigger || "unattributed"}`);
+      const invalidated = supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId);
+      // Always-on reopen record: milestone, the artifacts this reopen
+      // invalidated, and the cause. The record carries the stamped set the
+      // supersede call just produced — recomputing it here would report a
+      // different (already-stamped) set.
+      gateRecordEvent("REOPEN", [
+        ["session", sessionID],
+        ["milestone", milestoneId],
+        ["artifact", invalidated.length > 0 ? invalidated.join(",") : "none"]
+      ], opts.trigger || "unattributed");
+    }
+    // A row returning to checked-off starts a fresh record epoch: the
+    // settlement/promotion keys from the previous pass belong to that pass, and
+    // a later reopen → fix cycle must be recorded rather than deduped. Its
+    // stamp snapshots are dropped for the same reason — a settled row has no
+    // outstanding stamp to clear.
+    if (finalState === "checked-off") {
+      releaseGateRecordKeys(milestoneId);
+      clearStampSnapshotsForMilestone(sessionPhaseMap, sessionID, milestoneId);
     }
     debug(`Registry ${located.path}: ${milestoneId} ${current} → ${finalState} (session ${sessionID})`);
     return { ok: true, path: located.path, changed: true };
@@ -1289,21 +1382,174 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   return found || null;
 }
 
-// Reads a frontmatter status from KD text and reports whether it marks the
-// KD superseded. Pure over the string — the disk-reading wrapper below and
-// the write-hook check-off (which fires before the runtime materializes the
-// file, so only the incoming content is available) share this one parse, so
-// registry promotion and the cross-check agree on what counts as stale.
-// Fail-open: text without a parsable status counts as live, preserving the
-// behavior for KDs written without frontmatter.
+// --- Liveness allowlist (IC-1) ---
+// An artifact counts as completion evidence only when its declared frontmatter
+// `status` normalizes into this set. Frozen and exported because it is the one
+// admission vocabulary: a status word must never mean "evidence" on one gate
+// path and "stale" on another. `superseded` is deliberately absent — it is the
+// stamp a reopen puts on invalidated work.
+const LIVE_STATUSES = Object.freeze(["draft", "review", "approved", "amended"]);
+const STALE_STATUS = "superseded";
+
+// Locates the leading frontmatter block and reports where its body sits, so a
+// rewrite can replace frontmatter lines without reflowing a single body byte.
+// A leading UTF-8 BOM is stripped for the match but retained in `bom`, and
+// CRLF/LF inputs match identically — normalization happens exactly once here
+// (FR-02), never again in a consumer.
+function frontmatterSpan(content) {
+  const bom = content.charCodeAt(0) === 0xfeff ? "\ufeff" : "";
+  const text = bom ? content.slice(1) : content;
+  const match = text.match(/^---[ \t]*\r?\n([\s\S]*?)\r?\n---(?:[ \t]*\r?\n|$)/);
+  if (!match) return null;
+  const bodyStart = text.indexOf("\n") + 1;
+  return { bom, text, body: match[1], bodyStart, bodyEnd: bodyStart + match[1].length };
+}
+
+// Normalizes one declared value: drop a trailing `#` comment, trim, strip a
+// surrounding quote pair, lowercase. A value that is empty after this is
+// indistinguishable from an omitted status.
+function normalizeDeclaredStatus(raw) {
+  let value = String(raw ?? "").replace(/[ \t]+#.*$/, "").trim();
+  const quoted = value.match(/^"([\s\S]*)"$/) || value.match(/^'([\s\S]*)'$/);
+  if (quoted) value = quoted[1].trim();
+  return value.toLowerCase();
+}
+
+// The single liveness parse (FR-01..FR-04). Pure over the string, so the
+// write-hook (which sees incoming bytes before the runtime materializes the
+// file) and the disk-reading wrapper below reach the same verdict from the
+// same input. Fail-closed: only an allowlisted declared status is live.
+// `declared` is the normalized value; `raw` keeps what was written for records.
+function evaluateLiveness(content) {
+  if (typeof content !== "string" || content.trim().length === 0) {
+    return { live: false, declared: null, raw: null, reason: "empty-content" };
+  }
+  const span = frontmatterSpan(content);
+  if (!span) return { live: false, declared: null, raw: null, reason: "unparsable-frontmatter" };
+  const raws = [...span.body.matchAll(/^[ \t]*status[ \t]*:[ \t]*(.*)$/gim)].map(m => m[1]);
+  if (raws.length === 0) return { live: false, declared: null, raw: null, reason: "absent-status" };
+  // Two declarations cannot both govern the artifact — refuse rather than pick.
+  if (raws.length > 1) return { live: false, declared: null, raw: null, reason: "ambiguous-status" };
+  const raw = raws[0].trim();
+  const declared = normalizeDeclaredStatus(raw);
+  if (declared.length === 0) return { live: false, declared: null, raw, reason: "absent-status" };
+  if (LIVE_STATUSES.includes(declared)) return { live: true, declared, raw, reason: null };
+  return {
+    live: false,
+    declared,
+    raw,
+    reason: declared === STALE_STATUS ? "stale-status" : "unknown-status"
+  };
+}
+
+// File-level wrapper: adds the `missing-file` verdict an unreadable artifact
+// needs and emits the always-on rejection record, because only here is the path
+// known. A repeated evaluation of the same path emits nothing (NFR-02), keyed
+// on path + declared + reason so a different declared value still reports.
+function evaluateLivenessFile(knowledgeDir, filename) {
+  let content;
+  try {
+    content = readFileSync(join(knowledgeDir, filename), "utf8");
+  } catch (_) {
+    recordLivenessRejection(join(knowledgeDir, filename), null, "missing-file");
+    return { live: false, declared: null, raw: null, reason: "missing-file" };
+  }
+  const verdict = evaluateLiveness(content);
+  if (!verdict.live) recordLivenessRejection(join(knowledgeDir, filename), verdict.declared, verdict.reason);
+  return verdict;
+}
+
+// Always-on rejection record (AC-06). Values stay space-free: the declared
+// status is recorded in its normalized form, `<absent>` when no status parsed.
+function recordLivenessRejection(path, declared, reason) {
+  gateRecordEvent("LIVENESS_REJECTED", [
+    ["path", path],
+    ["declared", declared || "<absent>"],
+    ["reason", reason]
+  ], null, `LIVENESS_REJECTED|${path}|d:${declared || "<absent>"}|r:${reason}`);
+}
+
+// Legacy predicate name, redefined on the one parse (FR-04): a caller asking
+// "is this stale" gets exactly the negation of "is this live", never a second
+// status vocabulary.
 function isStaleImplKDContent(content) {
-  if (typeof content !== "string" || content.length === 0) return false;
-  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
-  if (!fence) return false;
-  const status = fence[1].match(/^\s*status\s*:\s*("([^"]*)"|'([^']*)'|([^\s#\r\n]+))/im);
-  if (!status) return false;
-  const value = (status[2] ?? status[3] ?? status[4] ?? "").trim().toLowerCase();
-  return value === "superseded";
+  return !evaluateLiveness(content).live;
+}
+
+// Labels an evidence artifact with an allowlisted status (FR-14 M2). The
+// frontmatter block is created when absent and only the status line changes
+// when present — every other byte, body included, survives. Never rejects,
+// deletes or demotes: the caller chooses `amended` for an artifact whose pass a
+// FAIL invalidated and `draft` otherwise. An artifact the allowlist already
+// admits is left untouched, so labelling cannot downgrade a reviewed or approved
+// artifact to draft. A non-allowlisted target is refused rather than written, so
+// labelling can never introduce a new stale stamp.
+function labelEvidenceStatus(content, status) {
+  const target = String(status || "").trim().toLowerCase();
+  if (typeof content !== "string" || !LIVE_STATUSES.includes(target)) return { content, changed: false };
+  if (evaluateLiveness(content).live) return { content, changed: false };
+  const span = frontmatterSpan(content);
+  if (!span) {
+    const rest = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+    return { content: `---\nstatus: ${target}\n---\n${rest}`, changed: true };
+  }
+  const hasStatus = /^[ \t]*status[ \t]*:/im.test(span.body);
+  const body = hasStatus
+    ? span.body.replace(/^[ \t]*status[ \t]*:.*$/im, `status: ${target}`)
+    : `status: ${target}\n${span.body}`;
+  if (body === span.body) return { content, changed: false };
+  return {
+    content: `${span.bom}${span.text.slice(0, span.bodyStart)}${body}${span.text.slice(span.bodyEnd)}`,
+    changed: true
+  };
+}
+
+// Relative paths of every `.md` under a knowledge root, so the audit population
+// is the whole tree rather than the top level: issue, memory and project records
+// sit in subdirectories beside lifecycle evidence, and an audit that stopped at
+// the top level would leave those unexamined. Depth is bounded because the audit
+// runs by hand, and an unbounded walk over a symlinked tree never terminates.
+function collectMarkdownPaths(root, rel = "", depth = 0) {
+  if (depth > 4) return [];
+  let entries = [];
+  try { entries = readdirSync(join(root, rel), { withFileTypes: true }); } catch (_) { return []; }
+  const found = [];
+  for (const entry of entries) {
+    const child = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      found.push(...collectMarkdownPaths(root, child, depth + 1));
+    } else if (entry.isFile() && /\.md$/i.test(entry.name)) {
+      found.push(child);
+    }
+  }
+  return found;
+}
+
+// M1 audit (FR-14): reports every artifact under `knowledge/` the allowlist
+// rejects, without gating anything. Retained as an exported seam so the audit is
+// re-runnable on a later tree — admission is already the allowlist, so this never
+// runs on the hot path. One line per artifact: the strict token already says the
+// artifact is refused, so a second LIVENESS_REJECTED line would double-count the
+// same event.
+function auditStrictLivenessWouldReject(knowledgeDir) {
+  const rejected = [];
+  for (const rel of collectMarkdownPaths(knowledgeDir)) {
+    let content;
+    try {
+      content = readFileSync(join(knowledgeDir, rel), "utf8");
+    } catch (_) {
+      continue;
+    }
+    const verdict = evaluateLiveness(content);
+    if (verdict.live) continue;
+    rejected.push({ path: rel, declared: verdict.declared, reason: verdict.reason });
+    gateRecordEvent("LIVENESS_STRICT_WOULD_REJECT", [
+      ["path", rel],
+      ["declared", verdict.declared || "<absent>"],
+      ["reason", verdict.reason]
+    ], null, `LIVENESS_STRICT_WOULD_REJECT|${join(knowledgeDir, rel)}|d:${verdict.declared || "<absent>"}|r:${verdict.reason}`);
+  }
+  return rejected;
 }
 
 // Shared staleness predicate for milestone completion evidence: a
@@ -1323,33 +1569,19 @@ function isLiveMilestoneEvidence(knowledgeDir, filename, sessionID, milestoneId,
 
 // Fail-closed readability gate for the pinned evidence path: a file whose
 // bytes cannot be read is not evidence — it never promotes (it is named by
-// the GEN_MISMATCH_SKIP diagnostic instead). Readable files without a
-// frontmatter fence keep the long-standing live default, so KDs written
-// without frontmatter still count; only the superseded stamp disqualifies.
+// the GEN_MISMATCH_SKIP diagnostic instead). The liveness allowlist decides;
+// a KD written without frontmatter is no longer live, which is what makes the
+// labelling migration mandatory for pre-existing evidence.
 function isLiveEvidenceFile(knowledgeDir, filename) {
-  let content;
-  try {
-    content = readFileSync(join(knowledgeDir, filename), "utf8");
-  } catch (_) {
-    return false;
-  }
-  return !isStaleImplKDContent(content);
+  return evaluateLivenessFile(knowledgeDir, filename).live;
 }
 
-// Reads the leading frontmatter block of a knowledge KD and reports whether
-// its `status` field marks it superseded. Canonical impl-KD filenames are
-// stable identifiers, so staleness lives in the frontmatter rather than in a
-// filename suffix. Fail-open: files that cannot be read or carry no parsable
-// frontmatter count as live evidence, preserving the behavior for KDs written
-// without frontmatter.
+// Reads the leading frontmatter block of a knowledge KD and reports whether the
+// allowlist refuses it. Canonical impl-KD filenames are stable identifiers, so
+// staleness lives in the frontmatter rather than in a filename suffix. Shares
+// the one parse with isLiveEvidenceFile — the two can never disagree.
 function isSupersededByFrontmatter(knowledgeDir, filename) {
-  let content;
-  try {
-    content = readFileSync(join(knowledgeDir, filename), "utf8");
-  } catch (_) {
-    return false;
-  }
-  return isStaleImplKDContent(content);
+  return !evaluateLivenessFile(knowledgeDir, filename).live;
 }
 
 // Snapshots the on-disk impl KD behind an incoming write, so the write-hook
@@ -1369,7 +1601,7 @@ function readImplKDSnapshot(relPath, writerSessionID) {
   } catch (_) {
     return null;
   }
-  return { dir, base, content, stale: isStaleImplKDContent(content) };
+  return { dir, base, content, stale: !evaluateLiveness(content).live };
 }
 
 // Stamps a canonical impl KD as superseded in place. The filename never
@@ -1400,38 +1632,103 @@ function stampImplKDSuperseded(knowledgeDir, filename, milestoneId) {
   debug(`supersede: stale impl KD ${filename} stamped superseded in place (milestone ${milestoneId} re-opened)`);
 }
 
-// Clears a frontmatter superseded stamp in KD text, restoring the KD to a
-// live draft that supersedes the invalidated pass. Pure over the string so
-// both the post-write hook (landed bytes on disk) and the explicit
-// remediation path (stamped files already on disk) share one rewrite: only
-// the `status` line flips to draft and `superseded_by` records the pointer to
-// the invalidated pass — every other frontmatter line and the body survive
-// byte-identical, so the fix-up content the artisan just landed is preserved.
-// Returns { content, cleared, lineageSet }: cleared is true only when a
-// superseded status was present; lineageSet reports whether superseded_by
-// carries a non-null pointer afterwards. Fail-closed: text without a
-// superseded frontmatter status returns unchanged with cleared=false.
-function clearSupersededStampContent(content, pointer) {
-  if (typeof content !== "string" || content.length === 0) return { content, cleared: false, lineageSet: false };
-  if (!isStaleImplKDContent(content)) {
-    const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(\s*\r?\n|$)/);
-    if (!fence) return { content, cleared: false, lineageSet: false };
-    const hasPointer = /^\s*superseded_by\s*:.*$/im.test(fence[1]) && !/^\s*superseded_by\s*:\s*(null|~)?\s*$/im.test(fence[1]);
-    if (hasPointer) return { content, cleared: false, lineageSet: true };
-    const body = /^\s*superseded_by\s*:.*$/im.test(fence[1])
-      ? fence[1].replace(/^\s*superseded_by\s*:.*$/im, `superseded_by: ${pointer}`)
-      : `${fence[1]}\nsuperseded_by: ${pointer}`;
-    return { content: `---\n${body}\n---${fence[2]}${content.slice(fence[0].length)}`, cleared: false, lineageSet: true };
+// Rewrites KD text into the sanctioned post-reopen state (FR-05): a
+// frontmatter `superseded` stamp becomes `status: amended`, and
+// `superseded_by` records the canonical basename of the invalidated pass.
+// An author-written `amended` (or any other live status) is accepted as-is and
+// only gains the lineage field. Pure over the string so the landed-bytes path
+// and the audit-remediation path share one rewrite; every other frontmatter
+// line and the whole body survive byte-identical, so the fix-up content the
+// artisan landed is preserved.
+// Returns { content, cleared, lineageSet, refused }: cleared is true only when
+// the gate flipped its own stale stamp; refused is true when the text is not
+// in a state the gate may amend (no frontmatter, or a non-live status that is
+// not the stale stamp) — the caller declines with `unparsable-frontmatter`
+// rather than inventing a status.
+function amendStampContent(content, pointer) {
+  if (typeof content !== "string" || content.trim().length === 0) {
+    return { content, cleared: false, lineageSet: false, refused: true };
   }
-  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(\s*\r?\n|$)/);
-  if (!fence) return { content, cleared: false, lineageSet: false };
-  let body = fence[1].replace(/^\s*status\s*:.*$/im, "status: draft");
-  if (/^\s*superseded_by\s*:.*$/im.test(body)) {
-    body = body.replace(/^\s*superseded_by\s*:.*$/im, `superseded_by: ${pointer}`);
-  } else {
-    body = `${body}\nsuperseded_by: ${pointer}`;
+  const span = frontmatterSpan(content);
+  if (!span) return { content, cleared: false, lineageSet: false, refused: true };
+  const verdict = evaluateLiveness(content);
+  if (!verdict.live && verdict.reason !== "stale-status") {
+    return { content, cleared: false, lineageSet: false, refused: true };
   }
-  return { content: `---\n${body}\n---${fence[2]}${content.slice(fence[0].length)}`, cleared: true, lineageSet: true };
+  const withLineage = (body) => (/^[ \t]*superseded_by[ \t]*:/im.test(body)
+    ? body.replace(/^[ \t]*superseded_by[ \t]*:.*$/im, `superseded_by: ${pointer}`)
+    : `${body}\nsuperseded_by: ${pointer}`);
+  const build = (body) => ({
+    content: `${span.bom}${span.text.slice(0, span.bodyStart)}${body}${span.text.slice(span.bodyEnd)}`,
+    cleared: verdict.reason === "stale-status",
+    lineageSet: true,
+    refused: false
+  });
+  if (verdict.reason === "stale-status") {
+    return build(withLineage(span.body.replace(/^[ \t]*status[ \t]*:.*$/im, "status: amended")));
+  }
+  // Already live: only the lineage field is written, and only when it is
+  // missing or null — an author's existing pointer is never overwritten.
+  const hasPointer = /^[ \t]*superseded_by[ \t]*:/im.test(span.body)
+    && !/^[ \t]*superseded_by[ \t]*:[ \t]*(null|~)?[ \t]*$/im.test(span.body);
+  if (hasPointer) return { content, cleared: false, lineageSet: true, refused: false };
+  return build(withLineage(span.body));
+}
+
+// --- Stamp snapshots (IC-2) ---
+// The reopen stamps an artifact in place, so "has new work landed since the
+// stamp" is a content question, not an mtime one. A sha256 digest of the
+// stamped bytes is recorded into persisted session state at reopen and removed
+// once the artifact settles or its row returns to checked-off. A restart that
+// loses the digest declines with `no-stamp-snapshot` rather than promoting over
+// a stamp the gate cannot recognise.
+function digestContent(content) {
+  return createHash("sha256").update(typeof content === "string" ? content : String(content ?? ""), "utf8").digest("hex");
+}
+
+function stampSnapshotKey(milestoneId, base) {
+  return `${milestoneId}|${base}`;
+}
+
+function getStampSnapshots(sessionPhaseMap, sessionID, create = false) {
+  const key = `${sessionID}:stampSnapshots`;
+  let snapshots = sessionPhaseMap.get(key);
+  if ((!snapshots || typeof snapshots !== "object") && create) {
+    snapshots = {};
+    sessionPhaseMap.set(key, snapshots);
+  }
+  return snapshots && typeof snapshots === "object" ? snapshots : null;
+}
+
+function dropStampSnapshot(sessionPhaseMap, sessionID, milestoneId, base) {
+  const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
+  if (!snapshots) return;
+  delete snapshots[stampSnapshotKey(milestoneId, base)];
+}
+
+// A row returning to checked-off closes the stamp epoch for its milestone —
+// whatever chance of settlement remained belongs to a pass that is over.
+function clearStampSnapshotsForMilestone(sessionPhaseMap, sessionID, milestoneId) {
+  const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
+  if (!snapshots) return;
+  const prefix = `${String(milestoneId).toUpperCase()}|`;
+  for (const key of Object.keys(snapshots)) {
+    if (key.toUpperCase().startsWith(prefix)) delete snapshots[key];
+  }
+}
+
+// saveState is closure-scoped inside server(); the reopen path that records a
+// digest is module-level. The persister rides on the map itself so a digest
+// reaches disk at the moment it is recorded — and so a second server instance
+// in the same process can never persist the wrong lifecycle's map.
+function persistSessionState(sessionPhaseMap, sessionID) {
+  const persist = sessionPhaseMap && typeof sessionPhaseMap.persist === "function" ? sessionPhaseMap.persist : null;
+  if (!persist) return false;
+  try {
+    return persist(sessionID) !== false;
+  } catch (_) {
+    return false;
+  }
 }
 
 // Re-opening a checked-off milestone invalidates its prior completion
@@ -1440,13 +1737,19 @@ function clearSupersededStampContent(content, pointer) {
 // evaluation. Staleness is recorded ON DISK by stamping the milestone's
 // same-session impl KDs (any embedded generation) as superseded in their
 // frontmatter — filenames stay canonical, so the evidence linkage keyed on
-// stable names cannot orphan. Stamps survive restarts — plugins load once per
+// Stable names cannot orphan. Stamps survive restarts — plugins load once per
 // process, so no in-memory epoch marker would. Best-effort: a failed stamp
 // leaves the file in place and is logged.
+// Each stamped file also gets its post-stamp digest recorded in session state
+// (IC-2), which is what lets settlement later prove the rewrite carried new
+// work instead of trusting a transport or a timestamp.
+// Returns the canonical filenames this call stamped, so the caller can record
+// exactly which artifacts it invalidated instead of re-deriving the set.
 function supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId) {
   const knowledgeDir = getKnowledgeDir(sessionID);
+  const stamped = [];
   let files = [];
-  try { files = readdirSync(knowledgeDir); } catch (_) { return; }
+  try { files = readdirSync(knowledgeDir); } catch (_) { return stamped; }
   const prefix = `impl-${milestoneId}-`;
   for (const f of files) {
     if (!f.toLowerCase().startsWith(prefix.toLowerCase())) continue;
@@ -1454,10 +1757,23 @@ function supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId) {
     if (isSupersededByFrontmatter(knowledgeDir, f)) continue;
     try {
       stampImplKDSuperseded(knowledgeDir, f, milestoneId);
+      stamped.push(f);
     } catch (e) {
       debug(`supersede: stamp failed for ${f}: ${e.message}`);
     }
   }
+  if (stamped.length > 0) {
+    const snapshots = getStampSnapshots(sessionPhaseMap, sessionID, true);
+    for (const f of stamped) {
+      try {
+        snapshots[stampSnapshotKey(milestoneId, f)] = digestContent(readFileSync(join(knowledgeDir, f), "utf8"));
+      } catch (e) {
+        debug(`supersede: digest failed for ${f}: ${e.message}`);
+      }
+    }
+    persistSessionState(sessionPhaseMap, sessionID);
+  }
+  return stamped;
 }
 
 // Scoped stale-KD removal predicate and operator (swarm/50 C-SCOPED-DELETE).
@@ -1477,18 +1793,20 @@ function supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId) {
 //       renamed `.superseded.md` provenance is never removed by this path.
 //   (b) the embedded session marker equals the active lifecycle session.
 //   (c) the embedded generation differs from the persisted lifecycle
-//       generation, OR the frontmatter status is stamped superseded.
+//       generation, OR the artifact is not live under the liveness allowlist.
 //   (d) live-generation evidence never qualifies: a file whose generation
-//       equals the persisted generation with a live frontmatter status is
-//       refused deletion (predicate-level impossibility).
+//       equals the persisted generation and whose frontmatter is live is
+//       refused deletion (predicate-level impossibility). The verdict comes
+//       from the same parse the evidence path uses, so a row can never be
+//       deletable here and live there.
 // Audit record shapes:
 //   removal: STALE_KD_DELETE session=<id> milestone=<rowId> file=<name>
-//     fileGen=<N> persistedGen=<M> reason=<gen-mismatch|superseded>
+//     fileGen=<N> persistedGen=<M> reason=<gen-mismatch|superseded|not-live>
 //     actor=<role> deleted=true
 //   refusal: STALE_KD_DELETE_REFUSED session=<id> milestone=<rowId> file=<name>
 //     fileGen=<N|unknown> persistedGen=<M> reason=<...> actor=<role>
 //     deleted=false
-function evaluateStaleKDDeletable(filename, sessionID, persistedGeneration, frontmatterStatus) {
+function evaluateStaleKDDeletable(filename, sessionID, persistedGeneration, liveness) {
   const unknown = { deletable: false, reason: "invalid-path", milestoneId: "unknown", fileGen: null };
   if (typeof filename !== "string" || filename.length === 0) return unknown;
   if (filename.includes("/") || filename.includes("\\")) return unknown;
@@ -1497,14 +1815,16 @@ function evaluateStaleKDDeletable(filename, sessionID, persistedGeneration, fron
   const fileGen = extractImplKDGeneration(filename, sessionID);
   if (fileGen === null) return { ...unknown, reason: "foreign-session" };
   const milestoneId = extractMilestoneIdFromImplKD(filename) || "unknown";
-  const stamped = String(frontmatterStatus ?? "").trim().toLowerCase() === "superseded";
-  if (fileGen === persistedGeneration && !stamped) {
+  const verdict = liveness && typeof liveness === "object" && typeof liveness.live === "boolean"
+    ? liveness
+    : evaluateLiveness(typeof liveness === "string" ? liveness : "");
+  if (fileGen === persistedGeneration && verdict.live) {
     return { deletable: false, reason: "live-evidence", milestoneId, fileGen };
   }
   if (fileGen !== persistedGeneration) {
     return { deletable: true, reason: "gen-mismatch", milestoneId, fileGen };
   }
-  return { deletable: true, reason: "superseded", milestoneId, fileGen };
+  return { deletable: true, reason: verdict.reason === "stale-status" ? "superseded" : "not-live", milestoneId, fileGen };
 }
 
 // Operator half of the scoped stale-KD removal: evaluates the four-clause
@@ -1526,10 +1846,8 @@ function deleteStaleMilestoneKD(sessionID, sessionPhaseMap, filename, actor) {
     loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=unknown file=${filename} fileGen=unknown persistedGen=${persistedGen} reason=missing actor=${who} deleted=false`);
     return { ok: false, reason: "missing", milestoneId: "unknown", fileGen: null, persistedGen: persistedGen };
   }
-  const fence = content.match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\s*\r?\n|$)/);
-  const statusMatch = fence && fence[1].match(/^\s*status\s*:\s*("([^"]*)"|'([^']*)'|([^\s#\r\n]+))/im);
-  const status = statusMatch ? (statusMatch[2] ?? statusMatch[3] ?? statusMatch[4] ?? "") : "";
-  const verdict = evaluateStaleKDDeletable(filename, sessionID, persistedGen, status);
+  const verdictForDeletion = evaluateLiveness(content);
+  const verdict = evaluateStaleKDDeletable(filename, sessionID, persistedGen, verdictForDeletion);
   if (!verdict.deletable) {
     loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen ?? "unknown"} persistedGen=${persistedGen} reason=${verdict.reason} actor=${who} deleted=false`);
     return { ok: false, reason: verdict.reason, milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, persistedGen: persistedGen };
@@ -1542,6 +1860,174 @@ function deleteStaleMilestoneKD(sessionID, sessionPhaseMap, filename, actor) {
   }
   loud(`STALE_KD_DELETE: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen} persistedGen=${persistedGen} reason=${verdict.reason} actor=${who} deleted=true`);
   return { ok: true, reason: verdict.reason, milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, persistedGen: persistedGen };
+}
+
+// --- Deterministic stamp settlement (FR-06..FR-08) ---
+// An impl-KD transport is identified by the artifact's basename, never by the
+// path prefix it happens to arrive under: an absolute path, a `./` prefix and a
+// nested directory all name the same artifact, and the old `^knowledge/impl-`
+// guard silently dropped the two that did not match its spelling.
+function isImplKDArtifactPath(filePath) {
+  if (typeof filePath !== "string" || filePath.length === 0) return false;
+  return /^impl-/i.test(filePath.replace(/\\/g, "/").split("/").pop());
+}
+
+// Resolves the directory settlement reads an artifact from. It is the session's
+// knowledge dir and nothing else: that is the directory the SWARM gate reads the
+// evidence back from (findMilestoneImplKD), so a settlement performed anywhere
+// else would promote a row over a file the gate never opens. A write path is a
+// hint about which artifact the writer meant, never a licence to settle a copy —
+// an absolute path, a `./` prefix and a nested directory all resolve here, and a
+// path that names a same-basename file elsewhere resolves here too.
+function resolveArtifactDir(sessionID) {
+  return getKnowledgeDir(sessionID);
+}
+
+// One record per settlement attempt, and nothing on a repeat of the same
+// attempt. The key carries the artifact's directory so two lifecycles holding
+// artifacts of the same name in different knowledge dirs never silence each
+// other.
+function settleStampDeclined(milestoneId, base, dir, reason) {
+  gateRecordEvent("STAMP_DECLINED", [
+    ["milestone", milestoneId],
+    ["artifact", base],
+    ["reason", reason]
+  ], `milestone ${milestoneId} settlement declined for ${base} (${reason}) — the row keeps its registry state and the artifact is untouched`, `STAMP_DECLINED|${dir}|${gateRecordMilestoneTag(milestoneId)}a:${base}|r:${reason}`);
+}
+
+// Settles one stamped artifact. Preconditions are checked in the order FR-07
+// states them, and every failing branch declines with exactly one token — a
+// decline never deletes, demotes or hides the artifact, and leaves the row
+// in-progress so the operator's next ordinary action is a redispatch.
+// Returns { settled, reason, content?, promoted? }.
+function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, milestoneId }) {
+  if (typeof base !== "string" || base.length === 0) return { settled: false, reason: "not-cited-artifact" };
+  const artifactDir = resolveArtifactDir(sessionID);
+  const rowId = milestoneId || extractMilestoneIdFromImplKD(base);
+  // (0) Only the canonical artifact is settleable. A caller naming another
+  // directory is asking the gate to amend and promote from a file that the
+  // registry check-off cross-check never reads — the wedge this guards: the copy
+  // settles, the digest is dropped, and the canonical artifact's own stamp can
+  // no longer be cleared by anything but a hand edit.
+  if (typeof dir === "string" && dir.length > 0 && resolve(dir) !== resolve(artifactDir)) {
+    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-cited-artifact");
+    return { settled: false, reason: "not-cited-artifact" };
+  }
+  // (1) Only a reopened row has a stamp to clear.
+  const state = rowId ? readMilestoneState(sessionID, sessionPhaseMap, rowId) : null;
+  if (state !== "in-progress") {
+    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-in-progress");
+    return { settled: false, reason: "not-in-progress" };
+  }
+  // (2) The artifact must be this milestone's impl KD for the current session.
+  if (!/^impl-/i.test(base)
+    || !base.toLowerCase().startsWith(`impl-${rowId}-`.toLowerCase())
+    || !matchesSessionKDAnyGeneration(base, sessionID)) {
+    settleStampDeclined(rowId, base, artifactDir, "not-cited-artifact");
+    return { settled: false, reason: "not-cited-artifact" };
+  }
+  // (3) No recorded digest means the gate cannot tell a fix-up from the stamp it
+  // wrote; decline rather than promote over a stamp it does not recognise.
+  const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
+  const snapshotDigest = snapshots ? snapshots[stampSnapshotKey(rowId, base)] : undefined;
+  if (typeof snapshotDigest !== "string" || snapshotDigest.length === 0) {
+    settleStampDeclined(rowId, base, artifactDir, "no-stamp-snapshot");
+    return { settled: false, reason: "no-stamp-snapshot" };
+  }
+  let landed;
+  try {
+    landed = readFileSync(join(artifactDir, base), "utf8");
+  } catch (_) {
+    settleStampDeclined(rowId, base, artifactDir, "write-failed");
+    return { settled: false, reason: "write-failed" };
+  }
+  // (4) Genuineness: the landed bytes must be new work past the stamp.
+  if (digestContent(landed) === snapshotDigest) {
+    settleStampDeclined(rowId, base, artifactDir, "byte-identical");
+    return { settled: false, reason: "byte-identical" };
+  }
+  // (5) The landed bytes must be in a state the gate may amend — its own stale
+  // stamp, or already live. Anything else declines rather than inventing a
+  // status the author never wrote.
+  const rewrite = amendStampContent(landed, base);
+  if (rewrite.refused) {
+    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter");
+    return { settled: false, reason: "unparsable-frontmatter" };
+  }
+  if (rewrite.content !== landed) {
+    try {
+      atomicWriteFileSync(join(artifactDir, base), rewrite.content);
+    } catch (_) {
+      settleStampDeclined(rowId, base, artifactDir, "write-failed");
+      return { settled: false, reason: "write-failed" };
+    }
+  }
+  // (6) Re-read and verify the LANDED bytes before promoting: promotion never
+  // precedes evidence (FR-08).
+  let settledContent;
+  try {
+    settledContent = readFileSync(join(artifactDir, base), "utf8");
+  } catch (_) {
+    settleStampDeclined(rowId, base, artifactDir, "write-failed");
+    return { settled: false, reason: "write-failed" };
+  }
+  const settledVerdict = evaluateLiveness(settledContent);
+  if (!settledVerdict.live) {
+    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter");
+    return { settled: false, reason: "unparsable-frontmatter" };
+  }
+  // Exactly one always-on line per settlement: the gate's own stamp rewrite is
+  // STAMP_CLEARED, while an artifact the author already made live records the
+  // lineage it gained instead — two lines for one event would double-count it.
+  if (rewrite.cleared) {
+    gateRecordEvent("STAMP_CLEARED", [
+      ["milestone", rowId],
+      ["artifact", base]
+    ], `milestone ${rowId} fix-up rewrite at ${base} — stamp cleared (status: ${settledVerdict.declared}, superseded_by: ${base}); the row re-completes on the landed evidence`, `STAMP_CLEARED|${artifactDir}|${gateRecordMilestoneTag(rowId)}a:${base}`);
+  } else {
+    gateRecordEvent("STAMP_LINEAGE_RECORDED", [
+      ["milestone", rowId],
+      ["artifact", base]
+    ], `milestone ${rowId} fix-up rewrite at ${base} — landed frontmatter already live (status: ${settledVerdict.declared}), superseded_by lineage recorded (${base}); the row re-completes on the landed evidence`, `STAMP_LINEAGE_RECORDED|${artifactDir}|${gateRecordMilestoneTag(rowId)}a:${base}`);
+  }
+  dropStampSnapshot(sessionPhaseMap, sessionID, rowId, base);
+  persistSessionState(sessionPhaseMap, sessionID);
+  // Promotion is the ordinary registry transition and is recorded either way —
+  // a row that stays open must be explainable from the log alone.
+  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+  const resolvedId = resolveMilestoneRowId(registry, base, rowId);
+  const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, resolvedId, ["checked-off"]);
+  const promoted = !!(result.ok && result.changed);
+  const reason = promoted ? "amended-evidence" : (result.ok ? "already-checked-off" : result.reason);
+  gateRecordEvent("CHECKOFF", [
+    ["milestone", resolvedId],
+    ["artifact", base],
+    ["promoted", promoted ? "true" : "false"],
+    ["reason", reason]
+  ], null, `CHECKOFF|${artifactDir}|${gateRecordMilestoneTag(resolvedId)}a:${base}|p:${promoted ? "true" : "false"}|r:${reason}`);
+  return { settled: true, reason: null, content: settledContent, promoted };
+}
+
+// Drives settlement over every artifact stamped in this session, so a gate
+// evaluation and the after-write fast path run the same loop. No observed write
+// path steers it: the canonical artifact is the only thing either loop settles,
+// so a write that merely shares a stamped artifact's basename cannot settle (or
+// silently unsnapshot) the row it names.
+function settleStampClearsForSession(sessionID, sessionPhaseMap) {
+  const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
+  if (!snapshots) return 0;
+  const keys = Object.keys(snapshots);
+  if (keys.length === 0) return 0;
+  const artifactDir = resolveArtifactDir(sessionID);
+  let settled = 0;
+  for (const key of keys) {
+    const sep = key.indexOf("|");
+    if (sep <= 0) continue;
+    const milestoneId = key.slice(0, sep);
+    const base = key.slice(sep + 1);
+    if (settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir: artifactDir, base, milestoneId }).settled) settled++;
+  }
+  return settled;
 }
 
 // Cross-checks a milestone's registry state against its impl KD on disk — the
@@ -1616,8 +2102,9 @@ function emitGenerationMismatchSkips(knowledgeDir, files, sessionID, milestoneId
     if (fileGen === null) continue;
     if (fileGen === persistedGeneration) {
       // Same generation but not live evidence: either unreadable bytes
-      // (fail-closed — the pinned predicate already declined) or
-      // frontmatter-superseded (named by the STALE_EVIDENCE probe below).
+      // (fail-closed — the pinned predicate already declined) or a status the
+      // liveness allowlist refuses (named by the promotion record in
+      // reconcileStuckRowsFromDiskEvidence).
       // Only the unreadable case skips here.
       let readable = true;
       try {
@@ -1658,11 +2145,19 @@ function emitGenerationMismatchSkips(knowledgeDir, files, sessionID, milestoneId
 // entirely. A missing/unparsable registry never reaches here (the
 // caller fails closed first); reconciliation never fabricates rows.
 function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry) {
+  // Settlement is attempted here too (FR-06 point c): a stamped artifact whose
+  // fix-up write landed through a transport the after-hook could not attribute
+  // re-closes its row at the next reconciliation instead of staying stuck.
+  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap);
+  if (settled > 0) {
+    const refreshed = readMilestoneRegistry(sessionID, sessionPhaseMap);
+    if (refreshed) registry = refreshed;
+  }
   const stuck = registry.rows.filter(r => r.state !== "checked-off");
-  if (stuck.length === 0) return 0;
+  if (stuck.length === 0) return settled;
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
-  try { files = readdirSync(knowledgeDir); } catch (_) { return 0; }
+  try { files = readdirSync(knowledgeDir); } catch (_) { return settled; }
   const persistedGeneration = getCurrentGeneration(sessionPhaseMap, sessionID);
   let promoted = 0;
   for (const row of stuck) {
@@ -1691,20 +2186,28 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
         return matchesSessionKDAnyGeneration(f.slice(0, -".superseded.md".length), sessionID);
       });
       if (superseded.length > 0) {
-        loud(`SUPERSEDED_EVIDENCE: milestone ${row.id} stays ${row.state} — same-session impl evidence exists solely as superseded file(s): ${superseded.join(", ")}. Remediation options: (a) restore a canonical-path impl KD for milestone ${row.id}, or (b) invoke the remediation path to advance the row to checked-off citing the superseded impl KD(s) as evidence.`);
+        gateRecordOnce(`SUPERSEDED_EVIDENCE: milestone ${row.id} stays ${row.state} — same-session impl evidence exists solely as superseded file(s): ${superseded.join(", ")}. Remediation options: (a) restore a canonical-path impl KD for milestone ${row.id}, or (b) invoke the remediation path to advance the row to checked-off citing the superseded impl KD(s) as evidence.`, `SUPERSEDED_EVIDENCE|${gateRecordMilestoneTag(row.id)}a:${[...superseded].sort().join(",")}`);
       }
-      // Frontmatter-stamped stale evidence: canonical files whose frontmatter
-      // carries a superseded status are invisible to the predicate above by
-      // design. Name them so a row awaiting fresh fix evidence is explainable
-      // instead of silently stuck; only a fresh canonical write re-completes
-      // such a row, never the stale file itself.
+      // Frontmatter-stamped stale evidence: canonical files the liveness
+      // allowlist refuses are invisible to the predicate above by design. Name
+      // them so a row awaiting fresh fix evidence is explainable instead of
+      // silently stuck; only a fresh canonical write re-completes such a row,
+      // never the stale file itself. One CHECKOFF line carries the reason — the
+      // promotion evaluation did run and did not promote, so it is a promotion
+      // record, not a second always-on event.
       const stamped = files.filter(f => {
         if (!f.toLowerCase().startsWith(prefix.toLowerCase())) return false;
         if (!matchesSessionKDAnyGeneration(f, sessionID)) return false;
         return isSupersededByFrontmatter(knowledgeDir, f);
       });
       if (stamped.length > 0) {
-        loud(`STALE_EVIDENCE: milestone ${row.id} stays ${row.state} — prior completion evidence is frontmatter-superseded (stale, canonical names kept): ${stamped.join(", ")}. Write fresh fix evidence at a canonical impl path for milestone ${row.id} to re-complete.`);
+        const refusal = evaluateLivenessFile(knowledgeDir, stamped[0]);
+        gateRecordEvent("CHECKOFF", [
+          ["milestone", row.id],
+          ["artifact", stamped.join(",")],
+          ["promoted", "false"],
+          ["reason", refusal.reason]
+        ], `milestone ${row.id} stays ${row.state} — prior completion evidence is not live (${refusal.reason}, canonical names kept): ${stamped.join(", ")}. Write fresh fix evidence at a canonical impl path for milestone ${row.id} to re-complete.`, `CHECKOFF|${gateRecordMilestoneTag(row.id)}a:${[...stamped].sort().join(",")}|p:false|r:${refusal.reason}`);
       }
       continue;
     }
@@ -1718,10 +2221,10 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
       warn(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile in-progress → checked-off) — ${result.reason}`);
       continue;
     }
-    loud(`RECONCILE_CHECKOFF: milestone ${row.id} promoted ${row.state} → checked-off (impl KD ${evidence})`);
+    gateRecord(`RECONCILE_CHECKOFF: milestone ${row.id} promoted ${row.state} → checked-off (impl KD ${evidence})`);
     promoted++;
   }
-  return promoted;
+  return promoted + settled;
 }
 
 // Explicit, audited remediation path for orphaned legacy evidence: advances
@@ -1783,7 +2286,7 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
       return isSupersededByFrontmatter(knowledgeDir, f);
     });
     if (stamped.length > 0) {
-      loud(`STAMPED_EVIDENCE: milestone ${milestoneId} stays ${current} — same-session impl evidence is frontmatter-superseded (stale, canonical names kept): ${stamped.join(", ")}. Only a genuine fix-up rewrite re-completes this row: write new fix evidence over the stamped file (the gate clears the stamp on landing) or at a fresh canonical impl path for milestone ${milestoneId}.`);
+      gateRecordOnce(`STAMPED_EVIDENCE: milestone ${milestoneId} stays ${current} — same-session impl evidence is frontmatter-superseded (stale, canonical names kept): ${stamped.join(", ")}. Only a genuine fix-up rewrite re-completes this row: write new fix evidence over the stamped file (the gate clears the stamp on landing) or at a fresh canonical impl path for milestone ${milestoneId}.`, `STAMPED_EVIDENCE|${gateRecordMilestoneTag(milestoneId)}a:${[...stamped].sort().join(",")}`);
       return { ok: false, reason: "frontmatter-stamped-evidence", milestoneId, evidence: stamped };
     }
     return { ok: false, reason: "no-superseded-evidence", milestoneId };
@@ -1829,6 +2332,10 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
 // reconciled to checked-off (reconcileStuckRowsFromDiskEvidence) and the
 // registry is re-read after any promotion. Returns { ok, total, checkedOff, rows }.
 function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
+  // Stamp settlement is attempted at every SWARM gate evaluation (FR-06 point
+  // b), before the registry is read, so a row the settlement re-closes is
+  // already checked-off when the verdict is computed.
+  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap);
   let registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
     debug(`REGISTRY_MISSING: no milestone registry for session ${sessionID} — SWARM cannot advance`);
@@ -1840,7 +2347,8 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   }
   // Reconcile evidence-backed stuck rows BEFORE computing ok — the
   // promotion writes land in the registry, so re-read it when rows changed.
-  if (reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry) > 0) {
+  const reconciled = reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry);
+  if (settled > 0 || reconciled > 0) {
     registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
     if (!registry) {
       debug(`REGISTRY_MISSING: milestone registry lost after reconciliation for session ${sessionID} — SWARM cannot advance`);
@@ -2120,15 +2628,48 @@ function findNewestEvidenceKD(sessionPhaseMap, sessionID, phase) {
   return newest;
 }
 
-// On a FAIL auto-regression the milestone rows CITED by the review KD re-open
-// to in-progress, so the all-checked-off gate cannot re-advance SWARM→VERIFY
-// before fresh impl KDs land. Scoped reopen: citedMilestoneIds are the
-// registry-resolvable milestone tokens parsed from the review KD's Findings
-// section — the intersection with registry row ids reopens exactly; unrelated
-// checked-off rows are untouched. Idempotent for rows already in-progress; a
-// missing/empty registry is a no-op and the SWARM gate fails closed on
-// REGISTRY_EMPTY/MISSING. updateMilestoneRegistry's reopen semantics preserve
-// the registry row's own casing.
+// Parses the review frontmatter `reopen_target` field — the ONLY source of
+// reopen targets (FR-11, IC-3). Scalar (`reopen_target: M4`) and flow-sequence
+// (`reopen_target: [M4, M-core]`) forms parse identically: brackets stripped,
+// comma split, quotes stripped, trimmed, uppercased. A token must match
+// `^[A-Za-z0-9_-]+$`; case-insensitive resolution to a registry row is the
+// caller's job, because "unresolvable" needs the registry.
+// Returns { present, tokens, reason, value }: reason is null when the field is
+// usable, `invalid-reopen-target` when a token breaks the grammar, and
+// `ambiguous-target` when the frontmatter carries the key twice. An absent,
+// empty, `""` or `null` field yields zero tokens and no reason — the caller
+// decides between the escalate and refuse branches.
+function parseReopenTarget(content) {
+  const span = typeof content === "string" ? frontmatterSpan(content) : null;
+  if (!span) return { present: false, tokens: [], reason: null, value: null };
+  const lines = [...span.body.matchAll(/^[ \t]*reopen_target[ \t]*:[ \t]*(.*)$/gim)].map(m => m[1].trim());
+  if (lines.length === 0) return { present: false, tokens: [], reason: null, value: null };
+  // Two keys cannot both govern the reopen set — refuse rather than pick one.
+  if (lines.length > 1) return { present: true, tokens: [], reason: "ambiguous-target", value: lines.join(",") };
+  const raw = lines[0];
+  if (raw.length === 0 || /^(null|~)$/i.test(raw)) return { present: true, tokens: [], reason: null, value: raw };
+  const inner = raw.replace(/^\[/, "").replace(/\]$/, "");
+  const tokens = [];
+  for (const piece of inner.split(",")) {
+    const cleaned = piece.trim().replace(/^["']/, "").replace(/["']$/, "").trim();
+    if (cleaned.length === 0) continue;
+    if (!/^[A-Za-z0-9_-]+$/.test(cleaned)) {
+      return { present: true, tokens: [], reason: "invalid-reopen-target", value: raw };
+    }
+    tokens.push(cleaned.toUpperCase());
+  }
+  return { present: true, tokens: [...new Set(tokens)], reason: null, value: raw };
+}
+
+// On a FAIL auto-regression the milestone rows named by the review KD's
+// `reopen_target` field re-open to in-progress, so the all-checked-off gate
+// cannot re-advance SWARM→VERIFY before fresh impl KDs land. Scoped reopen:
+// milestoneIds are the registry-resolvable tokens parsed from that field — the
+// intersection with registry row ids reopens exactly; unrelated checked-off
+// rows are untouched. Idempotent for rows already in-progress; a missing/empty
+// registry is a no-op and the SWARM gate fails closed on REGISTRY_EMPTY/MISSING.
+// updateMilestoneRegistry's reopen semantics preserve the registry row's own
+// casing.
 function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds, trigger) {
   const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
@@ -2144,62 +2685,10 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
   }
 }
 
-// Parses milestone tokens from a review KD — the provenance for scoped reopen:
-// `impl-<milestone-id>-` path tokens and bare `M\d+` milestone ids.
-// Tokens are deduplicated and case-preserved. The scan is FAIL-context-only
-// FAIL citations live in FAIL-status findings and explicit Verdict
-// citation lines, so prose tokens elsewhere are provenance, not citations.
-// Scanned locations: (a) `### F\d+` finding subsections whose `Status`
-// is `FAIL`; (b) `### A\d+` audit-finding subsections whose `Status` is `FAIL`;
-// (c) explicit `Milestone citation:` lines within the `## Verdict` section.
-// Never scanned: the KD preamble, `## Verdict Rules`, `## Registry/Plan
-// Consistency Note`, `## Test Results`, `## Pass Rate`, `## Process Friction`,
-// `## Audit` prose, `## References`, `### Traceability Matrix`, and any other
-// section that is not a FAIL-status finding or the `## Verdict` section — the
-// review template's own Verdict Rules prose carries literal example tokens
-// (F7), and scanning prose leaked sibling milestones into the reopen set (a
-// live anomaly: a FAIL citing only M3 reopened M1/M2). PASS findings'
-// `File`-field path tokens stay excluded. A KD
-// with zero FAIL-context tokens yields zero citations (fail-closed for the
-// malformed-FAIL rule).
-function extractMilestoneCitationsFromReviewKD(content) {
-  if (typeof content !== "string") return [];
-  const tokens = new Set();
-  const collect = (text) => {
-    let m;
-    const implPattern = /impl-([A-Za-z0-9_-]+)-/gi;
-    while ((m = implPattern.exec(text)) !== null) tokens.add(m[1]);
-    const idPattern = /\bM\d+\b/g;
-    while ((m = idPattern.exec(text)) !== null) tokens.add(m[0]);
-  };
-  for (const sub of content.split(/^#{2,3} /m)) {
-    const heading = sub.split("\n")[0];
-    // `[^:\n]*` tolerates markdown bold markers (`- **Status**: FAIL`).
-    const isFailFinding = /^F\d+/i.test(heading) && /Status[^:\n]*:\s*FAIL/i.test(sub);
-    const isFailAudit = /^A\d+/i.test(heading) && /Status[^:\n]*:\s*FAIL/i.test(sub);
-    const isVerdict = /^Verdict\s*$/i.test(heading);
-    if (!isFailFinding && !isFailAudit && !isVerdict) continue;
-    if (isVerdict) {
-      // Verdict prose is not scanned — only explicit `Milestone citation:` lines.
-      // `[^:\n]*` tolerates markdown bold markers (`- **Milestone citation**: M2`).
-      for (const line of sub.split("\n")) {
-        if (/Milestone citation[^:\n]*:/i.test(line)) collect(line);
-      }
-      continue;
-    }
-    collect(sub);
-  }
-  return [...tokens];
-}
+// The FAIL-finding subsection scan and the `Milestone citation:` prose parse
+// that used to derive this set are retired (FR-11): `reopen_target` in the
+// review frontmatter is the only target source, parsed by parseReopenTarget.
 
-// Filters cited milestone tokens down to the registry's row ids
-// (case-insensitive) — tokens not in the registry are dropped so only real
-// milestones can reopen. A missing registry yields an empty list.
-function registryResolvableMilestones(sessionID, sessionPhaseMap, citedMilestoneIds) {
-  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
-  if (!registry || !Array.isArray(citedMilestoneIds)) return [];
-  return citedMilestoneIds.filter(id => registry.rows.some(r => String(r.id).toUpperCase() === String(id).toUpperCase()));
-}
 
 // Newest session-scoped impl KD mtime — the freshness baseline for the
 // fresh-PASS-after-fix and fix-cycle-tied regression rules. -Infinity when no
@@ -2264,7 +2753,7 @@ function regressVerifyOnFail(sessionID, kdFilename, sessionFiles, sessionPhaseMa
   verdictRegressedKDs.set(sessionID, { kdFilename, regressedAt: now });
   debug(`VERDICT_FAIL: KD ${kdFilename} verdict=FAIL — auto-regressing VERIFY→SWARM (no BACKWARD flag)`);
   backwardTransition(sessionID, STATES.VERIFY, STATES.SWARM);
-  reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds, `FAIL citations in review KD ${kdFilename}`);
+  reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneIds, `FAIL reopen_target in review KD ${kdFilename}`);
   // Identical-verdict brake feed: each genuine FAIL regression extends the
   // consecutive run for its cited milestones under the verdict fingerprint
   // (verdict plus cited set — a re-emitted review with the same shape
@@ -2295,27 +2784,50 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
     return false;
   }
   if (verdictInfo && verdictInfo.verdict === "FAIL") {
-    const resolvable = registryResolvableMilestones(sessionID, sessionPhaseMap, extractMilestoneCitationsFromReviewKD(readReviewKdContent(verdictInfo.filename, sessionID)));
-    const escalated = hasEscalationMarker(readReviewKdContent(verdictInfo.filename, sessionID));
-    if (resolvable.length === 0) {
-      // OQ-4 malformed-FAIL rule, escalation form: a citation-less FAIL that
-      // carries escalation content is a design-level failure — blocked with NO
-      // regression and NO reopen, because the fix loop cannot act on it. A
-      // citation-less FAIL without the marker is malformed.
-      if (escalated) {
-        debug(`ESCALATION_BLOCKED: FAIL review KD ${verdictInfo.filename} cites no resolvable milestone and carries a non-empty ## Escalation section — blocked, no regression, no reopen; escalate to the user (Happy to Delete)`);
-        return false;
-      }
-      // A citation-less FAIL never enters the state machine (no regress, and
-      // forward advance is impossible while the newest verdict is FAIL), so it
-      // cannot deadlock.
-      debug(`MALFORMED_FAIL: FAIL review KD ${verdictInfo.filename} carries no registry-resolvable milestone citations — blocked, no regression, no reopen`);
+    const reviewContent = readReviewKdContent(verdictInfo.filename, sessionID);
+    const target = parseReopenTarget(reviewContent);
+    const escalated = hasEscalationMarker(reviewContent);
+    const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+    const resolvable = target.tokens.filter(id => registry && registry.rows.some(r => String(r.id).toUpperCase() === id));
+    // Refusal reasons in IC-3 order: an unusable field first, then a field that
+    // named rows the registry does not have, then a field that is simply absent.
+    let refusal = target.reason;
+    if (!refusal && target.tokens.length > 0 && resolvable.length !== target.tokens.length) {
+      refusal = "unresolvable-reopen-target";
+    }
+    if (!refusal && target.tokens.length === 0) refusal = "no-reopen-target";
+    if (refusal) {
+      // A FAIL carrying a non-empty `## Escalation` and no target is the
+      // documented escalate-without-regression shape: the fix loop cannot act
+      // on it, so it blocks without touching state. Every other refusal is the
+      // operator's mistake in a writable field, so the record names the field
+      // and the value to write back.
+      const cause = refusal === "no-reopen-target" && escalated
+        ? `FAIL review KD ${verdictInfo.filename} carries no reopen_target and a non-empty ## Escalation section — blocked, no regression, no reopen; escalate to the user`
+        : `FAIL review KD ${verdictInfo.filename} has an unusable reopen_target (${refusal}${target.value ? ` value=${target.value}` : ""}) — blocked, no regression, no reopen; write reopen_target: [<checked-off milestone id>] in the review frontmatter`;
+      gateRecordEvent("REOPEN_TARGET_INVALID", [
+        ["session", sessionID],
+        ["review", verdictInfo.filename],
+        ["reason", refusal]
+      ], cause, `REOPEN_TARGET_INVALID|${verdictInfo.filename}|r:${refusal}`);
+      debug(`REOPEN_TARGET_INVALID: ${cause}`);
       return false;
+    }
+    // A target naming rows that are not checked-off reopens nothing. Say so per
+    // row rather than leaving a reader to infer it from an unchanged registry.
+    for (const id of resolvable) {
+      const row = registry.rows.find(r => String(r.id).toUpperCase() === id);
+      if (!row || row.state === "checked-off") continue;
+      gateRecordEvent("REOPEN_NOOP", [
+        ["session", sessionID],
+        ["milestone", row.id],
+        ["reason", "not-checked-off"]
+      ], `reopen_target in ${verdictInfo.filename} names milestone ${row.id}, which is already ${row.state} — nothing to reopen`, `REOPEN_NOOP|${gateRecordMilestoneTag(row.id)}r:not-checked-off`);
     }
     if (escalated) {
       // Both intents in one verdict: a fix loop would have to guess which one
       // the reviewer meant, so fail closed and let a re-review pick one.
-      debug(`VERDICT_AMBIGUOUS: FAIL review KD ${verdictInfo.filename} cites ${resolvable.length} resolvable milestone(s) and carries a non-empty ## Escalation section — blocked, no regression, no reopen; re-issue the review as a fixable FAIL without the marker or as an escalation FAIL with no citations`);
+      debug(`VERDICT_AMBIGUOUS: FAIL review KD ${verdictInfo.filename} names ${resolvable.length} resolvable milestone(s) and carries a non-empty ## Escalation section — blocked, no regression, no reopen; re-issue the review as a fixable FAIL without the marker or as an escalation FAIL with no target`);
       return false;
     }
     let regressed = false;
@@ -2330,6 +2842,18 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
     // Inspector must emit a real verdict. Never treated as PASS.
     debug(`VERDICT_MISSING: newest review KD ${verdictInfo ? verdictInfo.filename : "(none)"} lacks a valid verdict field — advancement blocked`);
     return false;
+  }
+  // PASS never reopens (FR-13): the field is read only on FAIL, so a PASS that
+  // carries it changes no state — record that it was seen and ignored.
+  {
+    const passTarget = parseReopenTarget(readReviewKdContent(verdictInfo.filename, sessionID));
+    if (passTarget.present) {
+      gateRecordEvent("REOPEN_TARGET_IGNORED", [
+        ["session", sessionID],
+        ["review", verdictInfo.filename],
+        ["target", passTarget.tokens.length > 0 ? passTarget.tokens.join(",") : "<empty>"]
+      ], `PASS review KD ${verdictInfo.filename} carries reopen_target — the field is read only on FAIL, so nothing reopened`, `REOPEN_TARGET_IGNORED|${verdictInfo.filename}|t:${passTarget.tokens.length > 0 ? passTarget.tokens.join(",") : "<empty>"}`);
+    }
   }
   // Fresh-PASS-after-fix: a PASS verdict advances only when it is at
   // least as new as the newest impl-* KD. A fix cycle that landed after the
@@ -2389,20 +2913,26 @@ function findNewestPreflightKD(sessionFiles, sessionID = undefined) {
 // advancement here in the override and non-override paths alike. Advancement
 // needs the newest session-generation preflight KD to carry PASS; an
 // escalation verdict, a missing field, or an unreadable value blocks the
-// phase (fail closed). Under an active override at PREFLIGHT the newest KD
-// carries fresh evidence as well (mtime >= since) — stale KDs leave the
-// manual override in place. Emits one debug line per evaluation naming the
-// newest KD, its parsed verdict, and the advance/block decision.
-function evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap) {
+// phase (fail closed). While an override governs PREFLIGHT the newest KD must
+// also carry fresh evidence (mtime >= the hop anchor) — stale KDs leave the
+// manual override in place. The anchor is passed in by the caller when the
+// caller already resolved it (a re-entered hop anchors at `hopSince`); the
+// fallback recomputes the marker's own `since`. Emits one debug line per
+// evaluation naming the newest KD, its parsed verdict, and the advance/block
+// decision.
+function evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap, anchorOverride) {
   const info = findNewestPreflightKD(sessionFiles, sessionID);
   const newest = info ? info.filename : "(none)";
   const verdictLabel = info ? (info.verdict ?? "MISSING") : "MISSING";
   const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
   const overrideActive = overrideUntil && getOverrideTargetPhase(overrideUntil) === STATES.PREFLIGHT;
-  if (overrideActive && info) {
+  const anchor = typeof anchorOverride === "number"
+    ? anchorOverride
+    : (overrideActive ? overrideUntil.since : null);
+  if (anchor !== null && info) {
     const mtime = getFileMtimeMs(join(getKnowledgeDir(sessionID), info.filename));
-    if (mtime < overrideUntil.since) {
-      debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → false (stale under override since=${overrideUntil.since})`);
+    if (mtime < anchor) {
+      debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → false (stale under override since=${anchor})`);
       return false;
     }
   }
@@ -2443,13 +2973,124 @@ function isTerminalOverrideHop(overrideUntil) {
   return !!overrideUntil && Array.isArray(overrideUntil.phases) && overrideUntil.phases.length === 1;
 }
 
+// --- Override walk model (IC-4) ---
+//
+// A committed multi-phase /phase argument is a walk: `phases` is the remaining
+// plan and `phases[0]` is the head. `walkExists` is the SHAPE test and excludes
+// the legacy single-phase pin, whose documented semantics are unchanged — a pin
+// is a one-hop plan the user owns.
+//
+// Behind/at/ahead are NUMERIC comparisons, never queue membership. A plan that
+// skips SWARM (e.g. [1,7,10] walked from VERIFY) and a FAIL regression into
+// SWARM must both read as "behind the head" and resume; testing membership
+// instead would manufacture a divergence the walk can never leave.
+function walkExists(sessionPhaseMap, sessionID) {
+  const marker = getOverrideUntil(sessionPhaseMap, sessionID);
+  return !!marker && Array.isArray(marker.phases) && marker.phases.length > 0;
+}
+
+// The remaining plan for any marker shape — a walk's queue, or a legacy pin
+// read as a one-hop plan. Null when no marker governs anything.
+function walkPlanOf(marker) {
+  if (!marker) return null;
+  if (Array.isArray(marker.phases) && marker.phases.length > 0) return [...marker.phases];
+  if (typeof marker.phase === "number") return [marker.phase];
+  return null;
+}
+
+// The anchor a hop's evidence must reach: `hopSince` when the hop was re-entered
+// after a suspension, else the walk's own commit instant. While a walk is
+// suspended, the phase it regressed into is anchored the same way — a resume
+// must never be driven by pre-walk evidence. Returns null where the marker does
+// not govern the phase: no marker, a legacy pin whose phase has moved on, or a
+// phase ahead of the head (divergence, refused before any gate is read).
+function gateFreshnessAnchor(sessionPhaseMap, sessionID, phase) {
+  const marker = getOverrideUntil(sessionPhaseMap, sessionID);
+  if (!marker || typeof phase !== "number") return null;
+  const plan = walkPlanOf(marker);
+  if (!plan) return null;
+  const head = plan[0];
+  if (!Array.isArray(marker.phases)) return phase === head ? marker.since : null;
+  if (phase > head) return null;
+  return typeof marker.hopSince === "number" ? marker.hopSince : marker.since;
+}
+
+// How a walk leaves the last hop.
+const WALK_CLEAR_REASON = Object.freeze({
+  ORIGIN: "origin-return",
+  EXHAUSTED: "exhausted"
+});
+
+// IC-5 — the ONE next-hop decision every forward-advance site uses. Callers
+// supply only their own serial fallback; the queue decides everything else, so
+// no site can compute a forward target inline.
+//   no-walk          no marker, or a pin whose phase has moved on: the fallback
+//   hop              at the head with hops left: the next named hop
+//   terminal-report  that next hop is the last one and is REPORT
+//   resume           behind the head (a regression suspended the walk): the head
+//   origin-return    at the last hop, gate passed: the pre-walk origin, else the
+//                    fallback; the marker clears with a reason
+//   diverged         ahead of the head: target null — the caller must not
+//                    advance and must not fall through to presence
+//   blocked          defensive: a governed hop that yields no target
+function nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, fallbackTarget) {
+  const marker = getOverrideUntil(sessionPhaseMap, sessionID);
+  const plan = walkPlanOf(marker);
+  const isWalk = !!marker && Array.isArray(marker.phases);
+  const head = plan ? plan[0] : null;
+  const base = { target: fallbackTarget, outcome: "no-walk", head, queue: plan || [] };
+  if (!plan || typeof currentPhase !== "number") return base;
+  // A legacy pin governs only its own phase; anywhere else it is inert, exactly
+  // as before the walk existed.
+  if (!isWalk && currentPhase !== head) return base;
+  if (currentPhase === head) {
+    if (plan.length > 1) {
+      const next = plan[1];
+      const terminal = next === STATES.REPORT && plan.length === 2;
+      return { target: next, outcome: terminal ? "terminal-report" : "hop", head, queue: plan };
+    }
+    const safePoint = sessionPhaseMap.get(`${sessionID}:overrideSafePoint`);
+    const origin = safePoint && typeof safePoint.phase === "number" ? safePoint.phase : null;
+    const returnsToOrigin = origin !== null && origin > currentPhase;
+    return {
+      target: returnsToOrigin ? origin : fallbackTarget,
+      outcome: "origin-return",
+      head,
+      queue: plan,
+      clearReason: returnsToOrigin ? WALK_CLEAR_REASON.ORIGIN : WALK_CLEAR_REASON.EXHAUSTED
+    };
+  }
+  if (!isWalk) return base;
+  if (currentPhase < head) return { target: head, outcome: "resume", head, queue: plan };
+  return { target: null, outcome: "diverged", head, queue: plan };
+}
+
+// The no-walk fallback each forward-advance site supplies (FR-15): the serial
+// next phase, or VERIFY where a force-advance has always pushed forward. Named
+// here so no site spells a forward target of its own.
+function noWalkFallback(currentPhase, forceToVerify = false) {
+  return forceToVerify ? STATES.VERIFY : currentPhase + 1;
+}
+
 // Names the override/queue state for a refusal: the phase the override pins,
 // the remaining hop queue, and whether this is the terminal hop of a plan or a
 // single-phase pin. Returns null when no override pins the given phase, so
-// non-override refusals keep their unchanged message.
+// non-override refusals keep their unchanged message. A walk that is not at its
+// head names the off-head state instead: divergence (with the two documented
+// recoveries) or suspension (with the re-entry evidence rule).
 function describeOverrideState(sessionPhaseMap, sessionID, phase) {
   const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
-  if (!overrideUntil || getOverrideTargetPhase(overrideUntil) !== phase) return null;
+  if (!overrideUntil) return null;
+  const plan = walkPlanOf(overrideUntil);
+  const head = plan ? plan[0] : null;
+  if (Array.isArray(overrideUntil.phases) && head !== null && phase !== head) {
+    const queue = `[${overrideUntil.phases.join(",")}]`;
+    if (phase > head) {
+      return `override divergence: phase=${phase} head=${head} queue=${queue} — /phase clear or re-issue the walk to recover.`;
+    }
+    return `Override active: walk suspended — phase ${getPhaseName(phase)} (${phase}), head ${getPhaseName(head)} (${head}), queue ${queue} — re-entry requires evidence written at or after re-entry.`;
+  }
+  if (head !== phase) return null;
   const target = `${getPhaseName(phase)} (${phase})`;
   if (Array.isArray(overrideUntil.phases)) {
     const hops = overrideUntil.phases.length;
@@ -2609,6 +3250,19 @@ function evaluateCleanupArtifact(sessionID, sessionPhaseMap) {
 function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCount, f1Options) {
   if (phase === undefined) return false;
 
+  // A walk whose head sits behind the current phase cannot advance: evidence is
+  // irrelevant, because the phase the lifecycle stands in is not a hop of its
+  // plan. The callers record WALK_DIVERGED and refuse; this is the backstop for
+  // every other evaluation path.
+  {
+    const walkMarker = getOverrideUntil(sessionPhaseMap, sessionID);
+    if (walkMarker && Array.isArray(walkMarker.phases) && walkMarker.phases.length > 0
+      && typeof phase === "number" && phase > walkMarker.phases[0]) {
+      debug(`Disk check: walk divergence — phase=${phase} head=${walkMarker.phases[0]} queue=${JSON.stringify(walkMarker.phases)} — refusing to advance`);
+      return false;
+    }
+  }
+
   // Session ID is required to filter out stale KDs from prior sessions.
   // KD filenames embed the session ID (e.g. intent-foo-ses_abc123.md).
   // Without this, a plan KD from a different session instantly advances PREFLIGHT.
@@ -2673,13 +3327,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   const pattern = patterns[phase];
 
-  // While the override is active at this phase, only fresh evidence
-  // (KD mtime >= since) advances — pre-existing/stale KDs never undo the
-  // manual override (interface contract #5). KDs written before `since` are
-  // skipped; the marker clears on advance-away, restoring normal
+  // While an override governs this phase, only fresh evidence
+  // (KD mtime >= the hop anchor) advances — pre-existing/stale KDs never undo
+  // the manual override (interface contract #5). The anchor is `hopSince` for a
+  // hop re-entered after a suspension and `since` otherwise, so a resume is
+  // never driven by evidence that predates the regression. KDs written before
+  // the anchor are skipped; the marker clears on advance-away, restoring normal
   // advancement semantics for later phases.
-  const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
-  const overrideActive = overrideUntil && phase === getOverrideTargetPhase(overrideUntil);
+  const overrideAnchor = gateFreshnessAnchor(sessionPhaseMap, sessionID, phase);
+  const overrideActive = overrideAnchor !== null;
 
   // DECOMPOSE advancement requires BOTH the plan KD and a parseable milestone
   // registry (dual-KD gate). The Pathfinder produces both at DECOMPOSE; SWARM
@@ -2694,7 +3350,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // direct map seeding — keeps presence-only semantics.
   if (phase === STATES.DECOMPOSE) {
     const phaseEnteredAt = getPhaseEnteredAt(sessionPhaseMap, sessionID);
-    const freshnessAnchor = overrideActive ? overrideUntil.since : phaseEnteredAt;
+    const freshnessAnchor = overrideActive ? overrideAnchor : phaseEnteredAt;
     const isFresh = (f) => freshnessAnchor === null || getFileMtimeMs(join(knowledgeDir, f)) >= freshnessAnchor;
     const hasPlan = sessionFiles.some(f => /^plan-/i.test(f) && isFresh(f));
     const hasMilestones = sessionFiles.some(f => /^milestones-/i.test(f) && isFresh(f));
@@ -2704,7 +3360,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     // two gates can never disagree on what a valid registry is.
     const registryParses = hasMilestones && locateMilestoneRegistry(sessionID, sessionPhaseMap) !== null;
     const result = hasPlan && registryParses;
-    const anchorNote = overrideActive ? `override fresh-evidence since ${overrideUntil.since}` : `phase-entry anchor ${freshnessAnchor}`;
+    const anchorNote = overrideActive ? `override fresh-evidence since ${overrideAnchor}` : `phase-entry anchor ${freshnessAnchor}`;
     debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones}, registry-parses=${registryParses} → ${result} (${anchorNote})`);
     return result;
   }
@@ -2720,15 +3376,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     if (overrideActive) {
       const verdictInfo = findNewestVerdictKD(sessionFiles, sessionID);
       if (!verdictInfo) {
-        debug(`Disk check VERIFY: no review KD — cannot advance under override (since=${overrideUntil.since})`);
+        debug(`Disk check VERIFY: no review KD — cannot advance under override (since=${overrideAnchor})`);
         return false;
       }
       const mtime = getFileMtimeMs(join(knowledgeDir, verdictInfo.filename));
-      if (mtime < overrideUntil.since) {
-        debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} mtime=${mtime} < since=${overrideUntil.since} — not fresh (override)`);
+      if (mtime < overrideAnchor) {
+        debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} mtime=${mtime} < since=${overrideAnchor} — not fresh (override)`);
         return false;
       }
-      debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} is fresh (mtime=${mtime} >= since=${overrideUntil.since}) — evaluating verdict`);
+      debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} is fresh (mtime=${mtime} >= since=${overrideAnchor}) — evaluating verdict`);
       return evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options);
     }
     return evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options);
@@ -2745,12 +3401,13 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     const gate = checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap);
     let result = gate.ok;
     let overrideNote = "";
-    if (result && overrideActive && !isTerminalOverrideHop(overrideUntil)) {
+    const terminalHop = isTerminalOverrideHop(getOverrideUntil(sessionPhaseMap, sessionID));
+    if (result && overrideActive && !terminalHop) {
       const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
       const registryMtime = registry ? getFileMtimeMs(registry.path) : -1;
-      result = registryMtime >= overrideUntil.since;
-      overrideNote = `, override fresh-evidence: registry mtime=${registryMtime} >= since=${overrideUntil.since} → ${result}`;
-    } else if (overrideActive && isTerminalOverrideHop(overrideUntil)) {
+      result = registryMtime >= overrideAnchor;
+      overrideNote = `, override fresh-evidence: registry mtime=${registryMtime} >= since=${overrideAnchor} → ${result}`;
+    } else if (overrideActive && terminalHop) {
       // A terminal override hop completes on its ordinary advancement gate.
       // SWARM does not author the registry (a checked-off row is never
       // rewritten), so the registry-mtime anchor can never be satisfied at a
@@ -2769,7 +3426,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // freshness is evaluated inside the helper, so the override and
   // non-override paths route through it alike.
   if (phase === STATES.PREFLIGHT) {
-    return evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap);
+    return evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap, overrideAnchor);
   }
 
   // The identity-based CLEANUP gate — see evaluateCleanupArtifact. Validity is
@@ -2791,16 +3448,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
 
   let result;
   if (overrideActive) {
-    // Every override target requires fresh evidence (KD mtime >= since) —
-    // including INTENT. A pre-existing intent KD (e.g. the old KD the Overseer
-    // reads right after a /phase INTENT override) must never count as evidence
-    // and undo the override before the corrected KD is written. The in-place
-    // intent-correction path is the NON-override branch below, which keeps the
+    // Every override-governed phase requires fresh evidence (KD mtime >= the
+    // hop anchor) — including INTENT. A pre-existing intent KD (e.g. the old KD
+    // the Overseer reads right after a /phase INTENT override) must never count
+    // as evidence and undo the override before the corrected KD is written. The
+    // in-place intent-correction path is the NON-override branch below, whose
     // presence exemption (a session-matching intent KD advances regardless of
-    // mtime).
-    const freshnessRequired = true;
-    result = sessionFiles.some(f => pattern.test(f) && getFileMtimeMs(join(knowledgeDir, f)) >= overrideUntil.since);
-    debug(`Disk check ${getPhaseName(phase)}: override fresh-evidence (since=${overrideUntil.since}) → ${result}`);
+    // mtime) stays in force.
+    result = sessionFiles.some(f => pattern.test(f) && getFileMtimeMs(join(knowledgeDir, f)) >= overrideAnchor);
+    debug(`Disk check ${getPhaseName(phase)}: override fresh-evidence (since=${overrideAnchor}) → ${result}`);
   } else {
     result = sessionFiles.some(f => pattern.test(f));
     debug(`Disk check ${getPhaseName(phase)}: pattern=${pattern}, sessionID=${sessionID}, lookupSIDs=${JSON.stringify(lookupSIDs)} → ${result}`);
@@ -3027,10 +3683,9 @@ async function protocolGateServer(input, options) {
     // impl-KD write lands over a stamped file with new bytes (a genuine
     // post-stamp rewrite), consumed in tool.execute.after where the landed
     // bytes are on disk: the after-hook re-verifies genuineness against the
-    // pre-write snapshot, clears the stamp in place (draft + superseded_by),
-    // and promotes through the check-off path when the before-hook deferred
-    // it — so a row never completes on stale evidence. One entry per
-    // session, deleted after consumption.
+    // recorded digest and settles the stamp (status: amended + superseded_by)
+    // before promoting, so a row never completes on stale evidence. One entry
+    // per session, deleted after consumption.
     const pendingStampClear = new Map();
     // Tracks active subagent dispatches per session.
     // When a task call dispatches the current phase's expected agent, the
@@ -3135,7 +3790,14 @@ async function protocolGateServer(input, options) {
           if (typeof overrideUntil.phase === "number") {
             state.overrideUntil = { phase: overrideUntil.phase, since: overrideUntil.since };
           } else if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 0) {
+            // A live walk carries its re-entry anchor and its suspension with
+            // it across a restart, so a resumed hop keeps demanding evidence
+            // written after re-entry. A fresh walk persists exactly
+            // { phases, since } — the optional fields appear only when set.
             state.overrideUntil = { phases: overrideUntil.phases, since: overrideUntil.since };
+            if (typeof overrideUntil.hopSince === "number") state.overrideUntil.hopSince = overrideUntil.hopSince;
+            if (overrideUntil.state === "suspended") state.overrideUntil.state = "suspended";
+            if (typeof overrideUntil.suspendedAt === "number") state.overrideUntil.suspendedAt = overrideUntil.suspendedAt;
           }
         }
         // Serialize the pre-walk snapshot so a wedged queue stays
@@ -3151,6 +3813,15 @@ async function protocolGateServer(input, options) {
         const overrideHistory = sessionPhaseMap.get(`${sessionID}:overrideHistory`);
         if (Array.isArray(overrideHistory) && overrideHistory.length > 0) {
           state.overrideHistory = overrideHistory.slice(-OVERRIDE_HISTORY_MAX);
+        }
+        // Serialize the post-stamp digests (IC-2) so a restart between a reopen
+        // and its fix-up does not lose the only record of what the stamped bytes
+        // were. Without this the settlement declines `no-stamp-snapshot` and the
+        // row stays open until an operator reopens it again. Omitted when empty —
+        // legacy state files load unchanged.
+        const stampSnapshots = sessionPhaseMap.get(`${sessionID}:stampSnapshots`);
+        if (stampSnapshots && typeof stampSnapshots === "object" && Object.keys(stampSnapshots).length > 0) {
+          state.stampSnapshots = { ...stampSnapshots };
         }
         const stateDir = getStateDir();
         mkdirSync(stateDir, { recursive: true });
@@ -3177,6 +3848,12 @@ async function protocolGateServer(input, options) {
         return false;
       }
     }
+
+    // Module-level reopen and settlement paths persist through this hook, so the
+    // digest they record reaches disk in the same call that computes it. Bound
+    // per server instance: the map and its persister belong to one lifecycle
+    // state, never to whichever instance happened to load last.
+    sessionPhaseMap.persist = (sessionID) => saveState(sessionID);
 
     // Reads + parses the session's state file. Returns the parsed state object,
     // "missing" when no file exists, or "corrupt" when the file exists but
@@ -3343,8 +4020,15 @@ async function protocolGateServer(input, options) {
           sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: state.overrideUntil.phase, since: state.overrideUntil.since });
           debug(`reconcile: restored overrideUntil phase=${getPhaseName(state.overrideUntil.phase)} since=${state.overrideUntil.since} for ${sessionID}`);
         } else if (Array.isArray(state.overrideUntil.phases) && state.overrideUntil.phases.length > 0) {
-          sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: state.overrideUntil.phases, since: state.overrideUntil.since });
-          debug(`reconcile: restored overrideUntil queue=${JSON.stringify(state.overrideUntil.phases)} since=${state.overrideUntil.since} for ${sessionID}`);
+          const restoredMarker = { phases: state.overrideUntil.phases, since: state.overrideUntil.since };
+          // Suspension and the re-entry anchor survive a restart with the plan
+          // they belong to; both are optional, so a fresh walk restores exactly
+          // { phases, since }.
+          if (typeof state.overrideUntil.hopSince === "number") restoredMarker.hopSince = state.overrideUntil.hopSince;
+          if (state.overrideUntil.state === "suspended") restoredMarker.state = "suspended";
+          if (typeof state.overrideUntil.suspendedAt === "number") restoredMarker.suspendedAt = state.overrideUntil.suspendedAt;
+          sessionPhaseMap.set(`${sessionID}:overrideUntil`, restoredMarker);
+          debug(`reconcile: restored overrideUntil queue=${JSON.stringify(state.overrideUntil.phases)} since=${state.overrideUntil.since}${restoredMarker.state === "suspended" ? " (suspended)" : ""} for ${sessionID}`);
         }
       }
       // Restore the pre-walk snapshot alongside the marker it documents.
@@ -3367,6 +4051,23 @@ async function protocolGateServer(input, options) {
       if (state.sid && state.sid !== sessionID) {
         debug(`reconcile: healed stale sid ${state.sid} → ${sessionID} for ${sessionID}`);
         saveState(sessionID);
+      }
+      // Restore the post-stamp digests (IC-2) so a settlement attempt after a
+      // restart still recognises the bytes it stamped. Malformed entries are
+      // dropped rather than trusted: a digest that is not a string can never
+      // match content, and a settlement that declines `no-stamp-snapshot` is
+      // the honest outcome there anyway.
+      if (state.stampSnapshots && typeof state.stampSnapshots === "object" && !Array.isArray(state.stampSnapshots)) {
+        const restoredSnapshots = {};
+        for (const [key, digest] of Object.entries(state.stampSnapshots)) {
+          if (typeof key === "string" && key.includes("|") && typeof digest === "string" && digest.length > 0) {
+            restoredSnapshots[key] = digest;
+          }
+        }
+        if (Object.keys(restoredSnapshots).length > 0) {
+          sessionPhaseMap.set(`${sessionID}:stampSnapshots`, restoredSnapshots);
+          debug(`reconcile: restored ${Object.keys(restoredSnapshots).length} stamp snapshot(s) for ${sessionID}`);
+        }
       }
       debug(`reconcile: restored phase=${getPhaseName(phase)} sid=${healedSid || sessionID} for ${sessionID}`);
     }
@@ -3418,13 +4119,47 @@ async function protocolGateServer(input, options) {
 
       const prevPhase = sessionPhaseMap.get(sessionID);
       enterPhase(sessionPhaseMap, sessionID, targetPhase);
-      // A backward transition clears the override marker — the
-      // user chose to move back, so the previous override no longer applies.
+      // A backward transition clears a legacy single-phase pin — the user chose
+      // to move back, so the pin no longer applies — and the clear is recorded
+      // always-on with its cause. A committed queue is the user's *plan*, so a
+      // regression SUSPENDS it instead: the plan, the walk anchor and the safe
+      // point survive, because the detour is not a changed mind. The head is
+      // re-entered with a re-entry anchor on the way back (FR-22), so evidence
+      // written before the regression can never satisfy the re-entered hop.
       if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
-        sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
-        sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
-        sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
-        debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
+        const dropped = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
+        if (Array.isArray(dropped.phases) && dropped.phases.length > 0) {
+          const alreadySuspended = dropped.state === "suspended";
+          if (!alreadySuspended) {
+            sessionPhaseMap.set(`${sessionID}:overrideUntil`, {
+              ...dropped,
+              state: "suspended",
+              suspendedAt: Date.now()
+            });
+          }
+          // One line per regression, even when the walk is already suspended:
+          // the backward transition is the event, and an operator reading the
+          // log must see every detour the plan took.
+          gateRecordEvent("WALK_SUSPENDED", [
+            ["session", sessionID],
+            ["from", String(prevPhase)],
+            ["to", String(targetPhase)],
+            ["queue", `[${dropped.phases.join(",")}]`]
+          ]);
+          debug(`Override suspended: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)} — queue ${JSON.stringify(dropped.phases)} survives`);
+        } else {
+          sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+          sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+          sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+          gateRecordEvent("WALK_CLEARED", [
+            ["session", sessionID],
+            ["reason", "backward-pin"],
+            ["from", String(prevPhase)],
+            ["to", String(targetPhase)],
+            ["queue", `[${(Array.isArray(dropped?.phases) ? dropped.phases : [dropped?.phase]).filter(v => typeof v === "number").join(",")}]`]
+          ], `backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
+          debug(`Override cleared: backward transition ${getPhaseName(prevPhase)} → ${getPhaseName(targetPhase)}`);
+        }
       }
       // A backward transition also supersedes any pending auto-advance
       // — the one-shot announcement is stale the moment the user moves back.
@@ -3528,45 +4263,43 @@ async function protocolGateServer(input, options) {
     function autoCheckOffMilestone(relPath, incomingContent, writerSessionID) {
       const milestoneId = extractMilestoneIdFromImplKD(relPath);
       if (!milestoneId) return;
-      // Shared staleness predicate (incoming-content variant): the
-      // before-hook fires before the runtime materializes the file, so the
-      // incoming text is the only content available — the disk-reading
-      // cross-check consults the same parse via isSupersededByFrontmatter, so
-      // registry promotion and checkMilestoneCheckedOff agree on stamped rows.
-      // Fail-open: a call without full incoming text proceeds as before.
+      // Liveness decides with the one parse (FR-01, FR-04). The before-hook
+      // fires before the runtime materializes the file, so the incoming text is
+      // the only content available — the disk-reading cross-check consults the
+      // same parse, so registry promotion and checkMilestoneCheckedOff agree.
       //
-      // Genuine-rewrite clearing (gate-owned): a write that lands over a
-      // frontmatter-stamped file with bytes that differ from the stamped
-      // snapshot is post-stamp fix-up work — its mtime is newer than the
-      // stamp by construction — so the gate clears the stamp itself instead
-      // of declining. This stays robust across dispatch wording variants
-      // (in-place RESULT KD update versus fresh canonical file): the in-place
-      // fix-up that preserved the reopen stamp is exactly what the incident
-      // produced. Promotion is deferred to the after-hook, which re-verifies
-      // the landed bytes against the snapshot, clears the stamp in place
-      // (draft + superseded_by), and only then promotes — promotion never
-      // precedes live evidence. A byte-identical re-write carries no new work
-      // and still declines loudly, leaving the reopened row open.
+      // A stamped artifact is never promoted from the write hook, whatever the
+      // transport carried: the only evidence the gate accepts is the LANDED
+      // file, and the stamp has to settle on it first (FR-08). Settlement is a
+      // disk-state evaluation reachable from the after-hook, the SWARM gate and
+      // stuck-row reconciliation (FR-06), so nothing is lost by waiting.
       const diskSnapshot = readImplKDSnapshot(relPath, writerSessionID);
-      if (typeof incomingContent === "string" && isStaleImplKDContent(incomingContent)) {
-        if (diskSnapshot !== null && diskSnapshot.stale && diskSnapshot.content !== incomingContent) {
-          pendingStampClear.set(writerSessionID, { relPath, base: diskSnapshot.base, dir: diskSnapshot.dir, snapshot: diskSnapshot.content });
-          loud(`STAMP_CLEAR_PENDING: milestone ${milestoneId} genuine fix-up rewrite detected at ${relPath} — incoming bytes differ from the frontmatter-stamped snapshot, so the stamp clears on landing (draft + superseded_by) and the row promotes then.`);
-          return;
+      const artifactBase = relPath.replace(/\\/g, "/").split("/").pop();
+      const incomingVerdict = typeof incomingContent === "string" ? evaluateLiveness(incomingContent) : null;
+      if (diskSnapshot !== null && diskSnapshot.stale) {
+        if (typeof incomingContent === "string" && diskSnapshot.content !== incomingContent) {
+          // A marker that a stamp clear is owed, not a claim about the target:
+          // settlement re-derives the canonical artifact from disk, so this
+          // record cannot redirect it at the path the writer happened to use.
+          pendingStampClear.set(writerSessionID, { relPath, base: diskSnapshot.base });
+          gateRecordEvent("STAMP_CLEAR_PENDING", [
+            ["milestone", milestoneId],
+            ["artifact", artifactBase]
+          ], `milestone ${milestoneId} fix-up rewrite detected at ${relPath} — incoming bytes differ from the stamped digest, so the stamp settles on the landed bytes and the row promotes then`, `STAMP_CLEAR_PENDING|${milestoneId.toUpperCase()}|a:${artifactBase}`);
         }
-        loud(`STALE_CHECKOFF_DECLINED: milestone ${milestoneId} keeps its registry state — incoming impl KD carries a superseded status (stale fix-up write at ${relPath}). Write fresh fix evidence with a live status to re-complete.`);
         return;
       }
-      // A live write over a stamped file with new bytes is genuine post-stamp
-      // work through the other frontmatter shape: the landed bytes are live
-      // evidence, so the normal promotion below proceeds immediately
-      // (pre-existing behavior — the live hook re-fires on live content).
-      // Only the superseded_by lineage is deferred: the after-hook records it
-      // on the landed file, so the fix-up keeps its link to the invalidated
-      // pass.
-      if (typeof incomingContent === "string" && diskSnapshot !== null && diskSnapshot.stale && diskSnapshot.content !== incomingContent) {
-        pendingStampClear.set(writerSessionID, { relPath, base: diskSnapshot.base, dir: diskSnapshot.dir, snapshot: diskSnapshot.content });
-        loud(`STAMP_LINEAGE_PENDING: milestone ${milestoneId} genuine fix-up rewrite detected at ${relPath} — live incoming bytes over a frontmatter-stamped snapshot, so the row promotes now and the superseded_by lineage records on landing.`);
+      if (incomingVerdict && !incomingVerdict.live) {
+        // Not live and no stamped file behind it: the promotion evaluation ran
+        // and did not promote, so it is recorded as a promotion outcome
+        // carrying the liveness reason rather than as a second event.
+        gateRecordEvent("CHECKOFF", [
+          ["milestone", milestoneId],
+          ["artifact", artifactBase],
+          ["promoted", "false"],
+          ["reason", incomingVerdict.reason]
+        ], `milestone ${milestoneId} keeps its registry state — incoming impl KD is not live (${incomingVerdict.reason}) at ${relPath}. Write fresh fix evidence with an allowlisted status to re-complete.`, `CHECKOFF|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}|p:false|r:${incomingVerdict.reason}`);
+        return;
       }
       for (const candidate of collectParentSessionCandidates()) {
         // Disk generation is the SSOT (restart-proof); the map is a fallback.
@@ -3606,6 +4339,16 @@ async function protocolGateServer(input, options) {
         const resolvedId = resolveMilestoneRowId(registry, relPath, milestoneId);
         const result = updateMilestoneRegistry(candidate, sessionPhaseMap, resolvedId, ["checked-off"]);
         debug(`auto check-off: impl KD for milestone ${resolvedId} (parent ${candidate}) → ${JSON.stringify(result)}`);
+        // Always-on promotion record: one line per evaluation, naming the
+        // artifact and the outcome. Without it a row that stays open after a
+        // write is indistinguishable from a write the gate never saw.
+        const promoted = result.ok && result.changed;
+        gateRecordEvent("CHECKOFF", [
+          ["milestone", resolvedId],
+          ["artifact", artifactBase],
+          ["promoted", promoted ? "true" : "false"],
+          ["reason", promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)]
+        ], null, `CHECKOFF|${gateRecordMilestoneTag(resolvedId)}a:${artifactBase}|p:${promoted ? "true" : "false"}|r:${promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)}`);
         // Only a SUCCESSFUL check-off resets the per-milestone
         // redispatch budget. A failed registry update keeps the counter so
         // retries still count toward the cap; a re-opened milestone
@@ -3629,43 +4372,18 @@ async function protocolGateServer(input, options) {
       warn(`AUTO_CHECKOFF_UNMATCHED: ${relPath}`);
     }
 
-    // Settles a deferred genuine-rewrite stamp clear once the file has landed
-    // on disk. Re-verifies genuineness against the pre-write snapshot (the
-    // landed bytes must differ from the stamped snapshot — otherwise no new
-    // work arrived and the row stays open), clears the frontmatter stamp in
-    // place (status: draft, superseded_by naming the invalidated pass at its
-    // canonical path), then promotes through the normal check-off path so
-    // promotion never precedes live evidence. Loud at every outcome,
-    // following the audited diagnostic pattern used across this gate.
-    function settleStampClear(pending, writerSessionID) {
-      const milestoneId = extractMilestoneIdFromImplKD(pending.relPath);
-      if (!milestoneId) return;
-      let landed = null;
-      try {
-        landed = readFileSync(join(pending.dir, pending.base), "utf8");
-      } catch (_) {
-        landed = null;
+    // Settles every deferred genuine-rewrite stamp clear by evaluating disk
+    // state: settlement is idempotent and transport-independent (FR-06), so
+    // this is the after-write fast path sharing one implementation with the
+    // SWARM gate and stuck-row reconciliation. Each attempt, decline and
+    // promotion carries its own always-on line, so a reopened row that never
+    // closes is diagnosable with no debug flag set. The observed write path is
+    // not handed in: settlement reads the canonical artifact, so a write aimed
+    // at a same-basename copy settles nothing here.
+    function settlePendingStampClears() {
+      for (const candidate of collectParentSessionCandidates()) {
+        settleStampClearsForSession(candidate, sessionPhaseMap);
       }
-      if (typeof landed !== "string" || landed === pending.snapshot) {
-        loud(`STAMP_CLEAR_ABORTED: milestone ${milestoneId} keeps its registry state — post-write bytes at ${pending.relPath} carry no new work past the frontmatter-stamped snapshot. Write genuine fix evidence to re-complete.`);
-        return;
-      }
-      const pointer = pending.base;
-      const rewrite = clearSupersededStampContent(landed, pointer);
-      try {
-        atomicWriteFileSync(join(pending.dir, pending.base), rewrite.content);
-      } catch (e) {
-        warn(`STAMP_CLEAR_FAILED: milestone ${milestoneId} stamp clear at ${pending.relPath} failed (${e.message}) — row stays open.`);
-        return;
-      }
-      if (rewrite.cleared) {
-        loud(`STAMP_CLEARED: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — frontmatter stamp cleared in place (status: draft, superseded_by: ${pointer}); the row re-completes on the landed evidence.`);
-      } else if (rewrite.lineageSet) {
-        loud(`STAMP_LINEAGE_RECORDED: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — landed frontmatter already live, superseded_by lineage recorded (${pointer}); the row re-completes on the landed evidence.`);
-      } else {
-        loud(`STAMP_CLEAR_NO_FRONTMATTER: milestone ${milestoneId} genuine fix-up rewrite at ${pending.relPath} — landed bytes carry no frontmatter stamp, promoting on the landed evidence as a fresh write.`);
-      }
-      autoCheckOffMilestone(pending.relPath, rewrite.content, writerSessionID);
     }
 
     // Post-write SWARM→VERIFY auto-advance: after a subagent's impl KD write
@@ -3679,6 +4397,13 @@ async function protocolGateServer(input, options) {
     function advanceParentSessionFromSwarm(candidate) {
       const currentPhase = sessionPhaseMap.get(candidate);
       if (currentPhase !== STATES.SWARM) return false;
+      // The queue decides the next hop here too: a walk naming SWARM followed by
+      // EVOLVE hand the parent to EVOLVE, and a walk still behind SWARM resumes.
+      const decision = nextForwardPhase(sessionPhaseMap, candidate, currentPhase, noWalkFallback(currentPhase));
+      if (decision.outcome === "diverged") {
+        applyForwardAdvance(candidate, currentPhase, decision);
+        return false;
+      }
       // checkDiskAdvancement applies the full SWARM gate including the
       // override fresh-evidence requirement (registry mtime >= since).
       if (!checkDiskAdvancement(candidate, STATES.SWARM, sessionPhaseMap, swarmDispatchCount)) {
@@ -3691,27 +4416,11 @@ async function protocolGateServer(input, options) {
         }
         return false;
       }
-      const newPhase = STATES.VERIFY;
-      enterPhase(sessionPhaseMap, candidate, newPhase);
-      // This parent hand-off is fixed at SWARM → VERIFY; the override queue's
-      // next-named-phase rule governs the disk-evidence advance path only, so a
-      // plan naming SWARM then a phase other than VERIFY is not honored here.
-      // The phase advanced away from the override target on fresh evidence —
-      // re-arm a multi-phase queue or clear a single-phase marker so normal
-      // advancement semantics resume.
-      const overrideUntil = getOverrideUntil(sessionPhaseMap, candidate);
-      if (overrideUntil && currentPhase === getOverrideTargetPhase(overrideUntil)) {
-        if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 1) {
-          const remaining = overrideUntil.phases.slice(1);
-          sessionPhaseMap.set(`${candidate}:overrideUntil`, { phases: remaining, since: overrideUntil.since });
-          debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
-        } else {
-          sessionPhaseMap.delete(`${candidate}:overrideUntil`);
-          sessionPhaseMap.delete(`${candidate}:overrideSafePoint`);
-          sessionPhaseMap.delete(`${candidate}:overrideEvals`);
-          debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} on fresh evidence`);
-        }
-      }
+      // The one transition commit owns the phase entry, the marker settle and
+      // the record — the queue is authoritative here as at every other site.
+      const applied = applyForwardAdvance(candidate, currentPhase, decision);
+      if (applied.entered === null) return false;
+      const newPhase = applied.entered;
       diskCheckFailures.set(candidate, 0);
       inFlightDispatches.delete(candidate);
       pendingVerification.delete(candidate);
@@ -3729,7 +4438,6 @@ async function protocolGateServer(input, options) {
         to: getPhaseName(newPhase),
         reason
       });
-      saveState(candidate);
       debug(`POST_WRITE_ADVANCE: ${getPhaseName(currentPhase)} → ${getPhaseName(newPhase)} for parent session ${candidate} (${reason})`);
       return true;
     }
@@ -3870,6 +4578,13 @@ async function protocolGateServer(input, options) {
             enterPhase(sessionPhaseMap, sessionID, safePoint.phase);
             sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
             sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+            gateRecordEvent("WALK_CLEARED", [
+              ["session", sessionID],
+              ["reason", "explicit"],
+              ["from", String(currentPhase)],
+              ["to", String(safePoint.phase)],
+              ["queue", `[${marker.phases.join(",")}]`]
+            ], "wedged-queue-rollback");
             recordPhaseOverride(sessionPhaseMap, sessionID, { at, from: currentPhase, wedgedHop: marker.phases[0], rolledBackTo: wedgeError.safePoint });
             saveState(sessionID);
             debug(`Wedged queue: head ${getPhaseName(marker.phases[0])} earned no fresh evidence — rolled back to ${getPhaseName(safePoint.phase)} for session ${sessionID}`);
@@ -3880,6 +4595,13 @@ async function protocolGateServer(input, options) {
           sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
           sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
           sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+          gateRecordEvent("WALK_CLEARED", [
+            ["session", sessionID],
+            ["reason", "explicit"],
+            ["from", String(currentPhase)],
+            ["to", String(currentPhase)],
+            ["queue", `[${(Array.isArray(marker?.phases) ? marker.phases : [marker?.phase]).filter(v => typeof v === "number").join(",")}]`]
+          ]);
           recordPhaseOverride(sessionPhaseMap, sessionID, { at, from: currentPhase, to: currentPhase, cleared: true, ...(generationSuffix !== null ? { gen: generationSuffix } : {}) });
           saveState(sessionID);
           debug(`Override cleared: explicit /phase clear at ${getPhaseName(currentPhase)} for session ${sessionID}`);
@@ -3921,6 +4643,14 @@ async function protocolGateServer(input, options) {
         const rejected = validateMultiPhaseWalk(phases, currentPhase, BACKWARD_TRANSITIONS);
         if (rejected) {
           output.phaseError = { from: rejected.from, to: rejected.to, reason: rejected.reason };
+          // Always-on rejection record: the walk was not committed, and the log
+          // names the hop and the class that refused it, so a user whose queue
+          // was silently shortened can read why from the log alone.
+          gateRecordEvent("WALK_REJECTED", [
+            ["session", sessionID],
+            ["hop", String(rejected.to)],
+            ["reason", rejected.reason]
+          ], `commit-time validation refused hop ${getPhaseName(rejected.to)} (${rejected.to})`);
           output.parts = [{ type: "text", text: describeRejectedWalk(rejected) }];
           return;
         }
@@ -3966,11 +4696,33 @@ async function protocolGateServer(input, options) {
       // origin phase carried in `overrideSafePoint`. A new /phase replaces any
       // prior marker (clear-on-new-override); the marker also clears on a
       // backward transition or REPORT reset.
-      if (isMulti) {
-        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases, since: Date.now() });
-      } else {
-        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since: Date.now() });
+      // A commit that replaces a live marker clears it first, so the record
+      // order reads as the two events it is.
+      if (sessionPhaseMap.has(`${sessionID}:overrideUntil`)) {
+        const replaced = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
+        gateRecordEvent("WALK_CLEARED", [
+          ["session", sessionID],
+          ["reason", "replaced"],
+          ["from", String(prevPhase)],
+          ["to", String(n)],
+          ["queue", `[${(Array.isArray(replaced?.phases) ? replaced.phases : [replaced?.phase]).filter(v => typeof v === "number").join(",")}]`]
+        ]);
       }
+      const since = Date.now();
+      if (isMulti) {
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases, since });
+      } else {
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phase: n, since });
+      }
+      // Always-on walk commit: the marker every later hop is judged against,
+      // readable with no debug flag set.
+      gateRecordEvent("WALK_COMMIT", [
+        ["session", sessionID],
+        ["from", String(prevPhase)],
+        ["to", String(n)],
+        ["queue", `[${phases.join(",")}]`],
+        ["kind", isMulti ? "walk" : "pin"]
+      ]);
       // The one-line override record: the walk lands in lifecycle state
       // (overrideHistory, persisted by the saveState below) and is echoed in
       // the confirmation so lifecycle KDs can cite it without reading logs.
@@ -3984,6 +4736,21 @@ async function protocolGateServer(input, options) {
         ...(walkSafePoint ? { safePoint: { phase: walkSafePoint.phase, marker: walkSafePoint.marker } } : {}),
         ...(generationSuffix !== null ? { gen: generationSuffix } : {})
       });
+      // A commit whose target is REPORT has already reached the terminal hop:
+      // the report is written there, so the walk ends on arrival and the marker
+      // never outlives it. This is the one completion the commit itself owns —
+      // every other terminal arrival goes through applyForwardAdvance.
+      if (n === STATES.REPORT) {
+        sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+        sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+        sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+        gateRecordEvent("WALK_COMPLETE", [
+          ["session", sessionID],
+          ["terminal", "REPORT"],
+          ["kind", isMulti ? "hop" : "pin"]
+        ]);
+        debug(`WALK_COMPLETE: session ${sessionID} reached terminal REPORT by /phase commit`);
+      }
       // A manual /phase override supersedes any pending auto-advance.
       // The one-shot announcement must not leak into the next systemTransform —
       // e.g. a stale "auto-advanced EXPLORE → INVESTIGATE" after a redispatch to
@@ -4007,7 +4774,9 @@ async function protocolGateServer(input, options) {
         clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID);
       }
       const marker = sessionPhaseMap.get(`${sessionID}:overrideUntil`);
-      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — overrideUntil set (${isMulti ? `queue ${JSON.stringify(phases)}` : `phase ${n}`}, since ${marker.since})`);
+      debug(`Phase override: ${getPhaseName(n)} (${n}) for session ${sessionID} — ${marker
+        ? `overrideUntil set (${isMulti ? `queue ${JSON.stringify(phases)}` : `phase ${n}`}, since ${since})`
+        : `terminal REPORT reached, marker cleared on arrival (since ${since})`}`);
       const walk = isMulti ? `, queue ${JSON.stringify(phases)}` : "";
       output.parts = [{ type: "text", text: isMulti
         ? `Phase set to ${getPhaseName(n)} (${n}) for session ${sessionID} — override queue ${JSON.stringify(phases)}.${genNote} Override record: ${getPhaseName(prevPhase)} (${prevPhase}) → ${getPhaseName(n)} (${n})${walk} at ${at} — persisted in lifecycle state (overrideHistory).`
@@ -4045,6 +4814,118 @@ async function protocolGateServer(input, options) {
       return overseerSessions.has(sid);
     }
 
+    // The ONE transition commit (IC-5). Every forward-advance site decides its
+    // next phase with nextForwardPhase and lands it here: the phase entry, the
+    // marker settle (pop / suspend-clear / resume re-anchor / clear / complete),
+    // the safe-point drop and the single always-on transition record exist in
+    // this one place, and no site mutates the marker inline. The site keeps its
+    // own counters, announcements and bookkeeping.
+    // A `diverged` decision never advances and never falls through to presence
+    // evidence: it records the divergence and returns entered: null, so every
+    // caller reads "refuse" the same way it reads a closed gate.
+    function applyForwardAdvance(sessionID, fromPhase, decision) {
+      const marker = getOverrideUntil(sessionPhaseMap, sessionID);
+      if (decision.outcome === "diverged") {
+        gateRecordEvent("WALK_DIVERGED", [
+          ["session", sessionID],
+          ["phase", String(fromPhase)],
+          ["head", String(decision.head)],
+          ["queue", `[${decision.queue.join(",")}]`]
+        ], `phase ${getPhaseName(fromPhase)} (${fromPhase}) is ahead of the walk head`, `WALK_DIVERGED|${sessionID}|${fromPhase}|${decision.head}|${decision.queue.join(",")}`);
+        debug(`WALK_DIVERGED: session ${sessionID} phase=${fromPhase} head=${decision.head} queue=${JSON.stringify(decision.queue)} — refusing to advance`);
+        return { entered: null, walk: "unchanged" };
+      }
+      const target = decision.target;
+      if (typeof target !== "number") {
+        // Defensive: a governed hop yielding no target. Recorded rather than
+        // silently treated as a closed gate, so a walk that parks is diagnosable.
+        gateRecordEvent("WALK_BLOCKED", [
+          ["session", sessionID],
+          ["phase", String(fromPhase)],
+          ["outcome", decision.outcome],
+          ["queue", `[${decision.queue.join(",")}]`]
+        ], `walk outcome ${decision.outcome} produced no forward target`);
+        debug(`WALK_BLOCKED: session ${sessionID} phase=${fromPhase} outcome=${decision.outcome} — no forward target`);
+        return { entered: null, walk: "unchanged" };
+      }
+
+      enterPhase(sessionPhaseMap, sessionID, target);
+      let walk = "unchanged";
+      const queueOf = (m) => `[${(Array.isArray(m?.phases) ? m.phases : [m?.phase]).filter(v => typeof v === "number").join(",")}]`;
+
+      if (decision.outcome === "hop") {
+        // Consuming the head pops it: the next hop becomes the head and the
+        // re-entry anchor, if this hop carried one, is cleared with the hop it
+        // anchored — later hops are anchored to the walk's own `since` again.
+        const remaining = decision.queue.slice(1);
+        const rearmed = { phases: remaining, since: marker.since };
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, rearmed);
+        sessionPhaseMap.set(`${sessionID}:overrideEvals`, 0);
+        gateRecordEvent("WALK_HOP", [
+          ["session", sessionID],
+          ["from", String(fromPhase)],
+          ["to", String(target)],
+          ["queue", `[${remaining.join(",")}]`]
+        ]);
+        debug(`WALK_HOP: ${getPhaseName(fromPhase)} → ${getPhaseName(target)} — queue now ${JSON.stringify(remaining)}`);
+        walk = "popped";
+      } else if (decision.outcome === "resume") {
+        // Re-entering the suspended head stamps the re-entry instant: the hop
+        // now demands evidence written at or after this moment, so nothing from
+        // before the regression can satisfy it.
+        const hopSince = Date.now();
+        sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: decision.queue, since: marker.since, hopSince });
+        sessionPhaseMap.set(`${sessionID}:overrideEvals`, 0);
+        gateRecordEvent("WALK_RESUMED", [
+          ["session", sessionID],
+          ["phase", String(target)],
+          ["hopSince", String(hopSince)]
+        ]);
+        debug(`WALK_RESUMED: session ${sessionID} re-entered ${getPhaseName(target)} (${target}) with hopSince=${hopSince}`);
+        walk = "resumed";
+      } else if (decision.outcome === "terminal-report") {
+        // REPORT is the terminal hop — the walk ends where the report is
+        // written, so the marker never outlives the arrival.
+        sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+        sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+        sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+        gateRecordEvent("WALK_COMPLETE", [
+          ["session", sessionID],
+          ["terminal", "REPORT"],
+          ["kind", "hop"]
+        ]);
+        debug(`WALK_COMPLETE: session ${sessionID} reached terminal REPORT by hop`);
+        walk = "completed";
+      } else if (decision.outcome === "origin-return") {
+        const kind = Array.isArray(marker?.phases) ? "hop" : "pin";
+        sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
+        sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
+        sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
+        if (target === STATES.REPORT) {
+          gateRecordEvent("WALK_COMPLETE", [
+            ["session", sessionID],
+            ["terminal", "REPORT"],
+            ["kind", kind]
+          ]);
+          debug(`WALK_COMPLETE: session ${sessionID} reached terminal REPORT by ${kind}`);
+          walk = "completed";
+        } else {
+          gateRecordEvent("WALK_CLEARED", [
+            ["session", sessionID],
+            ["reason", decision.clearReason || WALK_CLEAR_REASON.EXHAUSTED],
+            ["from", String(fromPhase)],
+            ["to", String(target)],
+            ["queue", queueOf(marker)]
+          ]);
+          debug(`WALK_CLEARED: reason=${decision.clearReason} — ${getPhaseName(fromPhase)} → ${getPhaseName(target)}`);
+          walk = "cleared";
+        }
+      }
+
+      saveState(sessionID);
+      return { entered: target, walk };
+    }
+
     // Shared disk-evidence advancement. Evaluates checkDiskAdvancement for
     // the session's current phase and performs the full transition
     // bookkeeping on positive evidence (override re-arm/clear, failure
@@ -4057,6 +4938,13 @@ async function protocolGateServer(input, options) {
     async function advanceFromDiskEvidence(sessionID) {
       const currentPhase = sessionPhaseMap.get(sessionID);
       const currentPhaseName = getPhaseName(currentPhase);
+      // The next hop is decided before any gate is read: a walk whose head sits
+      // behind the current phase refuses regardless of what the evidence says.
+      const decision = nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, noWalkFallback(currentPhase));
+      if (decision.outcome === "diverged") {
+        applyForwardAdvance(sessionID, currentPhase, decision);
+        return false;
+      }
       if (!(await checkDiskAdvancement(sessionID, currentPhase, sessionPhaseMap, swarmDispatchCount, { verdictRegressedKDs, backwardTransition: handleBackwardTransition }))) {
         // Stall accounting — see advanceParentSessionFromSwarm above.
         const stalledMarker = getOverrideUntil(sessionPhaseMap, sessionID);
@@ -4066,49 +4954,12 @@ async function protocolGateServer(input, options) {
         return false;
       }
 
-        // Advance target. The default machine steps serially, but an active
-        // override queue at its head redirects the step: the queue is a forward
-        // plan of target phases, so on fresh evidence the lifecycle moves to the
-        // next NAMED phase (phases[1]) — a skipped hop (e.g. 1 → 3, preflight
-        // already done) is never re-entered. When the plan is exhausted (the
-        // last named hop, or a single-phase marker) the lifecycle returns to the
-        // phase the override started from — the walk safe point — so a detour
-        // re-enters the default machine where it left it instead of drifting
-        // forward past the origin. Origin return applies only when that phase
-        // lies ahead of the plan's end; an origin behind it (e.g. /phase PREFLIGHT
-        // issued from INTENT) would be a backward jump the serial machine never
-        // makes, so the serial step stands.
-        const overrideUntil = getOverrideUntil(sessionPhaseMap, sessionID);
-        const overrideAtHead = !!overrideUntil && currentPhase === getOverrideTargetPhase(overrideUntil);
-        let advanceTarget = currentPhase + 1;
-        if (overrideUntil && overrideAtHead) {
-          const named = Array.isArray(overrideUntil.phases) ? overrideUntil.phases : [overrideUntil.phase];
-          if (named.length > 1) {
-            advanceTarget = named[1];
-          } else {
-            const safePoint = sessionPhaseMap.get(`${sessionID}:overrideSafePoint`);
-            const origin = safePoint && typeof safePoint.phase === "number" ? safePoint.phase : null;
-            advanceTarget = origin !== null && origin > currentPhase ? origin : currentPhase + 1;
-          }
-        }
-        enterPhase(sessionPhaseMap, sessionID, advanceTarget);
-        // The phase advanced away from the override target on fresh evidence.
-        // A multi-phase queue re-arms to the next named phase (pop the head) so
-        // the plan survives the auto-advance; a single-phase marker (or an
-        // exhausted queue) clears once the origin has been restored, so normal
-        // advancement semantics resume.
-        if (overrideUntil && overrideAtHead) {
-          if (Array.isArray(overrideUntil.phases) && overrideUntil.phases.length > 1) {
-            const remaining = overrideUntil.phases.slice(1);
-            sessionPhaseMap.set(`${sessionID}:overrideUntil`, { phases: remaining, since: overrideUntil.since });
-            debug(`Override re-armed: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(advanceTarget)} on fresh evidence — queue now ${JSON.stringify(remaining)}`);
-          } else {
-            sessionPhaseMap.delete(`${sessionID}:overrideUntil`);
-            sessionPhaseMap.delete(`${sessionID}:overrideSafePoint`);
-            sessionPhaseMap.delete(`${sessionID}:overrideEvals`);
-            debug(`Override cleared: advanced ${getPhaseName(currentPhase)} → ${getPhaseName(advanceTarget)} on fresh evidence${advanceTarget !== currentPhase + 1 ? " (origin return)" : ""}`);
-          }
-        }
+        // The one transition commit owns enterPhase, the marker settle, the
+        // record and the save — see applyForwardAdvance. The sites keep only
+        // their own counters and announcements.
+        const applied = applyForwardAdvance(sessionID, currentPhase, decision);
+        if (applied.entered === null) return false;
+        const advanceTarget = applied.entered;
         diskCheckFailures.set(sessionID, 0);
         // Clear in-flight tracking — KD appeared on disk, dispatch is complete
         inFlightDispatches.delete(sessionID);
@@ -4185,7 +5036,6 @@ async function protocolGateServer(input, options) {
           to: getPhaseName(newPhase),
           reason: advancementGateEvidence || null
         });
-        saveState(sessionID);
         // When entering PREFLIGHT, skip the next disk check to give the Overseer
         // time to dispatch the committer before advancement to EXPLORE.
         if (newPhase === STATES.PREFLIGHT) {
@@ -4310,7 +5160,7 @@ async function protocolGateServer(input, options) {
           // only when chat.params carried the agent field, so a session whose
           // agent is unknown must still trigger the check-off (the observed
           // silent-skip root cause, issue 71).
-          const isImplKD = /^knowledge\/impl-/i.test(relPath) || /\/knowledge\/impl-/i.test(relPath);
+          const isImplKD = isImplKDArtifactPath(relPath);
           if (isImplKD) {
             const writingAgent = sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown";
             if (writingAgent !== "artisan") {
@@ -4760,14 +5610,18 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                   inFlightDispatches.delete(sessionID);
                   saveState(sessionID);
                 } else {
-                  debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → VERIFY after ${currentFailures} stuck failures (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
-                  enterPhase(sessionPhaseMap, sessionID, STATES.VERIFY);
+                  // The force-advance is a forward-advance site like any other:
+                  // at a walk head it takes the next named hop, behind the head
+                  // it re-enters the head, and ahead of it it refuses. VERIFY is
+                  // only the no-walk fallback.
+                  const forced = nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, noWalkFallback(currentPhase, true));
+                  debug(`SAFETY_OVERRIDE: FORCE ADVANCE — ${currentPhaseName} → ${getPhaseName(forced.target)} after ${currentFailures} stuck failures (outcome=${forced.outcome}, pendingVerification active=${!!pendingVerification.get(sessionID)})`);
+                  applyForwardAdvance(sessionID, currentPhase, forced);
                   diskCheckFailures.set(sessionID, 0);
                   phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
                   pendingVerification.delete(sessionID);
                   pendingVerificationToolCount.delete(sessionID);
                   inFlightDispatches.delete(sessionID);
-                  saveState(sessionID);
                 }
                 safetyTriggered = true;
               } else {
@@ -4807,14 +5661,14 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                     saveState(sessionID);
                     throw new ProtocolGateError("SAFETY_STUCK", `❌ SAFETY_STUCK: SWARM re-dispatch cap (${redispatches}) reached — milestone marked failed. Escalate to user or override with /phase`, "Escalate to user or use /phase to override");
                   }
-                  debug(`SAFETY_OVERRIDE: REDISPATCH CAP — ${currentPhaseName} phase — ${redispatches} re-dispatches used. Advancing to VERIFY (pendingVerification active=${!!pendingVerification.get(sessionID)})`);
-                  enterPhase(sessionPhaseMap, sessionID, STATES.VERIFY);
+                  const capped = nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, noWalkFallback(currentPhase, true));
+                  debug(`SAFETY_OVERRIDE: REDISPATCH CAP — ${currentPhaseName} phase — ${redispatches} re-dispatches used. Advancing to ${getPhaseName(capped.target)} (outcome=${capped.outcome}, pendingVerification active=${!!pendingVerification.get(sessionID)})`);
+                  applyForwardAdvance(sessionID, currentPhase, capped);
                   diskCheckFailures.set(sessionID, 0);
                   phaseRedispatchCount.delete(`${sessionID}:${currentPhase}`);
                   pendingVerification.delete(sessionID);
                   pendingVerificationToolCount.delete(sessionID);
                   inFlightDispatches.delete(sessionID);
-                  saveState(sessionID);
                   safetyTriggered = true;
                 }
               }
@@ -4844,13 +5698,13 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
                       inFlightDispatches.delete(sessionID);
                       saveState(sessionID);
                     } else {
-                      debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
+                      const timedOut = nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, noWalkFallback(currentPhase, true));
+                      debug(`pendingVerification SAFETY: force-advance after ${toolCalls} tool calls — advancing to ${getPhaseName(timedOut.target)} (outcome=${timedOut.outcome}) — expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)}`);
                       pendingVerification.delete(sessionID);
                       pendingVerificationToolCount.delete(sessionID);
-                      enterPhase(sessionPhaseMap, sessionID, STATES.VERIFY);
+                      applyForwardAdvance(sessionID, currentPhase, timedOut);
                       diskCheckFailures.set(sessionID, 0);
                       inFlightDispatches.delete(sessionID);
-                      saveState(sessionID);
                     }
                   } else if (toolCalls >= 10) {
                     debug(`pendingVerification WARNING: ${toolCalls} tool calls without expected KD — clearing pendingVerification (expectedPrefixes=${JSON.stringify(pvState.expectedPrefixes)})`);
@@ -4901,8 +5755,30 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       if (tool === "subagent") {
         // Task is only allowed during delegation phases (PREFLIGHT through CLEANUP)
         if (phase < STATES.PREFLIGHT || phase > STATES.CLEANUP) {
+          // The refusal names the phase the gate is actually in. A hardcoded
+          // phase name told the operator the lifecycle was in INTENT no matter
+          // where it stood, so a lifecycle parked at REPORT read as a stalled
+          // INTENT run and the recovery for the real phase was invisible.
+          const terminal = phase === STATES.REPORT
+            ? ` ${phaseName} is the terminal phase — write the report KD; no dispatch is needed.`
+            : " Task is only available in PREFLIGHT through CLEANUP phases";
+          // A refusal while an override governs the phase names that state too:
+          // the walk's head, remaining hops, suspension or divergence sentence —
+          // one formatter, so the refusal and the wrong-agent refusal can never
+          // describe the same walk differently.
+          const walkState = describeOverrideState(sessionPhaseMap, sessionID, phase);
+          gateRecordEvent("DISPATCH_REFUSED", [
+            ["session", sessionID],
+            ["phase", phaseName],
+            ["number", String(phase)],
+            ["reason", "phase-restriction"]
+          ], `task dispatch refused — ${phaseName} (${phase}) is outside PREFLIGHT through CLEANUP`);
           debug(`task: BLOCKED phase=${phaseName} (task not allowed outside delegation phases)`);
-          throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Task dispatch not allowed in INTENT phase. Task is only available in PREFLIGHT through CLEANUP phases", "Wait for delegation phase");
+          throw new ProtocolGateError(
+            ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code,
+            `❌ BLOCKED: Task dispatch not allowed in ${phaseName} (${phase}) phase.${terminal}${walkState ? ` ${walkState}` : ""}`,
+            phase === STATES.REPORT ? "Write the report KD — REPORT takes no dispatch" : "Wait for delegation phase"
+          );
         }
 
         const prompt = args?.prompt || "";
@@ -5066,16 +5942,14 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       if ((tool === "write" || tool === "edit") && !isOverseerSession(sessionID)) {
         const relPath = pendingImplKDWrites.get(sessionID);
         pendingImplKDWrites.delete(sessionID);
-        // Settle a deferred genuine-rewrite stamp clear BEFORE the advance
-        // evaluation below: the stamp clears (draft + superseded_by) and the
-        // row promotes first, so disk-advancement observes live evidence and
-        // SWARM→VERIFY advances through the evidence path.
+        // Settle a deferred stamp clear BEFORE the advance evaluation below: the
+        // stamp clears and the row promotes first, so disk-advancement observes
+        // live evidence and SWARM→VERIFY advances through the evidence path.
         const pending = pendingStampClear.get(sessionID);
         pendingStampClear.delete(sessionID);
-        if (pending && (/^knowledge\/impl-/i.test(pending.relPath) || /\/knowledge\/impl-/i.test(pending.relPath))) {
-          settleStampClear(pending, sessionID);
-        }
-        if (relPath && (/^knowledge\/impl-/i.test(relPath) || /\/knowledge\/impl-/i.test(relPath))) {
+        const isImplWrite = isImplKDArtifactPath(relPath);
+        if (pending || isImplWrite) settlePendingStampClears();
+        if (isImplWrite) {
           for (const candidate of collectParentSessionCandidates()) {
             advanceParentSessionFromSwarm(candidate);
           }
@@ -5217,25 +6091,32 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
           debug(`systemTransform: announced phase auto-advance ${announcement.from} → ${announcement.to} for session ${sessionID}`);
         }
 
-        // INTENT-phase verbatim raw-intent injection. The captured
-        // user text is relayed word-for-word into the Raw Request authoring
-        // flow, removing model discretion over the verbatim copy. Only entry 0
-        // opened the lifecycle, so only its line carries the copy directive:
-        // later entries stay in the block as the audit trail of what the user
-        // said, labelled as follow-ups and routed to the Triage Notes. Read-only:
-        // the directive instructs a copy, never an auto-write — the
-        // Overseer remains the KD author. Fires only while phase stays INTENT
-        // (may repeat on subsequent turns; stops automatically on advance).
-        // Overseer-only: this block is inside the isOverseerSession
-        // gate at the top of systemTransform.
+        // INTENT-phase raw-intent injection. The captured user text is relayed
+        // into the Raw Request authoring flow so downstream agents receive the
+        // words they must execute; the axis is the kind of message, not its
+        // position. A task specification addressed to the swarm is copied
+        // verbatim, because a paraphrase mangles what downstream agents must
+        // execute. A discussion with the Overseer about process is summarized,
+        // and its gist — what is to be done — becomes the request, with the
+        // message listed in Triage Notes beside its disposition; a message
+        // about the Overseer's conduct or the process state is a disposition
+        // only, never request material. Discriminating test: would a
+        // downstream agent need these exact words to do its job? Position is a
+        // tie-breaker, not the rule — a later message carrying the task
+        // specification becomes the Raw Request verbatim. Read-only: the
+        // directive instructs a copy, never an auto-write — the Overseer
+        // remains the KD author. Fires only while phase stays INTENT (may
+        // repeat on subsequent turns; stops automatically on advance).
+        // Overseer-only: this block is inside the isOverseerSession gate at the
+        // top of systemTransform.
         if (phase === STATES.INTENT && sessionID) {
           const captured = rawIntentCapture.get(sessionID);
           if (captured && captured.length > 0) {
             captured.forEach((entry, i) => {
               if (i === 0) {
-                output.system.push(`[Protocol Gate] Raw user request (verbatim) — the opening request: copy exactly, word for word, into the Raw Request section of the intent KD. Do not paraphrase or summarize. — Message ${i + 1}: ${entry.text}`);
+                output.system.push(`[Protocol Gate] Earliest user message — Message ${i + 1}: ${entry.text} — Classify this message before writing the Raw Request. If it is a task specification addressed to the swarm, copy it verbatim into the Raw Request section of the intent KD, because a paraphrase mangles what downstream agents must execute. If it is a discussion with the Overseer about process, summarize its gist — what is to be done — as the Raw Request and list the message in Triage Notes beside its disposition. A message about the Overseer's conduct or the process state is a disposition only, never request material. Discriminating test: would a downstream agent need these exact words to do its job? Position is a tie-breaker, not the rule — a later message carrying the task specification becomes the Raw Request verbatim and this discussion is triaged.`);
               } else {
-                output.system.push(`[Protocol Gate] Follow-up message — this follow-up arrived after the opening request. Distill it into the Triage Notes section of the intent KD with its disposition. — Message ${i + 1}: ${entry.text}`);
+                output.system.push(`[Protocol Gate] Follow-up message — Message ${i + 1}: ${entry.text} — If this follow-up carries the task specification, that message becomes the Raw Request verbatim; if it is a discussion with the Overseer about process, summarize its gist — what is to be done — as the request and route the message to Triage Notes with its disposition; a message about the Overseer's conduct or the process state is a disposition only, never request material. Discriminating test: would a downstream agent need these exact words to do its job? Position is a tie-breaker, not the rule.`);
               }
             });
           }
@@ -5330,7 +6211,26 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       evaluatePreflightVerdict,
       reopenCheckedOffMilestones,
       regressVerifyOnFail,
-      extractMilestoneCitationsFromReviewKD,
+      // IC-1 liveness surface: one allowlist, one parse, plus the file-level
+      // wrapper and the labelling/audit seams the migration phases use.
+      LIVE_STATUSES,
+      evaluateLiveness,
+      evaluateLivenessFile,
+      isStaleImplKDContent,
+      isLiveEvidenceFile,
+      isSupersededByFrontmatter,
+      readImplKDSnapshot,
+      labelEvidenceStatus,
+      auditStrictLivenessWouldReject,
+      // IC-2/IC-3 surfaces: stamp digests, the settlement entry point and the
+      // structured reopen target parser.
+      stampImplKDSuperseded,
+      amendStampContent,
+      digestContent,
+      getStampSnapshots,
+      settleStampClearForArtifact,
+      settleStampClearsForSession,
+      parseReopenTarget,
       verdictRegressedKDs,
       collectParentSessionCandidates,
       getPersistedGeneration,
@@ -5353,6 +6253,12 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       validateMultiPhaseWalk,
       describeRejectedWalk,
       queueHeadHasFreshEvidence,
+      // IC-4/IC-5 public seams: the walk shape test and the one next-hop
+      // decision, bound to this server's session map so the standing suite
+      // reads them off the public surface with the documented arity.
+      walkExists: (sessionID) => walkExists(sessionPhaseMap, sessionID),
+      nextForwardPhase: (sessionID, currentPhase, fallbackTarget) =>
+        nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, fallbackTarget),
       argsFromPrompt,
       saveState,
       loadState,

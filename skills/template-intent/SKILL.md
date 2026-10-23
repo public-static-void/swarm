@@ -16,13 +16,13 @@ superseded_by: null
 
 <!-- Filename: knowledge/intent-{{name}}-{{session_id}}-gen{{generation}}.md -->
 <!-- GENERATION: {{generation}} is the lifecycle counter from protocol-gate state. Each lifecycle's KDs are scoped to its generation (`-genN-` after the session ID) so stale KDs from prior lifecycles are never matched. Use the generation value provided by the dispatcher. -->
-<!-- Template has no decision points — the Overseer writes Raw Request verbatim. -->
+<!-- Template has no decision points. The Overseer classifies the message before writing: a task specification addressed to the swarm is copied verbatim, because a paraphrase mangles what downstream agents must execute; a discussion with the Overseer about process is summarized, and its gist — what is to be done — becomes the request while the message itself goes to Triage Notes with its disposition. A message about the Overseer's conduct or the process state is a disposition: it belongs in Triage Notes, and the request text comes from the specification or the gist. Discriminating test: would a downstream agent need these exact words to do its job? Position is a tie-breaker, not the rule — a later message carrying the task specification becomes the Raw Request verbatim and the earlier discussion is triaged. -->
 
 # INTENT: {{title}}
 
 ## Raw Request
 
-{{The user's original request, captured VERBATIM — copy word for word}}
+{{The Raw Request, written from the classification: a task specification addressed to the swarm is copied verbatim — word for word, because a paraphrase mangles what downstream agents must execute; a discussion with the Overseer about process is summarized, and its gist — what is to be done — is the request, with the message listed in Triage Notes beside its disposition. A message about the Overseer's conduct or the process state is a disposition: it belongs in Triage Notes, and the request text comes from the specification or the gist. Discriminating test: would a downstream agent need these exact words to do its job? Position is a tie-breaker, not the rule — a later message carrying the task specification becomes the Raw Request verbatim.}}
 
 ## Triage Notes
 
