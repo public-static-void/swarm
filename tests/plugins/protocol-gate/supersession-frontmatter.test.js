@@ -92,13 +92,13 @@ ${table}
 `;
   }
 
-  async function writeImplKD(artisan, filePath) {
+  async function writeImplKD(artisan, filePath, content) {
     await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
     await hooks["tool.execute.before"](
       { tool: "write", sessionID: artisan, callID: `c-${Date.now()}` },
-      { args: { filePath, content: "# IMPLEMENTATION SUMMARY (fix)" } }
+      { args: { filePath, content } }
     );
-    createKD(filePath.split("/").pop());
+    createKD(filePath.split("/").pop(), content);
   }
 
   function knowledgeFiles() {
@@ -128,7 +128,7 @@ ${table}
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
 
     // Fresh canonical evidence re-completes the row without any override.
-    await writeImplKD("m6-supersede-1-art", `knowledge/impl-M6-fix-${s}-gen0.md`);
+    await writeImplKD("m6-supersede-1-art", `knowledge/impl-M6-fix-${s}-gen0.md`, implKD(s));
     const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
     expect(content).toContain("  M6: checked-off");
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
@@ -147,8 +147,13 @@ ${table}
     expect(hooks.checkMilestoneCheckedOff(s, hooks.sessionPhaseMap, "M6").checkedOff).toBe(false);
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
     const log = readFileSync(join(protocolLogDir, "protocol-gate.log"), "utf8");
-    expect(log).toContain("STALE_EVIDENCE");
-    expect(log).toContain("milestone M6");
+    // The stamp refusal is a promotion evaluation that did not promote, so it is
+    // recorded once as CHECKOFF with its liveness reason — the always-on surface
+    // an operator reads instead of the retired STALE_EVIDENCE diagnostic.
+    expect(log).toContain("CHECKOFF:");
+    expect(log).toContain("promoted=false");
+    expect(log).toContain("reason=stale-status");
+    expect(log).toContain("milestone=M6");
     expect(log).toContain(`impl-M6-old-${s}-gen0.md`);
   });
 
@@ -161,7 +166,7 @@ ${table}
     createKD(`impl-M6-first-${s}-gen0.md`, implKD(s));
 
     hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M6", ["in-progress"], { reopen: true, trigger: "test-reopen-1" });
-    await writeImplKD("m6-supersede-3-art", `knowledge/impl-M6-fix-${s}-gen0.md`);
+    await writeImplKD("m6-supersede-3-art", `knowledge/impl-M6-fix-${s}-gen0.md`, implKD(s));
     expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M6: checked-off");
     hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M6", ["in-progress"], { reopen: true, trigger: "test-reopen-2" });
 

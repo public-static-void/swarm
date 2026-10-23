@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync
 import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
-import { createWalkHarness } from "./walk-unification-fixture.js";
+import { createWalkHarness, implKDContent } from "./walk-unification-fixture.js";
 
 // Observability of the control gates: the dispatch refusal names the phase the
 // lifecycle is actually in, and every walk mutation that exists today leaves an
@@ -118,7 +118,10 @@ ${table}
 `;
   }
 
-  function reviewKD(verdict, citation) {
+  // A FAIL states its reopen target in the review frontmatter (FR-11); the
+  // finding body names the same row as inert prose.
+  function reviewKD(verdict, target) {
+    const targetLine = verdict === "FAIL" && target ? `reopen_target: [${target}]\n` : "";
     return `---
 title: "REVIEW: test"
 version: 1.0.0
@@ -128,7 +131,7 @@ session_id: "ses_test"
 author: Inspector
 superseded_by: null
 verdict: ${verdict}
----
+${targetLine}---
 
 # REVIEW: test
 
@@ -140,7 +143,7 @@ ${verdict}
 
 ### F001: defect
 
-- **Milestone citation**: ${citation}
+- **Milestone**: ${target}
 - **Status**: ${verdict}
 `;
   }
@@ -257,7 +260,7 @@ ${verdict}
     hooks.sessionPhaseMap.set(b, hooks.STATES.SWARM);
     hooks.sessionPhaseMap.set(`${b}:sid`, b);
     createKD(`milestones-feature-${b}.md`, registryContent([["M1", "checked-off"]]));
-    createKD(`impl-M1-seed-${b}-gen0.md`, "impl evidence");
+    createKD(`impl-M1-seed-${b}-gen0.md`, implKDContent(b));
     const outB = { parts: [] };
     await hooks["command.execute.before"]({ command: "phase", sessionID: b, arguments: "VERIFY" }, outB);
     expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.VERIFY);
@@ -296,13 +299,13 @@ describe("Protocol-Gate override walk unification", () => {
   // evidence the SWARM hop advances on.
   function swarmEvidence(s, rows = [["M1", "checked-off"]]) {
     h.createRegistry(s, rows);
-    for (const [id] of rows) h.createKD(`impl-${id}-${s}.md`, "# IMPLEMENTATION SUMMARY");
+    for (const [id] of rows) h.createKD(`impl-${id}-${s}.md`, h.implKD(s));
   }
 
   // Closes a milestone row the FAIL regression reopened, backed by a fresh
   // impl KD so the all-checked-off gate sees disk evidence.
   function reclose(s, id = "M1") {
-    h.createKD(`impl-${id}-repair-${s}.md`, "# IMPLEMENTATION SUMMARY");
+    h.createKD(`impl-${id}-repair-${s}.md`, h.implKD(s));
     h.hooks.updateMilestoneRegistry(s, h.hooks.sessionPhaseMap, id, ["checked-off"]);
   }
 
@@ -331,10 +334,10 @@ describe("Protocol-Gate override walk unification", () => {
     await h.hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
     await h.hooks["tool.execute.before"](
       { tool: "write", sessionID: artisan, callID: "t6-w" },
-      { args: { filePath: `knowledge/impl-M2-${s}.md`, content: "# IMPLEMENTATION SUMMARY" } }
+      { args: { filePath: `knowledge/impl-M2-${s}.md`, content: h.implKD(s) } }
     );
     expect(h.hooks.sessionPhaseMap.get(s), "the SWARM gate advanced before the KD landed").toBe(h.hooks.STATES.SWARM);
-    h.createKD(`impl-M2-${s}.md`, "# IMPLEMENTATION SUMMARY");
+    h.createKD(`impl-M2-${s}.md`, h.implKD(s));
     await h.hooks["tool.execute.after"](
       { tool: "write", sessionID: artisan, callID: "t6-w" },
       { output: "done", title: "impl" }
@@ -585,7 +588,7 @@ describe("Protocol-Gate override walk unification", () => {
     h.hooks.sessionPhaseMap.set(w, h.hooks.STATES.SWARM);
     h.hooks.sessionPhaseMap.set(`${w}:sid`, w);
     h.createRegistry(w, [["M1", "checked-off"]]);
-    h.createKD(`impl-M1-${w}.md`, "# IMPLEMENTATION SUMMARY");
+    h.createKD(`impl-M1-${w}.md`, h.implKD(w));
     h.ageKD(`milestones-feature-${w}.md`, Date.now() - 60000);
     await h.commit(w, "{7}");
     expect(h.hooks.sessionPhaseMap.get(w)).toBe(h.hooks.STATES.SWARM);

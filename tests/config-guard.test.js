@@ -1504,11 +1504,21 @@ describe("VERIFY evidence shape", () => {
     }
   });
 
-  it("malforms uncited FAIL findings under the stale-PASS recency rule", () => {
+  it("refuses a FAIL with an unusable reopen target under the stale-PASS recency rule", () => {
     for (const content of [inspector, gates, reviewTemplate]) {
-      expect(content).toContain("MALFORMED");
-      expect(content).toMatch(/zero milestone citations/);
+      expect(content).toContain("REOPEN_TARGET_INVALID");
+      expect(content).toMatch(/no-reopen-target/);
       expect(content).toContain("stale PASS");
+    }
+  });
+
+  it("retires the citation mandate from every rule layer that carried it", () => {
+    // The field replaced the prose scan, so a surviving citation demand tells an
+    // Inspector to satisfy a rule the gate no longer reads.
+    for (const content of [inspector, gates, reviewTemplate]) {
+      expect(content).not.toContain("zero milestone citations");
+      expect(content).not.toContain("Milestone citation");
+      expect(content).not.toMatch(/\bMALFORMED\b/);
     }
   });
 
@@ -1559,8 +1569,8 @@ describe("rule layers state their rules self-containedly", () => {
   ];
 
   // The verdict semantics each loading agent needs: the erroneous-verdict
-  // posture, the uncited-FAIL malform, and the stale-PASS recency rule.
-  const VERDICT_FACTS = ["MALFORMED", "zero milestone citations", "stale PASS"];
+  // posture, the refused-target malform, and the stale-PASS recency rule.
+  const VERDICT_FACTS = ["reopen_target", "REOPEN_TARGET_INVALID", "stale PASS"];
 
   const artisanRedispatch = headingRegion(
     readAgent("artisan.md"),

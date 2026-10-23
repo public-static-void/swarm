@@ -159,20 +159,31 @@ ${table}
     expect(readFileSync(join(knowledgeDir, `impl-M6-first-${s}-gen0.md`), "utf8")).toContain("status: superseded");
 
     // The fix-up lands in place as a byte-identical re-write of the stamped
-    // snapshot — no new work past the stamp — so the write-hook check-off
-    // declines, and the registry and the cross-check agree the row is open.
-    // (A rewrite carrying new bytes past the stamp is genuine post-stamp work
-    // and clears instead — covered by the clearing cases below.)
+    // snapshot — no new work past the stamp — so settlement declines and the
+    // registry and the cross-check agree the row is open. (A rewrite carrying
+    // new bytes past the stamp is genuine post-stamp work and clears instead —
+    // covered by the clearing cases below.)
     const stampedSnapshot = readFileSync(join(knowledgeDir, `impl-M6-first-${s}-gen0.md`), "utf8");
     expect(stampedSnapshot).toContain("status: superseded");
-    await artisanWrite(`trap-stamped-write-2-art`, `knowledge/impl-M6-first-${s}-gen0.md`, stampedSnapshot);
+    await hooks["chat.params"]({ sessionID: `trap-stamped-write-2-art`, agent: "artisan" }, {});
+    const callID = "c-trap-stamped-2";
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: `trap-stamped-write-2-art`, callID },
+      { args: { filePath: `knowledge/impl-M6-first-${s}-gen0.md`, content: stampedSnapshot } }
+    );
+    expect(readRegistry()).toContain("  M6: in-progress");
+    createKD(`impl-M6-first-${s}-gen0.md`, stampedSnapshot);
+    await hooks["tool.execute.after"]({ tool: "write", sessionID: `trap-stamped-write-2-art`, callID }, {});
 
     expect(readRegistry()).toContain("  M6: in-progress");
     expect(hooks.checkMilestoneCheckedOff(s, hooks.sessionPhaseMap, "M6").checkedOff).toBe(false);
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
     const log = readFileSync(join(protocolLogDir, "protocol-gate.log"), "utf8");
-    expect(log).toContain("STALE_CHECKOFF_DECLINED");
-    expect(log).toContain("milestone M6");
+    expect(log).toContain("STAMP_DECLINED:");
+    expect(log).toContain("reason=byte-identical");
+    expect(log).toContain("milestone=M6");
+    // Nothing is deleted or hidden: the artifact keeps its stamped bytes.
+    expect(readFileSync(join(knowledgeDir, `impl-M6-first-${s}-gen0.md`), "utf8")).toBe(stampedSnapshot);
   });
 
   it("a fresh canonical write promotes the reopened row and opens the gate", async () => {
@@ -224,10 +235,11 @@ ${table}
       {}
     );
 
-    // The gate cleared the stamp in place: a live draft with lineage to the
-    // invalidated pass, and the fix-up body preserved below the frontmatter.
+    // The gate cleared the stamp in place: the sanctioned post-reopen state is
+    // `amended` with lineage to the invalidated pass, and the fix-up body is
+    // preserved below the frontmatter.
     const landed = readFileSync(join(knowledgeDir, `impl-M6-first-${s}-gen0.md`), "utf8");
-    expect(landed).toContain("status: draft");
+    expect(landed).toContain("status: amended");
     expect(landed).toContain(`superseded_by: impl-M6-first-${s}-gen0.md`);
     expect(landed).toContain("# Fix evidence: rebuilt behavior");
     expect(readRegistry()).toContain("  M6: checked-off");
@@ -297,7 +309,7 @@ ${table}
     await artisanWriteAndLand(`trap-sequence-7-art`, `knowledge/impl-M6-first-${s}-gen0.md`, fixBody);
 
     const landed = readFileSync(join(knowledgeDir, `impl-M6-first-${s}-gen0.md`), "utf8");
-    expect(landed).toContain("status: draft");
+    expect(landed).toContain("status: amended");
     expect(readRegistry()).toContain("  M6: checked-off");
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
     // Disk-advancement precedes agent routing with zero manual override: the

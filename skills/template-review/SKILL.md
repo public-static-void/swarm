@@ -13,6 +13,7 @@ session_id: "{{session_id}}"
 author: Inspector
 superseded_by: null
 verdict: {{PASS | FAIL}}
+reopen_target: {{[M3, M7] — REQUIRED on FAIL, omitted on PASS}}
 ---
 
 <!-- Filename: knowledge/review-{{artifact}}-{{session_id}}-gen{{generation}}.md -->
@@ -28,27 +29,37 @@ The `verdict` frontmatter field above is the single machine source — protocol-
 reads it during VERIFY, and the REVIEW KD carries the lifecycle acceptance proof (full suite re-run, dependency and SAST scans, traceability matrix). `MISSING` (absent or invalid) blocks VERIFY with a
 diagnostic and is not treated as PASS; `PASS` advances when this review KD is
 newer than the newest `impl-*` KD (fresh PASS after the last fix — a stale PASS
-blocks); `FAIL` auto-regresses VERIFY→SWARM and reopens exactly the milestone
-row(s) its findings cite.
+blocks); `FAIL` auto-regresses VERIFY→SWARM and reopens the milestone rows named
+by the `reopen_target` field.
 
 **Escalation.** To block advancement and escalate a design-level failure instead of
-requesting a fix, issue `FAIL` with zero milestone citations and add a level-2
+requesting a fix, issue `FAIL` with no `reopen_target` field and add a level-2
 section titled `Escalation` carrying at least one non-empty line before the next
 level-2 heading. That section is the escalation: the gate blocks with
-`ESCALATION_BLOCKED`, regresses nothing, and reopens nothing, leaving the phase at
-VERIFY for a user decision. A `FAIL` that both cites milestones and carries the
-section is `VERDICT_AMBIGUOUS` and blocks; a `FAIL` with neither is MALFORMED and
-blocks. An empty section counts as absent, and `PASS` ignores the section.
+`REOPEN_TARGET_INVALID reason=no-reopen-target`, regresses nothing, and reopens
+nothing, leaving the phase at VERIFY for a user decision. A `FAIL` that both names
+targets and carries the section is `VERDICT_AMBIGUOUS` and blocks. An empty section
+counts as absent, and `PASS` ignores the section.
 
-## Verdict Rules (citation mandate)
+## Verdict Rules (reopen_target mandate)
 
-- Every **FAIL** finding MUST cite at least one milestone token (`M\d+` id like
-  `M3`, or an `impl-<milestone-id>-` path like `impl-M3-short-term-store-...`).
-  The protocol-gate parses these tokens to reopen exactly the cited milestone
+- A **FAIL** MUST carry `reopen_target` in the frontmatter, naming the checked-off
+  milestone row ids the fix must redo — a list (`reopen_target: [M3, M7]`) or a
+  single id (`reopen_target: M3`). The protocol-gate reads that field to reopen
   rows when a FAIL regresses VERIFY→SWARM.
-- A FAIL verdict with **zero milestone citations** is **MALFORMED**: the gate
-  blocks with a diagnostic, regresses nothing, and reopens nothing. Re-dispatch
-  the review with proper citations rather than relying on a citation-less FAIL.
+- Prose is provenance: the field selects the rows. Milestone-shaped tokens in
+  findings, the traceability matrix or a `References` list stay provenance, so
+  name the rows under repair in the field.
+- A field that is absent, empty, malformed, declared twice, or naming a row the
+  registry does not have is **refused**: the gate blocks with
+  `REOPEN_TARGET_INVALID` carrying `no-reopen-target`, `invalid-reopen-target`,
+  `ambiguous-target` or `unresolvable-reopen-target`, regresses nothing and
+  reopens nothing. Re-issue the review with a usable field rather than relying on
+  the refusal.
+- A target naming a row that is not checked-off reopens nothing and is recorded as
+  `REOPEN_NOOP reason=not-checked-off`.
+- `PASS` ignores the field: a field on a PASS is recorded as `REOPEN_TARGET_IGNORED`
+  and changes no state.
 
 ## Review Findings
 
@@ -60,7 +71,7 @@ blocks. An empty section counts as absent, and `PASS` ignores the section.
 - **Severity**: {{critical / major / minor}}
 - **Status**: {{PASS / FAIL}}
 - **Detail**: {{what's wrong and why}}
-- **Milestone citation** (FAIL findings): {{M\d+ or impl-<id>- token}}
+- **Milestone** (provenance — the gate reads `reopen_target`, not this line): {{M\d+ id}}
 
 ### F002: {{finding title}}
 
@@ -94,7 +105,7 @@ third-party dependency versions, SAST/dependency scan output}}
 - **File**: {{path}}
 - **Description**: {{the vulnerability}}
 - **Remediation**: {{how to fix}}
-- **Milestone citation** (FAIL findings): {{M\d+ or impl-<id>- token}}
+- **Milestone** (provenance — the gate reads `reopen_target`, not this line): {{M\d+ id}}
 
 ### A002: ...
 

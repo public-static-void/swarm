@@ -6,6 +6,25 @@ import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 
+// Completion evidence is live only with an allowlisted frontmatter status, so
+// every fixture that expects a row to close states one. A body-only artifact is
+// non-evidence by design (FR-03) and would leave the gates closed for a reason
+// that has nothing to do with the behavior under test.
+export function implKDContent(sessionID, status = "draft") {
+  return `---
+title: "IMPLEMENTATION SUMMARY: test"
+version: 1.0.0
+status: ${status}
+type: impl
+session_id: "${sessionID}"
+author: Artisan
+superseded_by: null
+---
+
+# IMPLEMENTATION SUMMARY: test
+`;
+}
+
 export function createWalkHarness(beforeAll, afterAll, beforeEach) {
   const env = {};
 
@@ -66,6 +85,7 @@ export function createWalkHarness(beforeAll, afterAll, beforeEach) {
   api.createKD = (filename, content = "test content") => {
     writeFileSync(join(env.knowledgeDir, filename), content);
   };
+  api.implKD = implKDContent;
   api.removeKD = (filename) => {
     try { rmSync(join(env.knowledgeDir, filename)); } catch (_) {}
   };
@@ -132,9 +152,12 @@ ${table}
     api.createKD(`milestones-feature-${s}.md`, api.registryContent(rows));
   };
 
-  api.reviewKD = (verdict, citation = "") => {
-    const body = verdict === "FAIL" && citation
-      ? `### F001: defect\n\n- **Milestone citation**: ${citation}\n- **Status**: FAIL\n`
+  // The reopen target is a structured frontmatter field (FR-11), so a FAIL
+  // fixture states its row there; prose mentions of a milestone are inert.
+  api.reviewKD = (verdict, target = "") => {
+    const targetLine = verdict === "FAIL" && target ? `reopen_target: [${target}]\n` : "";
+    const body = verdict === "FAIL" && target
+      ? `### F001: defect\n\n- **Milestone**: ${target}\n- **Status**: FAIL\n`
       : "";
     return `---
 title: "REVIEW: test"
@@ -145,7 +168,7 @@ session_id: "ses_test"
 author: Inspector
 superseded_by: null
 verdict: ${verdict}
----
+${targetLine}---
 
 # REVIEW: test
 
