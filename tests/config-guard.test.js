@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { readdirSync, readFileSync, existsSync, mkdtempSync, rmSync } from "fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../plugins/delegation-gate/index.js";
@@ -2793,5 +2794,90 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
       "knowledge/impl-*.md",
       "knowledge/checkpoint-*.md",
     ]);
+  });
+});
+
+// Runtime transcripts under plugins/logs are produced by every lifecycle and
+// are never configuration. Coverage is asked of git rather than inferred from
+// the rule text: an anchored pattern, a negation or a later re-inclusion all
+// change the answer, and only the matcher knows which. Status 1 means "not
+// ignored"; any other outcome means git could not answer, which fails the
+// guard instead of passing it, so a machine without git cannot turn a broken
+// ignore set into a green run.
+function gitIgnored(path, gitBinary = "git") {
+  const result = spawnSync(gitBinary, ["check-ignore", "-q", path], { cwd: ROOT });
+  if (result.error) {
+    throw new Error(`git check-ignore ${path} could not run: ${result.error.message}`);
+  }
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error(`git check-ignore ${path} exited ${result.status}: ${String(result.stderr).trim()}`);
+}
+
+// Tracked paths under a directory, read from git rather than the working tree:
+// an ignore rule leaves an already-tracked file tracked, so emptiness here is
+// the assertion that the rule hides nothing the repository carries.
+function trackedUnder(dir) {
+  const result = spawnSync("git", ["ls-files", dir], { cwd: ROOT });
+  if (result.error) {
+    throw new Error(`git ls-files ${dir} could not run: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`git ls-files ${dir} exited ${result.status}: ${String(result.stderr).trim()}`);
+  }
+  return String(result.stdout).split("\n").filter(Boolean);
+}
+
+const LOGS_DIR = join("plugins", "logs");
+
+describe("plugin logs ignore coverage", () => {
+  // Probes are path strings, never created files: a created probe would make
+  // the guard observe the suite's own output and leave residue in the directory
+  // it is asserting about.
+  it("ignores a probe path with an extension no rule names", () => {
+    // Extension-independent by construction — the directory rule covers the
+    // next artifact type without a new line, which the enumerated set could not
+    // do and decayed twice by failing to.
+    expect(gitIgnored(join(LOGS_DIR, "probe.xyz"))).toBe(true);
+  });
+
+  it("ignores the artifact shapes a run leaves behind", () => {
+    for (const name of ["protocol-gate.log", "vitest.json", ".head-index.js"]) {
+      expect(gitIgnored(join(LOGS_DIR, name)), `${name} must be ignored`).toBe(true);
+    }
+  });
+
+  it("tracks nothing under the directory", () => {
+    const tracked = trackedUnder(LOGS_DIR);
+    expect(tracked, `tracked under ${LOGS_DIR}: ${tracked.join(", ")}`).toEqual([]);
+  });
+
+  it("leaves a path outside the directory unignored", () => {
+    // The paired positive is what keeps this from being a tautology: the same
+    // machinery answers true for a path the rule catches, so a false here is a
+    // scope fact rather than a matcher that always answers no.
+    expect(gitIgnored(join(LOGS_DIR, "probe.xyz"))).toBe(true);
+    expect(gitIgnored(join("plugins", "probe-outside.txt"))).toBe(false);
+  });
+
+  it("carries no re-inclusion of a path inside the directory", () => {
+    const negations = readRoot(".gitignore")
+      .split("\n")
+      .filter((line) => line.trim().startsWith("!plugins/logs"));
+    expect(negations).toEqual([]);
+  });
+
+  it("states the directory rule and keeps the root log rule", () => {
+    const lines = readRoot(".gitignore")
+      .split("\n")
+      .map((line) => line.trim());
+    expect(lines).toContain("plugins/logs/");
+    expect(lines).toContain("*.log");
+    expect(lines).not.toContain("plugins/logs/*.status");
+  });
+
+  it("fails rather than skips when git cannot answer", () => {
+    // A skip would let a machine without git report the ignore set as healthy.
+    expect(() => gitIgnored(join(LOGS_DIR, "probe.xyz"), "git-absent-probe")).toThrow(/could not run/);
   });
 });
