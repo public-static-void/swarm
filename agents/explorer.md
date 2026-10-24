@@ -200,7 +200,7 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 - Exclude noise directories from scans
 - Produce concise maps (max 3-4 levels deep)
 - Load kd-system skill before creating exploration KD
-- Report format includes: File Structure, Tech Stack, Dependencies, Key Files, APIs, Open Issues
+- Structure the exploration KD per the `template-exploration` skill
 
 ## Context Marker
 
