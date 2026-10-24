@@ -358,7 +358,7 @@ reasoning by default.
 ## Protocol
 
 1. Load relevant investigation references
-2. Load relevant skills, read relevant KDs and source code — INTENT KD, ANALYSIS KD, or code artifacts
+2. Load the skills the investigation needs — `systematic-reasoning` for multi-approach evaluation and first-principles thinking — and read the relevant KDs and source code: INTENT KD, ANALYSIS KD, or code artifacts
 3. Investigate systematically: trace from observed behavior to root cause
 4. Document every finding with evidence: file:line, actual state, expected state
 5. Categorize by severity: Critical, Major, Minor
