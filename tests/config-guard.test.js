@@ -2881,3 +2881,83 @@ describe("plugin logs ignore coverage", () => {
     expect(() => gitIgnored(join(LOGS_DIR, "probe.xyz"), "git-absent-probe")).toThrow(/could not run/);
   });
 });
+
+// A rule names no technology stack. Verification gates are project-owned: a
+// project declares them in its own manifests, task definitions and project
+// documentation, so a rule that names one ecosystem's binary, command or
+// manifest file reads as unrunnable in the next project. The sweep reads the
+// prose body only — a shell grant necessarily names a concrete binary because
+// the allowlist is prefix-based, so the permission block is mechanism and stays
+// outside the rule surface.
+describe("stack-neutral agent rules", () => {
+  const MANIFEST_NAMES = /\b(?:Makefile|Cargo\.toml|package\.json|go\.mod|pyproject\.toml|pom\.xml)\b/g;
+  const STACK_COMMAND =
+    /\b(?:make|cargo|go|pip|npm|npx|yarn|pnpm|bun|cmake|pytest|mvn|gradle|dotnet|poetry|rustc)\s+(?:-{1,2}[\w-]+|build|test|check|clippy|fmt|vet|audit|install|verify|mod|get|ci|lint|metadata|lock|update|add|show|list|freeze|outdated)\b/g;
+  const PACKAGE_MANAGER_RUN = /\b(?:npm|npx|yarn|pnpm|bun|poetry|uv)\s+(?:run|exec)\b/g;
+  const SWEEP = [MANIFEST_NAMES, STACK_COMMAND, PACKAGE_MANAGER_RUN];
+
+  // Matched fragments rather than a boolean: the failure message names what
+  // tripped, so the repair site is visible from the run output alone.
+  function stackTokens(text) {
+    return SWEEP.flatMap((pattern) => text.match(pattern) ?? []);
+  }
+
+  function bodyOffenders() {
+    return agentFiles()
+      .map((name) => ({ name, tokens: stackTokens(bodyRegion(readAgent(name))) }))
+      .filter((row) => row.tokens.length > 0)
+      .map((row) => `${row.name}: ${row.tokens.join(", ")}`);
+  }
+
+  it("sweeps every agent prose body clean", () => {
+    expect(bodyOffenders(), "agent rules naming a build system or its manifest").toEqual([]);
+  });
+
+  it("bites on a stack-specific rule injected into any agent body", () => {
+    const injected = "Run the make build-wasm-tests target.";
+    for (const name of agentFiles()) {
+      const body = `${bodyRegion(readAgent(name))}\n${injected}`;
+      expect(stackTokens(body), `${name} must be swept`).not.toEqual([]);
+    }
+  });
+
+  it("bites on each command-shaped form a later edit would reintroduce", () => {
+    for (const line of [
+      "Run the make build-wasm-tests target.",
+      "cargo test",
+      "the build reads Cargo.toml",
+      "npm audit",
+      "go vet ./...",
+    ]) {
+      expect(stackTokens(line), `unmatched stack rule: ${line}`).not.toEqual([]);
+    }
+  });
+
+  it("stays green on ordinary English and the generic stack phrase", () => {
+    for (const line of [
+      "make the test pass",
+      "detect the tech stack",
+      "the project's declared test command",
+      "go through the dispatch fields",
+      "the toolchain probe",
+    ]) {
+      expect(stackTokens(line), `false positive: ${line}`).toEqual([]);
+    }
+  });
+
+  it("reads the rule text and never the permission block", () => {
+    // Both directions in one file: the inspector's grants carry stack binaries,
+    // and the sweep over that same file's body must not see them.
+    const inspector = readAgent("inspector.md");
+    expect(stackTokens(inspector).length, "the permission block carries grants").toBeGreaterThan(0);
+    expect(stackTokens(bodyRegion(inspector))).toEqual([]);
+  });
+
+  it("states the declared-gate discovery method in the audit protocol", () => {
+    const body = bodyRegion(readAgent("inspector.md"));
+    expect(body).toContain("declares its verification gates");
+    expect(body).toContain("declared-vs-run delta");
+    expect(body).toContain("matching grant");
+    expect(body).not.toContain("tech stack's");
+  });
+});
