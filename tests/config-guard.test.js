@@ -1649,6 +1649,26 @@ describe("rule layers state their rules self-containedly", () => {
   // posture, the refused-target malform, and the stale-PASS recency rule.
   const VERDICT_FACTS = ["reopen_target", "REOPEN_TARGET_INVALID", "stale PASS"];
 
+  // The failure classes a resume can produce, and the recovery each one calls
+  // for. A dispatch failure used to be taught as one class — a dead handle — so
+  // a correct handle that failed on agent resolution or a quota gate read as
+  // lost context. Every layer that teaches recovery states all three branches
+  // itself: the dispatcher acts at the moment its dispatch fails, with no
+  // sibling file in hand.
+  const RESUME_CLASS_FACTS = ["session-not-found", "agent-resolution", "quota-denied"];
+
+  function resumeFallbackSites() {
+    return [
+      ["artisan redispatch", artisanRedispatch],
+      ["overseer redispatch", overseerRedispatch],
+      ["swarm template (parsed template)", renderedTemplate("swarm")],
+    ];
+  }
+
+  function missingResumeClasses(text) {
+    return RESUME_CLASS_FACTS.filter((failureClass) => !text.includes(failureClass));
+  }
+
   const artisanRedispatch = headingRegion(
     readAgent("artisan.md"),
     "### Same-Instance Redispatch",
@@ -1689,6 +1709,29 @@ describe("rule layers state their rules self-containedly", () => {
   it("states the verdict semantics in each layer that carries them", () => {
     expect(missingFacts(gatesVerdicts, VERDICT_FACTS)).toEqual([]);
     expect(missingFacts(reviewVerdicts, VERDICT_FACTS)).toEqual([]);
+  });
+
+  it("names all three resume failure classes at every fallback site", () => {
+    for (const [site, text] of resumeFallbackSites()) {
+      expect(text, `${site} must be readable — an empty read makes the sweep vacuous`).not.toBe("");
+      expect(missingResumeClasses(text), `${site} must name every resume failure class`).toEqual([]);
+      for (const failureClass of RESUME_CLASS_FACTS) {
+        expect(text, `${site} must record the decision as fresh: ${failureClass}`).toContain(`fresh: ${failureClass}`);
+      }
+      expect(text, `${site} must keep the handle value out of the record`).toContain("handle value");
+    }
+  });
+
+  it("fails when one fallback site drops one resume failure class", () => {
+    // Each class is removed from each site one at a time: a fixture that only
+    // reddens one site would leave the other two teaching the retired
+    // single-class fallback, which is how the drift started.
+    for (const [site, text] of resumeFallbackSites()) {
+      for (const failureClass of RESUME_CLASS_FACTS) {
+        const stripped = text.split(failureClass).join("the failure");
+        expect(missingResumeClasses(stripped), `${site} must redden without ${failureClass}`).not.toEqual([]);
+      }
+    }
   });
 
   it("keeps each of the three layers free of cross-file references", () => {

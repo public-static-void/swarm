@@ -593,9 +593,15 @@ The resume handle travels as the subagent call's `sessionID` argument: pass the 
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance).
 
-Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries `same` or `fresh: <reason>` — record the decision itself rather than the handle value. A same-artifact re-dispatch that records neither is a dispatcher-discipline finding. Compaction resume is a separate channel: it travels through a short-term memory note (`memory_note`).
+Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries `same` or `fresh: <class>` — record the decision itself rather than the handle value. A same-artifact re-dispatch that records neither is a dispatcher-discipline finding. Compaction resume is a separate channel: it travels through a short-term memory note (`memory_note`).
 
-**Unresumable handle** — a handle the host cannot resume answers `session not found`, which reaches you as a dispatch failure; the gate adds no fallback. Recover by re-dispatching fresh and recording `fresh: session-not-found` in the dispatch SCOPE, so the continuity record names why the instance changed.
+**Unresumable handle** — a handle the host cannot resume reaches you as a dispatch failure, and the failure text names its class. Recover by class, recording the class in the dispatch SCOPE:
+
+- `session not found` → the handle is dead. Re-dispatch fresh and record `fresh: session-not-found`.
+- An agent-resolution or binding failure → the agent name resolves and the handle is not dead. Re-dispatch the same agent fresh and record `fresh: agent-resolution`.
+- A quota denial → the dispatch was refused. Retry the same handle, escalate through the Overseer when refused again, and record `fresh: quota-denied` when a fresh instance is used.
+
+The gate adds no fallback of its own, so the recorded class is what tells a later reader which failure occurred and whether the instance changed.
 
 ### Checkpoint Verification
 
