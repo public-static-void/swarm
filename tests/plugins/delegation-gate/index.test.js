@@ -1202,7 +1202,7 @@ RESULT KD: knowledge/audit-foo.md`;
       expect(output.args.description).toContain("knowledge/<type>-<name>-<session_id>.md");
     });
 
-    it("renders the merged review instruction and FAIL-citation mandate from templates/review.json", async () => {
+    it("renders the merged review instruction and the reopen_target contract from templates/review.json", async () => {
       const prompt = `AGENT: inspector
 MODE: review
 INTENT KD: knowledge/intent-foo.md
@@ -1220,11 +1220,23 @@ RESULT KD: knowledge/review-foo.md`;
       // Single naming-convention hint on the merged surface — generation renders
       // when the dispatch carries one; the prefix hint is review-only.
       expect(output.args.prompt).toContain("knowledge/review-<name>-<session_id>-gen");
-      // Verdict + OQ-4 citation mandate surfaced to the Inspector.
-      expect(output.args.prompt).toContain("verdict: PASS | FAIL");
-      expect(output.args.prompt).toContain("CITATION MANDATE");
-      expect(output.args.prompt).toContain("every FAIL finding MUST cite at least one milestone token");
-      expect(output.args.prompt).toContain("MALFORMED");
+      // The rendered dispatch states the contract protocol-gate actually reads:
+      // the frontmatter field that selects the reopened rows, the refusal reason
+      // for an unusable target, and the recency rule that blocks a stale PASS.
+      for (const token of ["verdict: PASS | FAIL", "reopen_target", "REOPEN_TARGET_INVALID", "no-reopen-target", "stale PASS"]) {
+        expect(output.args.prompt, `rendered review dispatch must state: ${token}`).toContain(token);
+      }
+      // The retired prose-citation rule: a reviewer following it produces a
+      // verdict the gate rejects, because the gate derives targets from the
+      // field and never from the findings.
+      for (const retired of [
+        "CITATION MANDATE",
+        "MALFORMED",
+        "zero milestone citations",
+        "reopens exactly the milestone row(s)",
+      ]) {
+        expect(output.args.prompt, `rendered review dispatch must not carry: ${retired}`).not.toContain(retired);
+      }
       // No audit-specific dispatch remains on the surface.
       expect(output.args.prompt).not.toMatch(/MODE: audit/);
     });

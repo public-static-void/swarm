@@ -34,6 +34,24 @@ function readAgent(name) {
   return readFileSync(join(AGENTS_DIR, name), "utf8");
 }
 
+// The rendered body of a delegation-gate template. Parsed, never raw-matched:
+// the JSON string is escaped, so a raw match against the file would pass on an
+// escape change while the dispatch the Inspector receives said something else.
+function renderedTemplate(name) {
+  return JSON.parse(readRoot(join("plugins", "delegation-gate", "templates", `${name}.json`))).template;
+}
+
+// The in-code fallback body for one mode. `defaultTemplates` is local to
+// `loadTemplates`, so the entry is sliced out of the plugin source and decoded
+// as the JSON string literal it is.
+function defaultTemplateBody(mode) {
+  const source = readRoot(join("plugins", "delegation-gate", "index.js"));
+  const blockStart = source.indexOf("const defaultTemplates = {");
+  const block = source.slice(blockStart, source.indexOf("};", blockStart));
+  const entry = block.match(new RegExp(`^\\s{4}${mode}:\\s*("(?:[^"\\\\]|\\\\.)*")`, "m"));
+  return entry ? JSON.parse(entry[1]) : "";
+}
+
 // Parses the v2 `permissions:` frontmatter list (ordered action / resource /
 // effect rules) into flat entries. The `bash:` / `read:` / `edit:` mapping
 // blocks an earlier revision of this guard read predate the migration; no
@@ -1480,11 +1498,52 @@ describe("planning shape and scribe composition discipline", () => {
   });
 });
 
+// The retired prose-citation rule. A FAIL used to be said to reopen the rows its
+// findings cite, and a FAIL citing none was called MALFORMED; protocol-gate reads
+// the frontmatter `reopen_target` field and derives no target from prose. A site
+// that still demands citations tells an Inspector to satisfy a rule the gate
+// never reads, so the verdict is refused instead of regressing the milestone.
+const RETIRED_CITATION_TOKENS = [
+  "CITATION MANDATE",
+  "MALFORMED",
+  "zero milestone citations",
+  "reopens exactly the milestone row(s)",
+  "Milestone citation",
+];
+
+// The retired tokens present in a text, so one predicate drives both the sweep
+// and its injection proof. MALFORMED matches as a word: the log record name
+// MALFORMED_FAIL is a different string and is not this rule.
+function citationOffenders(text) {
+  return RETIRED_CITATION_TOKENS.filter((token) =>
+    token === "MALFORMED" ? /\bMALFORMED\b/.test(text) : text.includes(token)
+  );
+}
+
+// The five sites that carried the rule: the three prose layers an agent reads,
+// the template the gate renders into every REVIEW dispatch, and the in-code
+// fallback the gate renders when the template file is unreadable. The guard
+// names exactly these — a sweep of the prose layers alone let the rendered
+// mandate survive a template rewrite.
+function citationSites() {
+  return [
+    ["agents/inspector.md", readAgent("inspector.md")],
+    ["skills/verification-gates/SKILL.md", readRoot(join("skills", "verification-gates", "SKILL.md"))],
+    ["skills/template-review/SKILL.md", readRoot(join("skills", "template-review", "SKILL.md"))],
+    ["plugins/delegation-gate/templates/review.json (parsed template)", renderedTemplate("review")],
+    ["plugins/delegation-gate/index.js (defaultTemplates.review)", defaultTemplateBody("review")],
+  ];
+}
+
 describe("VERIFY evidence shape", () => {
   const inspector = readAgent("inspector.md");
   const gates = readRoot(join("skills", "verification-gates", "SKILL.md"));
   const reviewTemplate = readRoot(join("skills", "template-review", "SKILL.md"));
   const milestonesTemplate = readRoot(join("skills", "template-milestones", "SKILL.md"));
+
+  // The verdict contract a rendered REVIEW dispatch must carry: the field that
+  // selects the reopened rows, the refusal it produces, and the recency rule.
+  const RENDERED_CONTRACT_TOKENS = ["reopen_target", "REOPEN_TARGET_INVALID", "no-reopen-target", "stale PASS"];
 
   it("frames VERIFY around REVIEW KD evidence with a single verdict field", () => {
     for (const content of [inspector, gates, reviewTemplate]) {
@@ -1512,13 +1571,31 @@ describe("VERIFY evidence shape", () => {
     }
   });
 
-  it("retires the citation mandate from every rule layer that carried it", () => {
-    // The field replaced the prose scan, so a surviving citation demand tells an
-    // Inspector to satisfy a rule the gate no longer reads.
-    for (const content of [inspector, gates, reviewTemplate]) {
-      expect(content).not.toContain("zero milestone citations");
-      expect(content).not.toContain("Milestone citation");
-      expect(content).not.toMatch(/\bMALFORMED\b/);
+  it("retires the citation mandate from all five sites that carried it", () => {
+    for (const [site, text] of citationSites()) {
+      expect(text, `${site} must be readable — an empty read makes the sweep vacuous`).not.toBe("");
+      expect(citationOffenders(text), `${site} still carries the retired citation rule`).toEqual([]);
+    }
+  });
+
+  it("states the reopen_target contract in the template it renders", () => {
+    const rendered = renderedTemplate("review");
+    for (const token of RENDERED_CONTRACT_TOKENS) {
+      expect(rendered, `rendered review template must state: ${token}`).toContain(token);
+    }
+    // The positive check is not vacuous: the same check rejects a body with the
+    // field removed, which is the state the template was in before the repair.
+    const withoutField = rendered.replace(/reopen_target/g, "the findings");
+    expect(RENDERED_CONTRACT_TOKENS.filter((token) => !withoutField.includes(token))).not.toEqual([]);
+  });
+
+  it("fails when any one of the five sites carries a retired token", () => {
+    // Each retired token is injected into each site one at a time: a fixture
+    // that only reddens one site would leave the other four unguarded.
+    for (const [site, text] of citationSites()) {
+      for (const token of RETIRED_CITATION_TOKENS) {
+        expect(citationOffenders(`${text}\n${token}`), `${site} must redden on an injected ${token}`).not.toEqual([]);
+      }
     }
   });
 
