@@ -1887,20 +1887,29 @@ function resolveArtifactDir(sessionID) {
 // attempt. The key carries the artifact's directory so two lifecycles holding
 // artifacts of the same name in different knowledge dirs never silence each
 // other.
-function settleStampDeclined(milestoneId, base, dir, reason) {
+function settleStampDeclined(milestoneId, base, dir, reason, transport) {
   gateRecordEvent("STAMP_DECLINED", [
     ["milestone", milestoneId],
     ["artifact", base],
-    ["reason", reason]
+    ["reason", reason],
+    ["transport", transport]
   ], `milestone ${milestoneId} settlement declined for ${base} (${reason}) — the row keeps its registry state and the artifact is untouched`, `STAMP_DECLINED|${dir}|${gateRecordMilestoneTag(milestoneId)}a:${base}|r:${reason}`);
 }
+
+// The three entry points one settlement implementation serves (FR-06). The tag
+// is the only attribution a settlement line carries: without it a record says
+// what settled but not which transport reached the settlement.
+const SETTLEMENT_TRANSPORTS = ["after-hook", "swarm-gate", "stuck-row"];
 
 // Settles one stamped artifact. Preconditions are checked in the order FR-07
 // states them, and every failing branch declines with exactly one token — a
 // decline never deletes, demotes or hides the artifact, and leaves the row
 // in-progress so the operator's next ordinary action is a redispatch.
 // Returns { settled, reason, content?, promoted? }.
-function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, milestoneId }) {
+function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, milestoneId, transport }) {
+  if (!SETTLEMENT_TRANSPORTS.includes(transport)) {
+    throw new TypeError(`settleStampClearForArtifact: transport must be one of ${SETTLEMENT_TRANSPORTS.join(", ")} (got ${String(transport)})`);
+  }
   if (typeof base !== "string" || base.length === 0) return { settled: false, reason: "not-cited-artifact" };
   const artifactDir = resolveArtifactDir(sessionID);
   const rowId = milestoneId || extractMilestoneIdFromImplKD(base);
@@ -1910,20 +1919,20 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   // settles, the digest is dropped, and the canonical artifact's own stamp can
   // no longer be cleared by anything but a hand edit.
   if (typeof dir === "string" && dir.length > 0 && resolve(dir) !== resolve(artifactDir)) {
-    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-cited-artifact");
+    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-cited-artifact", transport);
     return { settled: false, reason: "not-cited-artifact" };
   }
   // (1) Only a reopened row has a stamp to clear.
   const state = rowId ? readMilestoneState(sessionID, sessionPhaseMap, rowId) : null;
   if (state !== "in-progress") {
-    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-in-progress");
+    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-in-progress", transport);
     return { settled: false, reason: "not-in-progress" };
   }
   // (2) The artifact must be this milestone's impl KD for the current session.
   if (!/^impl-/i.test(base)
     || !base.toLowerCase().startsWith(`impl-${rowId}-`.toLowerCase())
     || !matchesSessionKDAnyGeneration(base, sessionID)) {
-    settleStampDeclined(rowId, base, artifactDir, "not-cited-artifact");
+    settleStampDeclined(rowId, base, artifactDir, "not-cited-artifact", transport);
     return { settled: false, reason: "not-cited-artifact" };
   }
   // (3) No recorded digest means the gate cannot tell a fix-up from the stamp it
@@ -1931,19 +1940,19 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
   const snapshotDigest = snapshots ? snapshots[stampSnapshotKey(rowId, base)] : undefined;
   if (typeof snapshotDigest !== "string" || snapshotDigest.length === 0) {
-    settleStampDeclined(rowId, base, artifactDir, "no-stamp-snapshot");
+    settleStampDeclined(rowId, base, artifactDir, "no-stamp-snapshot", transport);
     return { settled: false, reason: "no-stamp-snapshot" };
   }
   let landed;
   try {
     landed = readFileSync(join(artifactDir, base), "utf8");
   } catch (_) {
-    settleStampDeclined(rowId, base, artifactDir, "write-failed");
+    settleStampDeclined(rowId, base, artifactDir, "write-failed", transport);
     return { settled: false, reason: "write-failed" };
   }
   // (4) Genuineness: the landed bytes must be new work past the stamp.
   if (digestContent(landed) === snapshotDigest) {
-    settleStampDeclined(rowId, base, artifactDir, "byte-identical");
+    settleStampDeclined(rowId, base, artifactDir, "byte-identical", transport);
     return { settled: false, reason: "byte-identical" };
   }
   // (5) The landed bytes must be in a state the gate may amend — its own stale
@@ -1951,14 +1960,14 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   // status the author never wrote.
   const rewrite = amendStampContent(landed, base);
   if (rewrite.refused) {
-    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter");
+    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter", transport);
     return { settled: false, reason: "unparsable-frontmatter" };
   }
   if (rewrite.content !== landed) {
     try {
       atomicWriteFileSync(join(artifactDir, base), rewrite.content);
     } catch (_) {
-      settleStampDeclined(rowId, base, artifactDir, "write-failed");
+      settleStampDeclined(rowId, base, artifactDir, "write-failed", transport);
       return { settled: false, reason: "write-failed" };
     }
   }
@@ -1968,12 +1977,12 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   try {
     settledContent = readFileSync(join(artifactDir, base), "utf8");
   } catch (_) {
-    settleStampDeclined(rowId, base, artifactDir, "write-failed");
+    settleStampDeclined(rowId, base, artifactDir, "write-failed", transport);
     return { settled: false, reason: "write-failed" };
   }
   const settledVerdict = evaluateLiveness(settledContent);
   if (!settledVerdict.live) {
-    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter");
+    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter", transport);
     return { settled: false, reason: "unparsable-frontmatter" };
   }
   // Exactly one always-on line per settlement: the gate's own stamp rewrite is
@@ -1982,12 +1991,14 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   if (rewrite.cleared) {
     gateRecordEvent("STAMP_CLEARED", [
       ["milestone", rowId],
-      ["artifact", base]
+      ["artifact", base],
+      ["transport", transport]
     ], `milestone ${rowId} fix-up rewrite at ${base} — stamp cleared (status: ${settledVerdict.declared}, superseded_by: ${base}); the row re-completes on the landed evidence`, `STAMP_CLEARED|${artifactDir}|${gateRecordMilestoneTag(rowId)}a:${base}`);
   } else {
     gateRecordEvent("STAMP_LINEAGE_RECORDED", [
       ["milestone", rowId],
-      ["artifact", base]
+      ["artifact", base],
+      ["transport", transport]
     ], `milestone ${rowId} fix-up rewrite at ${base} — landed frontmatter already live (status: ${settledVerdict.declared}), superseded_by lineage recorded (${base}); the row re-completes on the landed evidence`, `STAMP_LINEAGE_RECORDED|${artifactDir}|${gateRecordMilestoneTag(rowId)}a:${base}`);
   }
   dropStampSnapshot(sessionPhaseMap, sessionID, rowId, base);
@@ -2009,11 +2020,13 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
 }
 
 // Drives settlement over every artifact stamped in this session, so a gate
-// evaluation and the after-write fast path run the same loop. No observed write
-// path steers it: the canonical artifact is the only thing either loop settles,
-// so a write that merely shares a stamped artifact's basename cannot settle (or
-// silently unsnapshot) the row it names.
-function settleStampClearsForSession(sessionID, sessionPhaseMap) {
+// evaluation and the after-write fast path run the same loop. `transport` names
+// the entry point that reached this loop — the record it writes carries the tag,
+// so a settlement line says which of the three points produced it. No observed
+// write path steers it: the canonical artifact is the only thing either loop
+// settles, so a write that merely shares a stamped artifact's basename cannot
+// settle (or silently unsnapshot) the row it names.
+function settleStampClearsForSession(sessionID, sessionPhaseMap, transport) {
   const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
   if (!snapshots) return 0;
   const keys = Object.keys(snapshots);
@@ -2025,7 +2038,7 @@ function settleStampClearsForSession(sessionID, sessionPhaseMap) {
     if (sep <= 0) continue;
     const milestoneId = key.slice(0, sep);
     const base = key.slice(sep + 1);
-    if (settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir: artifactDir, base, milestoneId }).settled) settled++;
+    if (settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir: artifactDir, base, milestoneId, transport }).settled) settled++;
   }
   return settled;
 }
@@ -2146,9 +2159,10 @@ function emitGenerationMismatchSkips(knowledgeDir, files, sessionID, milestoneId
 // caller fails closed first); reconciliation never fabricates rows.
 function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry) {
   // Settlement is attempted here too (FR-06 point c): a stamped artifact whose
-  // fix-up write landed through a transport the after-hook could not attribute
-  // re-closes its row at the next reconciliation instead of staying stuck.
-  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap);
+  // fix-up write landed outside the write hook re-closes its row at the next
+  // reconciliation instead of staying stuck, and its record names the transport
+  // that settled it.
+  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap, "stuck-row");
   if (settled > 0) {
     const refreshed = readMilestoneRegistry(sessionID, sessionPhaseMap);
     if (refreshed) registry = refreshed;
@@ -2335,7 +2349,7 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   // Stamp settlement is attempted at every SWARM gate evaluation (FR-06 point
   // b), before the registry is read, so a row the settlement re-closes is
   // already checked-off when the verdict is computed.
-  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap);
+  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap, "swarm-gate");
   let registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
     debug(`REGISTRY_MISSING: no milestone registry for session ${sessionID} — SWARM cannot advance`);
@@ -4373,16 +4387,17 @@ async function protocolGateServer(input, options) {
     }
 
     // Settles every deferred genuine-rewrite stamp clear by evaluating disk
-    // state: settlement is idempotent and transport-independent (FR-06), so
-    // this is the after-write fast path sharing one implementation with the
-    // SWARM gate and stuck-row reconciliation. Each attempt, decline and
+    // state: settlement is idempotent and stays transport-independent (FR-06),
+    // and the tag on each record names which of the three transports produced
+    // it, so this is the after-write fast path sharing one implementation with
+    // the SWARM gate and stuck-row reconciliation. Each attempt, decline and
     // promotion carries its own always-on line, so a reopened row that never
     // closes is diagnosable with no debug flag set. The observed write path is
     // not handed in: settlement reads the canonical artifact, so a write aimed
     // at a same-basename copy settles nothing here.
     function settlePendingStampClears() {
       for (const candidate of collectParentSessionCandidates()) {
-        settleStampClearsForSession(candidate, sessionPhaseMap);
+        settleStampClearsForSession(candidate, sessionPhaseMap, "after-hook");
       }
     }
 

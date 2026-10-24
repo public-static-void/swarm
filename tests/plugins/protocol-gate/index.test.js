@@ -1384,6 +1384,59 @@ Amendment body.
       expect(JSON.parse(readFileSync(statePath(s2), "utf8")).phase).toBe(hooks.STATES.EXPLORE);
     });
 
+    // The V2 adapter is the only surface the host reaches, so a registration
+    // assertion there is the strongest wiring claim the repository can make.
+    // What this proves: setup() registers an execute.after hook on the v2 path,
+    // and the registered callback reaches the after-write handler — the captured
+    // handler advances the phase off an intent KD that exists on disk, which a
+    // callback that merely resolved could not do.
+    // What it cannot prove: that the host invokes the hook at all, that the host
+    // spells the event fields as this adapter reads them, or that a real host
+    // write ever reaches settlement. Those are host-side facts; wiring is not
+    // invocation, and no record may claim otherwise.
+    it("execute.after registration reaches the after-write handler", async () => {
+      const registrations = [];
+      const added = [];
+      const mockCtx = {
+        location: {},
+        options: {},
+        tool: {
+          hook: async (name, handler) => { registrations.push({ name, handler }); },
+          transform: async () => {},
+        },
+        permission: { hook: async () => {} },
+        session: { hook: async () => {}, synthetic: async () => {} },
+        command: { transform: async (cb) => cb({ add: (def) => added.push(def) }) },
+      };
+      await pluginModule.setup(mockCtx);
+
+      const afterHook = registrations.find((r) => r.name === "execute.after");
+      expect(afterHook, "the v2 path registered no execute.after hook").toBeDefined();
+      expect(typeof afterHook.handler).toBe("function");
+
+      const s = sid("v2-after-registration");
+      const phaseCmd = added.find((d) => d.name === "phase");
+      expect(phaseCmd).toBeDefined();
+      await phaseCmd.execute({ sessionID: s, prompt: { text: "1" }, delivery: "steer" });
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.INTENT);
+
+      // The intent KD is on disk before the hook runs, so the handler has
+      // evidence to advance on and the assertion reads a real branch. Its mtime
+      // is stamped past the override anchor the phase command just recorded, so
+      // the freshness check cannot depend on the filesystem's mtime resolution.
+      const intentPath = join(knowledgeDir, `intent-config-audit-${s}.md`);
+      createKD(`intent-config-audit-${s}.md`, "# INTENT: test\n");
+      utimesSync(intentPath, new Date(), new Date(Date.now() + 5000));
+      await afterHook.handler({
+        tool: "write",
+        sessionID: s,
+        callID: "c-v2-after",
+        input: { filePath: `knowledge/intent-config-audit-${s}.md` },
+      });
+
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.PREFLIGHT);
+    });
+
     it("/phase override persists to disk and survives a restart", async () => {
       const s = sid("ac008");
       await initOverseer(s);
