@@ -3681,7 +3681,7 @@ async function protocolGateServer(input, options) {
     // WRONG_AGENT hard error on each blocked dispatch is preserved.
     const blockedDispatchCount = new Map();
     // Per-session record of the LAST charged dispatch, set at
-    // the :2475 increment site so the tool.execute.after hook can restore the
+    // the before-hook charge site so the tool.execute.after hook can restore the
     // redispatch budget when a dispatch produces no expected RESULT KD
     // (empty-result detection). One entry per session — a re-dispatch
     // overwrites the previous record; the entry is deleted after reconciliation.
@@ -5173,8 +5173,8 @@ async function protocolGateServer(input, options) {
           // an in-progress row can check off, so firing for ANY non-overseer
           // writer cannot cause a wrong-advance. The writing agent is recorded
           // only when chat.params carried the agent field, so a session whose
-          // agent is unknown must still trigger the check-off (the observed
-          // silent-skip root cause, issue 71).
+          // agent is unknown must still trigger the check-off — the check-off
+          // keys on the KD path, not on the writer's identity.
           const isImplKD = isImplKDArtifactPath(relPath);
           if (isImplKD) {
             const writingAgent = sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown";
@@ -5199,8 +5199,8 @@ async function protocolGateServer(input, options) {
 
       let phase = sessionPhaseMap.get(sessionID);
       if (phase === undefined) {
-        // BUG 2 FIX: fail-closed — overseer session exists but phase is missing.
-        // This is an error state; block rather than silently allow.
+        // Fail-closed: an overseer session with no phase entry is an error
+        // state, so the call blocks rather than passing through.
         debug(`tool.execute.before: BLOCKED overseer session ${sessionID} has no phase entry (tool=${tool})`);
         throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.code, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.message, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.guidance);
       }
@@ -5998,7 +5998,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         if (postPhase === STATES.CLEANUP) await advanceFromDiskEvidence(sessionID);
       }
 
-      // Mirror the :1779 gate — only overseer task dispatches touch the
+      // Mirror the before-hook charge — only overseer task dispatches touch the
       // overseer's redispatch counter; subagent→subagent task calls never do.
       if (tool !== "subagent" || !isOverseerSession(sessionID)) return;
       const recorded = lastTaskDispatch.get(sessionID);

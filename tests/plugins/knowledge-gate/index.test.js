@@ -712,7 +712,7 @@ Body`;
       expect(createHint).toBeTruthy();
       // The scope enum must be spelled out to match validateIssue — an
       // unenumerated "copied from frontmatter" phrasing is how the doc/gate
-      // drift class crept in (Issue 66).
+      // drift class crept in.
       expect(createHint).toContain("project|generic|swarm");
       expect(createHint).not.toContain("scope copied from");
     });

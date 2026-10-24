@@ -2627,8 +2627,8 @@ Amendment body.
 
       // Once M1's impl KD lands, reconciliation promotes the row from disk
       // evidence alone — no manual registry write, no in-memory data. The
-      // gate reconstructs all-checked-off from disk (reconcile-or-fail-loud,
-      // Issue 64: the old contract required a manual check-off call here).
+      // gate reconstructs all-checked-off from disk (reconcile-or-fail-loud);
+      // a manual check-off call is not part of the contract.
       createKD(`impl-M1-recon-${s}.md`);
       const gate2 = hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
       expect(gate2.ok).toBe(true);
@@ -3024,7 +3024,7 @@ Amendment body.
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
     });
 
-    it("blocks rows without impl-KD evidence; evidence-backed stuck rows reconcile at gate evaluation (Issue 64)", async () => {
+    it("blocks rows without impl-KD evidence; evidence-backed stuck rows reconcile at gate evaluation", async () => {
       const s = sid("m5-pending");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3599,7 +3599,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
     });
   });
 
-  describe("SWARM→VERIFY reconciliation + loud auto-checkoff diagnostics (Issue 64)", () => {
+  describe("SWARM→VERIFY reconciliation + loud auto-checkoff diagnostics", () => {
     // Captures the loud channel (now file-based) — reads from the log file gated
     // behind PROTOCOL_GATE_DEBUG. Always clean up in finally.
     function readLoudLog() {
@@ -3730,8 +3730,8 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
       // A pending row cannot complete directly — the check-off transition from
-      // pending is invalid, which is exactly the silent-failure shape Issue 64
-      // buried (Defect A window: impl KD written before the dispatch flip).
+      // pending is invalid, which is exactly the silent-failure shape the
+      // diagnostic exists to surface (impl KD written before the dispatch flip).
       createRegistry(s, [["M1", "pending"]]);
 
       const artisan = sid("m1-diag-1-art");
@@ -5442,7 +5442,7 @@ milestones:
       }
     });
 
-    it("d: FAIL with a References section listing all impl KDs reopens ONLY the named rows (Issue 78 regression)", async () => {
+    it("d: FAIL with a References section listing all impl KDs reopens ONLY the named rows (regression)", async () => {
       const s = sid("i49d");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);

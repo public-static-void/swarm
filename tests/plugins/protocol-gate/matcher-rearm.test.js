@@ -82,12 +82,12 @@ ${table}
 `;
   }
 
-  // The observed gen0/gen1 divergence behind Issue 64: the artisan's valid
-  // canonical evidence carries an embedded generation that differs from the
-  // persisted lifecycle generation after a VERIFY FAIL backtrack. The
-  // registry fixture stays legacy-named (generation 0, as the
-  // generation-scoped registry lookup expects); only the evidence filename
-  // diverges — exactly the skew the strict live-hook matcher choked on.
+  // The observed gen0/gen1 divergence: the artisan's valid canonical evidence
+  // carries an embedded generation that differs from the persisted lifecycle
+  // generation after a VERIFY FAIL backtrack. The registry fixture stays
+  // legacy-named (generation 0, as the generation-scoped registry lookup
+  // expects); only the evidence filename diverges — exactly the skew the
+  // strict live-hook matcher choked on.
   async function writeImplKD(artisan, filePath, content) {
     await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
     await hooks["tool.execute.before"](
