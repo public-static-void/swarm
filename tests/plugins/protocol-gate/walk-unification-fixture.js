@@ -6,6 +6,23 @@ import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 
+// Every freshness gate compares a file's `mtimeMs` against an integer
+// millisecond anchor with `>=`. The filesystem stores mtime on a coarser grid
+// than that anchor, so a write issued AFTER the anchor can be stored with a
+// timestamp BEFORE it — and once that happens the ordering information is gone,
+// no comparison can recover it. The gate's `>=` is its contract and must keep
+// it, so the fix belongs where the write is made: a fixture whose write must
+// advance a gate stamps it forward of the anchor. The margin is derived, not
+// tuned: 500 × 10 ms covers the coarsest plausible local tick (HZ = 100), and
+// it stays well under the 10 s stale interval the suite already uses, so a
+// fresh and a stale artifact can never invert. A host with a coarser tick reds
+// loudly rather than flaking quietly — do not raise it.
+export const FRESH_MARGIN_MS = 5000;
+
+export function stampFresh(fullPath) {
+  utimesSync(fullPath, new Date(), new Date(Date.now() + FRESH_MARGIN_MS));
+}
+
 // Completion evidence is live only with an allowlisted frontmatter status, so
 // every fixture that expects a row to close states one. A body-only artifact is
 // non-evidence by design (FR-03) and would leave the gates closed for a reason
@@ -85,6 +102,13 @@ export function createWalkHarness(beforeAll, afterAll, beforeEach) {
   api.createKD = (filename, content = "test content") => {
     writeFileSync(join(env.knowledgeDir, filename), content);
   };
+  // Same bytes as createKD, then stamped forward of the anchor the gate will
+  // compare against (see stampFresh). Any write a test expects to advance a
+  // freshness gate uses this constructor, never a per-site utimes call.
+  api.createFreshKD = (filename, content = "test content") => {
+    api.createKD(filename, content);
+    stampFresh(join(env.knowledgeDir, filename));
+  };
   api.implKD = implKDContent;
   api.removeKD = (filename) => {
     try { rmSync(join(env.knowledgeDir, filename)); } catch (_) {}
@@ -150,6 +174,13 @@ ${table}
 
   api.createRegistry = (s, rows) => {
     api.createKD(`milestones-feature-${s}.md`, api.registryContent(rows));
+  };
+
+  // A registry write expected to advance a gate — the SWARM registry-mtime
+  // anchor and the DECOMPOSE dual-KD gate both read it — so it carries the same
+  // forward stamp through createFreshKD rather than duplicating it.
+  api.createFreshRegistry = (s, rows) => {
+    api.createFreshKD(`milestones-feature-${s}.md`, api.registryContent(rows));
   };
 
   // The reopen target is a structured frontmatter field (FR-11), so a FAIL
