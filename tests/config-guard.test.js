@@ -1735,6 +1735,78 @@ describe("rule layers state their rules self-containedly", () => {
     }
   });
 
+  // The closed continuity vocabulary. `same` reuses an instance, `fresh:
+  // new-task` covers a first dispatch or a genuinely new task, and one value per
+  // failure a re-dispatch recovers from. A four-value set has no legal value for
+  // a first dispatch, so the instruction that mandates the record cannot be
+  // followed as written; a site that teaches the retired set again is the
+  // regression this pins.
+  const CONTINUITY_VALUES = [
+    "same",
+    "fresh: new-task",
+    "fresh: session-not-found",
+    "fresh: agent-resolution",
+    "fresh: quota-denied",
+  ];
+
+  // The shape a dispatcher section uses to name the failure-keyed branch. It is
+  // a placeholder rather than a value a record carries, so the invented-value
+  // check admits it while still rejecting every other `fresh:` spelling.
+  const CONTINUITY_SHAPE = "fresh: <class>";
+
+  function continuitySites() {
+    return [
+      ...resumeFallbackSites(),
+      [
+        "impl template (Continuity section)",
+        headingRegion(readRoot(join("skills", "template-impl", "SKILL.md")), "## Continuity", "\n## "),
+      ],
+    ];
+  }
+
+  // Presence is checked on the backticked spelling: bare "same" is ordinary
+  // English and would pass in any paragraph.
+  function missingContinuityValues(text) {
+    return CONTINUITY_VALUES.filter((value) => !text.includes(`\`${value}\``));
+  }
+
+  // Every backticked `fresh:` spelling that is neither a legal value nor the
+  // shape placeholder. A record that invents a value cannot be told apart from
+  // a legal one, which is what the closed set exists to prevent.
+  function inventedFreshValues(text) {
+    const legal = new Set([...CONTINUITY_VALUES, CONTINUITY_SHAPE]);
+    const spellings = [...text.matchAll(/`fresh: [^`]+`/g)].map((match) => match[0].slice(1, -1));
+    return [...new Set(spellings)].filter((spelling) => !legal.has(spelling));
+  }
+
+  it("states the closed continuity vocabulary at every site that teaches it", () => {
+    const offenders = continuitySites().flatMap(([site, text]) =>
+      missingContinuityValues(text).map((value) => `${site} omits ${value}`)
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("admits no continuity value outside the closed set", () => {
+    for (const [site, text] of continuitySites()) {
+      expect(text, `${site} must be readable — an empty read makes the check vacuous`).not.toBe("");
+      expect(inventedFreshValues(text), `${site} carries a value outside the closed set`).toEqual([]);
+    }
+  });
+
+  it("fails when a site keeps the retired continuity vocabulary or invents a value", () => {
+    // Both directions per site: dropping the first-dispatch value is the retired
+    // set, and an invented class-shaped value is what two records wrote when no
+    // legal value existed.
+    for (const [site, text] of continuitySites()) {
+      const retired = text.split("fresh: new-task").join("");
+      expect(missingContinuityValues(retired), `${site} must redden without fresh: new-task`).not.toEqual([]);
+      expect(
+        inventedFreshValues(`${text}\n\`fresh: new-milestone\``),
+        `${site} must redden on an invented continuity value`
+      ).not.toEqual([]);
+    }
+  });
+
   it("keeps each of the three layers free of cross-file references", () => {
     for (const [layer, text] of [
       ["artisan redispatch", artisanRedispatch],

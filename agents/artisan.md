@@ -593,7 +593,7 @@ The resume handle travels as the subagent call's `sessionID` argument: pass the 
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance).
 
-Record the continuity choice on every same-artifact re-dispatch: the dispatch SCOPE carries `same` or `fresh: <class>` — record the decision itself rather than the handle value. A same-artifact re-dispatch that records neither is a dispatcher-discipline finding. Compaction resume is a separate channel: it travels through a short-term memory note (`memory_note`).
+Record the continuity choice on every dispatch: the dispatch SCOPE carries `same`, `fresh: new-task` for a first dispatch or a genuinely new task, or `fresh: <class>` naming the failure a re-dispatch recovered from — record the decision itself rather than the handle value. A dispatch that records no value is a dispatcher-discipline finding. Compaction resume is a separate channel: it travels through a short-term memory note (`memory_note`).
 
 **Unresumable handle** — a handle the host cannot resume reaches you as a dispatch failure, and the failure text names its class. Recover by class, recording the class in the dispatch SCOPE:
 

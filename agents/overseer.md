@@ -228,7 +228,7 @@ When re-dispatching an agent for the same task, choose the target instance delib
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, pass the prior call's `sessionID` to continue the same agent's work.
 
-Record the continuity choice on every same-artifact re-dispatch in any mode: the dispatch SCOPE carries `same` or `fresh: <class>` — record the decision itself rather than the handle value. A same-artifact re-dispatch that records neither is a dispatcher-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched.
+Record the continuity choice on every dispatch in any mode: the dispatch SCOPE carries `same`, `fresh: new-task` for a first dispatch or a genuinely new task, or `fresh: <class>` naming the failure a re-dispatch recovered from — record the decision itself rather than the handle value. A dispatch that records no value is a dispatcher-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched.
 
 **Unresumable handle** — a handle the host cannot resume reaches you as a dispatch failure, and the failure text names its class. Recover by class, recording the class in the dispatch SCOPE:
 

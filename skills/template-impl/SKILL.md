@@ -60,8 +60,7 @@ handoff:
 
 The durable copy of the dispatch's continuity decision: the SCOPE records it at dispatch time, this section keeps it with the work.
 
-- decision: `same` | `fresh: <class>`
-- class: `session-not-found` | `agent-resolution` | `quota-denied` — state it when the decision is fresh
+- decision: `same` | `fresh: new-task` | `fresh: session-not-found` | `fresh: agent-resolution` | `fresh: quota-denied`
 - note: {{what changed, without the handle value}}
 
 ## Process Friction
