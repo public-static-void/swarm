@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { readdirSync, readFileSync, existsSync, mkdtempSync, rmSync } from "fs";
+import {
+  readdirSync,
+  readFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+} from "fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -2888,9 +2896,11 @@ function gitIgnored(path, gitBinary = "git") {
 
 // Tracked paths under a directory, read from git rather than the working tree:
 // an ignore rule leaves an already-tracked file tracked, so emptiness here is
-// the assertion that the rule hides nothing the repository carries.
-function trackedUnder(dir) {
-  const result = spawnSync("git", ["ls-files", dir], { cwd: ROOT });
+// the assertion that the rule hides nothing the repository carries. `cwd` is a
+// parameter because the answer is only falsifiable against a repository that
+// does carry such a file, and a caller holding one must be able to say so.
+function trackedUnder(dir, cwd = ROOT) {
+  const result = spawnSync("git", ["ls-files", dir], { cwd });
   if (result.error) {
     throw new Error(`git ls-files ${dir} could not run: ${result.error.message}`);
   }
@@ -2951,6 +2961,58 @@ describe("plugin logs ignore coverage", () => {
   it("fails rather than skips when git cannot answer", () => {
     // A skip would let a machine without git report the ignore set as healthy.
     expect(() => gitIgnored(join(LOGS_DIR, "probe.xyz"), "git-absent-probe")).toThrow(/could not run/);
+  });
+
+  // The assertion above asks whether *this* repository tracks anything under
+  // plugins/logs, which a repository that never tracked a file there satisfies
+  // by construction — it cannot tell "the rule hides nothing" from "there is
+  // nothing to hide". The pair below reads an index that does carry such a
+  // file, so the helper's answer is falsifiable in both directions.
+  describe("against a repository that tracks a file under the ignored directory", () => {
+    let repo;
+
+    // Setup fails loudly rather than leaving a half-built repository that would
+    // make the assertions below red for a staging reason instead of the
+    // helper's answer.
+    const gitIn = (args) => {
+      const result = spawnSync("git", args, { cwd: repo });
+      if (result.error) {
+        throw new Error(`git ${args.join(" ")} could not run: ${result.error.message}`);
+      }
+      if (result.status !== 0) {
+        throw new Error(`git ${args.join(" ")} exited ${result.status}: ${String(result.stderr).trim()}`);
+      }
+      return String(result.stdout);
+    };
+
+    beforeAll(() => {
+      repo = mkdtempSync(join(tmpdir(), "config-guard-tracked-"));
+      gitIn(["init", "-q"]);
+      writeFileSync(join(repo, ".gitignore"), "plugins/logs/\n");
+      mkdirSync(join(repo, "plugins", "logs"), { recursive: true });
+      writeFileSync(join(repo, "plugins", "logs", "probe.log"), "");
+      // -f is required: the ignore rule written above would otherwise keep the
+      // path out of the index, and the positive half would red for a staging
+      // failure rather than for the helper's answer.
+      gitIn(["add", "-f", "plugins/logs/probe.log"]);
+    });
+
+    afterAll(() => {
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it("reads the index of the repository it is handed, not this one", () => {
+      // The fixture's own index is proven non-empty before the helper is asked
+      // anything, so a failure below can only be the helper answering about a
+      // different tree.
+      expect(gitIn(["ls-files", LOGS_DIR]).split("\n").filter(Boolean)).toEqual([
+        "plugins/logs/probe.log",
+      ]);
+      expect(trackedUnder(LOGS_DIR, repo)).toEqual(["plugins/logs/probe.log"]);
+      // Without the negative half a helper that returned every tracked path in
+      // the repository it was handed would pass the positive.
+      expect(trackedUnder(join("plugins", "absent"), repo)).toEqual([]);
+    });
   });
 });
 
