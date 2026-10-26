@@ -319,6 +319,41 @@ ${escalationSection}`;
     expect(records("CHECKOFF"), "a repeated identical evaluation emitted another record").toHaveLength(afterFirstRepeat);
   });
 
+  // The start-of-run marker is what makes the records above attributable: a
+  // settlement line belongs to the latest preceding GATE_START in the same log,
+  // so "no settlement line" stops being ambiguous between no write and a hook
+  // that never fired across a restart. It proves that a gate process started and
+  // when. It does not prove that the host invoked the write hook, and it cannot
+  // force a host write to happen — no assertion here may be read as either.
+  it("marks the process start once and adds no second line on a settlement tool call", async () => {
+    clearLog();
+    // A fresh instance is the only way to observe the emission: the marker is a
+    // property of construction, not of a call.
+    hooks = await pluginModule.server({}, {});
+    const starts = records("GATE_START");
+    expect(starts, "no GATE_START line at server construction").toHaveLength(1);
+    const { token, fields } = parseRecord(starts[0]);
+    expect(token).toBe("GATE_START");
+    expect(fields.pid).toBe(String(process.pid));
+    expect(new Date(fields.at).toISOString()).toBe(fields.at);
+
+    // One line per process instance, never per tool call: the write hook that
+    // lands settlement lines must add none.
+    const s = "gate-start";
+    const artisan = "gate-start-artisan";
+    const relPath = `knowledge/impl-M6-first-${s}-gen0.md`;
+    await reopenWithStamp(s, `impl-M6-first-${s}-gen0.md`);
+    const fixBody = `${implKD(s, "superseded")}\n# Fix evidence: addresses review findings\n`;
+    await artisanWrite(artisan, relPath, fixBody, "c-gate-start-a");
+    await artisanWrite(artisan, relPath, fixBody, "c-gate-start-b");
+    await landAndSettle(artisan, relPath, fixBody, "c-gate-start-b");
+    expect(
+      records("STAMP_CLEARED").length + records("STAMP_CLEAR_PENDING").length,
+      "no settlement line was produced, so the no-second-line half proves nothing"
+    ).toBeGreaterThan(0);
+    expect(records("GATE_START"), "a tool call emitted a second GATE_START").toHaveLength(1);
+  });
+
   // Settlement declines rather than guesses. Each token below is one reason the
   // gate refuses to promote, and each refusal is visible with no debug flag:
   // the row stays open, the artifact stays on disk, and one record says why.
