@@ -2163,18 +2163,28 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
 // settles, so a write that merely shares a stamped artifact's basename cannot
 // settle (or silently unsnapshot) the row it names.
 function settleStampClearsForSession(sessionID, sessionPhaseMap, transport) {
+  return settleStampClearsForSessionDetailed(sessionID, sessionPhaseMap, transport).length;
+}
+
+// The same loop, reporting WHICH artifacts it settled rather than how many. The
+// after-hook needs the names: a landing the stamp settlement already recorded
+// must not be evaluated a second time, because one event carries one CHECKOFF
+// line. Counting callers keep the count view above.
+function settleStampClearsForSessionDetailed(sessionID, sessionPhaseMap, transport) {
   const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
-  if (!snapshots) return 0;
+  if (!snapshots) return [];
   const keys = Object.keys(snapshots);
-  if (keys.length === 0) return 0;
+  if (keys.length === 0) return [];
   const artifactDir = resolveArtifactDir(sessionID);
-  let settled = 0;
+  const settled = [];
   for (const key of keys) {
     const sep = key.indexOf("|");
     if (sep <= 0) continue;
     const milestoneId = key.slice(0, sep);
     const base = key.slice(sep + 1);
-    if (settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir: artifactDir, base, milestoneId, transport }).settled) settled++;
+    if (settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir: artifactDir, base, milestoneId, transport }).settled) {
+      settled.push({ milestoneId, base });
+    }
   }
   return settled;
 }
@@ -4550,6 +4560,13 @@ async function protocolGateServer(input, options) {
             ["milestone", milestoneId],
             ["artifact", artifactBase]
           ], `milestone ${milestoneId} fix-up rewrite detected at ${relPath} — incoming bytes differ from the stamped digest, so the stamp settles on the landed bytes and the row promotes then`, `STAMP_CLEAR_PENDING|${milestoneId.toUpperCase()}|a:${artifactBase}`);
+          // This is a deferral too, and it needs the same terminal evaluation.
+          // The stamp loop settles the artifacts that are still stamped on disk;
+          // an author who writes a live document over the stamp leaves it
+          // nothing to clear, and the landed file would then be evaluated by no
+          // one. Registering the check-off makes the after-hook read the landed
+          // bytes either way.
+          deferredCheckOffs.set(writerSessionID, { relPath, base: artifactBase, milestoneId });
         }
         return;
       }
@@ -4676,7 +4693,7 @@ async function protocolGateServer(input, options) {
     // transition on evidence, not a phase move, so it must not be skipped
     // because this process is not the one standing in SWARM. One record either
     // way: the landed bytes decide, and a decline names why.
-    function settleDeferredCheckOff(writerSessionID, relPath) {
+    function settleDeferredCheckOff(writerSessionID, relPath, settledStampBases = new Set()) {
       const pending = deferredCheckOffs.get(writerSessionID);
       if (!pending) return false;
       const base = String(relPath).replace(/\\/g, "/").split("/").pop();
@@ -4684,6 +4701,10 @@ async function protocolGateServer(input, options) {
       // path must not consume it.
       if (pending.base !== base) return false;
       deferredCheckOffs.delete(writerSessionID);
+      // The stamp settlement already recorded this landing's one CHECKOFF line
+      // and promoted on the settled bytes. Evaluating them again would emit a
+      // second line for one event.
+      if (settledStampBases.has(base)) return false;
       let landed = null;
       try { landed = readFileSync(join(resolveArtifactDir(writerSessionID), base), "utf8"); } catch (_) { landed = null; }
       if (landed === null) {
@@ -4729,9 +4750,13 @@ async function protocolGateServer(input, options) {
     // not handed in: settlement reads the canonical artifact, so a write aimed
     // at a same-basename copy settles nothing here.
     function settlePendingStampClears() {
+      const settledBases = new Set();
       for (const candidate of collectParentSessionCandidates()) {
-        settleStampClearsForSession(candidate, sessionPhaseMap, "after-hook");
+        for (const entry of settleStampClearsForSessionDetailed(candidate, sessionPhaseMap, "after-hook")) {
+          settledBases.add(entry.base);
+        }
       }
+      return settledBases;
     }
 
     // Post-write SWARM→VERIFY auto-advance: after a subagent's impl KD write
@@ -6318,11 +6343,11 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         const pending = pendingStampClear.get(sessionID);
         pendingStampClear.delete(sessionID);
         const isImplWrite = isImplKDArtifactPath(relPath);
-        if (pending || isImplWrite) settlePendingStampClears();
+        const settledStampBases = (pending || isImplWrite) ? settlePendingStampClears() : new Set();
         if (isImplWrite) {
           // The deferral settles here, on the landed bytes, before any phase
           // gate is consulted: promotion is evidence, not a phase move.
-          settleDeferredCheckOff(sessionID, relPath);
+          settleDeferredCheckOff(sessionID, relPath, settledStampBases);
           for (const candidate of collectParentSessionCandidates()) {
             advanceParentSessionFromSwarm(candidate);
           }

@@ -428,6 +428,29 @@ ${table}
     expect(registryBody(s, 5)).toContain("  M1: in-progress");
   });
 
+  it("promotes on the landed bytes when a live document replaces a stamp and the stamp loop finds nothing to clear", async () => {
+    const s = "lcgen-stamp-landed-1";
+    await openLifecycle(s, { persistedGen: 6, anchorGen: 5 });
+    // The prior evidence was stamped superseded by a reopen, so the write hook
+    // sees a stale file and defers the check-off to the landed bytes.
+    createKD(`impl-M1-feat-${s}-gen5.md`, implKD(s, "superseded"));
+    clearLog();
+
+    await writeAsArtisan(`${s}-art`, `knowledge/impl-M1-feat-${s}-gen5.md`, implKD(s));
+    expect(readLog()).toContain("STAMP_CLEAR_PENDING");
+    expect(registryBody(s, 5)).toContain("  M1: in-progress");
+
+    // The runtime lands the author's live document, which is no longer stamped:
+    // the stamp loop has nothing to clear, so only the deferred check-off can
+    // evaluate what landed.
+    writeFileSync(join(knowledgeDir, `impl-M1-feat-${s}-gen5.md`), implKD(s));
+    await hooks["tool.execute.after"]({ tool: "write", sessionID: `${s}-art` }, {});
+
+    const log = readLog();
+    expect(log).toContain(`CHECKOFF: milestone=M1 artifact=impl-M1-feat-${s}-gen5.md promoted=true reason=live-evidence transport=after-hook`);
+    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+  });
+
   it("refuses to start a lifecycle at a generation another unfinished lifecycle holds", async () => {
     const s = "lcgen-collide-1";
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
