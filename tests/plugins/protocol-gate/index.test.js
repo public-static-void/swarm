@@ -121,9 +121,9 @@ author: Artisan
   // compare against. The freshness gates read `mtimeMs >= anchor` where the
   // anchor is an integer millisecond value; the filesystem's mtime grid is
   // coarser, so a write issued after the anchor can be stored before it and no
-  // comparison can recover the ordering. A write a test expects to advance a
-  // gate therefore goes through this constructor, never through a per-site
-  // utimes call — a copy of the stamp would be the same hazard in a new place.
+  // comparison can recover the ordering. This constructor is the common route
+  // for a write that must advance a gate; an ordering-constrained site sets its
+  // mtime with an explicit forward utimesSync, which is the spacing it needs.
   function createFreshKD(filename, content) {
     createKD(filename, content);
     stampFresh(join(knowledgeDir, filename));
