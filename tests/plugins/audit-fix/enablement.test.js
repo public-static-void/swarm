@@ -69,20 +69,6 @@ afterEach(() => {
   vi.resetModules();
 });
 
-// The always-on start marker is the one record a gate writes with logging off:
-// protocol-gate emits `GATE_START` when its server starts, so a settlement line
-// can be attributed to a process generation across a restart. The cases below
-// pin the debug/seam channel, so they read the log minus that marker instead of
-// the file's mere existence — with the marker always on, absence of the file is
-// no longer a proxy for "nothing was written", and this form also fails if a
-// debug or seam line ever joins the marker.
-function debugChannelLines(logFile) {
-  if (!existsSync(logFile)) return [];
-  return readFileSync(logFile, "utf8")
-    .split("\n")
-    .filter((line) => line.length > 0 && !line.includes("] [protocol-gate] GATE_START:"));
-}
-
 describe("gate debug enablement", () => {
   for (const def of GATES) {
     describe(def.gate, () => {
@@ -167,10 +153,7 @@ describe("gate debug enablement", () => {
 
         expect(state.enabled).toBe(false);
         expect(state.via).toBe("none");
-        expect(
-          debugChannelLines(join(logDir, `${def.gate}.log`)),
-          "the debug channel wrote a line while logging is off"
-        ).toEqual([]);
+        expect(existsSync(join(logDir, `${def.gate}.log`))).toBe(false);
         const statusFile = join(logDir, `${def.gate}.status`);
         expect(existsSync(statusFile)).toBe(true);
         const status = JSON.parse(readFileSync(statusFile, "utf8"));
@@ -231,10 +214,7 @@ describe("shipped default-off logging posture", () => {
       expect(isAbsolute(state.sentinelPath)).toBe(true);
       expect(state.sentinelPath.endsWith(join("plugins", def.gate, ".debug"))).toBe(true);
       expect(existsSync(state.sentinelPath)).toBe(false);
-      expect(
-        debugChannelLines(join(logDir, `${def.gate}.log`)),
-        "the shipped posture wrote a debug line while logging resolves off"
-      ).toEqual([]);
+      expect(existsSync(join(logDir, `${def.gate}.log`))).toBe(false);
     });
   }
 });
@@ -270,10 +250,7 @@ describe("deny seam evidence channel", () => {
 
     expect(failure).not.toBeNull();
     expect(failure.code).toBe("SHELL_DENIED_ATTRIBUTED");
-    expect(
-      debugChannelLines(join(logDir, "protocol-gate.log")),
-      "the deny seam wrote a line while logging stays off"
-    ).toEqual([]);
+    expect(existsSync(join(logDir, "protocol-gate.log"))).toBe(false);
   });
 
   it("appends a deny seam line when logging is enabled", async () => {

@@ -370,19 +370,6 @@ superseded_by: null
     expect(mtime).toBeGreaterThanOrEqual(anchor + FRESH_MARGIN_MS - 1);
   });
 
-  // The offset is a contract, not a convenience: the fixtures that need two
-  // fresh writes ORDERED relative to each other depend on a stamped write
-  // landing a known distance ahead of its sibling. Against a primitive that
-  // ignores its second argument the write lands at the default margin, so this
-  // reds deterministically rather than flaking.
-  it("stampFresh honors an explicit offset past the default margin", () => {
-    const anchor = Date.now();
-    createKD("intent-pin-offset.md");
-    stampFresh(join(knowledgeDir, "intent-pin-offset.md"), 10000);
-    const mtime = statSync(join(knowledgeDir, "intent-pin-offset.md")).mtimeMs;
-    expect(mtime).toBeGreaterThanOrEqual(anchor + 10000 - 1);
-  });
-
   it("tracks overseer sessions at INTENT and ignores non-overseer sessions", async () => {
     const overseer = sid("init-1");
     const artisan = sid("init-2");
@@ -1478,7 +1465,7 @@ Amendment body.
       // the freshness check cannot depend on the filesystem's mtime resolution.
       const intentPath = join(knowledgeDir, `intent-config-audit-${s}.md`);
       createKD(`intent-config-audit-${s}.md`, "# INTENT: test\n");
-      stampFresh(intentPath);
+      utimesSync(intentPath, new Date(), new Date(Date.now() + 5000));
       await afterHook.handler({
         tool: "write",
         sessionID: s,
@@ -5001,7 +4988,7 @@ milestones:
       createKD(`review-newer-${s}.md`, "no verdict frontmatter");
       // Make the newer KD decisively newest via mtime so the filename
       // tie-break is not load-bearing (newest wins).
-      stampFresh(join(knowledgeDir, `review-newer-${s}.md`));
+      utimesSync(join(knowledgeDir, `review-newer-${s}.md`), new Date(), new Date(Date.now() + 5000));
 
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
@@ -5100,7 +5087,7 @@ milestones:
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
       createKD(`preflight-older-${s}.md`, preflightKD("ESCALATION"));
       createKD(`preflight-newer-${s}.md`, preflightKD("PASS"));
-      stampFresh(join(knowledgeDir, `preflight-newer-${s}.md`));
+      utimesSync(join(knowledgeDir, `preflight-newer-${s}.md`), new Date(), new Date(Date.now() + 5000));
       await tick(s, "c1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
     });
@@ -5331,7 +5318,7 @@ milestones:
       // consumed verdict stays consumed: no second regression, no reopen.
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       createKD(`impl-M1-v2-${s}.md`);
-      stampFresh(join(knowledgeDir, `impl-M1-v2-${s}.md`));
+      utimesSync(join(knowledgeDir, `impl-M1-v2-${s}.md`), new Date(), new Date(Date.now() + 5000));
 
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c2" },
@@ -5342,7 +5329,7 @@ milestones:
 
       // The Inspector re-emits the verdict (same filename, rewritten after
       // the regression) — new information, so it regresses again.
-      stampFresh(join(knowledgeDir, reviewName), 10000);
+      utimesSync(join(knowledgeDir, reviewName), new Date(), new Date(Date.now() + 10000));
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c3" },
         { args: { pattern: "knowledge/*.md" } }
@@ -5362,7 +5349,7 @@ milestones:
       const reviewName = `review-pass-${s}.md`;
       createKD(reviewName, reviewKD("PASS"));
       createKD(`impl-M1-after-${s}.md`);
-      stampFresh(join(knowledgeDir, `impl-M1-after-${s}.md`));
+      utimesSync(join(knowledgeDir, `impl-M1-after-${s}.md`), new Date(), new Date(Date.now() + 5000));
 
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c1" },
@@ -5371,7 +5358,7 @@ milestones:
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY); // stale PASS blocked
 
       // A fresh review (newer than the newest impl KD) advances.
-      stampFresh(join(knowledgeDir, reviewName), 10000);
+      utimesSync(join(knowledgeDir, reviewName), new Date(), new Date(Date.now() + 10000));
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c2" },
         { args: { pattern: "knowledge/*.md" } }
@@ -5608,7 +5595,7 @@ audited
       // and no second regression fires.
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
       createKD(`impl-M1-fix-${s}.md`);
-      stampFresh(join(knowledgeDir, `impl-M1-fix-${s}.md`));
+      utimesSync(join(knowledgeDir, `impl-M1-fix-${s}.md`), new Date(), new Date(Date.now() + 5000));
       await hooks["tool.execute.before"](
         { tool: "glob", sessionID: s, callID: "c2" },
         { args: { pattern: "knowledge/*.md" } }

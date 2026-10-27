@@ -19,13 +19,8 @@ import pluginModule from "../../../plugins/protocol-gate/index.js";
 // loudly rather than flaking quietly — do not raise it.
 export const FRESH_MARGIN_MS = 5000;
 
-// The offset is a parameter because two fixtures must keep a fresh write
-// ORDERED ahead of a sibling written in the same tick — a single margin makes
-// them tie, and a tie fails deterministically. An offset call keeps that
-// ordering inside the one primitive; a per-site `utimesSync` would be the same
-// stamp copied into the place the consolidation exists to remove.
-export function stampFresh(fullPath, offsetMs = FRESH_MARGIN_MS) {
-  utimesSync(fullPath, new Date(), new Date(Date.now() + offsetMs));
+export function stampFresh(fullPath) {
+  utimesSync(fullPath, new Date(), new Date(Date.now() + FRESH_MARGIN_MS));
 }
 
 // Completion evidence is live only with an allowlisted frontmatter status, so

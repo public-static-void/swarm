@@ -3636,19 +3636,6 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
 }
 
 async function protocolGateServer(input, options) {
-    // Start-of-run marker: one line per instance, always on (gateRecord is not
-    // gated by the debug flag), and the instance's first record — emitted before
-    // any hook exists, so a marker in the log proves the process reached the
-    // server and brackets everything the instance writes after it. An operator
-    // attributes a settlement line to the latest preceding GATE_START, which is
-    // what stops "no settlement line" from being ambiguous between *no write
-    // happened* and *the hook never fired* across a restart.
-    // The ceiling is the point: this proves a gate process ran and when. It does
-    // not prove the host fires execute.after, that a real write reaches
-    // settlement, or any reliability rate — and it cannot force a host write to
-    // happen. Never emit it per tool call; a per-call line would mark the call,
-    // not the process, and attribution would be lost.
-    gateRecord(`GATE_START: pid=${process.pid} at=${new Date().toISOString()}`);
     // Re-emit the load-signal per server instance: the module-level emit ran
     // with import-time env, while test seams (and host restarts) bind later.
     // Overwrites the same status file with freshly resolved paths.

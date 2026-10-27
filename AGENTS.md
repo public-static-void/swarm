@@ -38,11 +38,3 @@ Context compaction truncates the working transcript. Load the `resume-protocol` 
 ## Searching Gitignored Trees
 
 The dedicated Grep tool searches every tree on disk — gitignored directories (`knowledge/`, `references/`, `node_modules/`) included. Log files (`*.log`, e.g. under `plugins/logs/`) fall outside its default file-type set: pass an explicit `include` glob such as `"*.log"`, or investigate them via the Read tool and bash allowlisted commands (`cat*`, `head*`, `tail*`). This swarm's own logs and config are workspace-relative paths: investigate them in-tree under `plugins/logs/`. An external evidence request is redirected to a workspace-local target — the working directory is the boundary, and no out-of-project path is admitted.
-
-## Scratch and Observation Artifacts
-
-Scratch and observation artifacts live under `plugins/logs/` — the ignored plugin log directory that already holds runtime output; a probe lives outside the collected test paths (`tests/**`); the working directory is the reachable boundary; and `/tmp/opencode` is a legacy removal grant, not a scratch area.
-
-When a role cannot write there, record the limitation in its KD rather than improvise a location inside the repository.
-
-Relation to the rules above: the Compound Commands rule governs how a command is split, not where a redirect lands — the destination is the writer's responsibility; the Searching Gitignored Trees rule names `plugins/logs/` as the log home, and this section extends that home to all scratch and observation artifacts.
