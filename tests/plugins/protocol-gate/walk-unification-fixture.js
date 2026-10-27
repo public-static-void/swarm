@@ -103,8 +103,10 @@ export function createWalkHarness(beforeAll, afterAll, beforeEach) {
     writeFileSync(join(env.knowledgeDir, filename), content);
   };
   // Same bytes as createKD, then stamped forward of the anchor the gate will
-  // compare against (see stampFresh). Any write a test expects to advance a
-  // freshness gate uses this constructor, never a per-site utimes call.
+  // compare against (see stampFresh). This constructor is the common route for a
+  // write that must advance a freshness gate; a site whose ordering against
+  // other artifacts is constrained sets its mtime with an explicit forward
+  // utimesSync instead.
   api.createFreshKD = (filename, content = "test content") => {
     api.createKD(filename, content);
     stampFresh(join(env.knowledgeDir, filename));

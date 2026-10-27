@@ -1161,7 +1161,11 @@ superseded_by: null
       expect(existsSync(join(knowledgeDir, `intent-a-${s}-gen1.md`))).toBe(false);
       expect(existsSync(join(knowledgeDir, `spec-b-${s}-gen1.md`))).toBe(false);
       expect(readFileSync(join(knowledgeDir, `intent-a-${s}-gen2.md`), "utf8")).toBe(gen2Content);
-      expect(hooks.getCurrentGeneration(s)).toBe(2);
+      // Allocated, not incremented: gen2 is still on disk and an unfinished
+      // lifecycle holds it, so the next lifecycle takes 3 rather than reusing a
+      // label that already names evidence. `currentGen + 1` here would hand the
+      // next lifecycle gen2 and merge the two lifecycles' evidence.
+      expect(hooks.getCurrentGeneration(s)).toBe(3);
     }
   });
 
