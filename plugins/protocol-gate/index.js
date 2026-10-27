@@ -219,7 +219,12 @@ const ERROR_TEMPLATES = {
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
   GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, opencode.json) or `git add .` to stage all non-ignored changes" },
   SHELL_DENIED_ATTRIBUTED: { code: "SHELL_DENIED_ATTRIBUTED", message: "SHELL DENIED (attributed — see message)", guidance: "Follow the Try next line in the message" },
-  INTENT_BOUNDARY_CLOSED: { code: "INTENT_BOUNDARY_CLOSED", message: "❌ INTENT BOUNDARY CLOSED: write/edit of intent-*.md outside INTENT", guidance: "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md" }
+  INTENT_BOUNDARY_CLOSED: { code: "INTENT_BOUNDARY_CLOSED", message: "❌ INTENT BOUNDARY CLOSED: write/edit of intent-*.md outside INTENT", guidance: "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md" },
+  GENERATION_HELD: (generation, holders) => ({
+    code: "GENERATION_HELD",
+    message: `❌ GENERATION_HELD: generation ${generation} is already held by an unfinished lifecycle of this session (${(holders || []).join(", ")})`,
+    guidance: `Start this lifecycle at a free generation — the gate allocates one above every label on disk and records it as LIFECYCLE_GENERATION_ALLOCATED — then rewrite the INTENT with that number in its filename. At the same generation the filename carries no discriminator, so the two lifecycles' evidence would be one set.`
+  })
 };
 
 function getPhaseName(phaseId) {
@@ -3871,6 +3876,14 @@ async function protocolGateServer(input, options) {
     // after-hook cannot see the tool args, so the before-hook records the path
     // for the post-write SWARM→VERIFY auto-advance evaluation.
     const pendingImplKDWrites = new Map();
+    // Deferred check-offs by subagent sessions — sessionID →
+    // { relPath, base, milestoneId }. Recorded in tool.execute.before when the
+    // payload is a patch fragment, which the gate cannot judge as a document,
+    // and consumed in tool.execute.after where the landed bytes are read. The
+    // deferral is only a postponement: without this marker the landed file is
+    // never evaluated, and a fragment-only fix delivery leaves a reopened row
+    // open with nothing but the deferral line to show for it.
+    const deferredCheckOffs = new Map();
     // Pending frontmatter stamp clears by subagent sessions — sessionID →
     // { relPath, base, dir, snapshot }. Recorded in tool.execute.before when an
     // impl-KD write lands over a stamped file with new bytes (a genuine
@@ -4450,20 +4463,19 @@ async function protocolGateServer(input, options) {
     // another — the state that refused this lifecycle's own evidence and left
     // the milestone gate with nothing to promote.
     //
-    // A number another INTENT of this session already carries belongs to a
-    // lifecycle that is still unfinished. The running lifecycle keeps the number
-    // its own artifact carries (the newest INTENT is the anchor every lookup
-    // resolves against) and the collision is recorded, because two lifecycles
-    // that share a label are the one case the filename cannot separate on its
-    // own. The allocator prevents that case at a gate-owned boundary
-    // (allocateLifecycleGeneration); it cannot prevent an INTENT written by a
-    // dispatcher that picked its own number.
+    // Uniqueness is enforced here, not reported. A number another INTENT of this
+    // session already carries belongs to a lifecycle that is still unfinished,
+    // and at the same generation the filename carries no discriminator — the two
+    // lifecycles' artifacts would satisfy one evidence predicate and merge.
+    // Recording that would leave the merge in place, so the start is refused and
+    // the caller blocks the write. The allocator keeps a held number out of
+    // gate-allocated starts; this keeps it out of the starts a dispatcher names.
     function adoptLifecycleGenerationOnIntent(sessionID, relPath) {
       const base = String(relPath).replace(/\\/g, "/").split("/").pop();
       const generation = extractImplKDGeneration(base, sessionID);
       // No `-gen{N}` for this session: the name is not this lifecycle's INTENT
       // and carries no number to adopt. Not a skip — there is nothing to adopt.
-      if (generation === null) return null;
+      if (generation === null) return { ok: true, generation: null };
       const persisted = getPersistedGeneration(sessionID) ?? getCurrentGeneration(sessionPhaseMap, sessionID);
       const knowledgeDir = getKnowledgeDir(sessionID);
       let holders = [];
@@ -4472,23 +4484,22 @@ async function protocolGateServer(input, options) {
           /^intent-/i.test(f) && f !== base && extractImplKDGeneration(f, sessionID) === generation
         );
       } catch (_) {}
-      // Recorded whether or not an adoption is still owed: the collision is a
-      // property of the label, and a lifecycle whose counter already agrees
-      // with it is exactly the case where the merge would go unnoticed.
       if (holders.length > 0) {
         gateRecordEvent("LIFECYCLE_GENERATION_COLLISION", [
           ["session", sessionID],
           ["generation", generation],
           ["anchor", base],
-          ["others", holders.join(",")]
-        ], `an unfinished lifecycle of this session already carries generation ${generation}; the newest INTENT anchors the running lifecycle, so this one keeps its own number rather than silently merging the two lifecycles' evidence`, `LIFECYCLE_GENERATION_COLLISION|${sessionID}|g:${generation}|f:${base}|o:${holders.join(",")}`);
+          ["others", holders.join(",")],
+          ["started", "false"]
+        ], `generation ${generation} is already held by an unfinished lifecycle of this session (${holders.join(",")}); at the same generation the filename carries no discriminator, so the two lifecycles' artifacts would be one evidence set — this lifecycle cannot start at ${generation} and the write is refused. Start at a free number: the allocator names the next one`, `LIFECYCLE_GENERATION_COLLISION|${sessionID}|g:${generation}|f:${base}|o:${holders.join(",")}`);
+        return { ok: false, reason: "generation-held", generation, holders };
       }
-      if (persisted === generation) return generation;
+      if (persisted === generation) return { ok: true, generation };
       sessionPhaseMap.set(`${sessionID}:gen`, generation);
       if (!saveState(sessionID)) {
         sessionPhaseMap.set(`${sessionID}:gen`, persisted);
         gateRecord(`LIFECYCLE_GENERATION_ADOPT_FAILED: session=${sessionID} artifact=${base} persistedGen=${persisted} activeGen=${generation} reason=state-write-failed`);
-        return null;
+        return { ok: false, reason: "state-write-failed", generation: null };
       }
       gateRecordEvent("LIFECYCLE_GENERATION_ADOPTED", [
         ["session", sessionID],
@@ -4496,7 +4507,7 @@ async function protocolGateServer(input, options) {
         ["activeGen", generation],
         ["anchor", base]
       ], `the lifecycle started under ${generation}: the number its INTENT carries is now the persisted counter, so the allocator and the evidence agree from the first write`, `LIFECYCLE_GENERATION_ADOPTED|${sessionID}|p:${persisted}|a:${generation}|f:${base}`);
-      return generation;
+      return { ok: true, generation };
     }
 
     // When the artisan writes its milestone-scoped impl KD,
@@ -4509,7 +4520,11 @@ async function protocolGateServer(input, options) {
     // RESTART REQUIRED: plugins load once per opencode process —
     // changes to this check-off path and its loud diagnostics take effect
     // only after opencode restarts.
-    function autoCheckOffMilestone(relPath, incomingContent, writerSessionID) {
+    // `transport` names the entry point that reached this evaluation: the write
+    // hook judges the incoming document, the after-hook judges the bytes a
+    // deferred fragment landed. The record carries the tag, so a promotion says
+    // which of the two produced it.
+    function autoCheckOffMilestone(relPath, incomingContent, writerSessionID, transport = "write-hook", opts = {}) {
       const milestoneId = extractMilestoneIdFromImplKD(relPath);
       if (!milestoneId) return;
       // Liveness decides with the one parse (FR-01, FR-04). The before-hook
@@ -4525,7 +4540,7 @@ async function protocolGateServer(input, options) {
       const diskSnapshot = readImplKDSnapshot(relPath, writerSessionID);
       const artifactBase = relPath.replace(/\\/g, "/").split("/").pop();
       const incomingVerdict = isDocumentPayload(incomingContent) ? evaluateLiveness(incomingContent) : null;
-      if (diskSnapshot !== null && diskSnapshot.stale) {
+      if (!opts.landed && diskSnapshot !== null && diskSnapshot.stale) {
         if (typeof incomingContent === "string" && diskSnapshot.content !== incomingContent) {
           // A marker that a stamp clear is owed, not a claim about the target:
           // settlement re-derives the canonical artifact from disk, so this
@@ -4550,6 +4565,11 @@ async function protocolGateServer(input, options) {
           ["promoted", "false"],
           ["reason", "not-a-document"]
         ], `milestone ${milestoneId}: the incoming payload carries no frontmatter block, so it is a patch fragment — the landed file is evaluated instead at ${relPath}`, `CHECKOFF_DEFERRED|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}`);
+        // The deferral names its own consumer: the after-hook reads the landed
+        // file and evaluates it there. Nothing about that evaluation depends on
+        // the phase the process happens to stand in — a row's promotion is a
+        // registry transition on evidence, not a phase move.
+        deferredCheckOffs.set(writerSessionID, { relPath, base: artifactBase, milestoneId });
         return;
       }
       if (incomingVerdict && !incomingVerdict.live) {
@@ -4560,8 +4580,9 @@ async function protocolGateServer(input, options) {
           ["milestone", milestoneId],
           ["artifact", artifactBase],
           ["promoted", "false"],
-          ["reason", incomingVerdict.reason]
-        ], `milestone ${milestoneId} keeps its registry state — incoming impl KD is not live (${incomingVerdict.reason}) at ${relPath}. Write fresh fix evidence with an allowlisted status to re-complete.`, `CHECKOFF|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}|p:false|r:${incomingVerdict.reason}`);
+          ["reason", incomingVerdict.reason],
+          ["transport", transport]
+        ], `milestone ${milestoneId} keeps its registry state — incoming impl KD is not live (${incomingVerdict.reason}) at ${relPath}. Write fresh fix evidence with an allowlisted status to re-complete.`, `CHECKOFF|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}|p:false|r:${incomingVerdict.reason}|t:${transport}`);
         return;
       }
       for (const candidate of collectParentSessionCandidates()) {
@@ -4623,8 +4644,9 @@ async function protocolGateServer(input, options) {
           ["milestone", resolvedId],
           ["artifact", artifactBase],
           ["promoted", promoted ? "true" : "false"],
-          ["reason", promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)]
-        ], null, `CHECKOFF|${gateRecordMilestoneTag(resolvedId)}a:${artifactBase}|p:${promoted ? "true" : "false"}|r:${promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)}`);
+          ["reason", promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)],
+          ["transport", transport]
+        ], null, `CHECKOFF|${gateRecordMilestoneTag(resolvedId)}a:${artifactBase}|p:${promoted ? "true" : "false"}|r:${promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)}|t:${transport}`);
         // Only a SUCCESSFUL check-off resets the per-milestone
         // redispatch budget. A failed registry update keeps the counter so
         // retries still count toward the cap; a re-opened milestone
@@ -4646,6 +4668,55 @@ async function protocolGateServer(input, options) {
       // silent: a row that stays open after a write must not be
       // indistinguishable from a write the gate never saw.
       gateRecord(`AUTO_CHECKOFF_UNMATCHED: ${relPath} reason=no-matching-session promoted=false`);
+    }
+
+    // Terminal evaluation for a deferred check-off: the fragment has landed, so
+    // the file on disk is read and judged by the same function the document path
+    // uses. Deliberately phase-independent — a row's promotion is a registry
+    // transition on evidence, not a phase move, so it must not be skipped
+    // because this process is not the one standing in SWARM. One record either
+    // way: the landed bytes decide, and a decline names why.
+    function settleDeferredCheckOff(writerSessionID, relPath) {
+      const pending = deferredCheckOffs.get(writerSessionID);
+      if (!pending) return false;
+      const base = String(relPath).replace(/\\/g, "/").split("/").pop();
+      // A deferral is keyed to the artifact it postponed; a write to another
+      // path must not consume it.
+      if (pending.base !== base) return false;
+      deferredCheckOffs.delete(writerSessionID);
+      let landed = null;
+      try { landed = readFileSync(join(resolveArtifactDir(writerSessionID), base), "utf8"); } catch (_) { landed = null; }
+      if (landed === null) {
+        gateRecordEvent("CHECKOFF", [
+          ["milestone", pending.milestoneId],
+          ["artifact", base],
+          ["promoted", "false"],
+          ["reason", "unreadable"],
+          ["transport", "after-hook"]
+        ], `milestone ${pending.milestoneId} keeps its registry state — the deferred write landed at ${relPath} but the file could not be read, so the evaluation had nothing to judge`, `CHECKOFF|${gateRecordMilestoneTag(pending.milestoneId)}a:${base}|p:false|r:unreadable|t:after-hook`);
+        return false;
+      }
+      // A landing that is not a document has no evaluation left to defer to.
+      // Recording it here closes the deferral instead of re-deferring on every
+      // later write of the same artifact.
+      if (!isDocumentPayload(landed)) {
+        gateRecordEvent("CHECKOFF", [
+          ["milestone", pending.milestoneId],
+          ["artifact", base],
+          ["promoted", "false"],
+          ["reason", "not-a-document"],
+          ["transport", "after-hook"]
+        ], `milestone ${pending.milestoneId} keeps its registry state — the landed file at ${relPath} carries no frontmatter block either, so there is no document to evaluate`, `CHECKOFF|${gateRecordMilestoneTag(pending.milestoneId)}a:${base}|p:false|r:not-a-document|t:after-hook`);
+        return false;
+      }
+      // The landed bytes are judged as a document, not through the write-hook's
+      // stamp snapshot: the snapshot answers "is the file behind this write
+      // already stamped?", a question about a write still in flight. Once the
+      // write has landed the answer is in the bytes, and routing a not-live
+      // landing through the snapshot would return silently — the deferral would
+      // end in exactly the silence it exists to remove.
+      autoCheckOffMilestone(relPath, landed, writerSessionID, "after-hook", { landed: true });
+      return true;
     }
 
     // Settles every deferred genuine-rewrite stamp clear by evaluating disk
@@ -5651,7 +5722,14 @@ async function protocolGateServer(input, options) {
         // can be judged against a counter that belongs to another lifecycle.
         // Runs after the content validation so a rejected write adopts nothing.
         if (phase === STATES.INTENT && isIntentKD) {
-          adoptLifecycleGenerationOnIntent(sessionID, relPath);
+          const adopted = adoptLifecycleGenerationOnIntent(sessionID, relPath);
+          // A held number blocks the write: a lifecycle that started at a number
+          // another unfinished lifecycle carries would merge the two evidence
+          // sets, and nothing downstream could separate them again.
+          if (!adopted.ok && adopted.reason === "generation-held") {
+            const template = ERROR_TEMPLATES.GENERATION_HELD(adopted.generation, adopted.holders);
+            throw new ProtocolGateError(template.code, template.message, template.guidance);
+          }
         }
 
         // Trigger pendingVerification when write creates a KD matching
@@ -6242,6 +6320,9 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         const isImplWrite = isImplKDArtifactPath(relPath);
         if (pending || isImplWrite) settlePendingStampClears();
         if (isImplWrite) {
+          // The deferral settles here, on the landed bytes, before any phase
+          // gate is consulted: promotion is evidence, not a phase move.
+          settleDeferredCheckOff(sessionID, relPath);
           for (const candidate of collectParentSessionCandidates()) {
             advanceParentSessionFromSwarm(candidate);
           }

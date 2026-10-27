@@ -300,7 +300,8 @@ ${table}
     // The counter sits at 6 (an earlier lifecycle's REPORT moved it); this
     // lifecycle's INTENT is gen5. Adoption is what stops the two disagreeing
     // for the whole lifecycle.
-    expect(hooks.adoptLifecycleGenerationOnIntent(s, `knowledge/intent-feature-${s}-gen5.md`)).toBe(5);
+    expect(hooks.adoptLifecycleGenerationOnIntent(s, `knowledge/intent-feature-${s}-gen5.md`))
+      .toEqual({ ok: true, generation: 5 });
 
     const log = readLog();
     expect(log).toContain("LIFECYCLE_GENERATION_ADOPTED");
@@ -311,12 +312,15 @@ ${table}
     const state = JSON.parse(readFileSync(join(stateDir, `.protocol-state-${s}.json`), "utf8"));
     expect(state.generation).toBe(5);
 
-    // Paired negative: a second lifecycle of the same session holding the same
-    // number is recorded rather than silently merged, and the number is not
-    // adopted twice.
+    // Paired negative: a second INTENT of the same session already holds the
+    // number. At equal generation the filename carries no discriminator, so the
+    // two lifecycles' artifacts would be one evidence set — the start is
+    // refused rather than recorded and merged.
     createKD(`intent-other-${s}-gen5.md`, intentKD(s));
     clearLog();
-    expect(hooks.adoptLifecycleGenerationOnIntent(s, `knowledge/intent-feature-${s}-gen5.md`)).toBe(5);
+    const refused = hooks.adoptLifecycleGenerationOnIntent(s, `knowledge/intent-feature-${s}-gen5.md`);
+    expect(refused.ok).toBe(false);
+    expect(refused.reason).toBe("generation-held");
     expect(readLog()).toContain("LIFECYCLE_GENERATION_COLLISION");
     expect(readLog()).toContain(`intent-other-${s}-gen5.md`);
   });
@@ -379,5 +383,82 @@ ${table}
     clearLog();
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, new Map())).toBe(true);
     expect(readLog()).not.toContain("SWARM_GATE_PARKED");
+  });
+
+  it("settles a deferred fragment on the landed bytes in a process that is not standing in SWARM", async () => {
+    const s = "lcgen-defer-settle-1";
+    await openLifecycle(s, { persistedGen: 6, anchorGen: 5 });
+    // The parent is not in SWARM in this process. That is the condition under
+    // which the deferral's only consumer returned silently, leaving a deferred
+    // row with a deferral line and no evaluation.
+    hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+    createKD(`impl-M1-feat-${s}-gen5.md`, implKD(s));
+    clearLog();
+
+    await editAsArtisan(`${s}-art`, `knowledge/impl-M1-feat-${s}-gen5.md`, "- delivered step one\n");
+    expect(readLog()).toContain("CHECKOFF_DEFERRED");
+    expect(registryBody(s, 5)).toContain("  M1: in-progress");
+
+    // The runtime materializes the edit. The after-hook is the terminal
+    // evaluation, so it reads the bytes that landed rather than the fragment.
+    writeFileSync(join(knowledgeDir, `impl-M1-feat-${s}-gen5.md`), `${implKD(s)}\n- delivered step one\n`);
+    await hooks["tool.execute.after"]({ tool: "edit", sessionID: `${s}-art` }, {});
+
+    const log = readLog();
+    expect(log).toContain(`CHECKOFF: milestone=M1 artifact=impl-M1-feat-${s}-gen5.md promoted=true reason=live-evidence transport=after-hook`);
+    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+  });
+
+  it("declines the deferred settlement when the landed bytes are not live", async () => {
+    const s = "lcgen-defer-decline-1";
+    await openLifecycle(s, { persistedGen: 6, anchorGen: 5 });
+    hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+    createKD(`impl-M1-feat-${s}-gen5.md`, implKD(s));
+    clearLog();
+
+    await editAsArtisan(`${s}-art`, `knowledge/impl-M1-feat-${s}-gen5.md`, "- delivered step one\n");
+    // The landing decides. A document whose status is not allowlisted is not
+    // evidence, and the settlement says so instead of promoting on the fragment
+    // that preceded it.
+    writeFileSync(join(knowledgeDir, `impl-M1-feat-${s}-gen5.md`), implKD(s, "retired"));
+    await hooks["tool.execute.after"]({ tool: "edit", sessionID: `${s}-art` }, {});
+
+    const log = readLog();
+    expect(log).toContain(`CHECKOFF: milestone=M1 artifact=impl-M1-feat-${s}-gen5.md promoted=false reason=unknown-status transport=after-hook`);
+    expect(registryBody(s, 5)).toContain("  M1: in-progress");
+  });
+
+  it("refuses to start a lifecycle at a generation another unfinished lifecycle holds", async () => {
+    const s = "lcgen-collide-1";
+    await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
+    hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+    hooks.sessionPhaseMap.set(`${s}:sid`, s);
+    hooks.sessionPhaseMap.set(`${s}:gen`, 4);
+    // An unfinished lifecycle of this session already holds 5.
+    createKD(`intent-earlier-${s}-gen5.md`, intentKD(s));
+    clearLog();
+
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "write", sessionID: s, callID: "c-intent-held" },
+        { args: { filePath: `knowledge/intent-later-${s}-gen5.md`, content: intentKD(s) } }
+      )
+    ).rejects.toThrow(/GENERATION_HELD/);
+
+    const log = readLog();
+    expect(log).toContain("LIFECYCLE_GENERATION_COLLISION");
+    expect(log).toContain(`intent-earlier-${s}-gen5.md`);
+    // The counter did not adopt a held number: uniqueness is the gate's
+    // guarantee, not a note in the log.
+    expect(hooks.getCurrentGeneration(s)).toBe(4);
+
+    // Paired positive: a free number starts the lifecycle and is adopted, so
+    // the refusal above is about the collision and not about INTENT writes.
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: s, callID: "c-intent-free" },
+      { args: { filePath: `knowledge/intent-later-${s}-gen6.md`, content: intentKD(s) } }
+    );
+    expect(hooks.getCurrentGeneration(s)).toBe(6);
+    expect(readLog()).toContain("LIFECYCLE_GENERATION_ADOPTED");
   });
 });
