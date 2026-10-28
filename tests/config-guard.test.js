@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { readdirSync, readFileSync, existsSync, mkdtempSync, rmSync } from "fs";
+import {
+  readdirSync,
+  readFileSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  rmSync,
+} from "fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../plugins/delegation-gate/index.js";
@@ -32,6 +41,24 @@ function agentFiles() {
 
 function readAgent(name) {
   return readFileSync(join(AGENTS_DIR, name), "utf8");
+}
+
+// The rendered body of a delegation-gate template. Parsed, never raw-matched:
+// the JSON string is escaped, so a raw match against the file would pass on an
+// escape change while the dispatch the Inspector receives said something else.
+function renderedTemplate(name) {
+  return JSON.parse(readRoot(join("plugins", "delegation-gate", "templates", `${name}.json`))).template;
+}
+
+// The in-code fallback body for one mode. `defaultTemplates` is local to
+// `loadTemplates`, so the entry is sliced out of the plugin source and decoded
+// as the JSON string literal it is.
+function defaultTemplateBody(mode) {
+  const source = readRoot(join("plugins", "delegation-gate", "index.js"));
+  const blockStart = source.indexOf("const defaultTemplates = {");
+  const block = source.slice(blockStart, source.indexOf("};", blockStart));
+  const entry = block.match(new RegExp(`^\\s{4}${mode}:\\s*("(?:[^"\\\\]|\\\\.)*")`, "m"));
+  return entry ? JSON.parse(entry[1]) : "";
 }
 
 // Parses the v2 `permissions:` frontmatter list (ordered action / resource /
@@ -1480,11 +1507,52 @@ describe("planning shape and scribe composition discipline", () => {
   });
 });
 
+// The retired prose-citation rule. A FAIL used to be said to reopen the rows its
+// findings cite, and a FAIL citing none was called MALFORMED; protocol-gate reads
+// the frontmatter `reopen_target` field and derives no target from prose. A site
+// that still demands citations tells an Inspector to satisfy a rule the gate
+// never reads, so the verdict is refused instead of regressing the milestone.
+const RETIRED_CITATION_TOKENS = [
+  "CITATION MANDATE",
+  "MALFORMED",
+  "zero milestone citations",
+  "reopens exactly the milestone row(s)",
+  "Milestone citation",
+];
+
+// The retired tokens present in a text, so one predicate drives both the sweep
+// and its injection proof. MALFORMED matches as a word: the log record name
+// MALFORMED_FAIL is a different string and is not this rule.
+function citationOffenders(text) {
+  return RETIRED_CITATION_TOKENS.filter((token) =>
+    token === "MALFORMED" ? /\bMALFORMED\b/.test(text) : text.includes(token)
+  );
+}
+
+// The five sites that carried the rule: the three prose layers an agent reads,
+// the template the gate renders into every REVIEW dispatch, and the in-code
+// fallback the gate renders when the template file is unreadable. The guard
+// names exactly these — a sweep of the prose layers alone let the rendered
+// mandate survive a template rewrite.
+function citationSites() {
+  return [
+    ["agents/inspector.md", readAgent("inspector.md")],
+    ["skills/verification-gates/SKILL.md", readRoot(join("skills", "verification-gates", "SKILL.md"))],
+    ["skills/template-review/SKILL.md", readRoot(join("skills", "template-review", "SKILL.md"))],
+    ["plugins/delegation-gate/templates/review.json (parsed template)", renderedTemplate("review")],
+    ["plugins/delegation-gate/index.js (defaultTemplates.review)", defaultTemplateBody("review")],
+  ];
+}
+
 describe("VERIFY evidence shape", () => {
   const inspector = readAgent("inspector.md");
   const gates = readRoot(join("skills", "verification-gates", "SKILL.md"));
   const reviewTemplate = readRoot(join("skills", "template-review", "SKILL.md"));
   const milestonesTemplate = readRoot(join("skills", "template-milestones", "SKILL.md"));
+
+  // The verdict contract a rendered REVIEW dispatch must carry: the field that
+  // selects the reopened rows, the refusal it produces, and the recency rule.
+  const RENDERED_CONTRACT_TOKENS = ["reopen_target", "REOPEN_TARGET_INVALID", "no-reopen-target", "stale PASS"];
 
   it("frames VERIFY around REVIEW KD evidence with a single verdict field", () => {
     for (const content of [inspector, gates, reviewTemplate]) {
@@ -1512,13 +1580,31 @@ describe("VERIFY evidence shape", () => {
     }
   });
 
-  it("retires the citation mandate from every rule layer that carried it", () => {
-    // The field replaced the prose scan, so a surviving citation demand tells an
-    // Inspector to satisfy a rule the gate no longer reads.
-    for (const content of [inspector, gates, reviewTemplate]) {
-      expect(content).not.toContain("zero milestone citations");
-      expect(content).not.toContain("Milestone citation");
-      expect(content).not.toMatch(/\bMALFORMED\b/);
+  it("retires the citation mandate from all five sites that carried it", () => {
+    for (const [site, text] of citationSites()) {
+      expect(text, `${site} must be readable — an empty read makes the sweep vacuous`).not.toBe("");
+      expect(citationOffenders(text), `${site} still carries the retired citation rule`).toEqual([]);
+    }
+  });
+
+  it("states the reopen_target contract in the template it renders", () => {
+    const rendered = renderedTemplate("review");
+    for (const token of RENDERED_CONTRACT_TOKENS) {
+      expect(rendered, `rendered review template must state: ${token}`).toContain(token);
+    }
+    // The positive check is not vacuous: the same check rejects a body with the
+    // field removed, which is the state the template was in before the repair.
+    const withoutField = rendered.replace(/reopen_target/g, "the findings");
+    expect(RENDERED_CONTRACT_TOKENS.filter((token) => !withoutField.includes(token))).not.toEqual([]);
+  });
+
+  it("fails when any one of the five sites carries a retired token", () => {
+    // Each retired token is injected into each site one at a time: a fixture
+    // that only reddens one site would leave the other four unguarded.
+    for (const [site, text] of citationSites()) {
+      for (const token of RETIRED_CITATION_TOKENS) {
+        expect(citationOffenders(`${text}\n${token}`), `${site} must redden on an injected ${token}`).not.toEqual([]);
+      }
     }
   });
 
@@ -1572,6 +1658,26 @@ describe("rule layers state their rules self-containedly", () => {
   // posture, the refused-target malform, and the stale-PASS recency rule.
   const VERDICT_FACTS = ["reopen_target", "REOPEN_TARGET_INVALID", "stale PASS"];
 
+  // The failure classes a resume can produce, and the recovery each one calls
+  // for. A dispatch failure used to be taught as one class — a dead handle — so
+  // a correct handle that failed on agent resolution or a quota gate read as
+  // lost context. Every layer that teaches recovery states all three branches
+  // itself: the dispatcher acts at the moment its dispatch fails, with no
+  // sibling file in hand.
+  const RESUME_CLASS_FACTS = ["session-not-found", "agent-resolution", "quota-denied"];
+
+  function resumeFallbackSites() {
+    return [
+      ["artisan redispatch", artisanRedispatch],
+      ["overseer redispatch", overseerRedispatch],
+      ["swarm template (parsed template)", renderedTemplate("swarm")],
+    ];
+  }
+
+  function missingResumeClasses(text) {
+    return RESUME_CLASS_FACTS.filter((failureClass) => !text.includes(failureClass));
+  }
+
   const artisanRedispatch = headingRegion(
     readAgent("artisan.md"),
     "### Same-Instance Redispatch",
@@ -1612,6 +1718,101 @@ describe("rule layers state their rules self-containedly", () => {
   it("states the verdict semantics in each layer that carries them", () => {
     expect(missingFacts(gatesVerdicts, VERDICT_FACTS)).toEqual([]);
     expect(missingFacts(reviewVerdicts, VERDICT_FACTS)).toEqual([]);
+  });
+
+  it("names all three resume failure classes at every fallback site", () => {
+    for (const [site, text] of resumeFallbackSites()) {
+      expect(text, `${site} must be readable — an empty read makes the sweep vacuous`).not.toBe("");
+      expect(missingResumeClasses(text), `${site} must name every resume failure class`).toEqual([]);
+      for (const failureClass of RESUME_CLASS_FACTS) {
+        expect(text, `${site} must record the decision as fresh: ${failureClass}`).toContain(`fresh: ${failureClass}`);
+      }
+      expect(text, `${site} must keep the handle value out of the record`).toContain("handle value");
+    }
+  });
+
+  it("fails when one fallback site drops one resume failure class", () => {
+    // Each class is removed from each site one at a time: a fixture that only
+    // reddens one site would leave the other two teaching the retired
+    // single-class fallback, which is how the drift started.
+    for (const [site, text] of resumeFallbackSites()) {
+      for (const failureClass of RESUME_CLASS_FACTS) {
+        const stripped = text.split(failureClass).join("the failure");
+        expect(missingResumeClasses(stripped), `${site} must redden without ${failureClass}`).not.toEqual([]);
+      }
+    }
+  });
+
+  // The closed continuity vocabulary. `same` reuses an instance, `fresh:
+  // new-task` covers a first dispatch or a genuinely new task, and one value per
+  // failure a re-dispatch recovers from. A four-value set has no legal value for
+  // a first dispatch, so the instruction that mandates the record cannot be
+  // followed as written; a site that teaches the retired set again is the
+  // regression this pins.
+  const CONTINUITY_VALUES = [
+    "same",
+    "fresh: new-task",
+    "fresh: session-not-found",
+    "fresh: agent-resolution",
+    "fresh: quota-denied",
+  ];
+
+  // The shape a dispatcher section uses to name the failure-keyed branch. It is
+  // a placeholder rather than a value a record carries, so the invented-value
+  // check admits it while still rejecting every other `fresh:` spelling.
+  const CONTINUITY_SHAPE = "fresh: <class>";
+
+  function continuitySites() {
+    return [
+      ...resumeFallbackSites(),
+      [
+        "impl template (Continuity section)",
+        headingRegion(readRoot(join("skills", "template-impl", "SKILL.md")), "## Continuity", "\n## "),
+      ],
+    ];
+  }
+
+  // Presence is checked on the backticked spelling: bare "same" is ordinary
+  // English and would pass in any paragraph.
+  function missingContinuityValues(text) {
+    return CONTINUITY_VALUES.filter((value) => !text.includes(`\`${value}\``));
+  }
+
+  // Every backticked `fresh:` spelling that is neither a legal value nor the
+  // shape placeholder. A record that invents a value cannot be told apart from
+  // a legal one, which is what the closed set exists to prevent.
+  function inventedFreshValues(text) {
+    const legal = new Set([...CONTINUITY_VALUES, CONTINUITY_SHAPE]);
+    const spellings = [...text.matchAll(/`fresh: [^`]+`/g)].map((match) => match[0].slice(1, -1));
+    return [...new Set(spellings)].filter((spelling) => !legal.has(spelling));
+  }
+
+  it("states the closed continuity vocabulary at every site that teaches it", () => {
+    const offenders = continuitySites().flatMap(([site, text]) =>
+      missingContinuityValues(text).map((value) => `${site} omits ${value}`)
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it("admits no continuity value outside the closed set", () => {
+    for (const [site, text] of continuitySites()) {
+      expect(text, `${site} must be readable — an empty read makes the check vacuous`).not.toBe("");
+      expect(inventedFreshValues(text), `${site} carries a value outside the closed set`).toEqual([]);
+    }
+  });
+
+  it("fails when a site keeps the retired continuity vocabulary or invents a value", () => {
+    // Both directions per site: dropping the first-dispatch value is the retired
+    // set, and an invented class-shaped value is what two records wrote when no
+    // legal value existed.
+    for (const [site, text] of continuitySites()) {
+      const retired = text.split("fresh: new-task").join("");
+      expect(missingContinuityValues(retired), `${site} must redden without fresh: new-task`).not.toEqual([]);
+      expect(
+        inventedFreshValues(`${text}\n\`fresh: new-milestone\``),
+        `${site} must redden on an invented continuity value`
+      ).not.toEqual([]);
+    }
   });
 
   it("keeps each of the three layers free of cross-file references", () => {
@@ -2673,5 +2874,224 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
       "knowledge/impl-*.md",
       "knowledge/checkpoint-*.md",
     ]);
+  });
+});
+
+// Runtime transcripts under plugins/logs are produced by every lifecycle and
+// are never configuration. Coverage is asked of git rather than inferred from
+// the rule text: an anchored pattern, a negation or a later re-inclusion all
+// change the answer, and only the matcher knows which. Status 1 means "not
+// ignored"; any other outcome means git could not answer, which fails the
+// guard instead of passing it, so a machine without git cannot turn a broken
+// ignore set into a green run.
+function gitIgnored(path, gitBinary = "git") {
+  const result = spawnSync(gitBinary, ["check-ignore", "-q", path], { cwd: ROOT });
+  if (result.error) {
+    throw new Error(`git check-ignore ${path} could not run: ${result.error.message}`);
+  }
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error(`git check-ignore ${path} exited ${result.status}: ${String(result.stderr).trim()}`);
+}
+
+// Tracked paths under a directory, read from git rather than the working tree:
+// an ignore rule leaves an already-tracked file tracked, so emptiness here is
+// the assertion that the rule hides nothing the repository carries. `cwd` is a
+// parameter because the answer is only falsifiable against a repository that
+// does carry such a file, and a caller holding one must be able to say so.
+function trackedUnder(dir, cwd = ROOT) {
+  const result = spawnSync("git", ["ls-files", dir], { cwd });
+  if (result.error) {
+    throw new Error(`git ls-files ${dir} could not run: ${result.error.message}`);
+  }
+  if (result.status !== 0) {
+    throw new Error(`git ls-files ${dir} exited ${result.status}: ${String(result.stderr).trim()}`);
+  }
+  return String(result.stdout).split("\n").filter(Boolean);
+}
+
+const LOGS_DIR = join("plugins", "logs");
+
+describe("plugin logs ignore coverage", () => {
+  // Probes are path strings, never created files: a created probe would make
+  // the guard observe the suite's own output and leave residue in the directory
+  // it is asserting about.
+  it("ignores a probe path with an extension no rule names", () => {
+    // Extension-independent by construction — the directory rule covers the
+    // next artifact type without a new line, which the enumerated set could not
+    // do and decayed twice by failing to.
+    expect(gitIgnored(join(LOGS_DIR, "probe.xyz"))).toBe(true);
+  });
+
+  it("ignores the artifact shapes a run leaves behind", () => {
+    for (const name of ["protocol-gate.log", "vitest.json", ".head-index.js"]) {
+      expect(gitIgnored(join(LOGS_DIR, name)), `${name} must be ignored`).toBe(true);
+    }
+  });
+
+  it("tracks nothing under the directory", () => {
+    const tracked = trackedUnder(LOGS_DIR);
+    expect(tracked, `tracked under ${LOGS_DIR}: ${tracked.join(", ")}`).toEqual([]);
+  });
+
+  it("leaves a path outside the directory unignored", () => {
+    // The paired positive is what keeps this from being a tautology: the same
+    // machinery answers true for a path the rule catches, so a false here is a
+    // scope fact rather than a matcher that always answers no.
+    expect(gitIgnored(join(LOGS_DIR, "probe.xyz"))).toBe(true);
+    expect(gitIgnored(join("plugins", "probe-outside.txt"))).toBe(false);
+  });
+
+  it("carries no re-inclusion of a path inside the directory", () => {
+    const negations = readRoot(".gitignore")
+      .split("\n")
+      .filter((line) => line.trim().startsWith("!plugins/logs"));
+    expect(negations).toEqual([]);
+  });
+
+  it("states the directory rule and keeps the root log rule", () => {
+    const lines = readRoot(".gitignore")
+      .split("\n")
+      .map((line) => line.trim());
+    expect(lines).toContain("plugins/logs/");
+    expect(lines).toContain("*.log");
+    expect(lines).not.toContain("plugins/logs/*.status");
+  });
+
+  it("fails rather than skips when git cannot answer", () => {
+    // A skip would let a machine without git report the ignore set as healthy.
+    expect(() => gitIgnored(join(LOGS_DIR, "probe.xyz"), "git-absent-probe")).toThrow(/could not run/);
+  });
+
+  // The assertion above asks whether *this* repository tracks anything under
+  // plugins/logs, which a repository that never tracked a file there satisfies
+  // by construction — it cannot tell "the rule hides nothing" from "there is
+  // nothing to hide". The pair below reads an index that does carry such a
+  // file, so the helper's answer is falsifiable in both directions.
+  describe("against a repository that tracks a file under the ignored directory", () => {
+    let repo;
+
+    // Setup fails loudly rather than leaving a half-built repository that would
+    // make the assertions below red for a staging reason instead of the
+    // helper's answer.
+    const gitIn = (args) => {
+      const result = spawnSync("git", args, { cwd: repo });
+      if (result.error) {
+        throw new Error(`git ${args.join(" ")} could not run: ${result.error.message}`);
+      }
+      if (result.status !== 0) {
+        throw new Error(`git ${args.join(" ")} exited ${result.status}: ${String(result.stderr).trim()}`);
+      }
+      return String(result.stdout);
+    };
+
+    beforeAll(() => {
+      repo = mkdtempSync(join(tmpdir(), "config-guard-tracked-"));
+      gitIn(["init", "-q"]);
+      writeFileSync(join(repo, ".gitignore"), "plugins/logs/\n");
+      mkdirSync(join(repo, "plugins", "logs"), { recursive: true });
+      writeFileSync(join(repo, "plugins", "logs", "probe.log"), "");
+      // -f is required: the ignore rule written above would otherwise keep the
+      // path out of the index, and the positive half would red for a staging
+      // failure rather than for the helper's answer.
+      gitIn(["add", "-f", "plugins/logs/probe.log"]);
+    });
+
+    afterAll(() => {
+      rmSync(repo, { recursive: true, force: true });
+    });
+
+    it("reads the index of the repository it is handed, not this one", () => {
+      // The fixture's own index is proven non-empty before the helper is asked
+      // anything, so a failure below can only be the helper answering about a
+      // different tree.
+      expect(gitIn(["ls-files", LOGS_DIR]).split("\n").filter(Boolean)).toEqual([
+        "plugins/logs/probe.log",
+      ]);
+      expect(trackedUnder(LOGS_DIR, repo)).toEqual(["plugins/logs/probe.log"]);
+      // Without the negative half a helper that returned every tracked path in
+      // the repository it was handed would pass the positive.
+      expect(trackedUnder(join("plugins", "absent"), repo)).toEqual([]);
+    });
+  });
+});
+
+// A rule names no technology stack. Verification gates are project-owned: a
+// project declares them in its own manifests, task definitions and project
+// documentation, so a rule that names one ecosystem's binary, command or
+// manifest file reads as unrunnable in the next project. The sweep reads the
+// prose body only — a shell grant necessarily names a concrete binary because
+// the allowlist is prefix-based, so the permission block is mechanism and stays
+// outside the rule surface.
+describe("stack-neutral agent rules", () => {
+  const MANIFEST_NAMES = /\b(?:Makefile|Cargo\.toml|package\.json|go\.mod|pyproject\.toml|pom\.xml)\b/g;
+  const STACK_COMMAND =
+    /\b(?:make|cargo|go|pip|npm|npx|yarn|pnpm|bun|cmake|pytest|mvn|gradle|dotnet|poetry|rustc)\s+(?:-{1,2}[\w-]+|build|test|check|clippy|fmt|vet|audit|install|verify|mod|get|ci|lint|metadata|lock|update|add|show|list|freeze|outdated)\b/g;
+  const PACKAGE_MANAGER_RUN = /\b(?:npm|npx|yarn|pnpm|bun|poetry|uv)\s+(?:run|exec)\b/g;
+  const SWEEP = [MANIFEST_NAMES, STACK_COMMAND, PACKAGE_MANAGER_RUN];
+
+  // Matched fragments rather than a boolean: the failure message names what
+  // tripped, so the repair site is visible from the run output alone.
+  function stackTokens(text) {
+    return SWEEP.flatMap((pattern) => text.match(pattern) ?? []);
+  }
+
+  function bodyOffenders() {
+    return agentFiles()
+      .map((name) => ({ name, tokens: stackTokens(bodyRegion(readAgent(name))) }))
+      .filter((row) => row.tokens.length > 0)
+      .map((row) => `${row.name}: ${row.tokens.join(", ")}`);
+  }
+
+  it("sweeps every agent prose body clean", () => {
+    expect(bodyOffenders(), "agent rules naming a build system or its manifest").toEqual([]);
+  });
+
+  it("bites on a stack-specific rule injected into any agent body", () => {
+    const injected = "Run the make build-wasm-tests target.";
+    for (const name of agentFiles()) {
+      const body = `${bodyRegion(readAgent(name))}\n${injected}`;
+      expect(stackTokens(body), `${name} must be swept`).not.toEqual([]);
+    }
+  });
+
+  it("bites on each command-shaped form a later edit would reintroduce", () => {
+    for (const line of [
+      "Run the make build-wasm-tests target.",
+      "cargo test",
+      "the build reads Cargo.toml",
+      "npm audit",
+      "go vet ./...",
+    ]) {
+      expect(stackTokens(line), `unmatched stack rule: ${line}`).not.toEqual([]);
+    }
+  });
+
+  it("stays green on ordinary English and the generic stack phrase", () => {
+    for (const line of [
+      "make the test pass",
+      "detect the tech stack",
+      "the project's declared test command",
+      "go through the dispatch fields",
+      "the toolchain probe",
+    ]) {
+      expect(stackTokens(line), `false positive: ${line}`).toEqual([]);
+    }
+  });
+
+  it("reads the rule text and never the permission block", () => {
+    // Both directions in one file: the inspector's grants carry stack binaries,
+    // and the sweep over that same file's body must not see them.
+    const inspector = readAgent("inspector.md");
+    expect(stackTokens(inspector).length, "the permission block carries grants").toBeGreaterThan(0);
+    expect(stackTokens(bodyRegion(inspector))).toEqual([]);
+  });
+
+  it("states the declared-gate discovery method in the audit protocol", () => {
+    const body = bodyRegion(readAgent("inspector.md"));
+    expect(body).toContain("declares its verification gates");
+    expect(body).toContain("declared-vs-run delta");
+    expect(body).toContain("matching grant");
+    expect(body).not.toContain("tech stack's");
   });
 });

@@ -14,7 +14,7 @@ author: Artisan
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/impl-{{step}}-{{session_id}}-gen{{generation}}.md -->
+<!-- Filename: knowledge/impl-{{feature}}-{{session_id}}-gen{{generation}}.md -->
 <!-- GENERATION: {{generation}} is the lifecycle counter from protocol-gate state. Each lifecycle's KDs are scoped to its generation (`-genN-` after the session ID) so stale KDs from prior lifecycles are never matched. Use the generation value provided by the dispatcher. -->
 
 # IMPLEMENTATION SUMMARY: {{feature}}
@@ -55,6 +55,13 @@ handoff:
   actually-run gate: {{executed command plus green run status}}
   run status: {{PASS | FAIL | NOT-RUN}}
   full-gate status: {{green run precondition for Committer dispatch}}
+
+## Continuity
+
+The durable copy of the dispatch's continuity decision: the SCOPE records it at dispatch time, this section keeps it with the work.
+
+- decision: `same` | `fresh: new-task` | `fresh: session-not-found` | `fresh: agent-resolution` | `fresh: quota-denied`
+- note: {{what changed, without the handle value}}
 
 ## Process Friction
 

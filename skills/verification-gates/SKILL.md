@@ -117,7 +117,7 @@ Phase Output ──► Gate ──► Next Phase
 
 ## Behavior-Based Tests
 
-Tests verify behavior, not wording. Group tests by behavior — one group per behavior, each test covering one meaningful case — and name each test after the behavior it verifies. Test names and comments describe behavior, with requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) living in the traceability matrix. A suite grows when new behavior appears, not when a requirement count suggests volume, and consolidation of overlapping or stale tests is part of normal maintenance. Static configuration guards are behavior tests when they protect a runtime contract — assert the contract, not the prose that describes it.
+Tests verify behavior, not wording. Group tests by behavior — one group per behavior, each test covering one meaningful case — and name each test after the behavior it verifies. Test names and comments describe behavior, with requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) living in the traceability matrix. A suite grows when new behavior appears, not when a requirement count suggests volume, and consolidation of overlapping or stale tests is part of normal maintenance. Static configuration guards are behavior tests when they protect a runtime contract — assert the contract, not the prose that describes it. Where the contract is an instruction with no executable surface, pin the smallest sentence that carries it.
 
 ## Gate Protocol
 
@@ -128,7 +128,7 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 5. Write the verdict into the REVIEW KD frontmatter (`verdict: PASS | FAIL`) — the single machine source for the VERIFY gate
 6. Produce ONE REVIEW KD containing the Review Findings (with traceability matrix) and the Audit section (Scope, Risk Summary, Security Findings)
 7. On FAIL, the gate regresses VERIFY→SWARM automatically: the producer fixes the findings, re-submits, and the Inspector re-reviews — repeat until PASS or diminishing returns
-8. On stalled progress (2-3 cycles without improvement), the Inspector issues a `FAIL` with no `reopen_target` field and a non-empty `Escalation` section, which blocks VERIFY advancement and escalates to the user (Happy to Delete)
+8. On stalled progress (2-3 cycles without improvement), the Inspector issues a `FAIL` with no `reopen_target` field and a non-empty `Escalation` section, which blocks VERIFY advancement and escalates through the Overseer to the user (Happy to Delete)
 
 ### VERIFY Acceptance Proof
 
@@ -140,7 +140,7 @@ VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the ful
 | ----------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | PASS        | All criteria met, clean | VERIFY advances under the fresh-PASS rule — the review KD must be newer than the newest impl KD; a stale PASS blocks |
 | FAIL        | Specific fixable issues | The gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; the producer fixes the findings and re-submits |
-| FAIL + `Escalation` section | Design-level flaw | The gate blocks VERIFY advancement with `REOPEN_TARGET_INVALID reason=no-reopen-target`, regresses nothing and reopens nothing; the phase stays at VERIFY for a user decision — Happy to Delete |
+| FAIL + `Escalation` section | Design-level flaw | The gate blocks VERIFY advancement with `REOPEN_TARGET_INVALID reason=no-reopen-target`, regresses nothing and reopens nothing; the phase stays at VERIFY for a decision that reaches the user through the Overseer — Happy to Delete |
 
 A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). Every FAIL names its rows in the frontmatter `reopen_target` field — a list or a scalar of checked-off milestone row ids (`reopen_target: [M3, M7]`). Prose is provenance: the field selects the rows, so milestone-shaped tokens in findings, the traceability matrix or a `References` list stay provenance. A field that is absent, empty, malformed, declared twice, or naming a row the registry does not have is refused with `REOPEN_TARGET_INVALID` and the reason (`no-reopen-target`, `invalid-reopen-target`, `ambiguous-target`, `unresolvable-reopen-target`) — the gate blocks, regresses nothing, and reopens nothing; re-dispatch the review with a usable field. A target naming a row that is not checked-off records `REOPEN_NOOP reason=not-checked-off`, and `PASS` records `REOPEN_TARGET_IGNORED` and reopens nothing.
 

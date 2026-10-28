@@ -39,13 +39,13 @@ milestones:
 | ------------------------------ | --------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | (creation)                     | pending         | Pathfinder    | registry written at DECOMPOSE                                                                                                                                                                                                |
 | pending / in-progress / failed | assigned        | protocol-gate | SWARM task dispatch with matching MILESTONE_ID                                                                                                                                                                               |
-| assigned                       | in-progress     | protocol-gate | SWARM task dispatch fires — same pass as assigned (M3)                                                                                                                                                                       |
-| in-progress                    | checked-off     | protocol-gate | Artisan writes the milestone-scoped impl KD `impl-<milestone_id>-<name>-<session_id>[-gen{N}].md` — the KD on disk is the verifiable evidence; in-progress rows complete on that evidence (M4)                               |
-| assigned / in-progress         | failed          | protocol-gate | automatic safety trigger during SWARM (M5): 15-failure force-advance, 5-redispatch cap, or pendingVerification timeout marks the stuck row(s) failed, logs SAFETY_STUCK, and STAYS in SWARM — no automatic advance to VERIFY |
+| assigned                       | in-progress     | protocol-gate | SWARM task dispatch fires — same pass as assigned                                                                                                                                                                            |
+| in-progress                    | checked-off     | protocol-gate | Artisan writes the milestone-scoped impl KD `impl-<milestone_id>-<name>-<session_id>[-gen{N}].md` — the KD on disk is the verifiable evidence; in-progress rows complete on that evidence                                    |
+| assigned / in-progress         | failed          | protocol-gate | automatic safety trigger during SWARM: 15-failure force-advance, 5-redispatch cap, or pendingVerification timeout marks the stuck row(s) failed, logs SAFETY_STUCK, and STAYS in SWARM — no automatic advance to VERIFY      |
 | assigned / in-progress         | failed          | Artisan       | escalation without completion                                                                                                                                                                                                |
 | checked-off                    | (no transition) | protocol-gate | checked-off rows stay checked-off across re-dispatch; a backward transition to SWARM (BACKWARD: true) resets dispatch counters and keeps checked-off rows checked-off                                                        |
 
-## SWARM→VERIFY Gate (M5)
+## SWARM→VERIFY Gate
 
 SWARM advances to VERIFY when every milestone row is `checked-off` AND each row has its milestone-scoped impl KD on disk (`checkAllMilestonesCheckedOff` — registry state cross-checked against `checkMilestoneCheckedOff` disk evidence). The gate fails closed on missing/empty/unparsable registries (logs `REGISTRY_MISSING`/`REGISTRY_EMPTY`). Count signals (`MILESTONE_COUNT`, dispatch counts) have no gating effect. The user's `/phase` override is the escape hatch from a stuck SWARM and logs `SAFETY_ESCAPE`.
 
@@ -56,6 +56,6 @@ protocol-gate reads the `## Milestone States` fenced YAML block (`milestones:` m
 ## Writing Rules
 
 - One row per plan milestone; IDs must match `/^[A-Za-z0-9][A-Za-z0-9_-]*$/` and be unique within the plan.
-- Writers use read-modify-write on the single registry file. Dispatches are serial (one `task` call at a time), so no concurrent writers are expected.
+- Writers use read-modify-write on the single registry file. Dispatches are serial (one `subagent` call at a time), so no concurrent writers are expected.
 - The registry is the live state SSOT; the PLAN KD remains immutable after approval.
 - **Update-in-place**: If a milestone registry already exists for this session, update it in-place using the edit tool. Create a new file when no registry exists for the current session and generation. Creating a duplicate registry causes the protocol-gate plugin to silently track the wrong file.

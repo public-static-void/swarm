@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
-import { createWalkHarness, implKDContent } from "./walk-unification-fixture.js";
+import { createWalkHarness, FRESH_MARGIN_MS, implKDContent, stampFresh } from "./walk-unification-fixture.js";
 
 // Observability of the control gates: the dispatch refusal names the phase the
 // lifecycle is actually in, and every walk mutation that exists today leaves an
@@ -70,6 +70,18 @@ describe("Protocol-Gate override walk observability", () => {
 
   function createKD(filename, content = "test content") {
     writeFileSync(join(knowledgeDir, filename), content);
+  }
+
+  // Same bytes as createKD, then stamped forward of the anchor the gate will
+  // compare against. The gates read `mtimeMs >= anchor` where the anchor is an
+  // integer millisecond value; the filesystem's mtime grid is coarser, so a
+  // write issued after the anchor can be stored before it and no comparison can
+  // recover the ordering. This inline harness keeps its own constructors
+  // because it predates the shared one; the stamp itself is shared, never
+  // re-implemented per site.
+  function createFreshKD(filename, content = "test content") {
+    createKD(filename, content);
+    stampFresh(join(knowledgeDir, filename));
   }
 
   function clearLog() {
@@ -158,6 +170,16 @@ ${verdict}
     await hooks["tool.execute.before"]({ tool: "skill", sessionID: s, callID }, { args: {} });
   }
 
+  // A plain write can never land FRESH_MARGIN_MS in the future, so this
+  // assertion fails deterministically at every tick phase when the write goes
+  // through the plain constructor.
+  it("the inline harness's fresh constructor stamps ahead of a captured anchor", () => {
+    const anchor = Date.now();
+    createFreshKD("intent-pin-legacy.md");
+    const mtime = statSync(join(knowledgeDir, "intent-pin-legacy.md")).mtimeMs;
+    expect(mtime).toBeGreaterThanOrEqual(anchor + FRESH_MARGIN_MS - 1);
+  });
+
   it("refusal names the actual phase", async () => {
     // REPORT (12): the refusal names REPORT and never INTENT.
     const s = "obs-t15-report";
@@ -239,7 +261,7 @@ ${verdict}
     expect(records("WALK_HOP")).toHaveLength(0);
 
     // Hop: fresh exploration evidence consumes the head and re-arms the queue.
-    createKD(`exploration-fresh-${s}.md`);
+    createFreshKD(`exploration-fresh-${s}.md`);
     await tick(s, "t16-hop-1");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
     expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([4, 5]);
@@ -266,7 +288,7 @@ ${verdict}
     expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.VERIFY);
     expect(hooks.sessionPhaseMap.get(`${b}:overrideUntil`).phase).toBe(hooks.STATES.VERIFY);
 
-    createKD(`review-fail-${b}.md`, reviewKD("FAIL", "M1"));
+    createFreshKD(`review-fail-${b}.md`, reviewKD("FAIL", "M1"));
     await tick(b, "t16-backward-1");
     expect(hooks.sessionPhaseMap.get(b)).toBe(hooks.STATES.SWARM);
     expect(hooks.sessionPhaseMap.has(`${b}:overrideUntil`)).toBe(false);
@@ -298,20 +320,30 @@ describe("Protocol-Gate override walk unification", () => {
   // A checked-off registry whose rows carry their impl KDs on disk — the
   // evidence the SWARM hop advances on.
   function swarmEvidence(s, rows = [["M1", "checked-off"]]) {
-    h.createRegistry(s, rows);
-    for (const [id] of rows) h.createKD(`impl-${id}-${s}.md`, h.implKD(s));
+    h.createFreshRegistry(s, rows);
+    for (const [id] of rows) h.createFreshKD(`impl-${id}-${s}.md`, h.implKD(s));
   }
 
   // Closes a milestone row the FAIL regression reopened, backed by a fresh
   // impl KD so the all-checked-off gate sees disk evidence.
   function reclose(s, id = "M1") {
-    h.createKD(`impl-${id}-repair-${s}.md`, h.implKD(s));
+    h.createFreshKD(`impl-${id}-repair-${s}.md`, h.implKD(s));
     h.hooks.updateMilestoneRegistry(s, h.hooks.sessionPhaseMap, id, ["checked-off"]);
   }
 
   function walkHopRecords(s) {
     return h.records("WALK_HOP").map(h.parseRecord).filter((r) => r.fields.session === s);
   }
+
+  // A plain write can never land FRESH_MARGIN_MS in the future, so this
+  // assertion fails deterministically at every tick phase when the write goes
+  // through the plain constructor.
+  it("the shared harness's fresh constructor stamps ahead of a captured anchor", () => {
+    const anchor = Date.now();
+    h.createFreshKD("intent-pin-harness.md");
+    const mtime = statSync(join(h.knowledgeDir(), "intent-pin-harness.md")).mtimeMs;
+    expect(mtime).toBeGreaterThanOrEqual(anchor + FRESH_MARGIN_MS - 1);
+  });
 
   it("SWARM hand-off follows the named hop", async () => {
     const s = await swarmSession("walk-t6");
@@ -322,7 +354,7 @@ describe("Protocol-Gate override walk unification", () => {
     swarmEvidence(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
 
     // The fresh intent KD walks the head from INTENT to the SWARM hop.
-    h.createKD(`intent-fresh-${s}.md`);
+    h.createFreshKD(`intent-fresh-${s}.md`);
     await h.tick(s, "t6-hop-1");
     expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.SWARM);
     expect(h.marker(s).phases).toEqual([7, 10]);
@@ -337,7 +369,7 @@ describe("Protocol-Gate override walk unification", () => {
       { args: { filePath: `knowledge/impl-M2-${s}.md`, content: h.implKD(s) } }
     );
     expect(h.hooks.sessionPhaseMap.get(s), "the SWARM gate advanced before the KD landed").toBe(h.hooks.STATES.SWARM);
-    h.createKD(`impl-M2-${s}.md`, h.implKD(s));
+    h.createFreshKD(`impl-M2-${s}.md`, h.implKD(s));
     await h.hooks["tool.execute.after"](
       { tool: "write", sessionID: artisan, callID: "t6-w" },
       { output: "done", title: "impl" }
@@ -399,10 +431,16 @@ describe("Protocol-Gate override walk unification", () => {
     const s = await swarmSession("walk-t11");
     await h.commit(s, "{7,8,10}");
     swarmEvidence(s);
+    // The walk anchor. Artifacts written during the walk are placed just past
+    // it rather than by the uniform forward margin: each must postdate `since`
+    // and stay older than the re-entry anchor the resume installs later, and
+    // the forward margin would overshoot the second bound.
+    const walkSince = h.marker(s).since;
 
     // An EVOLVE artifact written during the walk, before the regression: it is
     // fresh against the walk's own `since` but older than any re-entry anchor.
     h.createKD(`process-early-${s}.md`, "process evidence");
+    h.ageKD(`process-early-${s}.md`, walkSince + 1);
     await h.tick(s, "t11-hop");
     expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.VERIFY);
     expect(h.marker(s).phases).toEqual([8, 10]);
@@ -411,7 +449,11 @@ describe("Protocol-Gate override walk unification", () => {
     // The 7 → 8 hop above is already on the log; clear it so the hop-count
     // assertions below mean "no hop was consumed by this evaluation".
     h.clearLog();
+    // The FAIL must postdate the walk anchor (the override evaluates the verdict
+    // only after freshness) and stay older than the re-entry anchor the resume
+    // installs — the same two bounds as the EVOLVE artifact above.
     h.createKD(`review-fail-${s}.md`, h.reviewKD("FAIL", "M1"));
+    h.ageKD(`review-fail-${s}.md`, walkSince + 1);
     await h.tick(s, "t11-fail");
     expect(h.hooks.sessionPhaseMap.get(s), "the FAIL did not regress to SWARM").toBe(h.hooks.STATES.SWARM);
 
@@ -445,7 +487,7 @@ describe("Protocol-Gate override walk unification", () => {
     expect(walkHopRecords(s), "the pre-FAIL review consumed the hop").toHaveLength(0);
 
     // A fresh PASS advances to the next named hop (EVOLVE 10, not EXTRACT 9).
-    h.createKD(`review-pass-${s}.md`, h.reviewKD("PASS"));
+    h.createFreshKD(`review-pass-${s}.md`, h.reviewKD("PASS"));
     await h.tick(s, "t11-pass");
     expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.EVOLVE);
     expect(h.marker(s).phases).toEqual([10]);
@@ -467,14 +509,14 @@ describe("Protocol-Gate override walk unification", () => {
     expect(h.marker(s).phases, "the queue was not committed as given").toEqual([1, 6, 7, 8, 10, 11, 12]);
 
     // INTENT → DECOMPOSE on a fresh intent KD.
-    h.createKD(`intent-ac22-${s}.md`);
+    h.createFreshKD(`intent-ac22-${s}.md`);
     await h.tick(s, "ac22-1");
     expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.DECOMPOSE);
     expect(h.marker(s).phases).toEqual([6, 7, 8, 10, 11, 12]);
 
     // DECOMPOSE → SWARM on a fresh plan KD and the milestone registry (the
     // dual-KD gate).
-    h.createKD(`plan-ac22-${s}.md`);
+    h.createFreshKD(`plan-ac22-${s}.md`);
     swarmEvidence(s);
     await h.tick(s, "ac22-2");
     expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.SWARM);
@@ -488,7 +530,7 @@ describe("Protocol-Gate override walk unification", () => {
     h.clearLog();
 
     // The fresh PASS at VERIFY takes the named hop.
-    h.createKD(`review-pass-${s}.md`, h.reviewKD("PASS"));
+    h.createFreshKD(`review-pass-${s}.md`, h.reviewKD("PASS"));
     await h.tick(s, "ac22-4");
     expect(h.hooks.sessionPhaseMap.get(s), "the PASS landed on the serial EXTRACT instead of the named hop").toBe(h.hooks.STATES.EVOLVE);
     expect(h.marker(s).phases).toEqual([10, 11, 12]);
@@ -507,13 +549,13 @@ describe("Protocol-Gate override walk unification", () => {
     h.hooks.sessionPhaseMap.set(s, h.hooks.STATES.EVOLVE);
     h.hooks.sessionPhaseMap.set(`${s}:sid`, s);
     await h.commit(s, "{10,11,12}");
-    h.createKD(`process-fresh-${s}.md`, "process evidence");
+    h.createFreshKD(`process-fresh-${s}.md`, "process evidence");
     await h.tick(s, "t10-1");
     expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.CLEANUP);
     expect(h.marker(s).phases).toEqual([11, 12]);
     h.clearLog();
 
-    h.createKD(`cleanup-walk-${s}.md`, h.cleanupKD(s));
+    h.createFreshKD(`cleanup-walk-${s}.md`, h.cleanupKD(s));
     await h.tick(s, "t10-2");
     expect(h.hooks.sessionPhaseMap.get(s), "the terminal REPORT hop did not complete").toBe(h.hooks.STATES.REPORT);
     expect(h.marker(s), "the completed walk left its marker behind").toBeFalsy();
@@ -587,7 +629,7 @@ describe("Protocol-Gate override walk unification", () => {
     expect(walkHopRecords(s)).toHaveLength(0);
 
     // Positive control: an artifact at or after the anchor does complete it.
-    h.createKD(`composed-fresh-${s}.md`, "composed evidence");
+    h.createFreshKD(`composed-fresh-${s}.md`, "composed evidence");
     await h.tick(s, "t17-fresh");
     expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.EVOLVE);
     expect(walkHopRecords(s)).toHaveLength(1);
@@ -717,7 +759,7 @@ describe("Protocol-Gate override walk unification", () => {
     swarmEvidence(w);
     await h.tick(w, "t15-hop");
     expect(h.hooks.sessionPhaseMap.get(w)).toBe(h.hooks.STATES.VERIFY);
-    h.createKD(`review-fail-${w}.md`, h.reviewKD("FAIL", "M1"));
+    h.createFreshKD(`review-fail-${w}.md`, h.reviewKD("FAIL", "M1"));
     await h.tick(w, "t15-fail");
     expect(h.hooks.sessionPhaseMap.get(w)).toBe(h.hooks.STATES.SWARM);
 
@@ -754,7 +796,11 @@ describe("Protocol-Gate override walk unification", () => {
     expect(walkHopRecords(s), "no always-on WALK_HOP record").toHaveLength(1);
 
     // suspend
+    // The FAIL must postdate the walk anchor and stay older than the re-entry
+    // anchor the resume below installs — a forward-margin stamp would overshoot
+    // the second bound and re-regress the resumed hop on the repeat tick.
     h.createKD(`review-fail-${s}.md`, h.reviewKD("FAIL", "M1"));
+    h.ageKD(`review-fail-${s}.md`, h.marker(s).since + 1);
     await h.tick(s, "t16-fail");
     const suspended = h.records("WALK_SUSPENDED").map(h.parseRecord).filter((r) => r.fields.session === s);
     expect(suspended, "no always-on WALK_SUSPENDED record").toHaveLength(1);
@@ -767,7 +813,7 @@ describe("Protocol-Gate override walk unification", () => {
     swarmEvidence(w);
     // The walk already recorded one suspension before this one.
     h.seedWalk(w, [8, 10], Date.now() - 10000, { state: "suspended", suspendedAt: 111 });
-    h.createKD(`review-fail-${w}.md`, h.reviewKD("FAIL", "M1"));
+    h.createFreshKD(`review-fail-${w}.md`, h.reviewKD("FAIL", "M1"));
     h.clearLog();
     await h.tick(w, "t16-resuspend");
     expect(h.hooks.sessionPhaseMap.get(w)).toBe(h.hooks.STATES.SWARM);
@@ -799,9 +845,9 @@ describe("Protocol-Gate override walk unification", () => {
     const c = await swarmSession("walk-t16-clear");
     await h.commit(c, "{3,5}");
     swarmEvidence(c);
-    h.createKD(`exploration-fresh-${c}.md`);
+    h.createFreshKD(`exploration-fresh-${c}.md`);
     await h.tick(c, "t16-clear-hop");
-    h.createKD(`spec-fresh-${c}.md`);
+    h.createFreshKD(`spec-fresh-${c}.md`);
     await h.tick(c, "t16-clear");
     const cleared = h.records("WALK_CLEARED").map(h.parseRecord).filter((r) => r.fields.session === c);
     expect(cleared, "no always-on WALK_CLEARED record").toHaveLength(1);
@@ -813,9 +859,9 @@ describe("Protocol-Gate override walk unification", () => {
     h.hooks.sessionPhaseMap.set(r, h.hooks.STATES.EVOLVE);
     h.hooks.sessionPhaseMap.set(`${r}:sid`, r);
     await h.commit(r, "{10,11,12}");
-    h.createKD(`process-fresh-${r}.md`, "process evidence");
+    h.createFreshKD(`process-fresh-${r}.md`, "process evidence");
     await h.tick(r, "t16-complete-1");
-    h.createKD(`cleanup-walk-${r}.md`, h.cleanupKD(r));
+    h.createFreshKD(`cleanup-walk-${r}.md`, h.cleanupKD(r));
     await h.tick(r, "t16-complete-2");
     const completed = h.records("WALK_COMPLETE").map(h.parseRecord).filter((x) => x.fields.session === r);
     expect(completed, "no always-on WALK_COMPLETE record").toHaveLength(1);
@@ -847,7 +893,7 @@ describe("Protocol-Gate override walk unification", () => {
     swarmEvidence(s);
     await h.tick(s, "t18-hop");
     expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.VERIFY);
-    h.createKD(`review-fail-${s}.md`, h.reviewKD("FAIL", "M1"));
+    h.createFreshKD(`review-fail-${s}.md`, h.reviewKD("FAIL", "M1"));
     await h.tick(s, "t18-fail");
     expect(h.hooks.sessionPhaseMap.get(s)).toBe(h.hooks.STATES.SWARM);
     const suspended = h.marker(s);

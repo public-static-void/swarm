@@ -44,3 +44,11 @@ superseded_by: null
 - [ ] All staged changes committed successfully
 - [ ] Commit messages follow repository conventions
 - [ ] No knowledge/ files included in commits
+
+## Process Friction
+
+_This section is optional — include it when friction was encountered during work._
+
+| ID     | Issue                       | Severity            | Status                  | Fixed by            |
+| ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |
+| PF-001 | {{description of friction}} | {{low/medium/high}} | {{unresolved/resolved}} | {{agent or PR ref}} |

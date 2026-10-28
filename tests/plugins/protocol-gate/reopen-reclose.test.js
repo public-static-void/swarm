@@ -70,6 +70,12 @@ describe("Protocol-Gate reopen and settlement records", () => {
     hooks = await pluginModule.server({}, {});
   });
 
+  // Settlement's entry point requires the transport that reached it. These cases
+  // call it directly to isolate one decline branch, so they name the after-write
+  // value the production fast path would have passed; the assertions below read
+  // the decline reason and the row state, never the tag.
+  const DIRECT_SETTLEMENT_TRANSPORT = "after-hook";
+
   function createKD(filename, content = "test content") {
     writeFileSync(join(knowledgeDir, filename), content);
   }
@@ -334,6 +340,7 @@ ${escalationSection}`;
 
       const result = hooks.settleStampClearForArtifact(s, hooks.sessionPhaseMap, {
         dir: knowledgeDir,
+        transport: DIRECT_SETTLEMENT_TRANSPORT,
         base,
         milestoneId: "M6"
       });
@@ -355,6 +362,7 @@ ${escalationSection}`;
 
       const result = hooks.settleStampClearForArtifact(s, hooks.sessionPhaseMap, {
         dir: knowledgeDir,
+        transport: DIRECT_SETTLEMENT_TRANSPORT,
         base,
         milestoneId: "M6"
       });
@@ -372,6 +380,7 @@ ${escalationSection}`;
 
       const result = hooks.settleStampClearForArtifact(s, hooks.sessionPhaseMap, {
         dir: knowledgeDir,
+        transport: DIRECT_SETTLEMENT_TRANSPORT,
         base: `impl-M7-other-${s}-gen0.md`,
         milestoneId: "M6"
       });
@@ -389,6 +398,7 @@ ${escalationSection}`;
 
       const result = hooks.settleStampClearForArtifact(s, hooks.sessionPhaseMap, {
         dir: knowledgeDir,
+        transport: DIRECT_SETTLEMENT_TRANSPORT,
         base,
         milestoneId: "M6"
       });
@@ -406,6 +416,7 @@ ${escalationSection}`;
 
       const result = hooks.settleStampClearForArtifact(s, hooks.sessionPhaseMap, {
         dir: knowledgeDir,
+        transport: DIRECT_SETTLEMENT_TRANSPORT,
         base,
         milestoneId: "M6"
       });
@@ -423,6 +434,7 @@ ${escalationSection}`;
 
       const result = hooks.settleStampClearForArtifact(s, hooks.sessionPhaseMap, {
         dir: knowledgeDir,
+        transport: DIRECT_SETTLEMENT_TRANSPORT,
         base,
         milestoneId: "M6"
       });
@@ -592,6 +604,7 @@ ${escalationSection}`;
       // and keeps the row open, digest intact.
       const redirected = hooks.settleStampClearForArtifact(s, hooks.sessionPhaseMap, {
         dir: outsideDir,
+        transport: DIRECT_SETTLEMENT_TRANSPORT,
         base,
         milestoneId: "M6"
       });
@@ -610,6 +623,90 @@ ${escalationSection}`;
       expect(landed).toContain("# Fix evidence: canonical");
 
       rmSync(outsideDir, { recursive: true, force: true });
+    });
+  });
+
+  // One settlement implementation serves three entry points, so the record it
+  // writes is the only thing that can say which one ran. Each case below drives
+  // its own entry point through the caller that owns it and reads the tag back.
+  describe("settlement transport attribution", () => {
+    function settlementRecords() {
+      return ["STAMP_CLEARED", "STAMP_LINEAGE_RECORDED", "STAMP_DECLINED"]
+        .flatMap((token) => records(token).map((line) => ({ token, line, ...parseRecord(line) })));
+    }
+
+    function onlySettlement(expectedToken, expectedTransport) {
+      const found = settlementRecords();
+      expect(found, `expected exactly one settlement record, got ${found.map((r) => r.token).join(", ")}`).toHaveLength(1);
+      expect(found[0].token).toBe(expectedToken);
+      expect(found[0].fields.transport).toBe(expectedTransport);
+      // The tag rides after the payload it describes: a reader of an existing
+      // record keeps every field in place and gains one at the end.
+      expect(found[0].line.indexOf("transport=")).toBeGreaterThan(found[0].line.indexOf("artifact="));
+      return found[0];
+    }
+
+    it("the after-write fast path attributes its record to the hook", async () => {
+      const s = "transport-after-hook";
+      const artisan = "transport-after-hook-artisan";
+      const base = `impl-M6-first-${s}-gen0.md`;
+      const relPath = `knowledge/${base}`;
+      await reopenWithStamp(s, base);
+      clearLog();
+
+      const fixBody = `${implKD(s, "superseded")}\n# Fix evidence: delivered through the write hook\n`;
+      await artisanWrite(artisan, relPath, fixBody, "c-transport-hook");
+      await landAndSettle(artisan, relPath, fixBody, "c-transport-hook");
+
+      onlySettlement("STAMP_CLEARED", "after-hook");
+      expect(readRegistry(s)).toContain("  M6: checked-off");
+    });
+
+    it("the SWARM gate evaluation attributes its record to the gate", async () => {
+      const s = "transport-swarm-gate";
+      const base = `impl-M6-first-${s}-gen0.md`;
+      await reopenWithStamp(s, base);
+      clearLog();
+
+      // The fix-up lands with no write hook in sight, so the gate's own
+      // evaluation is the transport that settles it.
+      createKD(base, `${implKD(s, "superseded")}\n# Fix evidence: delivered out of band\n`);
+      await gateEvaluate(s, "c-transport-gate");
+
+      onlySettlement("STAMP_CLEARED", "swarm-gate");
+      expect(readRegistry(s)).toContain("  M6: checked-off");
+    });
+
+    it("stuck-row reconciliation attributes its record to the reconciler", async () => {
+      const s = "transport-stuck-row";
+      const base = `impl-M6-first-${s}-gen0.md`;
+      await reopenWithStamp(s, base);
+      clearLog();
+
+      createKD(base, `${implKD(s, "superseded")}\n# Fix evidence: delivered out of band\n`);
+      const registry = hooks.readMilestoneRegistry(s, hooks.sessionPhaseMap);
+      expect(registry, "no registry to reconcile against").toBeTruthy();
+      hooks.reconcileStuckRowsFromDiskEvidence(s, hooks.sessionPhaseMap, registry);
+
+      onlySettlement("STAMP_CLEARED", "stuck-row");
+      expect(readRegistry(s)).toContain("  M6: checked-off");
+    });
+
+    it("a decline names the transport that refused, not just the reason", async () => {
+      const s = "transport-decline";
+      const base = `impl-M6-first-${s}-gen0.md`;
+      await reopenWithStamp(s, base);
+      clearLog();
+
+      // The bytes on disk still match the stamped digest, so the gate refuses —
+      // and the refusal has to be attributable for the same reason a settlement
+      // does: an unattributed decline cannot say which path asked.
+      createKD(base, implKD(s, "superseded"));
+      const registry = hooks.readMilestoneRegistry(s, hooks.sessionPhaseMap);
+      hooks.reconcileStuckRowsFromDiskEvidence(s, hooks.sessionPhaseMap, registry);
+
+      const declined = onlySettlement("STAMP_DECLINED", "stuck-row");
+      expect(declined.fields.reason).toBe("byte-identical");
     });
   });
 

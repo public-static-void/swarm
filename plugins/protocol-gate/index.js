@@ -69,6 +69,15 @@ function getStateDir() {
     : join(PLUGIN_DIR, ".state");
 }
 
+// The one definition of the per-session state file path. Module-level so the
+// generation resolution can read persisted state without a server instance;
+// the server's getStatePath delegates here rather than restating the shape.
+function getStateFilePath(sessionID) {
+  const safe = sanitizeSessionID(sessionID);
+  if (!safe) return null;
+  return join(getStateDir(), `.protocol-state-${safe}.json`);
+}
+
 function getKnowledgeDir(sessionID) {
   // Shared project-root seam with knowledge-gate. The precedence is:
   // 1. PROTOCOL_GATE_KNOWLEDGE_DIR — explicit override (tests, production seam)
@@ -210,7 +219,12 @@ const ERROR_TEMPLATES = {
   MULTI_MILESTONE: { code: "MULTI_MILESTONE", message: "❌ MULTI_MILESTONE: Multiple milestones in single dispatch", guidance: "Include exactly one MILESTONE ID: <milestone-id> field per dispatch" },
   GITIGNORED_STAGE_REJECTED: { code: "GITIGNORED_STAGE_REJECTED", message: "❌ GITIGNORED_STAGE_REJECTED: git add would stage gitignored knowledge/ paths — knowledge/ is workflow meta and stays out of the commit set", guidance: "Stage only intended tracked files — run `git add <tracked-path>` (AGENTS.md, agents/, skills/, plugins/, tests/, opencode.json) or `git add .` to stage all non-ignored changes" },
   SHELL_DENIED_ATTRIBUTED: { code: "SHELL_DENIED_ATTRIBUTED", message: "SHELL DENIED (attributed — see message)", guidance: "Follow the Try next line in the message" },
-  INTENT_BOUNDARY_CLOSED: { code: "INTENT_BOUNDARY_CLOSED", message: "❌ INTENT BOUNDARY CLOSED: write/edit of intent-*.md outside INTENT", guidance: "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md" }
+  INTENT_BOUNDARY_CLOSED: { code: "INTENT_BOUNDARY_CLOSED", message: "❌ INTENT BOUNDARY CLOSED: write/edit of intent-*.md outside INTENT", guidance: "Run /phase INTENT to reopen the INTENT edit window, then edit knowledge/intent-*.md" },
+  GENERATION_HELD: (generation, holders) => ({
+    code: "GENERATION_HELD",
+    message: `❌ GENERATION_HELD: generation ${generation} is already held by an unfinished lifecycle of this session (${(holders || []).join(", ")})`,
+    guidance: `Start this lifecycle at a free generation — the gate allocates one above every label on disk and records it as LIFECYCLE_GENERATION_ALLOCATED — then rewrite the INTENT with that number in its filename. At the same generation the filename carries no discriminator, so the two lifecycles' evidence would be one set.`
+  })
 };
 
 function getPhaseName(phaseId) {
@@ -224,6 +238,124 @@ function getPhaseName(phaseId) {
 // sessionPhaseMap it already receives as a parameter.
 function getCurrentGeneration(sessionPhaseMap, sessionID) {
   return sessionPhaseMap.get(`${sessionID}:gen`) || 0;
+}
+
+// Persisted lifecycle state for a session, read from the .state file — the SSOT
+// across restarts, when the in-memory map is empty. `present:false` means no
+// readable file (callers fall back to the map); a file without a generation
+// field is a legacy state and reads as generation 0.
+function readPersistedLifecycleState(sessionID) {
+  const statePath = getStateFilePath(sessionID);
+  if (!statePath) return { present: false, generation: null, phase: null };
+  try {
+    const data = JSON.parse(readFileSync(statePath, "utf8"));
+    return {
+      present: true,
+      generation: typeof data.generation === "number" ? data.generation : 0,
+      phase: typeof data.phase === "number" ? data.phase : null
+    };
+  } catch (_) {
+    return { present: false, generation: null, phase: null };
+  }
+}
+
+// A lifecycle is identified by the generation its own artifacts carry, never by
+// the persisted counter. Every lifecycle writes its INTENT KD first and the
+// INTENT edit window closes behind it, so that artifact's embedded `-gen{N}` is
+// the lifecycle's name. The counter is only the allocator (see
+// allocateLifecycleGeneration) and moves at REPORT, so a lifecycle can start
+// under a counter that already ran past its label — an earlier lifecycle's
+// REPORT moved it, or the label was inherited from a previous INTENT. Resolving
+// evidence against the counter in that state refuses the running lifecycle's own
+// artifacts and wedges it, so lookups resolve against this anchor instead.
+function findLifecycleAnchor(sessionID) {
+  const knowledgeDir = getKnowledgeDir(sessionID);
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
+  const candidates = [];
+  for (const f of files) {
+    if (!/^intent-/i.test(f)) continue;
+    const generation = extractImplKDGeneration(f, sessionID);
+    if (generation === null) continue;
+    candidates.push({ file: f, generation, mtimeMs: getFileMtimeMs(join(knowledgeDir, f)) });
+  }
+  if (candidates.length === 0) return null;
+  // Newest anchor wins: a lifecycle's INTENT is written once, at its start, so
+  // the newer file is the later lifecycle. Generation and filename break an
+  // mtime tie deterministically — a same-millisecond pair must never make the
+  // resolved lifecycle depend on readdir order.
+  candidates.sort((a, b) =>
+    (b.mtimeMs - a.mtimeMs) || (b.generation - a.generation) || a.file.localeCompare(b.file)
+  );
+  return { generation: candidates[0].generation, file: candidates[0].file, candidates };
+}
+
+// The generation every lifecycle-scoped KD lookup resolves against. Falls back
+// to the persisted counter only when no anchor governs — a session that has not
+// written its INTENT yet, a generation-0 legacy lifecycle, or a session still in
+// INTENT. That last case is not an oversight: while the session sits in INTENT,
+// any INTENT on disk belongs to a prior lifecycle (this lifecycle's is the one
+// being written), so nothing on disk can name the running lifecycle and the
+// allocated number is its identity.
+function getActiveLifecycleGeneration(sessionPhaseMap, sessionID) {
+  const persistedState = readPersistedLifecycleState(sessionID);
+  // The in-memory value wins when it is set: it is seeded from this same file
+  // at load and is the live value afterwards. The file is the fallback a restart
+  // reads, and its `generation: 0` for a legacy file must not override a
+  // generation the session is actually running at.
+  const inMap = sessionPhaseMap.get(`${sessionID}:gen`);
+  const persisted = typeof inMap === "number"
+    ? inMap
+    : (persistedState.generation ?? 0);
+  const phase = sessionPhaseMap.get(sessionID) ?? persistedState.phase;
+  const pastIntent = typeof phase === "number" && phase > STATES.INTENT;
+  const anchor = pastIntent ? findLifecycleAnchor(sessionID) : null;
+  if (!anchor) return persisted;
+  if (anchor.candidates.length > 1) {
+    const others = anchor.candidates.slice(1).map(c => `${c.file}@gen${c.generation}`).join(",");
+    gateRecordEvent("LIFECYCLE_ANCHOR_AMBIGUOUS", [
+      ["session", sessionID],
+      ["activeGen", anchor.generation],
+      ["anchor", anchor.file],
+      ["others", others]
+    ], `several lifecycle INTENTs are on disk for this session — the newest anchors the running lifecycle; the others belong to prior or abandoned lifecycles and stay inert only where their generation differs`, `LIFECYCLE_ANCHOR_AMBIGUOUS|${sessionID}|a:${anchor.generation}|f:${anchor.file}|o:${others}`);
+  }
+  if (anchor.generation === persisted) return persisted;
+  gateRecordEvent("LIFECYCLE_GENERATION_RECONCILED", [
+    ["session", sessionID],
+    ["persistedGen", persisted],
+    ["activeGen", anchor.generation],
+    ["anchor", anchor.file]
+  ], `evidence resolves against the generation this lifecycle's own artifacts carry; the persisted counter is the allocator and sits at a different number`, `LIFECYCLE_GENERATION_RECONCILED|${sessionID}|p:${persisted}|a:${anchor.generation}|f:${anchor.file}`);
+  return anchor.generation;
+}
+
+// The number the lifecycle starting now will carry. Handing out a number an
+// existing artifact of this session already carries is what lets an unfinished
+// lifecycle's evidence pass for a fresh one's, so the allocator takes one above
+// both the counter and every generation already on disk — it never reuses a
+// label and never moves backwards. Called at the REPORT reset, where the ending
+// lifecycle's artifacts are still on disk and the next lifecycle begins.
+function allocateLifecycleGeneration(sessionPhaseMap, sessionID) {
+  const counter = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const knowledgeDir = getKnowledgeDir(sessionID);
+  let files = [];
+  try { files = readdirSync(knowledgeDir); } catch (_) { return counter + 1; }
+  let highest = -1;
+  for (const f of files) {
+    if (f.toLowerCase().endsWith(".superseded.md")) continue;
+    const generation = extractImplKDGeneration(f, sessionID);
+    if (generation === null) continue;
+    if (generation > highest) highest = generation;
+  }
+  const allocated = Math.max(counter, highest) + 1;
+  gateRecordEvent("LIFECYCLE_GENERATION_ALLOCATED", [
+    ["session", sessionID],
+    ["counter", counter],
+    ["highestOnDisk", highest],
+    ["allocated", allocated]
+  ], `the next lifecycle is named ${allocated}: one above the counter and above every generation this session's artifacts already carry, so no running lifecycle can be handed a label in use`, `LIFECYCLE_GENERATION_ALLOCATED|${sessionID}|c:${counter}|h:${highest}|n:${allocated}`);
+  return allocated;
 }
 
 // KD session matchers (matchesSessionKD*, getKDLookupSIDs) live in
@@ -738,7 +870,7 @@ function queueHeadHasFreshEvidence(sessionPhaseMap, sessionID, marker) {
   } catch (_) {
     return false;
   }
-  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const knowledgeDir = getKnowledgeDir(sessionID);
   const lowered = prefixes.map((p) => String(p).toLowerCase());
   return files.some((f) => {
@@ -1263,7 +1395,7 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
 // rather than mis-parsing. Failure surfaces as { ok:false, reason:"no-registry" }
 // from updateMilestoneRegistry (fails closed, never wrong-advances).
 function locateMilestoneRegistry(sessionID, sessionPhaseMap) {
-  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
@@ -1377,7 +1509,7 @@ function findMilestoneImplKD(sessionID, sessionPhaseMap, milestoneId) {
   // reopen) and never count, so a reopened row cannot re-complete on the
   // work the review just invalidated. Shared predicate below, so the
   // cross-check and the write-hook check-off agree on stamped rows.
-  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const found = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, milestoneId, generation));
   return found || null;
 }
@@ -1835,6 +1967,10 @@ function evaluateStaleKDDeletable(filename, sessionID, persistedGeneration, live
 function deleteStaleMilestoneKD(sessionID, sessionPhaseMap, filename, actor) {
   const who = actor || "Committer";
   const knowledgeDir = getKnowledgeDir(sessionID);
+  // Deletion protects the running lifecycle's live evidence, so the comparison
+  // generation is the lifecycle's identity, not the allocator counter: a moved
+  // counter would otherwise label the active lifecycle's own artifacts stale.
+  const activeGen = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const persistedGen = getCurrentGeneration(sessionPhaseMap, sessionID);
   let content = null;
   try {
@@ -1843,23 +1979,23 @@ function deleteStaleMilestoneKD(sessionID, sessionPhaseMap, filename, actor) {
     content = null;
   }
   if (typeof content !== "string") {
-    loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=unknown file=${filename} fileGen=unknown persistedGen=${persistedGen} reason=missing actor=${who} deleted=false`);
-    return { ok: false, reason: "missing", milestoneId: "unknown", fileGen: null, persistedGen: persistedGen };
+    loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=unknown file=${filename} fileGen=unknown activeGen=${activeGen} persistedGen=${persistedGen} reason=missing actor=${who} deleted=false`);
+    return { ok: false, reason: "missing", milestoneId: "unknown", fileGen: null, activeGen, persistedGen: persistedGen };
   }
   const verdictForDeletion = evaluateLiveness(content);
-  const verdict = evaluateStaleKDDeletable(filename, sessionID, persistedGen, verdictForDeletion);
+  const verdict = evaluateStaleKDDeletable(filename, sessionID, activeGen, verdictForDeletion);
   if (!verdict.deletable) {
-    loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen ?? "unknown"} persistedGen=${persistedGen} reason=${verdict.reason} actor=${who} deleted=false`);
-    return { ok: false, reason: verdict.reason, milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, persistedGen: persistedGen };
+    loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen ?? "unknown"} activeGen=${activeGen} persistedGen=${persistedGen} reason=${verdict.reason} actor=${who} deleted=false`);
+    return { ok: false, reason: verdict.reason, milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, activeGen, persistedGen: persistedGen };
   }
   try {
     unlinkSync(join(knowledgeDir, filename));
   } catch (e) {
-    loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen} persistedGen=${persistedGen} reason=delete-failed actor=${who} deleted=false`);
-    return { ok: false, reason: "delete-failed", milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, persistedGen: persistedGen };
+    loud(`STALE_KD_DELETE_REFUSED: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen} activeGen=${activeGen} persistedGen=${persistedGen} reason=delete-failed actor=${who} deleted=false`);
+    return { ok: false, reason: "delete-failed", milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, activeGen, persistedGen: persistedGen };
   }
-  loud(`STALE_KD_DELETE: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen} persistedGen=${persistedGen} reason=${verdict.reason} actor=${who} deleted=true`);
-  return { ok: true, reason: verdict.reason, milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, persistedGen: persistedGen };
+  loud(`STALE_KD_DELETE: session=${sessionID} milestone=${verdict.milestoneId} file=${filename} fileGen=${verdict.fileGen} activeGen=${activeGen} persistedGen=${persistedGen} reason=${verdict.reason} actor=${who} deleted=true`);
+  return { ok: true, reason: verdict.reason, milestoneId: verdict.milestoneId, fileGen: verdict.fileGen, activeGen, persistedGen: persistedGen };
 }
 
 // --- Deterministic stamp settlement (FR-06..FR-08) ---
@@ -1887,20 +2023,29 @@ function resolveArtifactDir(sessionID) {
 // attempt. The key carries the artifact's directory so two lifecycles holding
 // artifacts of the same name in different knowledge dirs never silence each
 // other.
-function settleStampDeclined(milestoneId, base, dir, reason) {
+function settleStampDeclined(milestoneId, base, dir, reason, transport) {
   gateRecordEvent("STAMP_DECLINED", [
     ["milestone", milestoneId],
     ["artifact", base],
-    ["reason", reason]
+    ["reason", reason],
+    ["transport", transport]
   ], `milestone ${milestoneId} settlement declined for ${base} (${reason}) — the row keeps its registry state and the artifact is untouched`, `STAMP_DECLINED|${dir}|${gateRecordMilestoneTag(milestoneId)}a:${base}|r:${reason}`);
 }
+
+// The three entry points one settlement implementation serves (FR-06). The tag
+// is the only attribution a settlement line carries: without it a record says
+// what settled but not which transport reached the settlement.
+const SETTLEMENT_TRANSPORTS = ["after-hook", "swarm-gate", "stuck-row"];
 
 // Settles one stamped artifact. Preconditions are checked in the order FR-07
 // states them, and every failing branch declines with exactly one token — a
 // decline never deletes, demotes or hides the artifact, and leaves the row
 // in-progress so the operator's next ordinary action is a redispatch.
 // Returns { settled, reason, content?, promoted? }.
-function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, milestoneId }) {
+function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, milestoneId, transport }) {
+  if (!SETTLEMENT_TRANSPORTS.includes(transport)) {
+    throw new TypeError(`settleStampClearForArtifact: transport must be one of ${SETTLEMENT_TRANSPORTS.join(", ")} (got ${String(transport)})`);
+  }
   if (typeof base !== "string" || base.length === 0) return { settled: false, reason: "not-cited-artifact" };
   const artifactDir = resolveArtifactDir(sessionID);
   const rowId = milestoneId || extractMilestoneIdFromImplKD(base);
@@ -1910,20 +2055,20 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   // settles, the digest is dropped, and the canonical artifact's own stamp can
   // no longer be cleared by anything but a hand edit.
   if (typeof dir === "string" && dir.length > 0 && resolve(dir) !== resolve(artifactDir)) {
-    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-cited-artifact");
+    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-cited-artifact", transport);
     return { settled: false, reason: "not-cited-artifact" };
   }
   // (1) Only a reopened row has a stamp to clear.
   const state = rowId ? readMilestoneState(sessionID, sessionPhaseMap, rowId) : null;
   if (state !== "in-progress") {
-    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-in-progress");
+    settleStampDeclined(rowId || "unknown", base, artifactDir, "not-in-progress", transport);
     return { settled: false, reason: "not-in-progress" };
   }
   // (2) The artifact must be this milestone's impl KD for the current session.
   if (!/^impl-/i.test(base)
     || !base.toLowerCase().startsWith(`impl-${rowId}-`.toLowerCase())
     || !matchesSessionKDAnyGeneration(base, sessionID)) {
-    settleStampDeclined(rowId, base, artifactDir, "not-cited-artifact");
+    settleStampDeclined(rowId, base, artifactDir, "not-cited-artifact", transport);
     return { settled: false, reason: "not-cited-artifact" };
   }
   // (3) No recorded digest means the gate cannot tell a fix-up from the stamp it
@@ -1931,19 +2076,19 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
   const snapshotDigest = snapshots ? snapshots[stampSnapshotKey(rowId, base)] : undefined;
   if (typeof snapshotDigest !== "string" || snapshotDigest.length === 0) {
-    settleStampDeclined(rowId, base, artifactDir, "no-stamp-snapshot");
+    settleStampDeclined(rowId, base, artifactDir, "no-stamp-snapshot", transport);
     return { settled: false, reason: "no-stamp-snapshot" };
   }
   let landed;
   try {
     landed = readFileSync(join(artifactDir, base), "utf8");
   } catch (_) {
-    settleStampDeclined(rowId, base, artifactDir, "write-failed");
+    settleStampDeclined(rowId, base, artifactDir, "write-failed", transport);
     return { settled: false, reason: "write-failed" };
   }
   // (4) Genuineness: the landed bytes must be new work past the stamp.
   if (digestContent(landed) === snapshotDigest) {
-    settleStampDeclined(rowId, base, artifactDir, "byte-identical");
+    settleStampDeclined(rowId, base, artifactDir, "byte-identical", transport);
     return { settled: false, reason: "byte-identical" };
   }
   // (5) The landed bytes must be in a state the gate may amend — its own stale
@@ -1951,14 +2096,14 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   // status the author never wrote.
   const rewrite = amendStampContent(landed, base);
   if (rewrite.refused) {
-    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter");
+    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter", transport);
     return { settled: false, reason: "unparsable-frontmatter" };
   }
   if (rewrite.content !== landed) {
     try {
       atomicWriteFileSync(join(artifactDir, base), rewrite.content);
     } catch (_) {
-      settleStampDeclined(rowId, base, artifactDir, "write-failed");
+      settleStampDeclined(rowId, base, artifactDir, "write-failed", transport);
       return { settled: false, reason: "write-failed" };
     }
   }
@@ -1968,12 +2113,12 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   try {
     settledContent = readFileSync(join(artifactDir, base), "utf8");
   } catch (_) {
-    settleStampDeclined(rowId, base, artifactDir, "write-failed");
+    settleStampDeclined(rowId, base, artifactDir, "write-failed", transport);
     return { settled: false, reason: "write-failed" };
   }
   const settledVerdict = evaluateLiveness(settledContent);
   if (!settledVerdict.live) {
-    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter");
+    settleStampDeclined(rowId, base, artifactDir, "unparsable-frontmatter", transport);
     return { settled: false, reason: "unparsable-frontmatter" };
   }
   // Exactly one always-on line per settlement: the gate's own stamp rewrite is
@@ -1982,12 +2127,14 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   if (rewrite.cleared) {
     gateRecordEvent("STAMP_CLEARED", [
       ["milestone", rowId],
-      ["artifact", base]
+      ["artifact", base],
+      ["transport", transport]
     ], `milestone ${rowId} fix-up rewrite at ${base} — stamp cleared (status: ${settledVerdict.declared}, superseded_by: ${base}); the row re-completes on the landed evidence`, `STAMP_CLEARED|${artifactDir}|${gateRecordMilestoneTag(rowId)}a:${base}`);
   } else {
     gateRecordEvent("STAMP_LINEAGE_RECORDED", [
       ["milestone", rowId],
-      ["artifact", base]
+      ["artifact", base],
+      ["transport", transport]
     ], `milestone ${rowId} fix-up rewrite at ${base} — landed frontmatter already live (status: ${settledVerdict.declared}), superseded_by lineage recorded (${base}); the row re-completes on the landed evidence`, `STAMP_LINEAGE_RECORDED|${artifactDir}|${gateRecordMilestoneTag(rowId)}a:${base}`);
   }
   dropStampSnapshot(sessionPhaseMap, sessionID, rowId, base);
@@ -2009,23 +2156,35 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
 }
 
 // Drives settlement over every artifact stamped in this session, so a gate
-// evaluation and the after-write fast path run the same loop. No observed write
-// path steers it: the canonical artifact is the only thing either loop settles,
-// so a write that merely shares a stamped artifact's basename cannot settle (or
-// silently unsnapshot) the row it names.
-function settleStampClearsForSession(sessionID, sessionPhaseMap) {
+// evaluation and the after-write fast path run the same loop. `transport` names
+// the entry point that reached this loop — the record it writes carries the tag,
+// so a settlement line says which of the three points produced it. No observed
+// write path steers it: the canonical artifact is the only thing either loop
+// settles, so a write that merely shares a stamped artifact's basename cannot
+// settle (or silently unsnapshot) the row it names.
+function settleStampClearsForSession(sessionID, sessionPhaseMap, transport) {
+  return settleStampClearsForSessionDetailed(sessionID, sessionPhaseMap, transport).length;
+}
+
+// The same loop, reporting WHICH artifacts it settled rather than how many. The
+// after-hook needs the names: a landing the stamp settlement already recorded
+// must not be evaluated a second time, because one event carries one CHECKOFF
+// line. Counting callers keep the count view above.
+function settleStampClearsForSessionDetailed(sessionID, sessionPhaseMap, transport) {
   const snapshots = getStampSnapshots(sessionPhaseMap, sessionID);
-  if (!snapshots) return 0;
+  if (!snapshots) return [];
   const keys = Object.keys(snapshots);
-  if (keys.length === 0) return 0;
+  if (keys.length === 0) return [];
   const artifactDir = resolveArtifactDir(sessionID);
-  let settled = 0;
+  const settled = [];
   for (const key of keys) {
     const sep = key.indexOf("|");
     if (sep <= 0) continue;
     const milestoneId = key.slice(0, sep);
     const base = key.slice(sep + 1);
-    if (settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir: artifactDir, base, milestoneId }).settled) settled++;
+    if (settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir: artifactDir, base, milestoneId, transport }).settled) {
+      settled.push({ milestoneId, base });
+    }
   }
   return settled;
 }
@@ -2084,23 +2243,36 @@ function resolveMilestoneRowId(registry, relPath, milestoneId) {
   return prefix ? prefix.id : milestoneId;
 }
 
-// Generation-mismatch skip diagnostic (swarm/50): same-session impl files for
-// a milestone row whose embedded generation differs from the persisted
-// lifecycle generation — or whose bytes cannot be read (fail-closed) — are
-// skipped with an auditable record, never promoted. Legacy suffix-less files
-// count as generation 0, so they skip (with fileGen=0) once the lifecycle
-// moves past generation 0. Files from foreign sessions are not this
-// lifecycle's evidence and stay silent here. Record shape:
-// GEN_MISMATCH_SKIP session=<id> milestone=<rowId> file=<name>
-// fileGen=<N> persistedGen=<M> reason=<gen-mismatch|unreadable> promoted=false.
-function emitGenerationMismatchSkips(knowledgeDir, files, sessionID, milestoneId, persistedGeneration) {
+// Generation-mismatch skip diagnostic: same-session impl files for a milestone
+// row whose embedded generation differs from the ACTIVE lifecycle generation —
+// or whose bytes cannot be read (fail-closed) — are skipped with an always-on
+// record, never promoted. Legacy suffix-less files count as generation 0, so
+// they skip (with fileGen=0) once the lifecycle moves past generation 0. Files
+// from foreign sessions are not this lifecycle's evidence and stay silent here.
+// Record shape: GEN_MISMATCH_SKIP session=<id> milestone=<rowId> file=<name>
+// fileGen=<N> activeGen=<M> persistedGen=<P> reason=<gen-mismatch|unreadable>
+// promoted=false.
+function emitGenerationMismatchSkips(knowledgeDir, files, sessionID, milestoneId, activeGeneration, persistedGeneration) {
   const prefix = `impl-${milestoneId}-`;
   for (const f of files) {
     if (!f.toLowerCase().startsWith(prefix.toLowerCase())) continue;
     if (f.toLowerCase().endsWith(".superseded.md")) continue;
     const fileGen = extractImplKDGeneration(f, sessionID);
-    if (fileGen === null) continue;
-    if (fileGen === persistedGeneration) {
+    if (fileGen === null) {
+      // The name carries no `-gen{N}` marker for this session, so the artifact
+      // cannot be placed in any lifecycle. Recorded rather than skipped
+      // silently: an artifact a reader can see on disk and the gate never
+      // mentions is the shape that made "the gate is disabled" a plausible
+      // misreading.
+      gateRecordEvent("GEN_MISMATCH_SKIP", [
+        ["session", sessionID], ["milestone", milestoneId], ["file", f],
+        ["fileGen", "none"], ["activeGen", activeGeneration],
+        ["persistedGen", persistedGeneration], ["reason", "no-generation-token"],
+        ["promoted", "false"]
+      ], `the filename carries no generation marker for this session, so the artifact belongs to no lifecycle this gate can name and the row is not promoted from it`, `GEN_MISMATCH_SKIP|${gateRecordMilestoneTag(milestoneId)}a:${f}|fg:none|ag:${activeGeneration}|r:no-generation-token`);
+      continue;
+    }
+    if (fileGen === activeGeneration) {
       // Same generation but not live evidence: either unreadable bytes
       // (fail-closed — the pinned predicate already declined) or a status the
       // liveness allowlist refuses (named by the promotion record in
@@ -2113,11 +2285,21 @@ function emitGenerationMismatchSkips(knowledgeDir, files, sessionID, milestoneId
         readable = false;
       }
       if (!readable) {
-        loud(`GEN_MISMATCH_SKIP: session=${sessionID} milestone=${milestoneId} file=${f} fileGen=${fileGen} persistedGen=${persistedGeneration} reason=unreadable promoted=false`);
+        gateRecordEvent("GEN_MISMATCH_SKIP", [
+          ["session", sessionID], ["milestone", milestoneId], ["file", f],
+          ["fileGen", fileGen], ["activeGen", activeGeneration],
+          ["persistedGen", persistedGeneration], ["reason", "unreadable"],
+          ["promoted", "false"]
+        ], `the artifact cannot be read, so it is not evidence — the row keeps its state`, `GEN_MISMATCH_SKIP|${gateRecordMilestoneTag(milestoneId)}a:${f}|fg:${fileGen}|ag:${activeGeneration}|r:unreadable`);
       }
       continue;
     }
-    loud(`GEN_MISMATCH_SKIP: session=${sessionID} milestone=${milestoneId} file=${f} fileGen=${fileGen} persistedGen=${persistedGeneration} reason=gen-mismatch promoted=false`);
+    gateRecordEvent("GEN_MISMATCH_SKIP", [
+      ["session", sessionID], ["milestone", milestoneId], ["file", f],
+      ["fileGen", fileGen], ["activeGen", activeGeneration],
+      ["persistedGen", persistedGeneration], ["reason", "gen-mismatch"],
+      ["promoted", "false"]
+    ], `file generation ${fileGen} is not the active lifecycle's ${activeGeneration}, so the row is not promoted from it`, `GEN_MISMATCH_SKIP|${gateRecordMilestoneTag(milestoneId)}a:${f}|fg:${fileGen}|ag:${activeGeneration}`);
   }
 }
 
@@ -2146,9 +2328,10 @@ function emitGenerationMismatchSkips(knowledgeDir, files, sessionID, milestoneId
 // caller fails closed first); reconciliation never fabricates rows.
 function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry) {
   // Settlement is attempted here too (FR-06 point c): a stamped artifact whose
-  // fix-up write landed through a transport the after-hook could not attribute
-  // re-closes its row at the next reconciliation instead of staying stuck.
-  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap);
+  // fix-up write landed outside the write hook re-closes its row at the next
+  // reconciliation instead of staying stuck, and its record names the transport
+  // that settled it.
+  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap, "stuck-row");
   if (settled > 0) {
     const refreshed = readMilestoneRegistry(sessionID, sessionPhaseMap);
     if (refreshed) registry = refreshed;
@@ -2159,21 +2342,22 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return settled; }
   const persistedGeneration = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   let promoted = 0;
   for (const row of stuck) {
     const prefix = `impl-${row.id}-`;
     // Shared pinned predicate: only live (non-frontmatter-superseded)
-    // same-session, current-generation evidence promotes — the write-hook
-    // check-off consults the same generation pin over the incoming path, so
-    // both agree on skewed rows.
-    const evidence = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, row.id, persistedGeneration));
+    // same-session, active-lifecycle-generation evidence promotes — the
+    // write-hook check-off consults the same resolution over the incoming
+    // path, so both agree on skewed rows.
+    const evidence = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, row.id, generation));
     if (!evidence) {
       // Generation-mismatch skip: same-session impl files for this row that
       // miss the generation pin (or cannot be read) are skipped audibly —
       // never promoted. The row keeps blocking the gate; the operator
       // recovers via the DIVERGENCE RECOVERY PROCEDURE (diagnose →
       // scoped-remove → redispatch).
-      emitGenerationMismatchSkips(knowledgeDir, files, sessionID, row.id, persistedGeneration);
+      emitGenerationMismatchSkips(knowledgeDir, files, sessionID, row.id, generation, persistedGeneration);
       // Superseded-only evidence probe: a reopened row's stale impl
       // KDs survive on disk as `*.superseded.md` — invisible to the predicate
       // above by design, since widening it would double-suffix the files on
@@ -2265,8 +2449,8 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return { ok: false, reason: "no-knowledge-dir", milestoneId }; }
   const prefix = `impl-${milestoneId}-`;
-  const persistedGeneration = getCurrentGeneration(sessionPhaseMap, sessionID);
-  const live = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, milestoneId, persistedGeneration));
+  const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
+  const live = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, milestoneId, generation));
   if (live) return { ok: false, reason: "live-evidence-present", milestoneId };
   const superseded = files.filter(f => {
     if (!f.toLowerCase().startsWith(prefix.toLowerCase())) return false;
@@ -2335,7 +2519,7 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   // Stamp settlement is attempted at every SWARM gate evaluation (FR-06 point
   // b), before the registry is read, so a row the settlement re-closes is
   // already checked-off when the verdict is computed.
-  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap);
+  const settled = settleStampClearsForSession(sessionID, sessionPhaseMap, "swarm-gate");
   let registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
     debug(`REGISTRY_MISSING: no milestone registry for session ${sessionID} — SWARM cannot advance`);
@@ -2463,8 +2647,7 @@ function extractToolPath(a) {
 // Reads the incoming file text from tool args across write/edit arg shapes.
 // Write tools carry the full text under `content`; edit-shaped calls vary
 // (`content`, `newText`, `newString`, `text`, `data`). Returns the string or
-// undefined when no text is present — callers fail open on undefined (live),
-// so an edit patch without full frontmatter never counts as stale.
+// undefined when no text is present — callers fail open on undefined (live).
 function extractToolContent(a) {
   if (!a || typeof a !== "object") return undefined;
   for (const k of ["content", "newContent", "newText", "newString", "text", "data"]) {
@@ -2472,6 +2655,16 @@ function extractToolContent(a) {
     if (typeof v === "string") return v;
   }
   return undefined;
+}
+
+// Whether a payload is a whole KD document rather than a patch fragment. The
+// liveness parse is a document parse — `frontmatterSpan` needs `---` at byte 0
+// (BOM aside) and a closing fence — so a fragment can be neither live nor
+// stale, and judging one returns a verdict about bytes the writer never
+// touched. Callers evaluate document-shaped payloads and defer a fragment to
+// the disk evaluation of the landed file.
+function isDocumentPayload(text) {
+  return typeof text === "string" && frontmatterSpan(text) !== null;
 }
 
 // Canonical tool identity: runtimes namespace built-ins (e.g.
@@ -2616,7 +2809,7 @@ function findNewestEvidenceKD(sessionPhaseMap, sessionID, phase) {
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return null; }
-  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const matches = files.filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation) && pattern.test(f));
   if (matches.length === 0) return null;
   let newest = matches[0];
@@ -3175,7 +3368,7 @@ export const CLEANUP_REJECTION_REASONS = Object.freeze({
 // the artifact's own path, or the expected pattern when nothing matched.
 function evaluateCleanupArtifact(sessionID, sessionPhaseMap) {
   const storedSID = sessionPhaseMap.get(`${sessionID}:sid`) || sessionID;
-  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const expectedPath = generation > 0
     ? `knowledge/cleanup-*-${storedSID}-gen${generation}.md`
     : `knowledge/cleanup-*-${storedSID}.md`;
@@ -3294,7 +3487,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // Reads scan the current session's KDs only — cross-session
   // adoption is removed, so a fresh session can never advance off another
   // lifecycle's KDs. lookupSIDs stays single-session (diagnostic only).
-  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const lookupSIDs = getKDLookupSIDs(sessionPhaseMap, sessionID);
   const sessionFiles = [];
   for (const f of files) {
@@ -3407,6 +3600,21 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
       const registryMtime = registry ? getFileMtimeMs(registry.path) : -1;
       result = registryMtime >= overrideAnchor;
       overrideNote = `, override fresh-evidence: registry mtime=${registryMtime} >= since=${overrideAnchor} → ${result}`;
+      if (!result) {
+        // The gate's evidence passed and a pin is what refuses the transition.
+        // Always-on because this is the wedge shape: a pin taken while every row
+        // was already checked-off can never be satisfied — a checked-off row is
+        // never rewritten, so the registry that would carry the fresh mtime is
+        // never written. Without the record the lifecycle parks with no trace
+        // and reads as "the gate is disabled".
+        gateRecordEvent("SWARM_GATE_PARKED", [
+          ["session", sessionID],
+          ["registry", registry ? registry.path.split("/").pop() : "<none>"],
+          ["registryMtime", registryMtime],
+          ["since", overrideAnchor],
+          ["reason", "stale-registry"]
+        ], `every milestone row is checked-off with its impl KD on disk, so the gate passed; the pin's fresh-evidence anchor is unmet and a checked-off row is never rewritten — walk the phase past SWARM or land a row transition, because evidence alone cannot satisfy this pin`, `SWARM_GATE_PARKED|${sessionID}|r:${registryMtime}|s:${overrideAnchor}`);
+      }
     } else if (overrideActive && terminalHop) {
       // A terminal override hop completes on its ordinary advancement gate.
       // SWARM does not author the registry (a checked-off row is never
@@ -3482,7 +3690,7 @@ function checkPhaseStateConsistency(sessionID, currentPhase, sessionPhaseMap, sa
   // suppress legitimate phase regression in the current lifecycle.
   // The scan covers the current session's KDs only — a fresh
   // session is never held up or regressed by another lifecycle's KDs.
-  const generation = getCurrentGeneration(sessionPhaseMap, sessionID);
+  const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const sessionFiles = files.filter(f => matchesSessionKDForSession(f, sessionPhaseMap, sessionID, generation));
 
   const patterns = {
@@ -3667,7 +3875,7 @@ async function protocolGateServer(input, options) {
     // WRONG_AGENT hard error on each blocked dispatch is preserved.
     const blockedDispatchCount = new Map();
     // Per-session record of the LAST charged dispatch, set at
-    // the :2475 increment site so the tool.execute.after hook can restore the
+    // the before-hook charge site so the tool.execute.after hook can restore the
     // redispatch budget when a dispatch produces no expected RESULT KD
     // (empty-result detection). One entry per session — a re-dispatch
     // overwrites the previous record; the entry is deleted after reconciliation.
@@ -3678,6 +3886,14 @@ async function protocolGateServer(input, options) {
     // after-hook cannot see the tool args, so the before-hook records the path
     // for the post-write SWARM→VERIFY auto-advance evaluation.
     const pendingImplKDWrites = new Map();
+    // Deferred check-offs by subagent sessions — sessionID →
+    // { relPath, base, milestoneId }. Recorded in tool.execute.before when the
+    // payload is a patch fragment, which the gate cannot judge as a document,
+    // and consumed in tool.execute.after where the landed bytes are read. The
+    // deferral is only a postponement: without this marker the landed file is
+    // never evaluated, and a fragment-only fix delivery leaves a reopened row
+    // open with nothing but the deferral line to show for it.
+    const deferredCheckOffs = new Map();
     // Pending frontmatter stamp clears by subagent sessions — sessionID →
     // { relPath, base, dir, snapshot }. Recorded in tool.execute.before when an
     // impl-KD write lands over a stamped file with new bytes (a genuine
@@ -3747,9 +3963,7 @@ async function protocolGateServer(input, options) {
     // adoption — and the active-session pointer is deleted at lifecycle
     // end and never re-created for a finished session.
     function getStatePath(sessionID) {
-      const safe = sanitizeSessionID(sessionID);
-      if (!safe) return null;
-      return join(getStateDir(), `.protocol-state-${safe}.json`);
+      return getStateFilePath(sessionID);
     }
 
     function saveState(sessionID) {
@@ -4250,6 +4464,62 @@ async function protocolGateServer(input, options) {
       }
     }
 
+    // The lifecycle's number is allocated when the lifecycle starts. Its INTENT
+    // is the artifact that names it, so the generation that INTENT carries IS
+    // this lifecycle's number; adopting it into the persisted counter on the
+    // INTENT write is what stops the counter and the artifacts from ever
+    // disagreeing while the lifecycle runs. The state this removes is a counter
+    // that says one number while every artifact of the running lifecycle carries
+    // another — the state that refused this lifecycle's own evidence and left
+    // the milestone gate with nothing to promote.
+    //
+    // Uniqueness is enforced here, not reported. A number another INTENT of this
+    // session already carries belongs to a lifecycle that is still unfinished,
+    // and at the same generation the filename carries no discriminator — the two
+    // lifecycles' artifacts would satisfy one evidence predicate and merge.
+    // Recording that would leave the merge in place, so the start is refused and
+    // the caller blocks the write. The allocator keeps a held number out of
+    // gate-allocated starts; this keeps it out of the starts a dispatcher names.
+    function adoptLifecycleGenerationOnIntent(sessionID, relPath) {
+      const base = String(relPath).replace(/\\/g, "/").split("/").pop();
+      const generation = extractImplKDGeneration(base, sessionID);
+      // No `-gen{N}` for this session: the name is not this lifecycle's INTENT
+      // and carries no number to adopt. Not a skip — there is nothing to adopt.
+      if (generation === null) return { ok: true, generation: null };
+      const persisted = getPersistedGeneration(sessionID) ?? getCurrentGeneration(sessionPhaseMap, sessionID);
+      const knowledgeDir = getKnowledgeDir(sessionID);
+      let holders = [];
+      try {
+        holders = readdirSync(knowledgeDir).filter(f =>
+          /^intent-/i.test(f) && f !== base && extractImplKDGeneration(f, sessionID) === generation
+        );
+      } catch (_) {}
+      if (holders.length > 0) {
+        gateRecordEvent("LIFECYCLE_GENERATION_COLLISION", [
+          ["session", sessionID],
+          ["generation", generation],
+          ["anchor", base],
+          ["others", holders.join(",")],
+          ["started", "false"]
+        ], `generation ${generation} is already held by an unfinished lifecycle of this session (${holders.join(",")}); at the same generation the filename carries no discriminator, so the two lifecycles' artifacts would be one evidence set — this lifecycle cannot start at ${generation} and the write is refused. Start at a free number: the allocator names the next one`, `LIFECYCLE_GENERATION_COLLISION|${sessionID}|g:${generation}|f:${base}|o:${holders.join(",")}`);
+        return { ok: false, reason: "generation-held", generation, holders };
+      }
+      if (persisted === generation) return { ok: true, generation };
+      sessionPhaseMap.set(`${sessionID}:gen`, generation);
+      if (!saveState(sessionID)) {
+        sessionPhaseMap.set(`${sessionID}:gen`, persisted);
+        gateRecord(`LIFECYCLE_GENERATION_ADOPT_FAILED: session=${sessionID} artifact=${base} persistedGen=${persisted} activeGen=${generation} reason=state-write-failed`);
+        return { ok: false, reason: "state-write-failed", generation: null };
+      }
+      gateRecordEvent("LIFECYCLE_GENERATION_ADOPTED", [
+        ["session", sessionID],
+        ["persistedGen", persisted],
+        ["activeGen", generation],
+        ["anchor", base]
+      ], `the lifecycle started under ${generation}: the number its INTENT carries is now the persisted counter, so the allocator and the evidence agree from the first write`, `LIFECYCLE_GENERATION_ADOPTED|${sessionID}|p:${persisted}|a:${generation}|f:${base}`);
+      return { ok: true, generation };
+    }
+
     // When the artisan writes its milestone-scoped impl KD,
     // advance that milestone to checked-off in the parent lifecycle's registry.
     // The impl KD on disk IS the verifiable evidence of completion — the
@@ -4260,7 +4530,11 @@ async function protocolGateServer(input, options) {
     // RESTART REQUIRED: plugins load once per opencode process —
     // changes to this check-off path and its loud diagnostics take effect
     // only after opencode restarts.
-    function autoCheckOffMilestone(relPath, incomingContent, writerSessionID) {
+    // `transport` names the entry point that reached this evaluation: the write
+    // hook judges the incoming document, the after-hook judges the bytes a
+    // deferred fragment landed. The record carries the tag, so a promotion says
+    // which of the two produced it.
+    function autoCheckOffMilestone(relPath, incomingContent, writerSessionID, transport = "write-hook", opts = {}) {
       const milestoneId = extractMilestoneIdFromImplKD(relPath);
       if (!milestoneId) return;
       // Liveness decides with the one parse (FR-01, FR-04). The before-hook
@@ -4275,8 +4549,8 @@ async function protocolGateServer(input, options) {
       // stuck-row reconciliation (FR-06), so nothing is lost by waiting.
       const diskSnapshot = readImplKDSnapshot(relPath, writerSessionID);
       const artifactBase = relPath.replace(/\\/g, "/").split("/").pop();
-      const incomingVerdict = typeof incomingContent === "string" ? evaluateLiveness(incomingContent) : null;
-      if (diskSnapshot !== null && diskSnapshot.stale) {
+      const incomingVerdict = isDocumentPayload(incomingContent) ? evaluateLiveness(incomingContent) : null;
+      if (!opts.landed && diskSnapshot !== null && diskSnapshot.stale) {
         if (typeof incomingContent === "string" && diskSnapshot.content !== incomingContent) {
           // A marker that a stamp clear is owed, not a claim about the target:
           // settlement re-derives the canonical artifact from disk, so this
@@ -4286,7 +4560,33 @@ async function protocolGateServer(input, options) {
             ["milestone", milestoneId],
             ["artifact", artifactBase]
           ], `milestone ${milestoneId} fix-up rewrite detected at ${relPath} — incoming bytes differ from the stamped digest, so the stamp settles on the landed bytes and the row promotes then`, `STAMP_CLEAR_PENDING|${milestoneId.toUpperCase()}|a:${artifactBase}`);
+          // This is a deferral too, and it needs the same terminal evaluation.
+          // The stamp loop settles the artifacts that are still stamped on disk;
+          // an author who writes a live document over the stamp leaves it
+          // nothing to clear, and the landed file would then be evaluated by no
+          // one. Registering the check-off makes the after-hook read the landed
+          // bytes either way.
+          deferredCheckOffs.set(writerSessionID, { relPath, base: artifactBase, milestoneId });
         }
+        return;
+      }
+      if (typeof incomingContent === "string" && incomingVerdict === null) {
+        // A patch fragment is not a document, so it carries no verdict about
+        // the artifact. Deferring is recorded rather than silent: without the
+        // line, "the hook saw a fragment and waited for the landed file" is
+        // indistinguishable from "the hook never ran".
+        gateRecordEvent("CHECKOFF_DEFERRED", [
+          ["milestone", milestoneId],
+          ["artifact", artifactBase],
+          ["payload", "fragment"],
+          ["promoted", "false"],
+          ["reason", "not-a-document"]
+        ], `milestone ${milestoneId}: the incoming payload carries no frontmatter block, so it is a patch fragment — the landed file is evaluated instead at ${relPath}`, `CHECKOFF_DEFERRED|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}`);
+        // The deferral names its own consumer: the after-hook reads the landed
+        // file and evaluates it there. Nothing about that evaluation depends on
+        // the phase the process happens to stand in — a row's promotion is a
+        // registry transition on evidence, not a phase move.
+        deferredCheckOffs.set(writerSessionID, { relPath, base: artifactBase, milestoneId });
         return;
       }
       if (incomingVerdict && !incomingVerdict.live) {
@@ -4297,29 +4597,43 @@ async function protocolGateServer(input, options) {
           ["milestone", milestoneId],
           ["artifact", artifactBase],
           ["promoted", "false"],
-          ["reason", incomingVerdict.reason]
-        ], `milestone ${milestoneId} keeps its registry state — incoming impl KD is not live (${incomingVerdict.reason}) at ${relPath}. Write fresh fix evidence with an allowlisted status to re-complete.`, `CHECKOFF|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}|p:false|r:${incomingVerdict.reason}`);
+          ["reason", incomingVerdict.reason],
+          ["transport", transport]
+        ], `milestone ${milestoneId} keeps its registry state — incoming impl KD is not live (${incomingVerdict.reason}) at ${relPath}. Write fresh fix evidence with an allowlisted status to re-complete.`, `CHECKOFF|${gateRecordMilestoneTag(milestoneId)}a:${artifactBase}|p:false|r:${incomingVerdict.reason}|t:${transport}`);
         return;
       }
       for (const candidate of collectParentSessionCandidates()) {
-        // Disk generation is the SSOT (restart-proof); the map is a fallback.
-        // Seeded into the map so the generation-scoped registry lookup
-        // (locateMilestoneRegistry) finds the same lifecycle after a restart
-        // when the map is empty. The live-hook match is generation-pinned
-        // (extractImplKDGeneration equals the persisted generation, aligned
-        // with the disk-evidence predicate): a write whose embedded
-        // generation skews from the persisted generation declines with a
-        // GEN_MISMATCH_SKIP diagnostic instead of checking off — the operator
-        // recovers via the DIVERGENCE RECOVERY PROCEDURE (diagnose →
-        // scoped-remove → redispatch with fresh current-generation evidence).
-        // updateMilestoneRegistry's in-progress→checked-off guard stays the
-        // strict writer.
-        const generation = getPersistedGeneration(candidate) ?? getCurrentGeneration(sessionPhaseMap, candidate);
+        // The lifecycle's own artifacts name its generation; the persisted
+        // counter is only the allocator and is carried in the record so a
+        // moved counter is visible beside the value evidence resolved against.
+        // The map is seeded so the generation-scoped registry lookup
+        // (locateMilestoneRegistry) resolves the same lifecycle after a restart
+        // when the map is empty. A write whose embedded generation differs from
+        // the active lifecycle's declines with an always-on GEN_MISMATCH_SKIP
+        // record instead of checking off.
+        const persisted = getPersistedGeneration(candidate) ?? getCurrentGeneration(sessionPhaseMap, candidate);
+        const generation = getActiveLifecycleGeneration(sessionPhaseMap, candidate);
         const base = relPath.replace(/\\/g, "/").split("/").pop();
         const fileGen = extractImplKDGeneration(base, candidate);
-        if (fileGen === null) continue;
+        if (fileGen === null) {
+          // The filename carries no generation token for this session, so the
+          // artifact cannot be placed in any lifecycle. Recorded per candidate
+          // because the reason is the candidate's: a name that matches one
+          // session and not another is the ordinary case here.
+          gateRecord(`AUTO_CHECKOFF_UNMATCHED: ${relPath} session=${candidate} milestone=${milestoneId} reason=no-generation-token activeGen=${generation} persistedGen=${persisted} promoted=false`);
+          continue;
+        }
         if (fileGen !== generation) {
-          warn(`GEN_MISMATCH_SKIP: session=${candidate} milestone=${milestoneId} file=${relPath} fileGen=${fileGen} persistedGen=${generation} reason=gen-mismatch promoted=false`);
+          gateRecordEvent("GEN_MISMATCH_SKIP", [
+            ["session", candidate],
+            ["milestone", milestoneId],
+            ["file", base],
+            ["fileGen", fileGen],
+            ["activeGen", generation],
+            ["persistedGen", persisted],
+            ["reason", "gen-mismatch"],
+            ["promoted", "false"]
+          ], `the write is not this lifecycle's evidence: file generation ${fileGen} differs from the active lifecycle's ${generation}, so nothing is promoted at ${relPath}`, `GEN_MISMATCH_SKIP|${gateRecordMilestoneTag(milestoneId)}a:${base}|fg:${fileGen}|ag:${generation}`);
           return;
         }
         // Seed the in-memory generation so the generation-scoped registry
@@ -4347,8 +4661,9 @@ async function protocolGateServer(input, options) {
           ["milestone", resolvedId],
           ["artifact", artifactBase],
           ["promoted", promoted ? "true" : "false"],
-          ["reason", promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)]
-        ], null, `CHECKOFF|${gateRecordMilestoneTag(resolvedId)}a:${artifactBase}|p:${promoted ? "true" : "false"}|r:${promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)}`);
+          ["reason", promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)],
+          ["transport", transport]
+        ], null, `CHECKOFF|${gateRecordMilestoneTag(resolvedId)}a:${artifactBase}|p:${promoted ? "true" : "false"}|r:${promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)}|t:${transport}`);
         // Only a SUCCESSFUL check-off resets the per-milestone
         // redispatch budget. A failed registry update keeps the counter so
         // retries still count toward the cap; a re-opened milestone
@@ -4359,31 +4674,89 @@ async function protocolGateServer(input, options) {
           debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${resolvedId} (session ${candidate})`);
         } else {
           // Loud, non-blocking diagnostic: silent failures here left
-          // registries stuck in SWARM. Visible without
-          // PROTOCOL_GATE_DEBUG; carries the {ok:false} reason
+          // registries stuck in SWARM. Always-on; carries the {ok:false} reason
           // (no-registry / milestone-not-found / invalid-transition / write-failed).
-          warn(`AUTO_CHECKOFF_FAILED: milestone ${resolvedId} (parent ${candidate}) — ${result.reason}`);
+          gateRecord(`AUTO_CHECKOFF_FAILED: milestone ${resolvedId} (parent ${candidate}) — ${result.reason} artifact=${artifactBase} reason=${result.reason} promoted=false`);
         }
         return;
       }
       // No parent-session/generation candidate matched the impl KD filename —
-      // nothing was checked off. Loud no-op diagnostic so the miss is
-      // observable instead of silent.
-      warn(`AUTO_CHECKOFF_UNMATCHED: ${relPath}`);
+      // nothing was checked off. Always-on so the miss is observable instead of
+      // silent: a row that stays open after a write must not be
+      // indistinguishable from a write the gate never saw.
+      gateRecord(`AUTO_CHECKOFF_UNMATCHED: ${relPath} reason=no-matching-session promoted=false`);
+    }
+
+    // Terminal evaluation for a deferred check-off: the fragment has landed, so
+    // the file on disk is read and judged by the same function the document path
+    // uses. Deliberately phase-independent — a row's promotion is a registry
+    // transition on evidence, not a phase move, so it must not be skipped
+    // because this process is not the one standing in SWARM. One record either
+    // way: the landed bytes decide, and a decline names why.
+    function settleDeferredCheckOff(writerSessionID, relPath, settledStampBases = new Set()) {
+      const pending = deferredCheckOffs.get(writerSessionID);
+      if (!pending) return false;
+      const base = String(relPath).replace(/\\/g, "/").split("/").pop();
+      // A deferral is keyed to the artifact it postponed; a write to another
+      // path must not consume it.
+      if (pending.base !== base) return false;
+      deferredCheckOffs.delete(writerSessionID);
+      // The stamp settlement already recorded this landing's one CHECKOFF line
+      // and promoted on the settled bytes. Evaluating them again would emit a
+      // second line for one event.
+      if (settledStampBases.has(base)) return false;
+      let landed = null;
+      try { landed = readFileSync(join(resolveArtifactDir(writerSessionID), base), "utf8"); } catch (_) { landed = null; }
+      if (landed === null) {
+        gateRecordEvent("CHECKOFF", [
+          ["milestone", pending.milestoneId],
+          ["artifact", base],
+          ["promoted", "false"],
+          ["reason", "unreadable"],
+          ["transport", "after-hook"]
+        ], `milestone ${pending.milestoneId} keeps its registry state — the deferred write landed at ${relPath} but the file could not be read, so the evaluation had nothing to judge`, `CHECKOFF|${gateRecordMilestoneTag(pending.milestoneId)}a:${base}|p:false|r:unreadable|t:after-hook`);
+        return false;
+      }
+      // A landing that is not a document has no evaluation left to defer to.
+      // Recording it here closes the deferral instead of re-deferring on every
+      // later write of the same artifact.
+      if (!isDocumentPayload(landed)) {
+        gateRecordEvent("CHECKOFF", [
+          ["milestone", pending.milestoneId],
+          ["artifact", base],
+          ["promoted", "false"],
+          ["reason", "not-a-document"],
+          ["transport", "after-hook"]
+        ], `milestone ${pending.milestoneId} keeps its registry state — the landed file at ${relPath} carries no frontmatter block either, so there is no document to evaluate`, `CHECKOFF|${gateRecordMilestoneTag(pending.milestoneId)}a:${base}|p:false|r:not-a-document|t:after-hook`);
+        return false;
+      }
+      // The landed bytes are judged as a document, not through the write-hook's
+      // stamp snapshot: the snapshot answers "is the file behind this write
+      // already stamped?", a question about a write still in flight. Once the
+      // write has landed the answer is in the bytes, and routing a not-live
+      // landing through the snapshot would return silently — the deferral would
+      // end in exactly the silence it exists to remove.
+      autoCheckOffMilestone(relPath, landed, writerSessionID, "after-hook", { landed: true });
+      return true;
     }
 
     // Settles every deferred genuine-rewrite stamp clear by evaluating disk
-    // state: settlement is idempotent and transport-independent (FR-06), so
-    // this is the after-write fast path sharing one implementation with the
-    // SWARM gate and stuck-row reconciliation. Each attempt, decline and
+    // state: settlement is idempotent and stays transport-independent (FR-06),
+    // and the tag on each record names which of the three transports produced
+    // it, so this is the after-write fast path sharing one implementation with
+    // the SWARM gate and stuck-row reconciliation. Each attempt, decline and
     // promotion carries its own always-on line, so a reopened row that never
     // closes is diagnosable with no debug flag set. The observed write path is
     // not handed in: settlement reads the canonical artifact, so a write aimed
     // at a same-basename copy settles nothing here.
     function settlePendingStampClears() {
+      const settledBases = new Set();
       for (const candidate of collectParentSessionCandidates()) {
-        settleStampClearsForSession(candidate, sessionPhaseMap);
+        for (const entry of settleStampClearsForSessionDetailed(candidate, sessionPhaseMap, "after-hook")) {
+          settledBases.add(entry.base);
+        }
       }
+      return settledBases;
     }
 
     // Post-write SWARM→VERIFY auto-advance: after a subagent's impl KD write
@@ -5158,8 +5531,8 @@ async function protocolGateServer(input, options) {
           // an in-progress row can check off, so firing for ANY non-overseer
           // writer cannot cause a wrong-advance. The writing agent is recorded
           // only when chat.params carried the agent field, so a session whose
-          // agent is unknown must still trigger the check-off (the observed
-          // silent-skip root cause, issue 71).
+          // agent is unknown must still trigger the check-off — the check-off
+          // keys on the KD path, not on the writer's identity.
           const isImplKD = isImplKDArtifactPath(relPath);
           if (isImplKD) {
             const writingAgent = sessionAgentMap.get(sessionID)?.toLowerCase() || "unknown";
@@ -5167,7 +5540,10 @@ async function protocolGateServer(input, options) {
               // File-only observability for a non-artisan/unknown impl-KD
               // writer — the check-off still proceeds; this just records who
               // wrote it so a future silent-skip class is visible.
-              warn(`AUTO_CHECKOFF_NON_ARTISAN: agent=${writingAgent} path=${relPath}`);
+              gateRecordEvent("AUTO_CHECKOFF_NON_ARTISAN", [
+                ["agent", writingAgent],
+                ["path", relPath]
+              ], null, `AUTO_CHECKOFF_NON_ARTISAN|${relPath}|a:${writingAgent}`);
             }
             autoCheckOffMilestone(relPath, extractToolContent(args), sessionID);
             // Record the write for the after-hook's post-write SWARM→VERIFY
@@ -5184,8 +5560,8 @@ async function protocolGateServer(input, options) {
 
       let phase = sessionPhaseMap.get(sessionID);
       if (phase === undefined) {
-        // BUG 2 FIX: fail-closed — overseer session exists but phase is missing.
-        // This is an error state; block rather than silently allow.
+        // Fail-closed: an overseer session with no phase entry is an error
+        // state, so the call blocks rather than passing through.
         debug(`tool.execute.before: BLOCKED overseer session ${sessionID} has no phase entry (tool=${tool})`);
         throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.code, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.message, ERROR_TEMPLATES.BLOCKED_UNINITIALIZED.guidance);
       }
@@ -5283,7 +5659,9 @@ async function protocolGateServer(input, options) {
           // scopes all KDs written in the next lifecycle. The increment
           // is atomic with saveState — revert on save failure.
           const currentGen = getCurrentGeneration(sessionPhaseMap, sessionID);
-          const nextGen = currentGen + 1;
+          // Allocated, not incremented — see the write handler for why the
+          // disk is consulted as well as the counter.
+          const nextGen = allocateLifecycleGeneration(sessionPhaseMap, sessionID);
           sessionPhaseMap.set(`${sessionID}:gen`, nextGen);
           // Delete the phase entry instead of setting INTENT directly.
           // chat.params only re-runs loadState() when the entry is absent, so a
@@ -5361,6 +5739,21 @@ async function protocolGateServer(input, options) {
                 ERROR_TEMPLATES.FABRICATED_SECTION.guidance
               );
             }
+          }
+        }
+
+        // Lifecycle start: the INTENT that opens a lifecycle names it, so the
+        // generation it carries is allocated here — before any later artifact
+        // can be judged against a counter that belongs to another lifecycle.
+        // Runs after the content validation so a rejected write adopts nothing.
+        if (phase === STATES.INTENT && isIntentKD) {
+          const adopted = adoptLifecycleGenerationOnIntent(sessionID, relPath);
+          // A held number blocks the write: a lifecycle that started at a number
+          // another unfinished lifecycle carries would merge the two evidence
+          // sets, and nothing downstream could separate them again.
+          if (!adopted.ok && adopted.reason === "generation-held") {
+            const template = ERROR_TEMPLATES.GENERATION_HELD(adopted.generation, adopted.holders);
+            throw new ProtocolGateError(template.code, template.message, template.guidance);
           }
         }
 
@@ -5454,7 +5847,9 @@ async function protocolGateServer(input, options) {
           // for the atomicity rationale). Delete the phase
           // entry so the next chat.params re-runs loadState().
           const currentGen = getCurrentGeneration(sessionPhaseMap, sessionID);
-          const nextGen = currentGen + 1;
+          // Allocated, not incremented — see the write handler for why the
+          // disk is consulted as well as the counter.
+          const nextGen = allocateLifecycleGeneration(sessionPhaseMap, sessionID);
           sessionPhaseMap.set(`${sessionID}:gen`, nextGen);
           sessionPhaseMap.delete(sessionID);
           diskCheckFailures.set(sessionID, 0);
@@ -5948,8 +6343,11 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         const pending = pendingStampClear.get(sessionID);
         pendingStampClear.delete(sessionID);
         const isImplWrite = isImplKDArtifactPath(relPath);
-        if (pending || isImplWrite) settlePendingStampClears();
+        const settledStampBases = (pending || isImplWrite) ? settlePendingStampClears() : new Set();
         if (isImplWrite) {
+          // The deferral settles here, on the landed bytes, before any phase
+          // gate is consulted: promotion is evidence, not a phase move.
+          settleDeferredCheckOff(sessionID, relPath, settledStampBases);
           for (const candidate of collectParentSessionCandidates()) {
             advanceParentSessionFromSwarm(candidate);
           }
@@ -5983,7 +6381,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
         if (postPhase === STATES.CLEANUP) await advanceFromDiskEvidence(sessionID);
       }
 
-      // Mirror the :1779 gate — only overseer task dispatches touch the
+      // Mirror the before-hook charge — only overseer task dispatches touch the
       // overseer's redispatch counter; subagent→subagent task calls never do.
       if (tool !== "subagent" || !isOverseerSession(sessionID)) return;
       const recorded = lastTaskDispatch.get(sessionID);
@@ -6234,6 +6632,14 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       verdictRegressedKDs,
       collectParentSessionCandidates,
       getPersistedGeneration,
+      // Lifecycle identity surface: the generation a lifecycle's own artifacts
+      // carry, the allocator that hands the next lifecycle a free number, and
+      // the adoption at lifecycle start.
+      getActiveLifecycleGeneration: (sessionID) => getActiveLifecycleGeneration(sessionPhaseMap, sessionID),
+      findLifecycleAnchor: (sessionID) => findLifecycleAnchor(sessionID),
+      allocateLifecycleGeneration: (sessionID) => allocateLifecycleGeneration(sessionPhaseMap, sessionID),
+      adoptLifecycleGenerationOnIntent,
+      isDocumentPayload,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
       parseSinglePhaseArg,

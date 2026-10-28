@@ -194,7 +194,7 @@ Every phase dispatches one specific agent. The protocol-gate plugin enforces thi
    SCOPE: <optional context>
    ```
 
-   Required: `mode`, `intent_kd` (except checkpoint/cleanup modes), `result_kd` (for KD-producing modes), `session_date`. `SESSION ID` and `GENERATION` fall back to the session and protocol-gate state when omitted, but pass them explicitly. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The resume handle travels as the subagent call's `sessionID` argument rather than a prompt field, and the resume outcome itself is harness-side. The plugin generates `prompt` and `description` from the template and keeps your `agent` selection.
+   Required: `mode`, `intent_kd` (except checkpoint/cleanup modes), `result_kd` (for KD-producing modes), `session_date`. `SESSION ID` and `GENERATION` fall back to the session and protocol-gate state when omitted, but pass them explicitly. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The resume handle travels as the subagent call's `sessionID` argument rather than a prompt field, and the resume outcome itself is harness-side. The plugin renders `prompt` from the template, appends a delegation-format hint to your `description`, and keeps your `agent` selection.
 
     Provenance travels stamped: the Committer's preflight recording sets `BASELINE BRANCH` and `HEAD SHA`, and each dispatch carries those values forward as given. Branch discovery rests with the preflight recording, so a dispatch leaving the provenance fields empty is a dispatch defect.
 
@@ -228,9 +228,15 @@ When re-dispatching an agent for the same task, choose the target instance delib
 
 Frame every redispatch positively: state the expected action (reuse the same instance, or start a fresh instance). When re-dispatching a failed milestone, pass the prior call's `sessionID` to continue the same agent's work.
 
-Record the continuity choice on every same-artifact re-dispatch in any mode: the dispatch SCOPE carries `same` or `fresh: <reason>` — record the decision itself rather than the handle value. A same-artifact re-dispatch that records neither is a dispatcher-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched.
+Record the continuity choice on every dispatch in any mode: the dispatch SCOPE carries `same`, `fresh: new-task` for a first dispatch or a genuinely new task, or `fresh: <class>` naming the failure a re-dispatch recovered from — record the decision itself rather than the handle value. A dispatch that records no value is a dispatcher-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched.
 
-**Unresumable handle** — a handle the host cannot resume answers `session not found`, which reaches you as a dispatch failure; the gate adds no fallback. Recover by re-dispatching fresh and recording `fresh: session-not-found` in the dispatch SCOPE, so the continuity record names why the instance changed.
+**Unresumable handle** — a handle the host cannot resume reaches you as a dispatch failure, and the failure text names its class. Recover by class, recording the class in the dispatch SCOPE:
+
+- `session not found` → the handle is dead. Re-dispatch fresh and record `fresh: session-not-found`.
+- An agent-resolution or binding failure → the agent name resolves and the handle is not dead. Re-dispatch the same agent fresh and record `fresh: agent-resolution`.
+- A quota denial → the dispatch was refused. Retry the same handle, escalate to the user when refused again, and record `fresh: quota-denied` when a fresh instance is used.
+
+The gate adds no fallback of its own, so the recorded class is what tells a later reader which failure occurred and whether the instance changed.
 
 ### Dispatch Discipline
 

@@ -65,6 +65,25 @@ describe("comment and label marker guard", () => {
     );
     expect(reports).toEqual([]);
   });
+
+  // The hyphen forms were covered from the start; the space-separated form a
+  // person writes in a comment was not, so process trace survived in plugin
+  // sources while the rule read as complete.
+  it("flags the space-separated issue and fix citations", () => {
+    const forms = [" silent-skip root cause, issue 71", " BUG 2 FIX: fail-closed"];
+    for (const form of forms) {
+      const reports = collectReports(noMetaMarker, jsSource({ comments: [comment(form)] }));
+      expect(reports, `must flag ${form.trim()}`).toHaveLength(1);
+    }
+  });
+
+  it("passes a comment that names the words without a citation number", () => {
+    const reports = collectReports(
+      noMetaMarker,
+      jsSource({ comments: [comment(" the issue tracker is external; a bug needs a reproduction")] })
+    );
+    expect(reports).toEqual([]);
+  });
 });
 
 describe("prose marker guard for agent and skill docs", () => {

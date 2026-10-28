@@ -181,7 +181,7 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 ## Protocol
 
-1. **Role-Specific Check — File-Reading Pattern Detection** — Scan the dispatch DOMAIN for file-reading patterns. If the dispatch objective can be satisfied by reading specific files (rather than mapping codebase structure), flag this as a role violation and escalate.
+1. **Mapping-Task Check** — Confirm the dispatch is a mapping task: an objective answered by mapping structure, not by reading one file. When the objective is a single-file read, record a single-file read request in Process Friction and escalate.
 2. List root structure — exclude .git, node_modules, vendor, build, dist, venv
 3. Detect tech stack from file extensions and config files
 4. Locate entry points, DB schemas, test directories, config files
@@ -200,7 +200,7 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 - Exclude noise directories from scans
 - Produce concise maps (max 3-4 levels deep)
 - Load kd-system skill before creating exploration KD
-- Report format includes: File Structure, Tech Stack, Dependencies, Key Files, APIs, Open Issues
+- Structure the exploration KD per the `template-exploration` skill
 
 ## Context Marker
 

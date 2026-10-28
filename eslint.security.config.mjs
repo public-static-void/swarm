@@ -109,7 +109,8 @@ const rulesLayerConfig = {
 // ── no-meta-marker: purge regression guard ───────────────────────────────────
 // Scans comments in plugin sources and tests, plus describe/it/test first-arg
 // labels, for process-workflow meta markers (AC###, R###, NFR###, P###, EC##,
-// BUG-##, issue-##, Finding #, F#, FM#, G#, RSK-##, T##-##, and milestone
+// BUG-##, issue-##, the space-separated BUG N / issue N citation a comment
+// writes in prose, Finding #, F#, FM#, G#, RSK-##, T##-##, and milestone
 // prefixes in labels). Fixture data lives in string literals (dispatch prompts,
 // fixture KD paths, registry rows) — functional test input — so only comments
 // and label strings are scanned, never code.
@@ -120,7 +121,9 @@ const META_MARKERS = [
   /\bP\d{3}\b/,
   /\bEC-?\d+\b/,
   /\bBUG-\d+\b/,
+  /\bBUG \d+\b/i,
   /\bissue-\d+\b/i,
+  /\bissue \d+\b/i,
   /\bFinding \d+\b/i,
   /\bF\d{2,3}\b/,
   /\bFM\d+\b/,

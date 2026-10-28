@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join, resolve } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
 import delegationPlugin from "../../../plugins/delegation-gate/index.js";
+import { FRESH_MARGIN_MS, stampFresh } from "./walk-unification-fixture.js";
 
 // Consolidated protocol-gate suite: 78 → 70 tests. Parallel
 // one-off accepts (VERIFY dual-KD, cleanup write+edit, generation-0/n,
@@ -116,6 +117,18 @@ author: Artisan
     writeFileSync(join(knowledgeDir, filename), body);
   }
 
+  // Same bytes as createKD, then stamped forward of the anchor the gate will
+  // compare against. The freshness gates read `mtimeMs >= anchor` where the
+  // anchor is an integer millisecond value; the filesystem's mtime grid is
+  // coarser, so a write issued after the anchor can be stored before it and no
+  // comparison can recover the ordering. This constructor is the common route
+  // for a write that must advance a gate; an ordering-constrained site sets its
+  // mtime with an explicit forward utimesSync, which is the spacing it needs.
+  function createFreshKD(filename, content) {
+    createKD(filename, content);
+    stampFresh(join(knowledgeDir, filename));
+  }
+
   // Builds the milestone registry fixture body: the machine-readable
   // `## Milestone States` YAML block (the state SSOT) plus a human-readable
   // details table — the shape the Pathfinder produces at DECOMPOSE.
@@ -139,6 +152,13 @@ ${table}
 
   function createRegistry(s, rows) {
     createKD(`milestones-feature-${s}.md`, registryContent(rows));
+  }
+
+  // A registry write a test expects to advance a gate — the SWARM
+  // registry-mtime anchor and the DECOMPOSE dual-KD gate both read it — so it
+  // takes the same forward stamp through createFreshKD.
+  function createFreshRegistry(s, rows) {
+    createFreshKD(`milestones-feature-${s}.md`, registryContent(rows));
   }
 
   // Builds a REVIEW KD with the machine-readable verdict frontmatter field the
@@ -293,8 +313,8 @@ superseded_by: null
     createKD(`spec-a${suffix}`);
     await tick(s, "c7");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
-    createKD(`plan-a${suffix}`);
-    createKD(`milestones-a${suffix}`, registryContent([["M1", "checked-off"]]));
+    createFreshKD(`plan-a${suffix}`);
+    createFreshKD(`milestones-a${suffix}`, registryContent([["M1", "checked-off"]]));
     await tick(s, "c8");
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
     // SWARM→VERIFY advances on the registry all-checked-off gate — the
@@ -329,6 +349,25 @@ superseded_by: null
     for (const hook of ["chat.params", "chat.message", "permission.ask", "tool.execute.before", "command.execute.before", "tool.definition", "experimental.chat.system.transform"]) {
       expect(typeof hooks[hook]).toBe("function");
     }
+  });
+
+  // The pins that hold the fresh-stamp constructors honest. A plain write can
+  // never land FRESH_MARGIN_MS in the future, so this assertion fails
+  // deterministically at every tick phase when the write goes through the plain
+  // constructor — it is not a flake detector, it is the invariant the fixture
+  // layer now guarantees.
+  it("createFreshKD stamps the write ahead of an anchor captured before it", () => {
+    const anchor = Date.now();
+    createFreshKD("intent-pin-stamp.md");
+    const mtime = statSync(join(knowledgeDir, "intent-pin-stamp.md")).mtimeMs;
+    expect(mtime).toBeGreaterThanOrEqual(anchor + FRESH_MARGIN_MS - 1);
+  });
+
+  it("createFreshRegistry stamps the registry write ahead of an anchor captured before it", () => {
+    const anchor = Date.now();
+    createFreshRegistry("pin-stamp", [["M1", "pending"]]);
+    const mtime = statSync(join(knowledgeDir, "milestones-feature-pin-stamp.md")).mtimeMs;
+    expect(mtime).toBeGreaterThanOrEqual(anchor + FRESH_MARGIN_MS - 1);
   });
 
   it("tracks overseer sessions at INTENT and ignores non-overseer sessions", async () => {
@@ -1122,7 +1161,11 @@ superseded_by: null
       expect(existsSync(join(knowledgeDir, `intent-a-${s}-gen1.md`))).toBe(false);
       expect(existsSync(join(knowledgeDir, `spec-b-${s}-gen1.md`))).toBe(false);
       expect(readFileSync(join(knowledgeDir, `intent-a-${s}-gen2.md`), "utf8")).toBe(gen2Content);
-      expect(hooks.getCurrentGeneration(s)).toBe(2);
+      // Allocated, not incremented: gen2 is still on disk and an unfinished
+      // lifecycle holds it, so the next lifecycle takes 3 rather than reusing a
+      // label that already names evidence. `currentGen + 1` here would hand the
+      // next lifecycle gen2 and merge the two lifecycles' evidence.
+      expect(hooks.getCurrentGeneration(s)).toBe(3);
     }
   });
 
@@ -1382,6 +1425,59 @@ Amendment body.
       const s2 = sid("v2-phase-2");
       await phaseCmd.execute({ sessionID: s2, prompt: { text: "/phase EXPLORE" }, delivery: "steer" });
       expect(JSON.parse(readFileSync(statePath(s2), "utf8")).phase).toBe(hooks.STATES.EXPLORE);
+    });
+
+    // The V2 adapter is the only surface the host reaches, so a registration
+    // assertion there is the strongest wiring claim the repository can make.
+    // What this proves: setup() registers an execute.after hook on the v2 path,
+    // and the registered callback reaches the after-write handler — the captured
+    // handler advances the phase off an intent KD that exists on disk, which a
+    // callback that merely resolved could not do.
+    // What it cannot prove: that the host invokes the hook at all, that the host
+    // spells the event fields as this adapter reads them, or that a real host
+    // write ever reaches settlement. Those are host-side facts; wiring is not
+    // invocation, and no record may claim otherwise.
+    it("execute.after registration reaches the after-write handler", async () => {
+      const registrations = [];
+      const added = [];
+      const mockCtx = {
+        location: {},
+        options: {},
+        tool: {
+          hook: async (name, handler) => { registrations.push({ name, handler }); },
+          transform: async () => {},
+        },
+        permission: { hook: async () => {} },
+        session: { hook: async () => {}, synthetic: async () => {} },
+        command: { transform: async (cb) => cb({ add: (def) => added.push(def) }) },
+      };
+      await pluginModule.setup(mockCtx);
+
+      const afterHook = registrations.find((r) => r.name === "execute.after");
+      expect(afterHook, "the v2 path registered no execute.after hook").toBeDefined();
+      expect(typeof afterHook.handler).toBe("function");
+
+      const s = sid("v2-after-registration");
+      const phaseCmd = added.find((d) => d.name === "phase");
+      expect(phaseCmd).toBeDefined();
+      await phaseCmd.execute({ sessionID: s, prompt: { text: "1" }, delivery: "steer" });
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.INTENT);
+
+      // The intent KD is on disk before the hook runs, so the handler has
+      // evidence to advance on and the assertion reads a real branch. Its mtime
+      // is stamped past the override anchor the phase command just recorded, so
+      // the freshness check cannot depend on the filesystem's mtime resolution.
+      const intentPath = join(knowledgeDir, `intent-config-audit-${s}.md`);
+      createKD(`intent-config-audit-${s}.md`, "# INTENT: test\n");
+      utimesSync(intentPath, new Date(), new Date(Date.now() + 5000));
+      await afterHook.handler({
+        tool: "write",
+        sessionID: s,
+        callID: "c-v2-after",
+        input: { filePath: `knowledge/intent-config-audit-${s}.md` },
+      });
+
+      expect(JSON.parse(readFileSync(statePath(s), "utf8")).phase).toBe(hooks.STATES.PREFLIGHT);
     });
 
     it("/phase override persists to disk and survives a restart", async () => {
@@ -1676,8 +1772,8 @@ Amendment body.
       // A's plan alone (named under A) does not satisfy B's dual-KD gate.
       expect(hooks.checkDiskAdvancement(b, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
 
-      createKD(`plan-f5-${b}.md`);
-      createRegistry(b, [["M1", "checked-off"]]);
+      createFreshKD(`plan-f5-${b}.md`);
+      createFreshRegistry(b, [["M1", "checked-off"]]);
       expect(hooks.checkDiskAdvancement(b, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
       // The registry located for B's lifecycle is B's own file.
       expect(hooks.readMilestoneRegistry(b, hooks.sessionPhaseMap).path).toBe(join(knowledgeDir, `milestones-feature-${b}.md`));
@@ -1955,11 +2051,11 @@ Amendment body.
 
     // milestones- alone: no advancement (plan is the primary DECOMPOSE artifact)
     removeKD(`plan-only-${s}.md`);
-    createRegistry(s, [["M1", "pending"]]);
+    createFreshRegistry(s, [["M1", "pending"]]);
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
 
     // both plan- + milestones-: advancement
-    createKD(`plan-both-${s}.md`);
+    createFreshKD(`plan-both-${s}.md`);
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
 
     // Generation scoping: a current-gen plan with a stale prior-gen registry is
@@ -1967,10 +2063,10 @@ Amendment body.
     removeKD(`plan-both-${s}.md`);
     removeKD(`milestones-feature-${s}.md`);
     hooks.sessionPhaseMap.set(`${s}:gen`, 2);
-    createKD(`plan-cur-${s}-gen2.md`);
+    createFreshKD(`plan-cur-${s}-gen2.md`);
     createKD(`milestones-stale-${s}-gen1.md`, registryContent([["M1", "pending"]]));
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
-    createKD(`milestones-cur-${s}-gen2.md`, registryContent([["M1", "pending"]]));
+    createFreshKD(`milestones-cur-${s}-gen2.md`, registryContent([["M1", "pending"]]));
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
@@ -2001,8 +2097,8 @@ Amendment body.
     await initOverseer(ok);
     hooks.sessionPhaseMap.set(ok, hooks.STATES.DECOMPOSE);
     hooks.sessionPhaseMap.set(`${ok}:sid`, ok);
-    createKD(`plan-${ok}.md`);
-    createRegistry(ok, [["M1", "pending"]]);
+    createFreshKD(`plan-${ok}.md`);
+    createFreshRegistry(ok, [["M1", "pending"]]);
     expect(hooks.checkDiskAdvancement(ok, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
   });
 
@@ -2137,8 +2233,8 @@ Amendment body.
 
     // Both plan- and milestones- KDs on disk — the dual-KD gate is satisfied,
     // so the Overseer's read of the registry succeeds and the phase advances.
-    createKD(`plan-feature-${s}.md`);
-    createRegistry(s, [["M1", "pending"]]);
+    createFreshKD(`plan-feature-${s}.md`);
+    createFreshRegistry(s, [["M1", "pending"]]);
 
     await expect(
       hooks["tool.execute.before"](
@@ -2574,8 +2670,8 @@ Amendment body.
 
       // Once M1's impl KD lands, reconciliation promotes the row from disk
       // evidence alone — no manual registry write, no in-memory data. The
-      // gate reconstructs all-checked-off from disk (reconcile-or-fail-loud,
-      // Issue 64: the old contract required a manual check-off call here).
+      // gate reconstructs all-checked-off from disk (reconcile-or-fail-loud);
+      // a manual check-off call is not part of the contract.
       createKD(`impl-M1-recon-${s}.md`);
       const gate2 = hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
       expect(gate2.ok).toBe(true);
@@ -2971,7 +3067,7 @@ Amendment body.
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
     });
 
-    it("blocks rows without impl-KD evidence; evidence-backed stuck rows reconcile at gate evaluation (Issue 64)", async () => {
+    it("blocks rows without impl-KD evidence; evidence-backed stuck rows reconcile at gate evaluation", async () => {
       const s = sid("m5-pending");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3546,7 +3642,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
     });
   });
 
-  describe("SWARM→VERIFY reconciliation + loud auto-checkoff diagnostics (Issue 64)", () => {
+  describe("SWARM→VERIFY reconciliation + loud auto-checkoff diagnostics", () => {
     // Captures the loud channel (now file-based) — reads from the log file gated
     // behind PROTOCOL_GATE_DEBUG. Always clean up in finally.
     function readLoudLog() {
@@ -3677,8 +3773,8 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
       // A pending row cannot complete directly — the check-off transition from
-      // pending is invalid, which is exactly the silent-failure shape Issue 64
-      // buried (Defect A window: impl KD written before the dispatch flip).
+      // pending is invalid, which is exactly the silent-failure shape the
+      // diagnostic exists to surface (impl KD written before the dispatch flip).
       createRegistry(s, [["M1", "pending"]]);
 
       const artisan = sid("m1-diag-1-art");
@@ -5016,7 +5112,7 @@ milestones:
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
       expect(readFileSync(logPath, "utf8")).toContain(`newest=preflight-old-${s}.md verdict=PASS → false (stale under override`);
 
-      createKD(`preflight-fresh-${s}.md`, preflightKD("PASS"));
+      createFreshKD(`preflight-fresh-${s}.md`, preflightKD("PASS"));
       await tick(s, "o2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -5299,7 +5395,7 @@ milestones:
       const out = { parts: [] };
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "VERIFY" }, out);
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
-      createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1 defect", "", ["M1"]));
+      createFreshKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1 defect", "", ["M1"]));
 
       // No forward advance while the newest verdict is FAIL — the override
       // evaluates the verdict after freshness, and the FAIL regresses to SWARM.
@@ -5389,7 +5485,7 @@ milestones:
       }
     });
 
-    it("d: FAIL with a References section listing all impl KDs reopens ONLY the named rows (Issue 78 regression)", async () => {
+    it("d: FAIL with a References section listing all impl KDs reopens ONLY the named rows (regression)", async () => {
       const s = sid("i49d");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -6216,7 +6312,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
 
       // A NEW preflight KD (mtime >= since) advances PREFLIGHT → EXPLORE and
       // clears the override marker (advance-away).
-      createKD(`preflight-fresh-${s}.md`, preflightKD("PASS"));
+      createFreshKD(`preflight-fresh-${s}.md`, preflightKD("PASS"));
       await tick(s, "o2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -6245,7 +6341,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
       // A matching exploration KD for the current session advances and clears.
-      createKD(`exploration-override-${s}.md`);
+      createFreshKD(`exploration-override-${s}.md`);
       await tick(s, "k3");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -6306,7 +6402,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
       // A fresh exploration KD advances and clears the restored marker.
-      createKD(`exploration-fresh-${s}.md`);
+      createFreshKD(`exploration-fresh-${s}.md`);
       await tick(s, "r2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -6329,7 +6425,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
 
       // A fresh plan alone still does not satisfy the dual-KD gate.
-      createKD(`plan-fresh-${s}.md`);
+      createFreshKD(`plan-fresh-${s}.md`);
       await tick(s, "d2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
 
@@ -6337,8 +6433,39 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       // The stale registry is removed first — a second milestones KD for the
       // same session/generation is a duplicate registry, which fails closed.
       removeKD(`milestones-old-${s}.md`);
-      createKD(`milestones-fresh-${s}.md`, registryContent([["M1", "checked-off"]]));
+      createFreshKD(`milestones-fresh-${s}.md`, registryContent([["M1", "checked-off"]]));
       await tick(s, "d3");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
+    });
+
+    // The gate must still gate. Both legs run on one anchor and on identical
+    // registry bytes, and only the milestones mtime differs — so a green accept
+    // leg cannot be an artifact of a different fixture, and the reject leg is
+    // what proves freshness is still enforced rather than merely satisfied.
+    it("the DECOMPOSE dual-KD gate accepts and rejects the same registry bytes on mtime alone", async () => {
+      const s = sid("override-decompose-pair");
+      const registry = registryContent([["M1", "checked-off"]]);
+      await initOverseer(s);
+
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "DECOMPOSE" }, out);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+
+      // Reject leg: a fresh plan plus the registry aged past the anchor.
+      createFreshKD(`plan-pair-${s}.md`);
+      createKD(`milestones-pair-stale-${s}.md`, registry);
+      ageKD(`milestones-pair-stale-${s}.md`);
+      await tick(s, "pair-r1");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
+      expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.DECOMPOSE);
+
+      // Accept leg: the stale registry goes first — a second registry for the
+      // same session/generation is a duplicate, which fails closed — then the
+      // same bytes land fresh and the dual-KD gate opens.
+      removeKD(`milestones-pair-stale-${s}.md`);
+      createFreshKD(`milestones-pair-fresh-${s}.md`, registry);
+      await tick(s, "pair-a1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
@@ -6361,7 +6488,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
 
       // A fresh registry write advances SWARM → VERIFY and clears the marker.
-      createRegistry(s, [["M1", "checked-off"]]);
+      createFreshRegistry(s, [["M1", "checked-off"]]);
       await tick(s, "sw2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -6383,7 +6510,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
 
       // A fresh PASS review KD advances + clears: the merged surface needs a
       // single fresh review KD (no separate audit KD).
-      createKD(`review-fresh-${s}.md`, reviewKD("PASS"));
+      createFreshKD(`review-fresh-${s}.md`, reviewKD("PASS"));
       await tick(s, "v2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -6479,13 +6606,13 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
       // Fresh exploration KD advances EXPLORE → INVESTIGATE and re-arms to 4.
-      createKD(`exploration-fresh-${s}.md`);
+      createFreshKD(`exploration-fresh-${s}.md`);
       await tick(s, "m2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([4, 5]);
 
       // Fresh analysis KD advances INVESTIGATE → ALIGN and re-arms to 5.
-      createKD(`analysis-fresh-${s}.md`);
+      createFreshKD(`analysis-fresh-${s}.md`);
       await tick(s, "m3");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5]);
@@ -6493,7 +6620,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       // Fresh spec KD exhausts the queue. ALIGN (5) was the last named hop, so
       // the lifecycle returns to the phase the override started from — SWARM (7),
       // the pre-walk origin — rather than the serial DECOMPOSE (6).
-      createKD(`spec-fresh-${s}.md`);
+      createFreshKD(`spec-fresh-${s}.md`);
       await tick(s, "m4");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -6670,14 +6797,14 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([3, 5]);
 
-      createKD(`exploration-fresh-${s}.md`);
+      createFreshKD(`exploration-fresh-${s}.md`);
       await tick(s, "j1");
       // Jump-to-next-named: EXPLORE (3) → ALIGN (5), never the serial INVESTIGATE (4).
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5]);
 
       // The final named hop exhausts the queue and returns to the origin (SWARM).
-      createKD(`spec-fresh-${s}.md`);
+      createFreshKD(`spec-fresh-${s}.md`);
       await tick(s, "j2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -6695,27 +6822,27 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
 
       // The Overseer rewrites the intent KD → auto-advance straight to EXPLORE (3),
       // skipping PREFLIGHT (2): the next list entry is 3 and preflight's work is done.
-      createKD(`intent-fixed-${s}.md`);
+      createFreshKD(`intent-fixed-${s}.md`);
       await tick(s, "w1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
       // Each subsequent named entry is reached in list order.
-      createKD(`exploration-fixed-${s}.md`);
+      createFreshKD(`exploration-fixed-${s}.md`);
       await tick(s, "w2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
 
-      createKD(`analysis-fixed-${s}.md`);
+      createFreshKD(`analysis-fixed-${s}.md`);
       await tick(s, "w3");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
 
-      createKD(`spec-fixed-${s}.md`);
+      createFreshKD(`spec-fixed-${s}.md`);
       await tick(s, "w4");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
 
       // Only after the list is exhausted does it return to SWARM (7) — the phase
       // the override started from — never between hops.
-      createKD(`plan-fixed-${s}.md`);
-      createKD(`milestones-fixed-${s}.md`, registryContent([["M1", "checked-off"]]));
+      createFreshKD(`plan-fixed-${s}.md`);
+      createFreshKD(`milestones-fixed-${s}.md`, registryContent([["M1", "checked-off"]]));
       await tick(s, "w5");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
@@ -6730,7 +6857,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "1" }, out);
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-      createKD(`intent-fixed-${s}.md`);
+      createFreshKD(`intent-fixed-${s}.md`);
       await tick(s, "s1");
       // Origin-return: INTENT → SWARM, never the serial PREFLIGHT (2).
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
@@ -6785,7 +6912,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       // The fresh intent KD advances the head hop to the queue's terminal SWARM
       // hop, which re-arms to the one-element queue [7] — the marker SHAPE that
       // distinguishes a terminal hop from a genuine single-phase pin.
-      createKD(`intent-fresh-${s}.md`);
+      createFreshKD(`intent-fresh-${s}.md`);
       await tick(s, "t1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([7]);
@@ -6841,7 +6968,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       // Fresh exploration evidence exhausts the queue to its terminal PREFLIGHT
       // hop. No fresh PASS preflight KD follows, so the verdict gate stays
       // closed — the marker must hold, never auto-clear on exhaustion.
-      createKD(`exploration-exhaust-${s}.md`);
+      createFreshKD(`exploration-exhaust-${s}.md`);
       await tick(s, "e1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([2]);
@@ -6894,7 +7021,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
 
       await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "3,5" }, { parts: [] });
-      createKD(`exploration-refuse-${s}.md`);
+      createFreshKD(`exploration-refuse-${s}.md`);
       await tick(s, "ov3");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.ALIGN);
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phases).toEqual([5]);
@@ -7083,7 +7210,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
 
       // A FRESH intent KD (mtime >= since) advances INTENT → PREFLIGHT and
       // clears the override marker (advance-away).
-      createKD(`intent-fresh-${s}.md`);
+      createFreshKD(`intent-fresh-${s}.md`);
       await tick(s, "f2-2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
