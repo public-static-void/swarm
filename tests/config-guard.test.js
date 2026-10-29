@@ -2305,13 +2305,18 @@ describe("inspector rebuild parity and overseer disk-check scope", () => {
     expect(patterns.get("cargo --version*")).toBe("allow");
   });
 
-  it("covers impl and checkpoint KD reads in the overseer glob scope", () => {
+  it("covers the three artifact families in the overseer glob scope and no others", () => {
     const allows = actionEntries(readAgent("overseer.md"), "glob")
       .filter((e) => e.mode === "allow")
       .map((e) => e.pattern);
-    expect(allows).toContain("knowledge/*.md");
-    expect(allows).toContain("knowledge/impl-*.md");
-    expect(allows).toContain("knowledge/checkpoint-*.md");
+    expect(allows).toEqual([
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
+    ]);
+    expect(allows).not.toContain("knowledge/*.md");
+    expect(allows).not.toContain("knowledge/impl-*.md");
+    expect(allows).not.toContain("knowledge/checkpoint-*.md");
   });
 
   it("holds deny-by-default with family-scoped shell and docs-scoped reads", () => {
@@ -2639,7 +2644,7 @@ const RAW_REQUEST_SITES = [
   {
     id: "S3",
     file: "agents/overseer.md",
-    text: () => sectionBetween(readAgent("overseer.md"), "### Entry Point", "### Knowledge Gate Auto-Injection"),
+    text: () => sectionBetween(readAgent("overseer.md"), "### Entry Point", "### Status Surface"),
   },
   {
     id: "S4",
@@ -2995,7 +3000,11 @@ describe("working-directory boundary (no external literals)", () => {
     const overseer = readAgent("overseer.md");
     const readAllows = actionEntries(overseer, "read").filter((e) => e.mode === "allow").map((e) => e.pattern);
     const globAllows = actionEntries(overseer, "glob").filter((e) => e.mode === "allow").map((e) => e.pattern);
-    expect(globAllows).toEqual(["knowledge/*.md", "knowledge/impl-*.md", "knowledge/checkpoint-*.md"]);
+    expect(globAllows).toEqual([
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
+    ]);
     for (const p of [...readAllows, ...globAllows]) {
       expect(p.startsWith("knowledge/"), `${p} must stay in the docs scope`).toBe(true);
     }
@@ -3065,7 +3074,11 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
 
   it("binds the advertised glob scope to the Overseer's granted glob scope", () => {
     const granted = overseerGlobGrantPatterns();
-    expect(granted).toEqual(["knowledge/*.md", "knowledge/impl-*.md", "knowledge/checkpoint-*.md"]);
+    expect(granted).toEqual([
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
+    ]);
     expect(globScopeFindings(protocolPhases.TOOL_RESTRICTIONS, granted)).toEqual([]);
   });
 
@@ -3074,11 +3087,13 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
     const live = protocolPhases.TOOL_RESTRICTIONS;
     const withSwarmGlob = (text) => ({ ...live, SWARM: { ...live.SWARM, glob: text } });
     // Advertised narrower than granted (a dropped pattern).
-    expect(globScopeFindings(withSwarmGlob("ONLY knowledge/*.md — docs-scoped"), granted)).not.toEqual([]);
+    expect(globScopeFindings(withSwarmGlob("ONLY knowledge/intent-*.md — docs-scoped"), granted)).not.toEqual([]);
     // Advertised wider than granted (an extra resource).
     expect(
       globScopeFindings(
-        withSwarmGlob("ONLY knowledge/*.md, knowledge/impl-*.md, knowledge/checkpoint-*.md, src/*.ts — docs-scoped"),
+        withSwarmGlob(
+          "ONLY knowledge/intent-*.md, knowledge/report-*.md, knowledge/milestones-*.md, src/*.ts — docs-scoped"
+        ),
         granted
       )
     ).not.toEqual([]);
@@ -3086,7 +3101,7 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
     expect(globScopeFindings({ ...live, SWARM: { read: "ONLY milestone registry KDs" } }, granted)).not.toEqual([]);
     // The grant narrowed without the advertisement following.
     expect(
-      globScopeFindings(live, granted.filter((p) => p !== "knowledge/checkpoint-*.md"))
+      globScopeFindings(live, granted.filter((p) => p !== "knowledge/report-*.md"))
     ).not.toEqual([]);
   });
 
@@ -3102,28 +3117,25 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
     // The seam closes on the advertisement side; the grant itself stands.
     expect(overseerScopeFindings(readAgent("overseer.md"))).toEqual([]);
     expect(overseerGlobGrantPatterns()).toEqual([
-      "knowledge/*.md",
-      "knowledge/impl-*.md",
-      "knowledge/checkpoint-*.md",
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
     ]);
   });
 });
 
-// The read-side twin of the glob seam above. REPORT advertises reading
-// knowledge KDs — a report KD summarises review, impl, spec and checkpoint KDs —
-// while the host grant reached three prefixes, and deny wins, so the terminal
-// deliverable was composed from what the Overseer already held. The grant is
-// the three existing read patterns plus a mirror of the three glob patterns;
-// the pin reads both halves, so a pattern dropped from the grant, a pattern
-// added to it that no phase asks for, and an advertisement with no scope entry
-// behind it all red.
+// The read-side twin of the glob seam above, and the pin on the Overseer's
+// status-only scope. The Overseer authors INTENT and REPORT KDs and tracks the
+// milestone registry, so its reach is exactly those three families: it reads
+// back what it wrote and the record it dispatches from, and nothing else. The
+// advertised classes and the granted patterns are the same three, so
+// advertisement and grant cannot drift apart in either direction: a pattern
+// dropped from the grant breaks an advertisement that names it, and a pattern
+// no advertisement names is reach granted for a phase that never asked for it.
 const OVERSEER_READ_CONTRACT = [
   "knowledge/intent-*.md",
   "knowledge/report-*.md",
   "knowledge/milestones-*.md",
-  "knowledge/*.md",
-  "knowledge/impl-*.md",
-  "knowledge/checkpoint-*.md",
 ];
 
 const OVERSEER_READ_PHASES = Object.keys(protocolPhases.STATES).filter((p) =>
@@ -3131,12 +3143,12 @@ const OVERSEER_READ_PHASES = Object.keys(protocolPhases.STATES).filter((p) =>
 );
 
 // Each advertisement names a resource class in prose, and the class is what the
-// grant has to cover. The REPORT class is the widest one, so it is the phase
-// whose advertisement the full granted set backs.
+// grant has to cover. The three classes are disjoint, so the contract is their
+// union: no phase names a class the others already cover.
 const READ_SCOPE_CLASSES = [
   { id: "intent KDs", scope: /ONLY intent KDs/i, patterns: ["knowledge/intent-*.md"] },
   { id: "milestone registry KDs", scope: /ONLY milestone registry KDs/i, patterns: ["knowledge/milestones-*.md"] },
-  { id: "knowledge KDs", scope: /ONLY knowledge KDs/i, patterns: OVERSEER_READ_CONTRACT },
+  { id: "report KDs", scope: /ONLY report KDs/i, patterns: ["knowledge/report-*.md"] },
 ];
 
 function overseerReadGrantPatterns() {
@@ -3176,7 +3188,7 @@ function readScopeFindings(restrictions, grantPatterns) {
   return findings;
 }
 
-describe("advertised-vs-granted seam — Overseer read scope", () => {
+describe("advertised-vs-granted seam — Overseer status scope", () => {
   it("carries a read restriction entry in every phase that advertises read", () => {
     expect(OVERSEER_READ_PHASES).toEqual(["INTENT", "DECOMPOSE", "SWARM", "VERIFY", "REPORT"]);
     const missing = OVERSEER_READ_PHASES.filter(
@@ -3201,10 +3213,36 @@ describe("advertised-vs-granted seam — Overseer read scope", () => {
     const granted = overseerReadGrantPatterns();
     // A dropped pattern: the grant narrowed without the advertisement following.
     expect(readScopeFindings(live, granted.filter((p) => p !== "knowledge/report-*.md"))).not.toEqual([]);
-    // A seventh pattern: reach the advertisements never asked for.
+    // A fourth pattern: reach the advertisements never asked for.
     expect(readScopeFindings(live, [...granted, "knowledge/spec-*.md"])).not.toEqual([]);
     // An advertised read with no scope entry behind it.
     expect(readScopeFindings({ ...live, SWARM: { glob: live.SWARM.glob } }, granted)).not.toEqual([]);
+    // The reach the narrowing removed: an impl or checkpoint pattern is now
+    // unbacked, so re-adding either to the grant reds the seam.
+    expect(readScopeFindings(live, [...granted, "knowledge/impl-*.md"])).not.toEqual([]);
+  });
+
+  it("states the status surface, the vocabulary and the read-back in the Overseer body", () => {
+    const body = bodyRegion(readAgent("overseer.md"));
+    expect(body).toContain("status surface");
+    for (const noun of ["phase", "milestone state", "agent outcome", "succeeded", "failed"]) {
+      expect(body.toLowerCase(), `the status vocabulary must name ${noun}`).toContain(noun);
+    }
+    expect(body).toMatch(/read from the dispatch result/);
+    expect(body).toContain("read back the INTENT and REPORT KDs you author");
+  });
+
+  it("keeps phase scope, disk checks and plugin internals out of the body", () => {
+    // The body states what the role tracks, never the gate mechanics behind it:
+    // a phase-scope enumeration, a disk-check evidence model, a glob-scope
+    // sentence or a plugin internal in this layer is a rule its reader cannot act
+    // on. The four residue rows that carried these facts have their own entries
+    // in `audit residue absent`; this case holds the rest of the class.
+    const body = bodyRegion(readAgent("overseer.md"));
+    for (const phrase of ["permitted in", "blocked in", "disk-check", "glob scope", "glob-scope"]) {
+      expect(body, `the body must carry no "${phrase}"`).not.toContain(phrase);
+    }
+    expect(purityFindings(body, "agents/overseer.md")).toEqual([]);
   });
 
   it("keeps the Overseer docs-only scope and the glob seam unchanged", () => {
@@ -3212,9 +3250,9 @@ describe("advertised-vs-granted seam — Overseer read scope", () => {
     // the pattern set this one mirrors — reads the same as it did before.
     expect(overseerScopeFindings(readAgent("overseer.md"))).toEqual([]);
     expect(overseerGlobGrantPatterns()).toEqual([
-      "knowledge/*.md",
-      "knowledge/impl-*.md",
-      "knowledge/checkpoint-*.md",
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
     ]);
   });
 });
@@ -3656,6 +3694,15 @@ const RESIDUE_FORBIDDEN = [
   // sentence joins its phases with commas and a trailing conjunction, so this
   // phrase cannot match it.
   { phrase: "DECOMPOSE (phase 6) and SWARM (phase 7)", file: join("agents", "overseer.md") },
+  // The status-only body: a phase-scope enumeration, the disk-check evidence
+  // model that scoped glob reads, a plugin-surfaced issue input and a
+  // store-inspection route the role has no entitlement for. The body states what
+  // the role tracks and reads back; the gate keeps the phase scope, and the issue
+  // records stay with their curator.
+  { phrase: "permitted in DECOMPOSE (phase 6), SWARM (phase 7) and VERIFY (phase 8)", file: join("agents", "overseer.md") },
+  { phrase: "The scoped disk-check evidence model applies", file: join("agents", "overseer.md") },
+  { phrase: "issue files surfaced by the Knowledge Gate plugin", file: join("agents", "overseer.md") },
+  { phrase: "inspect the issue stores directly", file: join("agents", "overseer.md") },
   // Ground rules that stated this repository's architecture: the layer policy,
   // the investigation walk through the repo's own paths, and an agent-exclusive
   // grant the shared principles have no business carrying.
@@ -3734,44 +3781,16 @@ describe("audit residue absent", () => {
   });
 });
 
-// The registry-read scope is stated twice: the Overseer's phase-7 bullet tells
-// the dispatcher which phases may read the milestone registry, and the phase
-// table decides which phases may. The bullet is the human half of one fact the
-// code already holds, so a phase that gains or loses the scope moves the
-// expected sentence with it instead of leaving the prose promising a read the
-// gate blocks — or hiding one it allows.
+// The registry-read scope is a phase-table fact. The Overseer body names the
+// registry as its status surface without enumerating phases, so the table is the
+// one place the scope is stated and this group derives it from the shipped
+// restriction strings rather than restating them: a phase that gains or loses
+// the scope moves the derived set, and a phase that scopes read without
+// advertising the tool is drift in the other direction.
 function registryReadPhases(restrictions = protocolPhases.TOOL_RESTRICTIONS) {
   return Object.keys(protocolPhases.STATES).filter((phase) =>
     /milestone[- ]registry/i.test(restrictions[phase]?.read || "")
   );
-}
-
-// The phase-7 bullet alone: the parse reads the sentence that states the scope,
-// not the whole definition, so a later sentence naming a phase for its own
-// reason cannot be mistaken for a scope claim.
-function phase7Bullet(content) {
-  const start = content.indexOf("- **Phase 7 (SWARM)**");
-  if (start === -1) return "";
-  const end = content.indexOf("- **Phase 8 (VERIFY)**", start);
-  return content.slice(start, end === -1 ? undefined : end);
-}
-
-// The phase names the registry-read sentence carries. The sentence names them
-// between the permission verb and the scope clause, and that fragment is the
-// only surface the parse trusts.
-function registryReadProsePhases(content) {
-  const sentence = phase7Bullet(content).match(/permitted in ([^.;]*)scoped to milestone-registry KDs/i);
-  if (!sentence) return [];
-  return [...new Set(sentence[1].match(/[A-Z]{4,}/g) || [])].filter((name) => name in protocolPhases.STATES);
-}
-
-// Empty means the sentence names exactly the phases the table scopes. A
-// difference in either direction is drift, and the finding names both sides so
-// a red run says which half moved.
-function registryPhaseFindings(prosePhases, derivedPhases) {
-  const prose = [...prosePhases].sort().join(", ");
-  const derived = [...derivedPhases].sort().join(", ");
-  return prose === derived ? [] : [`prose names "${prose}", the phase table allows "${derived}"`];
 }
 
 describe("registry read phase set", () => {
@@ -3787,40 +3806,17 @@ describe("registry read phase set", () => {
     expect(unadvertised).toEqual([]);
   });
 
-  it("names every allowed phase in the phase-7 bullet", () => {
-    const prose = registryReadProsePhases(readAgent("overseer.md"));
-    expect(prose).toEqual(PHASE_SET);
-    expect(registryPhaseFindings(prose, registryReadPhases())).toEqual([]);
-  });
-
-  it("states the regression that puts VERIFY in the set", () => {
-    const bullet = phase7Bullet(readAgent("overseer.md"));
-    expect(bullet).toMatch(/FAIL verdict regresses/);
-    expect(bullet).toMatch(/reopens/i);
-  });
-
-  it("fails when the prose drops VERIFY", () => {
-    const content = readAgent("overseer.md").replace(" and VERIFY (phase 8)", "");
-    expect(registryReadProsePhases(content)).toEqual(["DECOMPOSE", "SWARM"]);
-    expect(registryPhaseFindings(registryReadProsePhases(content), registryReadPhases())).not.toEqual([]);
-  });
-
   it("fails when the phase table drops the scope VERIFY relies on", () => {
     const live = protocolPhases.TOOL_RESTRICTIONS;
     const narrowed = { ...live, VERIFY: { glob: live.VERIFY.glob } };
+    expect(registryReadPhases(narrowed)).not.toEqual(PHASE_SET);
     expect(registryReadPhases(narrowed)).toEqual(["DECOMPOSE", "SWARM"]);
-    expect(
-      registryPhaseFindings(registryReadProsePhases(readAgent("overseer.md")), registryReadPhases(narrowed))
-    ).not.toEqual([]);
   });
 
   it("fails when a fourth phase gains the scope", () => {
     const live = protocolPhases.TOOL_RESTRICTIONS;
     const widened = { ...live, INTENT: { ...live.INTENT, read: "ONLY milestone registry KDs" } };
     expect(registryReadPhases(widened)).toEqual(["INTENT", "DECOMPOSE", "SWARM", "VERIFY"]);
-    expect(
-      registryPhaseFindings(registryReadProsePhases(readAgent("overseer.md")), registryReadPhases(widened))
-    ).not.toEqual([]);
   });
 });
 
@@ -3828,16 +3824,12 @@ describe("registry read phase set", () => {
 // pair names both sites, the token set both must carry, and a reader per site;
 // one table drives one group, so a statement added at one site without the
 // other is a red run rather than a silent disagreement.
-const AGREEMENT_PAIRS = [
-  {
-    id: "registry read phase set",
-    tokens: ["DECOMPOSE", "SWARM", "VERIFY"],
-    sites: [
-      ["overseer phase-7 bullet", () => registryReadProsePhases(readAgent("overseer.md"))],
-      ["protocol-gate phase table", () => registryReadPhases()],
-    ],
-  },
-];
+//
+// The table holds no pair right now: the Overseer body stopped restating the
+// registry-read phase set, so the one pair it carried has no second site left
+// and retires with the prose. The machinery below stays — the next fact stated
+// twice registers here — and the completeness count is deferred until then.
+const AGREEMENT_PAIRS = [];
 
 // One finding per token a site states and its partner does not, so a red run
 // names the side that drifted rather than only the pair. Overrides are keyed
@@ -3856,9 +3848,33 @@ function agreementFindings(pairs, overrides = {}) {
   );
 }
 
+// A synthetic pair with the table's shape, read entirely from fixtures. The
+// table is legitimately empty, so the mutation cases below would pass while
+// proving nothing; they run over this pair as well and keep the detector
+// falsifiable until a real pair registers.
+function syntheticPair() {
+  const sites = {
+    left: ["ALPHA", "BETA"],
+    right: ["ALPHA", "BETA"],
+  };
+  return [
+    {
+      id: "synthetic fact",
+      tokens: ["ALPHA", "BETA"],
+      sites: [
+        ["left", () => sites.left],
+        ["right", () => sites.right],
+      ],
+    },
+  ];
+}
+
 describe("duplicated rules agree", () => {
   it("states every registered fact at both of its sites", () => {
-    expect(AGREEMENT_PAIRS.length).toBeGreaterThan(0);
+    // The empty table is a legal state between a pair retiring and the next one
+    // registering; the count assertion that would reject it is deferred to the
+    // milestone that restores a full pair set.
+    expect(Array.isArray(AGREEMENT_PAIRS)).toBe(true);
     expect(agreementFindings(AGREEMENT_PAIRS)).toEqual([]);
   });
 
@@ -3876,8 +3892,23 @@ describe("duplicated rules agree", () => {
     }
   });
 
-  it("fails when a pair's token list no longer matches the sites", () => {
-    const narrowed = AGREEMENT_PAIRS.map((pair) => ({ ...pair, tokens: pair.tokens.slice(0, -1) }));
-    expect(agreementFindings(narrowed)).not.toEqual([]);
+  it("reds a registered pair the moment one site drops a token", () => {
+    // Falsifiable with the table empty: a dropped token at either site, and a
+    // token list wider than the sites, each report the drifting side by name.
+    const pair = syntheticPair();
+    expect(agreementFindings(pair)).toEqual([]);
+    for (const site of ["left", "right"]) {
+      expect(agreementFindings(pair, { [`synthetic fact:${site}`]: ["ALPHA"] })).toEqual([
+        `synthetic fact: ${site} omits BETA`,
+      ]);
+    }
+    expect(agreementFindings(pair, { "synthetic fact:left": ["ALPHA", "BETA", "GAMMA"] })).toEqual([
+      "synthetic fact: left names GAMMA",
+    ]);
+    const widened = pair.map((entry) => ({ ...entry, tokens: ["ALPHA", "BETA", "GAMMA"] }));
+    expect(agreementFindings(widened)).toEqual([
+      "synthetic fact: left omits GAMMA",
+      "synthetic fact: right omits GAMMA",
+    ]);
   });
 });

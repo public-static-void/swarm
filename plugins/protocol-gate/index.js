@@ -5818,14 +5818,17 @@ async function protocolGateServer(input, options) {
               throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/intent-*.md only — delegation templates are auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", "Read from knowledge/intent-*.md only");
             }
           } else {
-            // REPORT phase: any knowledge KD (needed to compose the report).
+            // REPORT phase: the report KDs the Overseer authored earlier in this
+            // lifecycle, read back to point at them. Composing the report from
+            // other KD families is not this phase's job — the report is a status
+            // delivery — so the reach stops at the report family.
             // Skills are auto-injected via the skill tool — never read here.
             // Delegation templates are auto-injected by delegation-gate at
             // dispatch — not read here.
-            const isKnowledge = relPath.startsWith("knowledge/") || relPath.includes("/knowledge/");
-            if (!isKnowledge) {
-              debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to knowledge KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge KDs only — delegation templates are auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", "Read from knowledge KDs only");
+            const isReportKD = /knowledge\/report-/i.test(relPath);
+            if (!isReportKD) {
+              debug(`read: BLOCKED phase=${phaseName} path=${path} (REPORT reads restricted to report KDs)`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/report-*.md only — delegation templates are auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", "Read from knowledge/report-*.md only");
             }
           }
         }

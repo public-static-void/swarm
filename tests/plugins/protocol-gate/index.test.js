@@ -846,7 +846,7 @@ superseded_by: null
     ).rejects.toThrow("Read from knowledge/intent-*.md only");
   });
 
-  it("REPORT-phase read allows knowledge KDs, blocks skill files and delegation-gate template JSON", async () => {
+  it("REPORT-phase read allows report KDs, blocks other knowledge KDs, skill files and delegation-gate template JSON", async () => {
     const s = sid("ac004");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
@@ -857,9 +857,9 @@ superseded_by: null
         { tool: "read", sessionID: s, callID: "c1" },
         { args: { filePath: "skills/template-report/SKILL.md" } }
       )
-    ).rejects.toThrow("Read from knowledge KDs only");
+    ).rejects.toThrow("Read from knowledge/report-*.md only");
 
-    // Knowledge KD resolves (needed to compose the report)
+    // A report KD resolves (read back to point at it in the report)
     await expect(
       hooks["tool.execute.before"](
         { tool: "read", sessionID: s, callID: "c2" },
@@ -867,13 +867,79 @@ superseded_by: null
       )
     ).resolves.toBeUndefined();
 
+    // Another KD family stays out of reach: the report points at artifacts, it
+    // does not synthesise them.
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c4" },
+        { args: { filePath: "knowledge/impl-M1-narrow-scope.md" } }
+      )
+    ).rejects.toThrow("Read from knowledge/report-*.md only");
+
     // Delegation template JSON is auto-injected by delegation-gate, never read
     await expect(
       hooks["tool.execute.before"](
         { tool: "read", sessionID: s, callID: "c3" },
         { args: { filePath: "plugins/delegation-gate/templates/investigate.json" } }
       )
-    ).rejects.toThrow("Read from knowledge KDs only");
+    ).rejects.toThrow("Read from knowledge/report-*.md only");
+  });
+
+  // The read handler's reach, driven directly: the phase layer advertises
+  // `read` in five phases and in no other, so a refusal in the remaining seven
+  // happens at admission and never reaches the handler. Each admitted phase
+  // admits the class it advertises and refuses a KD outside it. Host-level
+  // precedence between the phase gate and the agent's permission block is not
+  // claimed here.
+  describe("read handler — advertised phase reach", () => {
+    const ADMITTED = [
+      ["INTENT", "knowledge/intent-a.md"],
+      ["REPORT", "knowledge/report-a.md"],
+      ["DECOMPOSE", "knowledge/milestones-a.md"],
+      ["SWARM", "knowledge/milestones-b.md"],
+      ["VERIFY", "knowledge/milestones-c.md"],
+    ];
+    const OUTSIDE_CLASS = {
+      INTENT: "knowledge/report-a.md",
+      REPORT: "knowledge/impl-M1-a.md",
+      DECOMPOSE: "knowledge/plan-a.md",
+      SWARM: "knowledge/impl-M1-a.md",
+      VERIFY: "knowledge/spec-a.md",
+    };
+    const NO_READ_PHASES = ["PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "EXTRACT", "EVOLVE", "CLEANUP"];
+
+    it.each(ADMITTED)("admits %s a KD of the class the phase advertises", async (phase, filePath) => {
+      const s = sid(`read-admit-${phase.toLowerCase()}`);
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES[phase]);
+      await expect(
+        hooks["tool.execute.before"]({ tool: "read", sessionID: s, callID: "r1" }, { args: { filePath } })
+      ).resolves.toBeUndefined();
+    });
+
+    it.each(ADMITTED)("refuses %s a KD outside the class it advertises", async (phase) => {
+      const s = sid(`read-refuse-class-${phase.toLowerCase()}`);
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES[phase]);
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "r2" },
+          { args: { filePath: OUTSIDE_CLASS[phase] } }
+        )
+      ).rejects.toThrow(/BLOCKED: Wrong phase/);
+    });
+
+    it.each(NO_READ_PHASES)("refuses read in %s, which advertises no read", async (phase) => {
+      const s = sid(`read-refuse-phase-${phase.toLowerCase()}`);
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES[phase]);
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "r3" },
+          { args: { filePath: "knowledge/milestones-a.md" } }
+        )
+      ).rejects.toThrow(`Tool "read" is not available in ${phase}`);
+    });
   });
 
   it("normalizes backslash and absolute Windows paths to project-relative knowledge/ paths", async () => {
@@ -7472,7 +7538,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     it("the overseer entry point mirrors the discriminator and the follow-up dispositions", () => {
       const overseer = readFileSync(join(process.cwd(), "agents", "overseer.md"), "utf8");
       const start = overseer.indexOf("### Entry Point");
-      const end = overseer.indexOf("### Knowledge Gate Auto-Injection");
+      const end = overseer.indexOf("### Status Surface");
       expect(start).toBeGreaterThan(-1);
       expect(end).toBeGreaterThan(start);
       const entryPoint = overseer.slice(start, end);

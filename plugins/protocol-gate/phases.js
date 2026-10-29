@@ -93,7 +93,7 @@ export function admitTool(phaseName, tool) {
 // lists glob advertises the granted scope alongside the name. The grant stands
 // — widening it to match the advertisement is the failure this closes.
 const OVERSEER_GLOB_SCOPE =
-  "ONLY knowledge/*.md, knowledge/impl-*.md, knowledge/checkpoint-*.md — docs-scoped: the Overseer glob grant stays as granted and is never widened to satisfy this advertisement";
+  "ONLY knowledge/intent-*.md, knowledge/report-*.md, knowledge/milestones-*.md — docs-scoped: the Overseer glob grant stays as granted and is never widened to satisfy this advertisement";
 
 export const TOOL_RESTRICTIONS = {
   INTENT: { read: "ONLY intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", shell: "ONLY mkdir for knowledge directory creation" },
@@ -107,5 +107,5 @@ export const TOOL_RESTRICTIONS = {
   EXTRACT: { glob: OVERSEER_GLOB_SCOPE },
   EVOLVE: { glob: OVERSEER_GLOB_SCOPE },
   CLEANUP: { glob: OVERSEER_GLOB_SCOPE },
-  REPORT: { read: "ONLY knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
+  REPORT: { read: "ONLY report KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
 };
