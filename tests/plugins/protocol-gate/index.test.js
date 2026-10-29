@@ -8003,4 +8003,71 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(otherRefusal.message).not.toContain("cleanup");
     });
   });
+
+  // The fallback a force-advance supplies when no walk queue governs the phase.
+  // Every member of the phase table is asserted: a hardcoded target is only
+  // wrong for the phases nobody happened to exercise, so the table itself is
+  // the expectation and the hook case proves the behaviour end to end.
+  describe("force-advance fallback never targets a phase behind the current one", () => {
+    const allPhases = () =>
+      Object.values(hooks.STATES).filter((p) => typeof p === "number").sort((a, b) => a - b);
+
+    it("steps one phase forward from every phase, capped at the terminal phase", () => {
+      const phases = allPhases();
+      expect(phases).toHaveLength(12);
+      for (const p of phases) {
+        const expected = p < hooks.STATES.REPORT ? p + 1 : hooks.STATES.REPORT;
+        expect(hooks.noWalkFallback(p, true), `forced target from phase ${p}`).toBe(expected);
+      }
+    });
+
+    it("never leaves a phase where it found it", () => {
+      for (const p of allPhases()) {
+        const target = hooks.noWalkFallback(p, true);
+        expect(target, `forced target from phase ${p}`).toBeGreaterThanOrEqual(p);
+        expect(target, `forced target from phase ${p}`).toBeLessThanOrEqual(hooks.STATES.REPORT);
+      }
+    });
+
+    it("an unforced fallback is the serial next phase", () => {
+      for (const p of allPhases()) {
+        expect(hooks.noWalkFallback(p), `serial target from phase ${p}`).toBe(p + 1);
+        expect(hooks.noWalkFallback(p, false), `serial target from phase ${p}`).toBe(p + 1);
+      }
+    });
+
+    it("a force-advance stuck in EXTRACT lands in EVOLVE", async () => {
+      const s = sid("force-extract");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.EXTRACT);
+      // The no-walk path is constructed explicitly: no queue is committed, so
+      // the phase's missing evidence runs the safety counter to its threshold
+      // and the fallback alone decides the target.
+      expect(hooks.walkExists(s)).toBe(false);
+      for (let i = 0; i < 15; i++) {
+        await tick(s, `fx${i}`);
+      }
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EVOLVE);
+      // The recorded safety override names the same hop, so the landing is the
+      // fallback's work rather than an unrelated advancement on the same call.
+      expect(readFileSync(logPath, "utf8")).toContain("SAFETY_OVERRIDE: FORCE ADVANCE — EXTRACT → EVOLVE");
+    });
+
+    it("a walk in progress wins over the fallback", async () => {
+      const s = sid("force-walk");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.EXTRACT);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "9,12" }, out);
+      expect(out.phaseError).toBeUndefined();
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+
+      for (let i = 0; i < 15; i++) {
+        await tick(s, `fw${i}`);
+      }
+      // The queue's next named hop is REPORT; the serial fallback (EVOLVE)
+      // never runs while a walk governs the phase.
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.REPORT);
+    });
+  });
 });

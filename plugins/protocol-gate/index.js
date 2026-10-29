@@ -3258,11 +3258,13 @@ function nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, fallbackTarg
   return { target: null, outcome: "diverged", head, queue: plan };
 }
 
-// The no-walk fallback each forward-advance site supplies (FR-15): the serial
-// next phase, or VERIFY where a force-advance has always pushed forward. Named
-// here so no site spells a forward target of its own.
+// The no-walk fallback each forward-advance site supplies: the phase after the
+// current one, capped at the terminal REPORT phase. A force-advance takes the
+// same step, so its target sits ahead of the phase it leaves and REPORT yields
+// a no-op. From VERIFY the step lands in EXTRACT — a deliberate forward escape.
+// Named here so no site spells a forward target of its own.
 function noWalkFallback(currentPhase, forceToVerify = false) {
-  return forceToVerify ? STATES.VERIFY : currentPhase + 1;
+  return forceToVerify ? Math.min(currentPhase + 1, STATES.REPORT) : currentPhase + 1;
 }
 
 // Names the override/queue state for a refusal: the phase the override pins,
@@ -6665,6 +6667,11 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       walkExists: (sessionID) => walkExists(sessionPhaseMap, sessionID),
       nextForwardPhase: (sessionID, currentPhase, fallbackTarget) =>
         nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, fallbackTarget),
+      // The no-walk fallback as a value: a returned reference, not a call path,
+      // so the standing suite reads every phase's forced target off the public
+      // surface without seeding stuck state.
+      noWalkFallback: (currentPhase, forceToVerify = false) =>
+        noWalkFallback(currentPhase, forceToVerify),
       argsFromPrompt,
       saveState,
       loadState,

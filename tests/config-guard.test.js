@@ -3095,3 +3095,68 @@ describe("stack-neutral agent rules", () => {
     expect(body).not.toContain("tech stack's");
   });
 });
+
+// Residue the audit's corrections replaced. Each entry names one phrase the
+// old text carried and the file that carried it; a correction replaces the
+// phrase, so a surviving copy is the regression this table detects. Scoping is
+// per file because a phrase can be legitimate elsewhere — the point is that the
+// corrected site no longer states it, not that the words are banned everywhere.
+const RESIDUE_FORBIDDEN = [
+  { phrase: "always pushed forward", file: join("plugins", "protocol-gate", "index.js") },
+  { phrase: "FR-15", file: join("plugins", "protocol-gate", "index.js") },
+];
+
+// Normalized match: case-insensitive with whitespace collapsed, so a reflowed or
+// re-cased copy of a phrase is still that phrase.
+function normalizeResidueProse(text) {
+  return text.toLowerCase().replace(/\s+/g, " ");
+}
+
+// Returns one finding per entry whose phrase survives in the content. Entries
+// are filtered by file by the caller, so a phrase legal in another layer never
+// reds the group.
+function residueFindings(content, entries) {
+  const normalized = normalizeResidueProse(content);
+  return entries
+    .filter((entry) => normalized.includes(normalizeResidueProse(entry.phrase)))
+    .map((entry) => `${entry.file} still carries "${entry.phrase}"`);
+}
+
+describe("audit residue absent", () => {
+  it("carries no listed phrase in the file that carried it", () => {
+    const files = [...new Set(RESIDUE_FORBIDDEN.map((entry) => entry.file))];
+    const findings = files.flatMap((file) =>
+      residueFindings(readRoot(file), RESIDUE_FORBIDDEN.filter((entry) => entry.file === file))
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it("fails when a listed phrase is reintroduced", () => {
+    // The mutation case: the same detector that passes on the corrected tree
+    // must fire on a copy carrying the phrase, otherwise the group is a
+    // tautology that cannot report a regression.
+    const [entry] = RESIDUE_FORBIDDEN;
+    const source = readRoot(entry.file);
+    expect(residueFindings(source, [entry])).toEqual([]);
+    expect(residueFindings(`${source}\n// ${entry.phrase}\n`, [entry])).not.toEqual([]);
+  });
+
+  it("matches a re-cased or reflowed copy of a listed phrase", () => {
+    const [entry] = RESIDUE_FORBIDDEN;
+    const recased = entry.phrase.toUpperCase();
+    const reflowed = entry.phrase.replace(/ /g, "\n\t ");
+    expect(residueFindings(recased, [entry])).not.toEqual([]);
+    expect(residueFindings(reflowed, [entry])).not.toEqual([]);
+  });
+
+  it("scopes each entry to its own file", () => {
+    // A phrase listed for one file stays legal in another: the table asserts
+    // the corrected sites, not a repository-wide word ban.
+    const [entry] = RESIDUE_FORBIDDEN;
+    const otherFile = "plugins/delegation-gate/index.js";
+    expect(residueFindings(`${entry.phrase}`, [{ ...entry, file: otherFile }])).toEqual([
+      `${otherFile} still carries "${entry.phrase}"`,
+    ]);
+    expect(residueFindings("unrelated prose", [entry])).toEqual([]);
+  });
+});
