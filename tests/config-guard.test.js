@@ -2970,6 +2970,116 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
   });
 });
 
+// The read-side twin of the glob seam above. REPORT advertises reading
+// knowledge KDs — a report KD summarises review, impl, spec and checkpoint KDs —
+// while the host grant reached three prefixes, and deny wins, so the terminal
+// deliverable was composed from what the Overseer already held. The grant is
+// the three existing read patterns plus a mirror of the three glob patterns;
+// the pin reads both halves, so a pattern dropped from the grant, a pattern
+// added to it that no phase asks for, and an advertisement with no scope entry
+// behind it all red.
+const OVERSEER_READ_CONTRACT = [
+  "knowledge/intent-*.md",
+  "knowledge/report-*.md",
+  "knowledge/milestones-*.md",
+  "knowledge/*.md",
+  "knowledge/impl-*.md",
+  "knowledge/checkpoint-*.md",
+];
+
+const OVERSEER_READ_PHASES = Object.keys(protocolPhases.STATES).filter((p) =>
+  (protocolPhases.TOOL_ALLOWLIST[p] || []).includes("read")
+);
+
+// Each advertisement names a resource class in prose, and the class is what the
+// grant has to cover. The REPORT class is the widest one, so it is the phase
+// whose advertisement the full granted set backs.
+const READ_SCOPE_CLASSES = [
+  { id: "intent KDs", scope: /ONLY intent KDs/i, patterns: ["knowledge/intent-*.md"] },
+  { id: "milestone registry KDs", scope: /ONLY milestone registry KDs/i, patterns: ["knowledge/milestones-*.md"] },
+  { id: "knowledge KDs", scope: /ONLY knowledge KDs/i, patterns: OVERSEER_READ_CONTRACT },
+];
+
+function overseerReadGrantPatterns() {
+  return actionEntries(readAgent("overseer.md"), "read")
+    .filter((e) => e.mode === "allow")
+    .map((e) => e.pattern);
+}
+
+// Compared in both directions, because either one alone hides a failure: a
+// pattern the grant lacks is an advertisement promising a read the host
+// refuses, and a pattern no advertisement names is reach granted for a phase
+// that never asked for it.
+function readScopeFindings(restrictions, grantPatterns) {
+  const findings = [];
+  const granted = new Set(grantPatterns);
+  const required = new Set();
+  for (const phase of OVERSEER_READ_PHASES) {
+    const advertised = restrictions[phase]?.read;
+    if (typeof advertised !== "string" || advertised.length === 0) {
+      findings.push(`${phase}: read is advertised with no scope`);
+      continue;
+    }
+    const backing = READ_SCOPE_CLASSES.find((klass) => klass.scope.test(advertised));
+    if (!backing) {
+      findings.push(`${phase}: advertised scope names no known resource class`);
+      continue;
+    }
+    backing.patterns.forEach((pattern) => required.add(pattern));
+    const unbacked = backing.patterns.filter((pattern) => !granted.has(pattern));
+    if (unbacked.length > 0) {
+      findings.push(`${phase}: advertised "${backing.id}" is not backed by ${unbacked.join(", ")}`);
+    }
+  }
+  for (const pattern of grantPatterns) {
+    if (!required.has(pattern)) findings.push(`grant carries ${pattern}, which no advertised read scope names`);
+  }
+  return findings;
+}
+
+describe("advertised-vs-granted seam — Overseer read scope", () => {
+  it("carries a read restriction entry in every phase that advertises read", () => {
+    expect(OVERSEER_READ_PHASES).toEqual(["INTENT", "DECOMPOSE", "SWARM", "VERIFY", "REPORT"]);
+    const missing = OVERSEER_READ_PHASES.filter(
+      (phase) => typeof protocolPhases.TOOL_RESTRICTIONS[phase]?.read !== "string"
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("grants exactly the contracted read patterns", () => {
+    // Order-insensitive per the contract; the count is the half an order-blind
+    // comparison would otherwise leave to a matcher accident.
+    expect([...overseerReadGrantPatterns()].sort()).toEqual([...OVERSEER_READ_CONTRACT].sort());
+    expect(overseerReadGrantPatterns()).toHaveLength(OVERSEER_READ_CONTRACT.length);
+  });
+
+  it("binds the advertised read scope to the Overseer's granted read scope", () => {
+    expect(readScopeFindings(protocolPhases.TOOL_RESTRICTIONS, overseerReadGrantPatterns())).toEqual([]);
+  });
+
+  it("fails closed when the grant drops a pattern, adds one, or a phase loses its scope entry", () => {
+    const live = protocolPhases.TOOL_RESTRICTIONS;
+    const granted = overseerReadGrantPatterns();
+    // A dropped pattern: the grant narrowed without the advertisement following.
+    expect(readScopeFindings(live, granted.filter((p) => p !== "knowledge/report-*.md"))).not.toEqual([]);
+    // A seventh pattern: reach the advertisements never asked for.
+    expect(readScopeFindings(live, [...granted, "knowledge/spec-*.md"])).not.toEqual([]);
+    // An advertised read with no scope entry behind it.
+    expect(readScopeFindings({ ...live, SWARM: { glob: live.SWARM.glob } }, granted)).not.toEqual([]);
+  });
+
+  it("keeps the Overseer docs-only scope and the glob seam unchanged", () => {
+    // The read grant stays inside the docs scope, and the glob group's grant —
+    // the pattern set this one mirrors — reads the same as it did before.
+    expect(overseerScopeFindings(readAgent("overseer.md"))).toEqual([]);
+    expect(overseerGlobGrantPatterns()).toEqual([
+      "knowledge/*.md",
+      "knowledge/impl-*.md",
+      "knowledge/checkpoint-*.md",
+    ]);
+  });
+});
+
 // Runtime transcripts under plugins/logs are produced by every lifecycle and
 // are never configuration. Coverage is asked of git rather than inferred from
 // the rule text: an anchored pattern, a negation or a later re-inclusion all

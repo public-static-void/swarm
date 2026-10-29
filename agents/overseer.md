@@ -19,6 +19,15 @@ permissions:
   - action: read
     resource: "knowledge/milestones-*.md"
     effect: allow
+  - action: read
+    resource: "knowledge/*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/impl-*.md"
+    effect: allow
+  - action: read
+    resource: "knowledge/checkpoint-*.md"
+    effect: allow
   - action: grep
     resource: "*"
     effect: deny
