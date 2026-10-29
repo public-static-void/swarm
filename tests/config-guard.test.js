@@ -3205,6 +3205,11 @@ const RESIDUE_FORBIDDEN = [
   // attribution that points the framing rule at another layer.
   { phrase: "log rotation bounds growth", file: join("plugins", "delegation-gate", "index.js") },
   { phrase: "Positive framing per AGENTS.md", file: join("plugins", "protocol-gate", "phases.js") },
+  // The registry-read enumeration that stopped at SWARM: the phase table scopes
+  // read in VERIFY too, and a FAIL verdict reopens rows there. The corrected
+  // sentence joins its phases with commas and a trailing conjunction, so this
+  // phrase cannot match it.
+  { phrase: "DECOMPOSE (phase 6) and SWARM (phase 7)", file: join("agents", "overseer.md") },
 ];
 
 // Normalized match: case-insensitive with whitespace collapsed, so a reflowed or
@@ -3404,5 +3409,153 @@ describe("rule placement", () => {
     const reassigned = readme.replace("Valid for all agents at all times", "Valid for the Overseer");
     expect(placementFindings(policy, renamed)).not.toEqual([]);
     expect(placementFindings(policy, reassigned)).not.toEqual([]);
+  });
+});
+
+// The registry-read scope is stated twice: the Overseer's phase-7 bullet tells
+// the dispatcher which phases may read the milestone registry, and the phase
+// table decides which phases may. The bullet is the human half of one fact the
+// code already holds, so a phase that gains or loses the scope moves the
+// expected sentence with it instead of leaving the prose promising a read the
+// gate blocks — or hiding one it allows.
+function registryReadPhases(restrictions = protocolPhases.TOOL_RESTRICTIONS) {
+  return Object.keys(protocolPhases.STATES).filter((phase) =>
+    /milestone[- ]registry/i.test(restrictions[phase]?.read || "")
+  );
+}
+
+// The phase-7 bullet alone: the parse reads the sentence that states the scope,
+// not the whole definition, so a later sentence naming a phase for its own
+// reason cannot be mistaken for a scope claim.
+function phase7Bullet(content) {
+  const start = content.indexOf("- **Phase 7 (SWARM)**");
+  if (start === -1) return "";
+  const end = content.indexOf("- **Phase 8 (VERIFY)**", start);
+  return content.slice(start, end === -1 ? undefined : end);
+}
+
+// The phase names the registry-read sentence carries. The sentence names them
+// between the permission verb and the scope clause, and that fragment is the
+// only surface the parse trusts.
+function registryReadProsePhases(content) {
+  const sentence = phase7Bullet(content).match(/permitted in ([^.;]*)scoped to milestone-registry KDs/i);
+  if (!sentence) return [];
+  return [...new Set(sentence[1].match(/[A-Z]{4,}/g) || [])].filter((name) => name in protocolPhases.STATES);
+}
+
+// Empty means the sentence names exactly the phases the table scopes. A
+// difference in either direction is drift, and the finding names both sides so
+// a red run says which half moved.
+function registryPhaseFindings(prosePhases, derivedPhases) {
+  const prose = [...prosePhases].sort().join(", ");
+  const derived = [...derivedPhases].sort().join(", ");
+  return prose === derived ? [] : [`prose names "${prose}", the phase table allows "${derived}"`];
+}
+
+describe("registry read phase set", () => {
+  const PHASE_SET = ["DECOMPOSE", "SWARM", "VERIFY"];
+
+  it("derives the milestone-registry scope from the phase table", () => {
+    expect(registryReadPhases()).toEqual(PHASE_SET);
+    // A phase that scopes read must also advertise read, or the restriction
+    // describes a tool the phase cannot call.
+    const unadvertised = registryReadPhases().filter(
+      (phase) => !(protocolPhases.TOOL_ALLOWLIST[phase] || []).includes("read")
+    );
+    expect(unadvertised).toEqual([]);
+  });
+
+  it("names every allowed phase in the phase-7 bullet", () => {
+    const prose = registryReadProsePhases(readAgent("overseer.md"));
+    expect(prose).toEqual(PHASE_SET);
+    expect(registryPhaseFindings(prose, registryReadPhases())).toEqual([]);
+  });
+
+  it("states the regression that puts VERIFY in the set", () => {
+    const bullet = phase7Bullet(readAgent("overseer.md"));
+    expect(bullet).toMatch(/FAIL verdict regresses/);
+    expect(bullet).toMatch(/reopens/i);
+  });
+
+  it("fails when the prose drops VERIFY", () => {
+    const content = readAgent("overseer.md").replace(" and VERIFY (phase 8)", "");
+    expect(registryReadProsePhases(content)).toEqual(["DECOMPOSE", "SWARM"]);
+    expect(registryPhaseFindings(registryReadProsePhases(content), registryReadPhases())).not.toEqual([]);
+  });
+
+  it("fails when the phase table drops the scope VERIFY relies on", () => {
+    const live = protocolPhases.TOOL_RESTRICTIONS;
+    const narrowed = { ...live, VERIFY: { glob: live.VERIFY.glob } };
+    expect(registryReadPhases(narrowed)).toEqual(["DECOMPOSE", "SWARM"]);
+    expect(
+      registryPhaseFindings(registryReadProsePhases(readAgent("overseer.md")), registryReadPhases(narrowed))
+    ).not.toEqual([]);
+  });
+
+  it("fails when a fourth phase gains the scope", () => {
+    const live = protocolPhases.TOOL_RESTRICTIONS;
+    const widened = { ...live, INTENT: { ...live.INTENT, read: "ONLY milestone registry KDs" } };
+    expect(registryReadPhases(widened)).toEqual(["INTENT", "DECOMPOSE", "SWARM", "VERIFY"]);
+    expect(
+      registryPhaseFindings(registryReadProsePhases(readAgent("overseer.md")), registryReadPhases(widened))
+    ).not.toEqual([]);
+  });
+});
+
+// A fact this configuration deliberately states at more than one site. Each
+// pair names both sites, the token set both must carry, and a reader per site;
+// one table drives one group, so a statement added at one site without the
+// other is a red run rather than a silent disagreement.
+const AGREEMENT_PAIRS = [
+  {
+    id: "registry read phase set",
+    tokens: ["DECOMPOSE", "SWARM", "VERIFY"],
+    sites: [
+      ["overseer phase-7 bullet", () => registryReadProsePhases(readAgent("overseer.md"))],
+      ["protocol-gate phase table", () => registryReadPhases()],
+    ],
+  },
+];
+
+// One finding per token a site states and its partner does not, so a red run
+// names the side that drifted rather than only the pair. Overrides are keyed
+// "<pair id>:<site>" and let a mutation case edit one site in isolation.
+function agreementFindings(pairs, overrides = {}) {
+  return pairs.flatMap((pair) =>
+    pair.sites.flatMap(([site, read]) => {
+      const tokens = overrides[`${pair.id}:${site}`] || read();
+      const missing = pair.tokens.filter((token) => !tokens.includes(token));
+      const extra = tokens.filter((token) => !pair.tokens.includes(token));
+      return [
+        ...missing.map((token) => `${pair.id}: ${site} omits ${token}`),
+        ...extra.map((token) => `${pair.id}: ${site} names ${token}`),
+      ];
+    })
+  );
+}
+
+describe("duplicated rules agree", () => {
+  it("states every registered fact at both of its sites", () => {
+    expect(AGREEMENT_PAIRS.length).toBeGreaterThan(0);
+    expect(agreementFindings(AGREEMENT_PAIRS)).toEqual([]);
+  });
+
+  it("fails when either site of a pair is edited alone", () => {
+    for (const pair of AGREEMENT_PAIRS) {
+      for (const [site, read] of pair.sites) {
+        for (const token of pair.tokens) {
+          const dropped = read().filter((value) => value !== token);
+          expect(
+            agreementFindings(AGREEMENT_PAIRS, { [`${pair.id}:${site}`]: dropped }),
+            `${pair.id}: dropping ${token} from ${site} must red the pair`
+          ).not.toEqual([]);
+        }
+      }
+    }
+  });
+
+  it("fails when a pair's token list no longer matches the sites", () => {
+    const narrowed = AGREEMENT_PAIRS.map((pair) => ({ ...pair, tokens: pair.tokens.slice(0, -1) }));
+    expect(agreementFindings(narrowed)).not.toEqual([]);
   });
 });
