@@ -806,7 +806,8 @@ async function delegationGateServer(input, options) {
       const description = args?.description || "";
 
       // Log raw inputs before any mutation — critical for debugging delegation failures.
-      // Full text is the dispatch audit trail; log rotation bounds growth (AGENTS.md).
+      // The debug channel writes to the plugin's log file, and only while the plugin's
+      // debug switch is on.
       debug(`RAW PROMPT (${prompt.length} chars): ${prompt}`);
       debug(`RAW DESCRIPTION (${description.length} chars): ${description}`);
       debug(`RAW SUBAGENT_TYPE: ${subagentType}`);

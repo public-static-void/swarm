@@ -3108,6 +3108,10 @@ const RESIDUE_FORBIDDEN = [
   // remedy the parked state forecloses.
   { phrase: "prior or abandoned lifecycles", file: join("plugins", "protocol-gate", "index.js") },
   { phrase: "land a row transition", file: join("plugins", "protocol-gate", "index.js") },
+  // Plugin comments: a growth bound no code in the tree establishes, and an
+  // attribution that points the framing rule at another layer.
+  { phrase: "log rotation bounds growth", file: join("plugins", "delegation-gate", "index.js") },
+  { phrase: "Positive framing per AGENTS.md", file: join("plugins", "protocol-gate", "phases.js") },
 ];
 
 // Normalized match: case-insensitive with whitespace collapsed, so a reflowed or

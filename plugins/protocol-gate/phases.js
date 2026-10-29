@@ -24,7 +24,8 @@ export const STATES = {
 // The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
 export const PHASE_INSTRUCTIONS = {
   // Absolute single-action directive: names the tool and content, no reasoning gap.
-  // Positive framing per AGENTS.md — no negative "do NOT" instructions.
+  // Each instruction states the expected action; limiter words belong to the
+  // structural layers that enforce them.
   INTENT: "Call write to create an intent KD in one complete write — assemble every section and every amendment or correction before the first write, because the INTENT edit window closes on that successful write. Fill the Raw Request from the classification: a task specification addressed to the swarm is copied verbatim, because a paraphrase mangles what downstream agents must execute; a discussion with you about process is summarized, and its gist — what is to be done — becomes the request, with the message listed in Triage Notes beside its disposition. A message about your conduct or the process state is a disposition only, never request material. Discriminating test: would a downstream agent need these exact words to do its job? Position is a tie-breaker, not the rule — a later message carrying the task specification becomes the Raw Request verbatim. Distill later follow-up messages into Triage Notes with their disposition. The Explorer handles all codebase details after dispatch.",
   PREFLIGHT: "Dispatch the Committer agent.",
   EXPLORE: "Dispatch the Explorer agent.",
