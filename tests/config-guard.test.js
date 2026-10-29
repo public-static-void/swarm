@@ -958,6 +958,19 @@ function metadataTopLevelKeys(content) {
   return keys;
 }
 
+// Declared-key findings for every definition, reported per file so a mutation
+// names its offender rather than only shifting a helper's return value.
+function metadataKeyFindings(read) {
+  const findings = [];
+  for (const f of agentFiles()) {
+    const keys = metadataTopLevelKeys(read(f));
+    if (keys.join(",") !== METADATA_KEYS.join(",")) {
+      findings.push(`${f}: ${keys.join(", ") || "(no keys)"}`);
+    }
+  }
+  return findings;
+}
+
 // Entries of the `permissions:` block whose key set is not exactly the triple,
 // reported as `line: keys`. The block ends at the next top-level key or the
 // region's closing fence, so a later document shape is never folded in.
@@ -1023,14 +1036,7 @@ describe("agent metadata block purity", () => {
   });
 
   it("carries the five declared keys in every agent file", () => {
-    const offenders = [];
-    for (const f of agentFiles()) {
-      const keys = metadataTopLevelKeys(readAgent(f));
-      if (keys.join(",") !== METADATA_KEYS.join(",")) {
-        offenders.push(`${f}: ${keys.join(", ") || "(no keys)"}`);
-      }
-    }
-    expect(offenders).toEqual([]);
+    expect(metadataKeyFindings(readAgent)).toEqual([]);
   });
 
   it("fails when an undeclared key joins the metadata block", () => {
@@ -1040,7 +1046,10 @@ describe("agent metadata block purity", () => {
       "title: rationale moved out of the body\nsteps: "
     );
     expect(annotated).not.toBe(content);
-    expect(metadataTopLevelKeys(annotated)).not.toEqual(METADATA_KEYS);
+    const findings = metadataKeyFindings((file) => (file === "artisan.md" ? annotated : readAgent(file)));
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain("artisan.md");
+    expect(findings[0]).toContain("title");
   });
 
   it("carries only action/resource/effect triples in the permission table", () => {
