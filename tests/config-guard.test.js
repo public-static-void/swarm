@@ -2855,13 +2855,6 @@ describe("working-directory boundary (no external literals)", () => {
     }
     expect(overseerScopeFindings(overseer)).toEqual([]);
   });
-
-  it("redirects external evidence requests to workspace-local targets in the ground rules", () => {
-    const groundRules = readRoot("AGENTS.md");
-    expect(groundRules).toContain("plugins/logs/");
-    expect(groundRules).toMatch(/workspace-local/);
-    expect(groundRules).toMatch(/working directory/);
-  });
 });
 
 // The advertised-vs-granted seam (A2): the phase layer advertises a tool by
@@ -3299,6 +3292,203 @@ describe("stack-neutral agent rules", () => {
   });
 });
 
+// A layer's audience decides what its prose may name. The ground rules reach
+// every agent in every project, so a repo path, a plugin internal or this
+// stack's tooling named there is one project's fact leaking into all of them.
+// Matching is per whole token, so an ordinary English word that contains one
+// stays clean, and each finding names the class, the token and the file.
+const PURITY_CLASSES = [
+  {
+    id: "P1",
+    label: "repo path",
+    tokens: [
+      "plugins/",
+      "tests/",
+      "agents/",
+      "skills/",
+      "opencode.json",
+      "package.json",
+      "service.json",
+      "eslint.security.config.mjs",
+      ".githooks",
+      ".head-index",
+      "README.md",
+      "AGENTS.md",
+      "eslint.config",
+    ],
+  },
+  {
+    id: "P2",
+    label: "plugin internal",
+    tokens: [
+      "protocol-gate",
+      "delegation-gate",
+      "knowledge-gate",
+      "TOOL_ALLOWLIST",
+      "TOOL_RESTRICTIONS",
+      "PHASE_INSTRUCTIONS",
+      "admitTool",
+      "checkAllMilestonesCheckedOff",
+      "gateRecordEvent",
+      "lifecycle.json",
+      "WRONG_AGENT",
+      "SAFETY_STUCK",
+      "SAFETY_ESCAPE",
+      "REOPEN_TARGET_INVALID",
+      "VERDICT_MISSING",
+      "STALE_PASS",
+      "MISSING_STRUCTURED_FIELDS",
+      "all-checked-off",
+      "disk-advance",
+    ],
+  },
+  {
+    id: "P3",
+    label: "stack tooling",
+    tokens: ["vitest", "eslint", "npm", "npx", "pnpm", "yarn", "node", "pre-commit", "core.hooksPath"],
+  },
+];
+
+// A whole-token match for one token: no letter, digit, underscore or hyphen
+// bounded before it, and none after it when the token ends in one of those. A
+// token ending in a separator (`plugins/`) keeps its tail open, because the
+// path it names continues past the separator.
+function purityPattern(token) {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tail = /\w$/.test(token) ? "(?![A-Za-z0-9_-])" : "";
+  return new RegExp(`(?<![A-Za-z0-9_-])${escaped}${tail}`, "i");
+}
+
+// One finding per token that survived in the text, so a red run names the
+// offending class, token and file rather than only a count.
+function purityFindings(text, file) {
+  const findings = [];
+  for (const klass of PURITY_CLASSES) {
+    for (const token of klass.tokens) {
+      if (purityPattern(token).test(text)) {
+        findings.push(`${file} carries ${klass.id} ${klass.label} token "${token}"`);
+      }
+    }
+  }
+  return findings;
+}
+
+// A rule stated for every project names no role of this swarm either. The role
+// set is read from the definitions on disk, so a definition added later joins
+// the sweep instead of leaving a name the pin never learned.
+function roleNamePattern() {
+  const forms = agentFiles().flatMap((file) => {
+    const name = file.replace(/\.md$/, "");
+    return [name, name.replace(/-/g, " ")];
+  });
+  return new RegExp(`(?<![A-Za-z0-9-])(?:${forms.join("|")})(?![A-Za-z0-9-])`, "i");
+}
+
+// Level-two section text, from its heading to the next one. An absent heading
+// reads as an empty region, so a deleted section cannot pass by matching prose
+// further down the file.
+function headingSection(content, heading) {
+  const start = content.indexOf(heading);
+  if (start === -1) return "";
+  const end = content.indexOf("\n## ", start + heading.length);
+  return content.slice(start, end === -1 ? undefined : end);
+}
+
+describe("audience purity", () => {
+  // The ground rules carry no frontmatter, so the body region is the file.
+  const groundRules = readRoot("AGENTS.md");
+
+  it("sweeps the ground rules free of repo, plugin and stack facts", () => {
+    expect(purityFindings(bodyRegion(groundRules), "AGENTS.md")).toEqual([]);
+  });
+
+  it("names the offending class, token and file for an injected token", () => {
+    const samples = [
+      ["P1", "Write the sweep output under `plugins/logs/`.", "plugins/"],
+      ["P2", "The verdict comes from protocol-gate.", "protocol-gate"],
+      ["P3", "Run `npx vitest` before dispatch.", "npx"],
+    ];
+    for (const [id, sentence, token] of samples) {
+      const klass = PURITY_CLASSES.find((entry) => entry.id === id);
+      const findings = purityFindings(`${bodyRegion(groundRules)}\n${sentence}\n`, "AGENTS.md");
+      expect(findings).toContain(`AGENTS.md carries ${id} ${klass.label} token "${token}"`);
+    }
+  });
+
+  it("keeps a token fragment inside an ordinary word clean", () => {
+    // "nodes" holds "node": a sweep that matched fragments would red on
+    // ordinary prose and earn its own deletion.
+    expect(purityFindings("Every agent tracks the nodes it hands work to.", "AGENTS.md")).toEqual([]);
+  });
+});
+
+// The narrowing rule every entitlement change follows: a claim broader than the
+// privilege behind it narrows to that privilege. The pin holds the rule's facts
+// as normalized tokens, and holds the section free of names — no role, file or
+// tool — because the rule is method shared by every project rather than a fact
+// about this one.
+const GOVERNING_HEADING = "## Governing Disposition";
+const GOVERNING_FACTS = [
+  { id: "the mismatch", pattern: /a mismatch between a broad claim and a narrow entitlement/i },
+  { id: "the narrowing direction", pattern: /resolves by narrowing the broad side/i },
+  { id: "the three broad sides", pattern: /expertise[\s\S]+advertisement[\s\S]+executor check/i },
+  { id: "the entitlement as the boundary", pattern: /to the entitlement/i },
+  { id: "privilege held in place", pattern: /privilege does not grow to meet a claim/i },
+];
+
+function governingFindings(content) {
+  const section = headingSection(content, GOVERNING_HEADING);
+  if (section === "") return ["AGENTS.md carries no Governing Disposition section"];
+  const findings = GOVERNING_FACTS.filter((fact) => !fact.pattern.test(section)).map(
+    (fact) => `AGENTS.md Governing Disposition is missing ${fact.id}`
+  );
+  return [...findings, ...purityFindings(section, "AGENTS.md Governing Disposition")];
+}
+
+describe("governing disposition", () => {
+  const groundRules = readRoot("AGENTS.md");
+
+  it("states the narrowing rule between dispatch shaping and focused execution", () => {
+    expect(governingFindings(groundRules)).toEqual([]);
+    const order = ["## Delegation Integrity", GOVERNING_HEADING, "## Focused Execution"].map((heading) =>
+      groundRules.indexOf(heading)
+    );
+    expect(order.every((index) => index >= 0), "all three headings must be present").toBe(true);
+    expect(order, "the rule reads where a rule about placement used to sit").toEqual(
+      [...order].sort((a, b) => a - b)
+    );
+  });
+
+  it("fails when the section is removed", () => {
+    expect(governingFindings(groundRules.replace(GOVERNING_HEADING, "## Disposition Notes"))).not.toEqual([]);
+  });
+
+  it("fails when the direction reverses", () => {
+    const widened = groundRules.replace(
+      "resolves by narrowing the broad side",
+      "resolves by widening the narrow side"
+    );
+    expect(governingFindings(widened)).not.toEqual([]);
+  });
+
+  it("fails when privilege grows to meet a claim", () => {
+    const grown = groundRules.replace(
+      "Privilege does not grow to meet a claim",
+      "Privilege grows to meet a claim"
+    );
+    expect(governingFindings(grown)).not.toEqual([]);
+  });
+
+  it("names no role, file or tool in the rule", () => {
+    const section = headingSection(groundRules, GOVERNING_HEADING);
+    expect(roleNamePattern().test(section), "the rule binds every project").toBe(false);
+    expect(roleNamePattern().test(`${section}\nThe Artisan narrows its claim.`), "a named role must red").toBe(
+      true
+    );
+    expect(purityFindings(section, "AGENTS.md Governing Disposition")).toEqual([]);
+  });
+});
+
 // Residue the audit's corrections replaced. Each entry names one phrase the
 // old text carried and the file that carried it; a correction replaces the
 // phrase, so a surviving copy is the regression this table detects. Scoping is
@@ -3320,12 +3510,21 @@ const RESIDUE_FORBIDDEN = [
   // sentence joins its phases with commas and a trailing conjunction, so this
   // phrase cannot match it.
   { phrase: "DECOMPOSE (phase 6) and SWARM (phase 7)", file: join("agents", "overseer.md") },
+  // Ground rules that stated this repository's architecture: the layer policy,
+  // the investigation walk through the repo's own paths, and an agent-exclusive
+  // grant the shared principles have no business carrying.
+  { phrase: "A rule lives in the layer that reaches its audience", file: "AGENTS.md" },
+  { phrase: "The dedicated Grep tool searches every tree on disk", file: "AGENTS.md" },
+  { phrase: "the Committer holds the git reset grant", file: "AGENTS.md" },
 ];
 
-// Normalized match: case-insensitive with whitespace collapsed, so a reflowed or
-// re-cased copy of a phrase is still that phrase.
+// Normalized match: case-insensitive, with whitespace collapsed and the
+// markdown wrappers dropped, so a reflowed, re-cased or re-wrapped copy of a
+// phrase is still that phrase. Code-span backticks and template braces carry no
+// prose meaning — an edit that wraps the same words in backticks changes the
+// rendering, not the fact the phrase states.
 function normalizeResidueProse(text) {
-  return text.toLowerCase().replace(/\s+/g, " ");
+  return text.toLowerCase().replace(/[{}`]/g, "").replace(/\s+/g, " ");
 }
 
 // Returns one finding per entry whose phrase survives in the content. Entries
@@ -3386,139 +3585,6 @@ describe("audit residue absent", () => {
       `${otherFile} still carries "${entry.phrase}"`,
     ]);
     expect(residueFindings("unrelated prose", [entry])).toEqual([]);
-  });
-});
-
-// The placement policy is stated twice: AGENTS.md carries the rule every agent
-// receives, and README's layer table lists the same layers for the reader who
-// arrives from outside. One pin reads both, because a layer edited on one side
-// alone leaves the two statements contradicting each other. Each row names the
-// noun the policy bullet uses for the layer, the audience the bullet states,
-// and the same audience as README's role column words it.
-describe("rule placement", () => {
-  const POLICY_HEADING = "## Rule Placement";
-
-  function section(content, heading) {
-    const start = content.indexOf(heading);
-    if (start === -1) return "";
-    const end = content.indexOf("\n## ", start + heading.length);
-    return content.slice(start, end === -1 ? undefined : end);
-  }
-
-  // Policy order: the layer that binds every agent, the layer exclusive to one
-  // agent, the layer that arrives with a skill, the layer a machine runs.
-  const LAYERS = [
-    {
-      layer: "AGENTS.md",
-      target: /`AGENTS\.md`/,
-      audience: [/every agent/i, /every session/i],
-      role: /all agents at all times/i,
-    },
-    {
-      layer: "agents/*.md",
-      target: /agent definition/i,
-      audience: [/one agent/i, /frontmatter/i],
-      role: /respective agent at all times/i,
-    },
-    {
-      layer: "skills/*/SKILL.md",
-      target: /skill body/i,
-      audience: [/load(?:s|ing)? with/i],
-      role: /loaded on demand/i,
-    },
-    {
-      layer: "plugins/",
-      target: /plugin code/i,
-      audience: [/machine/i, /prose/i, /contract/i],
-      role: /enforced at runtime/i,
-    },
-  ];
-
-  function policyBullets(content) {
-    return section(content, POLICY_HEADING)
-      .split("\n")
-      .filter((line) => line.startsWith("- "));
-  }
-
-  // README's table rows: the header row and the separator carry no layer, so
-  // both drop out and the remaining rows read as (layer, role).
-  function readmeLayers(content) {
-    return section(content, "## Layer Discipline")
-      .split("\n")
-      .filter((line) => line.startsWith("|") && !/^\|\s*-/.test(line))
-      .map((line) =>
-        line
-          .split("|")
-          .map((cell) => cell.trim())
-          .filter(Boolean)
-      )
-      .filter((cells) => cells.length === 3)
-      .slice(1)
-      .map(([layer, , role]) => ({ layer: layer.replace(/`/g, ""), role }));
-  }
-
-  // One finding per fact a layer states and its partner does not, so a red run
-  // names the side that drifted rather than only the pair.
-  function placementFindings(policy, readme) {
-    if (section(policy, POLICY_HEADING) === "") return ["AGENTS.md carries no Rule Placement section"];
-    const bullets = policyBullets(policy);
-    if (bullets.length !== LAYERS.length) {
-      return [`AGENTS.md states ${bullets.length} placement targets, expected ${LAYERS.length}`];
-    }
-    const rows = readmeLayers(readme);
-    if (rows.length !== LAYERS.length) {
-      return [`README lists ${rows.length} layers, expected ${LAYERS.length}`];
-    }
-    const findings = [];
-    LAYERS.forEach((expected, index) => {
-      const bullet = bullets[index];
-      if (!expected.target.test(bullet)) findings.push(`bullet ${index + 1} must name ${expected.layer}`);
-      for (const audience of expected.audience) {
-        if (!audience.test(bullet)) findings.push(`bullet ${index + 1} must state the ${expected.layer} rule whole`);
-      }
-      const row = rows[index];
-      if (row.layer !== expected.layer) {
-        findings.push(`README row ${index + 1} is ${row.layer}, expected ${expected.layer}`);
-      } else if (!expected.role.test(row.role)) {
-        findings.push(`README's ${expected.layer} row must state the role the policy claims for it`);
-      }
-    });
-    return findings;
-  }
-
-  it("names every layer's target in the policy's order", () => {
-    const bullets = policyBullets(readRoot("AGENTS.md"));
-    expect(bullets).toHaveLength(LAYERS.length);
-    LAYERS.forEach((expected, index) => {
-      expect(expected.target.test(bullets[index]), `bullet ${index + 1} must name ${expected.layer}`).toBe(true);
-    });
-  });
-
-  it("agrees with README's layer table on every layer and its audience", () => {
-    expect(placementFindings(readRoot("AGENTS.md"), readRoot("README.md"))).toEqual([]);
-  });
-
-  it("fails when the section is deleted", () => {
-    const stripped = readRoot("AGENTS.md").replace(POLICY_HEADING, "## Placement Notes");
-    expect(placementFindings(stripped, readRoot("README.md"))).not.toEqual([]);
-  });
-
-  it("fails when a bullet stops naming its layer or its audience", () => {
-    const policy = readRoot("AGENTS.md");
-    const readme = readRoot("README.md");
-    const relabelled = policy.replace("**Agent definition**", "**Agent note**");
-    const narrowed = policy.replace("rules exclusive to one agent", "rules for an agent");
-    expect(placementFindings(relabelled, readme)).not.toEqual([]);
-    expect(placementFindings(narrowed, readme)).not.toEqual([]);
-  });
-
-  it("fails when README's rows are edited alone", () => {
-    const policy = readRoot("AGENTS.md");
-    const readme = readRoot("README.md");
-    const renamed = readme.replace("`agents/*.md`", "`agent-files/*.md`");
-    const reassigned = readme.replace("Valid for all agents at all times", "Valid for the Overseer");
-    expect(placementFindings(policy, renamed)).not.toEqual([]);
-    expect(placementFindings(policy, reassigned)).not.toEqual([]);
   });
 });
 
