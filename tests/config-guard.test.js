@@ -3104,6 +3104,10 @@ describe("stack-neutral agent rules", () => {
 const RESIDUE_FORBIDDEN = [
   { phrase: "always pushed forward", file: join("plugins", "protocol-gate", "index.js") },
   { phrase: "FR-15", file: join("plugins", "protocol-gate", "index.js") },
+  // Operator messages: the cause the record asserted without support, and the
+  // remedy the parked state forecloses.
+  { phrase: "prior or abandoned lifecycles", file: join("plugins", "protocol-gate", "index.js") },
+  { phrase: "land a row transition", file: join("plugins", "protocol-gate", "index.js") },
 ];
 
 // Normalized match: case-insensitive with whitespace collapsed, so a reflowed or
@@ -3147,6 +3151,18 @@ describe("audit residue absent", () => {
     const reflowed = entry.phrase.replace(/ /g, "\n\t ");
     expect(residueFindings(recased, [entry])).not.toEqual([]);
     expect(residueFindings(reflowed, [entry])).not.toEqual([]);
+  });
+
+  it("fails for every listed phrase reintroduced into the file that carried it", () => {
+    // One case per table row rather than per group: a row added without a
+    // working detector would otherwise pass unproven.
+    for (const entry of RESIDUE_FORBIDDEN) {
+      const source = readRoot(entry.file);
+      expect(residueFindings(source, [entry])).toEqual([]);
+      expect(residueFindings(`${source}\n// ${entry.phrase}\n`, [entry])).toEqual([
+        `${entry.file} still carries "${entry.phrase}"`,
+      ]);
+    }
   });
 
   it("scopes each entry to its own file", () => {

@@ -318,7 +318,7 @@ function getActiveLifecycleGeneration(sessionPhaseMap, sessionID) {
       ["activeGen", anchor.generation],
       ["anchor", anchor.file],
       ["others", others]
-    ], `several lifecycle INTENTs are on disk for this session — the newest anchors the running lifecycle; the others belong to prior or abandoned lifecycles and stay inert only where their generation differs`, `LIFECYCLE_ANCHOR_AMBIGUOUS|${sessionID}|a:${anchor.generation}|f:${anchor.file}|o:${others}`);
+    ], `several lifecycle INTENTs are on disk for this session, so the anchor rule decides which generation this lifecycle runs at: newest by modification time, then by generation, then by name, and every lifecycle-scoped lookup reads artifacts of that generation`, `LIFECYCLE_ANCHOR_AMBIGUOUS|${sessionID}|a:${anchor.generation}|f:${anchor.file}|o:${others}`);
   }
   if (anchor.generation === persisted) return persisted;
   gateRecordEvent("LIFECYCLE_GENERATION_RECONCILED", [
@@ -3615,7 +3615,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
           ["registryMtime", registryMtime],
           ["since", overrideAnchor],
           ["reason", "stale-registry"]
-        ], `every milestone row is checked-off with its impl KD on disk, so the gate passed; the pin's fresh-evidence anchor is unmet and a checked-off row is never rewritten — walk the phase past SWARM or land a row transition, because evidence alone cannot satisfy this pin`, `SWARM_GATE_PARKED|${sessionID}|r:${registryMtime}|s:${overrideAnchor}`);
+        ], `every milestone row is checked-off with its impl KD on disk, so the all-checked-off gate passed; the override's freshness pin is unmet because the registry write that would carry a fresh timestamp cannot happen — a checked-off row is never rewritten. Walk the phase past SWARM with /phase: evidence cannot satisfy the pin and a retry changes nothing`, `SWARM_GATE_PARKED|${sessionID}|r:${registryMtime}|s:${overrideAnchor}`);
       }
     } else if (overrideActive && terminalHop) {
       // A terminal override hop completes on its ordinary advancement gate.

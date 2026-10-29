@@ -8070,4 +8070,79 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.REPORT);
     });
   });
+
+  // The two always-on records the gate writes when it cannot advance on
+  // evidence. A record earns its place only when the reader learns which state
+  // holds, which cause the code established, and the one route out — so each
+  // case asserts the facts the sentence must carry and the claims it must not
+  // make, and both lists come from the same emitted line.
+  describe("operator messages name a live remedy and an established cause", () => {
+    it("records the anchor rule and the candidate count without judging the candidates it did not pick", async () => {
+      const s = sid("msg-anchor-ambiguous");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      hooks.sessionPhaseMap.set(`${s}:gen`, 6);
+      // Two INTENTs for one session: the counter has moved past its own label,
+      // so only modification time separates the candidates.
+      createKD(`intent-feature-${s}-gen6.md`);
+      createKD(`intent-feature-${s}-gen5.md`);
+      const now = Date.now() / 1000;
+      utimesSync(join(knowledgeDir, `intent-feature-${s}-gen6.md`), now - 120, now - 120);
+      utimesSync(join(knowledgeDir, `intent-feature-${s}-gen5.md`), now, now);
+      try { rmSync(logPath); } catch (_) {}
+
+      expect(hooks.getActiveLifecycleGeneration(s)).toBe(5);
+
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toContain("LIFECYCLE_ANCHOR_AMBIGUOUS");
+      // Present: the candidate count and the tie-break rule the sort applies,
+      // in the order it applies them.
+      expect(log).toContain("several lifecycle INTENTs");
+      expect(log).toContain("modification time");
+      expect(log).toContain("then by generation");
+      expect(log).toContain("then by name");
+      // Absent: any state asserted for the candidates the sort did not pick. No
+      // code path establishes what became of them, and the case that matters is
+      // a live lifecycle whose own INTENT is the older one.
+      for (const unestablishedClaim of ["prior", "abandoned", "inert", "stale"]) {
+        expect(log).not.toContain(unestablishedClaim);
+      }
+      // The record's fields and its anchor/others pair are unchanged.
+      expect(log).toContain("activeGen=5");
+      expect(log).toContain(`anchor=intent-feature-${s}-gen5.md`);
+      expect(log).toContain(`others=intent-feature-${s}-gen6.md@gen6`);
+    });
+
+    it("names the /phase walk as the way out of a stale-pin park and offers no route the park forecloses", async () => {
+      const s = sid("msg-swarm-parked");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // Every row complete with its artifact on disk: the gate's own evidence
+      // passes, and the freshness pin alone refuses the transition.
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+      createKD(`impl-M2-feature-${s}.md`);
+      hooks.sessionPhaseMap.set(`${s}:overrideUntil`, { phase: hooks.STATES.SWARM, since: Date.now() + 60_000 });
+      try { rmSync(logPath); } catch (_) {}
+
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toContain("SWARM_GATE_PARKED");
+      expect(log).toContain("reason=stale-registry");
+      // Present: the gate that passed, the pin that refused, the one live
+      // remedy, and the fact that no further evidence moves the pin.
+      expect(log).toContain("all-checked-off gate passed");
+      expect(log).toContain("freshness pin is unmet");
+      expect(log).toContain("/phase");
+      expect(log).toContain("cannot satisfy the pin");
+      expect(log).toContain("retry");
+      // Absent: the row transition the park state forecloses — a checked-off
+      // row is never rewritten, and the session is parked before that write.
+      expect(log).not.toContain("land a row transition");
+      expect(log).toContain("registry=milestones-feature-");
+    });
+  });
 });
