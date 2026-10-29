@@ -97,6 +97,9 @@ permissions:
   - action: memory_note_delete
     resource: "*"
     effect: allow
+  - action: issue_read
+    resource: "*"
+    effect: allow
   - action: shell
     resource: "*"
     effect: deny

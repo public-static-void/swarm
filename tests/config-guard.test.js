@@ -1231,6 +1231,99 @@ describe("memory_search reachability", () => {
   });
 });
 
+// The issue read side is a grant every agent holds for the same reason the
+// memory read side is: the knowledge-gate advertises issue_read to all agents,
+// so a missing, duplicated, or narrowed allow in any definition is a layer
+// disagreement the calling agent would only meet as an absent tool. It is also
+// the inspection path for the roles whose file reads deny the issue store.
+describe("issue_read reachability", () => {
+  const files = agentFiles();
+  const ISSUE_READ_ALLOW = /- action: issue_read\n\s*resource: [^\n]*\n\s*effect: allow\n/;
+
+  function issueReadAllows(content) {
+    return permissionRules(content).filter(
+      (r) => r.action === "issue_read" && r.resource === "*" && r.effect === "allow"
+    );
+  }
+
+  it("grants issue_read exactly once in every agent definition", () => {
+    expect(files).toEqual([
+      "analyzer.md",
+      "artisan.md",
+      "committer.md",
+      "explorer.md",
+      "habit-builder.md",
+      "inspector.md",
+      "overseer.md",
+      "pathfinder.md",
+      "scribe.md",
+      "spec-weaver.md",
+    ]);
+    for (const file of files) {
+      expect(issueReadAllows(readAgent(file)), file).toHaveLength(1);
+    }
+  });
+
+  it("keeps the grant inside the custom-tool run ahead of the shell table", () => {
+    const offenders = [];
+    for (const file of files) {
+      const rules = permissionRules(readAgent(file));
+      const grant = rules.findIndex((r) => r.action === "issue_read");
+      if (grant === -1) {
+        offenders.push(`${file}: no issue_read grant`);
+        continue;
+      }
+      const firstShell = rules.findIndex((r) => r.action === "shell");
+      if (firstShell !== -1 && grant > firstShell) {
+        offenders.push(`${file}: issue_read sits after the shell table`);
+      }
+      const neighbour = rules.at(grant - 1);
+      if (!neighbour || !/^(issue|memory)_/.test(neighbour.action)) {
+        offenders.push(`${file}: issue_read does not follow another custom-tool grant`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("fails when the grant is deleted from an agent definition", () => {
+    const content = readAgent("scribe.md");
+    const match = content.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const removed = content.replace(match[0], "");
+    expect(removed).not.toBe(content);
+    expect(issueReadAllows(removed)).toHaveLength(0);
+  });
+
+  it("fails when the grant is duplicated in an agent definition", () => {
+    const content = readAgent("artisan.md");
+    const match = content.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const duplicated = content.replace(match[0], match[0] + match[0]);
+    expect(issueReadAllows(duplicated)).toHaveLength(2);
+  });
+
+  it("fails when the grant is flipped to deny", () => {
+    const content = readAgent("inspector.md");
+    const match = content.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const flipped = content.replace(match[0], match[0].replace("effect: allow", "effect: deny"));
+    expect(flipped).not.toBe(content);
+    expect(issueReadAllows(flipped)).toHaveLength(0);
+  });
+
+  it("fails when the grant is narrowed to one store record", () => {
+    const content = readAgent("overseer.md");
+    const match = content.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const narrowed = content.replace(
+      match[0],
+      match[0].replace('resource: "*"', 'resource: "knowledge/issues/77.md"')
+    );
+    expect(narrowed).not.toBe(content);
+    expect(issueReadAllows(narrowed)).toHaveLength(0);
+  });
+});
+
 describe("agents delegation dispatch docs", () => {
   const files = agentFiles();
 
