@@ -3180,3 +3180,136 @@ describe("audit residue absent", () => {
     expect(residueFindings("unrelated prose", [entry])).toEqual([]);
   });
 });
+
+// The placement policy is stated twice: AGENTS.md carries the rule every agent
+// receives, and README's layer table lists the same layers for the reader who
+// arrives from outside. One pin reads both, because a layer edited on one side
+// alone leaves the two statements contradicting each other. Each row names the
+// noun the policy bullet uses for the layer, the audience the bullet states,
+// and the same audience as README's role column words it.
+describe("rule placement", () => {
+  const POLICY_HEADING = "## Rule Placement";
+
+  function section(content, heading) {
+    const start = content.indexOf(heading);
+    if (start === -1) return "";
+    const end = content.indexOf("\n## ", start + heading.length);
+    return content.slice(start, end === -1 ? undefined : end);
+  }
+
+  // Policy order: the layer that binds every agent, the layer exclusive to one
+  // agent, the layer that arrives with a skill, the layer a machine runs.
+  const LAYERS = [
+    {
+      layer: "AGENTS.md",
+      target: /`AGENTS\.md`/,
+      audience: [/every agent/i, /every session/i],
+      role: /all agents at all times/i,
+    },
+    {
+      layer: "agents/*.md",
+      target: /agent definition/i,
+      audience: [/one agent/i, /frontmatter/i],
+      role: /respective agent at all times/i,
+    },
+    {
+      layer: "skills/*/SKILL.md",
+      target: /skill body/i,
+      audience: [/load(?:s|ing)? with/i],
+      role: /loaded on demand/i,
+    },
+    {
+      layer: "plugins/",
+      target: /plugin code/i,
+      audience: [/machine/i, /prose/i, /contract/i],
+      role: /enforced at runtime/i,
+    },
+  ];
+
+  function policyBullets(content) {
+    return section(content, POLICY_HEADING)
+      .split("\n")
+      .filter((line) => line.startsWith("- "));
+  }
+
+  // README's table rows: the header row and the separator carry no layer, so
+  // both drop out and the remaining rows read as (layer, role).
+  function readmeLayers(content) {
+    return section(content, "## Layer Discipline")
+      .split("\n")
+      .filter((line) => line.startsWith("|") && !/^\|\s*-/.test(line))
+      .map((line) =>
+        line
+          .split("|")
+          .map((cell) => cell.trim())
+          .filter(Boolean)
+      )
+      .filter((cells) => cells.length === 3)
+      .slice(1)
+      .map(([layer, , role]) => ({ layer: layer.replace(/`/g, ""), role }));
+  }
+
+  // One finding per fact a layer states and its partner does not, so a red run
+  // names the side that drifted rather than only the pair.
+  function placementFindings(policy, readme) {
+    if (section(policy, POLICY_HEADING) === "") return ["AGENTS.md carries no Rule Placement section"];
+    const bullets = policyBullets(policy);
+    if (bullets.length !== LAYERS.length) {
+      return [`AGENTS.md states ${bullets.length} placement targets, expected ${LAYERS.length}`];
+    }
+    const rows = readmeLayers(readme);
+    if (rows.length !== LAYERS.length) {
+      return [`README lists ${rows.length} layers, expected ${LAYERS.length}`];
+    }
+    const findings = [];
+    LAYERS.forEach((expected, index) => {
+      const bullet = bullets[index];
+      if (!expected.target.test(bullet)) findings.push(`bullet ${index + 1} must name ${expected.layer}`);
+      for (const audience of expected.audience) {
+        if (!audience.test(bullet)) findings.push(`bullet ${index + 1} must state the ${expected.layer} rule whole`);
+      }
+      const row = rows[index];
+      if (row.layer !== expected.layer) {
+        findings.push(`README row ${index + 1} is ${row.layer}, expected ${expected.layer}`);
+      } else if (!expected.role.test(row.role)) {
+        findings.push(`README's ${expected.layer} row must state the role the policy claims for it`);
+      }
+    });
+    return findings;
+  }
+
+  it("names every layer's target in the policy's order", () => {
+    const bullets = policyBullets(readRoot("AGENTS.md"));
+    expect(bullets).toHaveLength(LAYERS.length);
+    LAYERS.forEach((expected, index) => {
+      expect(expected.target.test(bullets[index]), `bullet ${index + 1} must name ${expected.layer}`).toBe(true);
+    });
+  });
+
+  it("agrees with README's layer table on every layer and its audience", () => {
+    expect(placementFindings(readRoot("AGENTS.md"), readRoot("README.md"))).toEqual([]);
+  });
+
+  it("fails when the section is deleted", () => {
+    const stripped = readRoot("AGENTS.md").replace(POLICY_HEADING, "## Placement Notes");
+    expect(placementFindings(stripped, readRoot("README.md"))).not.toEqual([]);
+  });
+
+  it("fails when a bullet stops naming its layer or its audience", () => {
+    const policy = readRoot("AGENTS.md");
+    const readme = readRoot("README.md");
+    const relabelled = policy.replace("**Agent definition**", "**Agent note**");
+    const narrowed = policy.replace("rules exclusive to one agent", "rules for an agent");
+    expect(placementFindings(relabelled, readme)).not.toEqual([]);
+    expect(placementFindings(narrowed, readme)).not.toEqual([]);
+  });
+
+  it("fails when README's rows are edited alone", () => {
+    const policy = readRoot("AGENTS.md");
+    const readme = readRoot("README.md");
+    const renamed = readme.replace("`agents/*.md`", "`agent-files/*.md`");
+    const reassigned = readme.replace("Valid for all agents at all times", "Valid for the Overseer");
+    expect(placementFindings(policy, renamed)).not.toEqual([]);
+    expect(placementFindings(policy, reassigned)).not.toEqual([]);
+  });
+});

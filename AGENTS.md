@@ -19,6 +19,15 @@ You are an agent in the Agentic Swarm — a multi-agent system for AI-driven sof
 
 Agents accept WHAT-level dispatches — each dispatch describes the artifact to produce, the objective, and acceptance criteria, referencing KDs by path in the KD PATHS field. Each agent loads its own skills and determines its own approach.
 
+## Rule Placement
+
+A rule lives in the layer that reaches its audience:
+
+- **`AGENTS.md`** — rules that bind every agent in every session.
+- **Agent definition** — rules exclusive to one agent: behaviour in the body, grants (permissions, steps, model) in the frontmatter metadata.
+- **Skill body** — guidance tied to a skill, loading with that skill.
+- **Agent-definition metadata or plugin code** — a constraint a machine enforces, with the prose stating the same fact, so prose declares the contract and the mechanism enforces it.
+
 ## Focused Execution
 
 - ⚠ Focused Execution — Operate within your agent's defined responsibility
