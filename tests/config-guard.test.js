@@ -936,6 +936,64 @@ describe("agent permission allowlists", () => {
 // Only the leading region is read — a file carrying more than one `---` region
 // (the multi-region skill template shape) is out of scope by explicit decision,
 // so a second region is never folded in and never silently scanned.
+//
+// The region's shape is pinned beside its comment purity: a fixed key set and an
+// ordered table of action/resource/effect triples. An entry the rules parser
+// drops for a missing key otherwise reads everywhere else as an absent rule, so
+// a shape defect is named here rather than surfacing as a wrong grant.
+const METADATA_KEYS = ["description", "mode", "steps", "request", "permissions"];
+const PERMISSION_KEYS = ["action", "resource", "effect"];
+
+// Top-level keys of the leading region, in file order. Indented lines belong to
+// the key above them, so a `- action:` entry is never read as a top-level key.
+function metadataTopLevelKeys(content) {
+  const region = frontmatterRegion(content);
+  if (!region) return [];
+  const lines = content.split("\n");
+  const keys = [];
+  for (let i = region.start + 1; i < region.end; i++) {
+    const m = lines[i].match(/^([A-Za-z_][\w-]*):/);
+    if (m) keys.push(m[1]);
+  }
+  return keys;
+}
+
+// Entries of the `permissions:` block whose key set is not exactly the triple,
+// reported as `line: keys`. The block ends at the next top-level key or the
+// region's closing fence, so a later document shape is never folded in.
+function permissionEntryFindings(content) {
+  const region = frontmatterRegion(content);
+  if (!region) return ["no leading metadata region"];
+  const lines = content.split("\n");
+  const blockStart = lines.findIndex(
+    (line, i) => i > region.start && i < region.end && /^permissions:\s*$/.test(line)
+  );
+  if (blockStart === -1) return ["no permissions block"];
+  const findings = [];
+  let entry = null;
+  const flush = () => {
+    if (!entry) return;
+    const { line, keys } = entry;
+    const triple =
+      keys.length === PERMISSION_KEYS.length && PERMISSION_KEYS.every((k) => keys.includes(k));
+    if (!triple) findings.push(`${line}: ${keys.length ? keys.join("/") : "(no keys)"}`);
+    entry = null;
+  };
+  for (let i = blockStart + 1; i < region.end; i++) {
+    const line = lines[i];
+    if (/^\S/.test(line)) break;
+    if (/^\s*-\s/.test(line)) {
+      flush();
+      entry = { line: i + 1, keys: [] };
+    }
+    if (!entry) continue;
+    const m = line.match(/^\s*(?:-\s*)?([A-Za-z_][\w-]*):/);
+    if (m) entry.keys.push(m[1]);
+  }
+  flush();
+  return findings;
+}
+
 describe("agent metadata block purity", () => {
   it("reports a comment line injected into the leading metadata region", () => {
     // Non-vacuous: the predicate reports the offender at line 2 of an injected
@@ -962,6 +1020,55 @@ describe("agent metadata block purity", () => {
     for (const f of agentFiles()) {
       expect(frontmatterRegion(readAgent(f)), `${f} carries a leading metadata region`).not.toBeNull();
     }
+  });
+
+  it("carries the five declared keys in every agent file", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      const keys = metadataTopLevelKeys(readAgent(f));
+      if (keys.join(",") !== METADATA_KEYS.join(",")) {
+        offenders.push(`${f}: ${keys.join(", ") || "(no keys)"}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("fails when an undeclared key joins the metadata block", () => {
+    const content = readAgent("artisan.md");
+    const annotated = content.replace(
+      /^steps: /m,
+      "title: rationale moved out of the body\nsteps: "
+    );
+    expect(annotated).not.toBe(content);
+    expect(metadataTopLevelKeys(annotated)).not.toEqual(METADATA_KEYS);
+  });
+
+  it("carries only action/resource/effect triples in the permission table", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      for (const finding of permissionEntryFindings(readAgent(f))) {
+        offenders.push(`${f}: ${finding}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("fails when a permission entry drops a key", () => {
+    const content = readAgent("artisan.md");
+    const match = content.match(/  - action: read\n\s*resource: "\*"\n\s*effect: allow\n/);
+    expect(match).toBeTruthy();
+    const dropped = content.replace(match[0], match[0].replace(/\s*effect: allow\n$/, "\n"));
+    expect(dropped).not.toBe(content);
+    expect(permissionEntryFindings(dropped)).toHaveLength(1);
+  });
+
+  it("fails when a permission entry carries an extra key", () => {
+    const content = readAgent("artisan.md");
+    const match = content.match(/  - action: read\n\s*resource: "\*"\n\s*effect: allow\n/);
+    expect(match).toBeTruthy();
+    const extended = content.replace(match[0], match[0].replace(/\n$/, "\n    note: justification\n"));
+    expect(extended).not.toBe(content);
+    expect(permissionEntryFindings(extended)).toHaveLength(1);
   });
 });
 
@@ -1231,22 +1338,34 @@ describe("memory_search reachability", () => {
   });
 });
 
-// The issue read side is a grant every agent holds for the same reason the
-// memory read side is: the knowledge-gate advertises issue_read to all agents,
-// so a missing, duplicated, or narrowed allow in any definition is a layer
-// disagreement the calling agent would only meet as an absent tool. It is also
-// the inspection path for the roles whose file reads deny the issue store.
+// The issue store belongs to the role that curates it: the Habit Builder writes,
+// updates and moves issues, so it is also the one role that reads them. A grant
+// in any other definition puts the store's read path outside that role, and the
+// knowledge-gate tool admits whichever caller holds the grant — so the narrowing
+// is stated in the frontmatter and pinned here.
+const ISSUE_READ_HOLDER = "habit-builder.md";
+
 describe("issue_read reachability", () => {
   const files = agentFiles();
   const ISSUE_READ_ALLOW = /- action: issue_read\n\s*resource: [^\n]*\n\s*effect: allow\n/;
 
-  function issueReadAllows(content) {
-    return permissionRules(content).filter(
-      (r) => r.action === "issue_read" && r.resource === "*" && r.effect === "allow"
-    );
+  // Expected count per definition: one allow triple in the curating role, no
+  // entry at all elsewhere. Reported per file so a mutation names its offender.
+  function holderFindings(read) {
+    const findings = [];
+    for (const file of files) {
+      const rules = permissionRules(read(file)).filter((r) => r.action === "issue_read");
+      const allows = rules.filter((r) => r.resource === "*" && r.effect === "allow").length;
+      if (file === ISSUE_READ_HOLDER) {
+        if (allows !== 1) findings.push(`${file}: ${allows} allows, expected 1`);
+      } else if (rules.length !== 0) {
+        findings.push(`${file}: ${rules.length} issue_read entries, expected 0`);
+      }
+    }
+    return findings;
   }
 
-  it("grants issue_read exactly once in every agent definition", () => {
+  it("grants issue_read once, in the role that curates the issue stores", () => {
     expect(files).toEqual([
       "analyzer.md",
       "artisan.md",
@@ -1259,68 +1378,86 @@ describe("issue_read reachability", () => {
       "scribe.md",
       "spec-weaver.md",
     ]);
-    for (const file of files) {
-      expect(issueReadAllows(readAgent(file)), file).toHaveLength(1);
-    }
+    expect(holderFindings(readAgent)).toEqual([]);
   });
 
-  it("keeps the grant inside the custom-tool run ahead of the shell table", () => {
+  it("keeps the single grant inside the custom-tool run ahead of the shell table", () => {
     const offenders = [];
-    for (const file of files) {
-      const rules = permissionRules(readAgent(file));
-      const grant = rules.findIndex((r) => r.action === "issue_read");
-      if (grant === -1) {
-        offenders.push(`${file}: no issue_read grant`);
-        continue;
-      }
+    const rules = permissionRules(readAgent(ISSUE_READ_HOLDER));
+    const grant = rules.findIndex((r) => r.action === "issue_read");
+    if (grant === -1) {
+      offenders.push(`${ISSUE_READ_HOLDER}: no issue_read grant`);
+    } else {
       const firstShell = rules.findIndex((r) => r.action === "shell");
       if (firstShell !== -1 && grant > firstShell) {
-        offenders.push(`${file}: issue_read sits after the shell table`);
+        offenders.push(`${ISSUE_READ_HOLDER}: issue_read sits after the shell table`);
       }
       const neighbour = rules.at(grant - 1);
       if (!neighbour || !/^(issue|memory)_/.test(neighbour.action)) {
-        offenders.push(`${file}: issue_read does not follow another custom-tool grant`);
+        offenders.push(`${ISSUE_READ_HOLDER}: issue_read does not follow another custom-tool grant`);
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  it("fails when the grant is deleted from an agent definition", () => {
-    const content = readAgent("scribe.md");
-    const match = content.match(ISSUE_READ_ALLOW);
+  it("fails when the grant is added to another definition", () => {
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
     expect(match).toBeTruthy();
-    const removed = content.replace(match[0], "");
-    expect(removed).not.toBe(content);
-    expect(issueReadAllows(removed)).toHaveLength(0);
+    const added = readAgent("artisan.md").replace(
+      /(  - action: shell\n\s*resource: "\*"\n\s*effect: deny\n)/,
+      `${match[0]}$1`
+    );
+    expect(added).not.toBe(readAgent("artisan.md"));
+    expect(holderFindings((file) => (file === "artisan.md" ? added : readAgent(file)))).toEqual([
+      "artisan.md: 1 issue_read entries, expected 0",
+    ]);
   });
 
-  it("fails when the grant is duplicated in an agent definition", () => {
-    const content = readAgent("artisan.md");
-    const match = content.match(ISSUE_READ_ALLOW);
+  it("fails when the grant leaves the curating role", () => {
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
     expect(match).toBeTruthy();
-    const duplicated = content.replace(match[0], match[0] + match[0]);
-    expect(issueReadAllows(duplicated)).toHaveLength(2);
+    const removed = holder.replace(match[0], "");
+    expect(removed).not.toBe(holder);
+    expect(holderFindings((file) => (file === ISSUE_READ_HOLDER ? removed : readAgent(file)))).toEqual([
+      `${ISSUE_READ_HOLDER}: 0 allows, expected 1`,
+    ]);
+  });
+
+  it("fails when the grant is duplicated", () => {
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const duplicated = holder.replace(match[0], match[0] + match[0]);
+    expect(holderFindings((file) => (file === ISSUE_READ_HOLDER ? duplicated : readAgent(file)))).toEqual([
+      `${ISSUE_READ_HOLDER}: 2 allows, expected 1`,
+    ]);
   });
 
   it("fails when the grant is flipped to deny", () => {
-    const content = readAgent("inspector.md");
-    const match = content.match(ISSUE_READ_ALLOW);
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
     expect(match).toBeTruthy();
-    const flipped = content.replace(match[0], match[0].replace("effect: allow", "effect: deny"));
-    expect(flipped).not.toBe(content);
-    expect(issueReadAllows(flipped)).toHaveLength(0);
+    const flipped = holder.replace(match[0], match[0].replace("effect: allow", "effect: deny"));
+    expect(flipped).not.toBe(holder);
+    expect(holderFindings((file) => (file === ISSUE_READ_HOLDER ? flipped : readAgent(file)))).toEqual([
+      `${ISSUE_READ_HOLDER}: 0 allows, expected 1`,
+    ]);
   });
 
   it("fails when the grant is narrowed to one store record", () => {
-    const content = readAgent("overseer.md");
-    const match = content.match(ISSUE_READ_ALLOW);
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
     expect(match).toBeTruthy();
-    const narrowed = content.replace(
+    const narrowed = holder.replace(
       match[0],
-      match[0].replace('resource: "*"', 'resource: "knowledge/issues/77.md"')
+      match[0].replace('resource: "*"', 'resource: "knowledge/issues/issue-77.md"')
     );
-    expect(narrowed).not.toBe(content);
-    expect(issueReadAllows(narrowed)).toHaveLength(0);
+    expect(narrowed).not.toBe(holder);
+    expect(holderFindings((file) => (file === ISSUE_READ_HOLDER ? narrowed : readAgent(file)))).toEqual([
+      `${ISSUE_READ_HOLDER}: 0 allows, expected 1`,
+    ]);
   });
 });
 

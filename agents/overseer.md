@@ -106,9 +106,6 @@ permissions:
   - action: memory_search
     resource: "*"
     effect: allow
-  - action: issue_read
-    resource: "*"
-    effect: allow
   - action: shell
     resource: "*"
     effect: deny
