@@ -1874,7 +1874,10 @@ describe("VERIFY evidence shape", () => {
   });
 
   it("refuses a FAIL with an unusable reopen target under the stale-PASS recency rule", () => {
-    for (const content of [inspector, gates, reviewTemplate]) {
+    // The two skill layers carry the whole verdict contract. The inspector body
+    // states the same contract in role terms and names no gate code, so the
+    // contract's code names are read where the gate's own language belongs.
+    for (const content of [gates, reviewTemplate]) {
       expect(content).toContain("REOPEN_TARGET_INVALID");
       expect(content).toMatch(/no-reopen-target/);
       expect(content).toContain("stale PASS");
@@ -3539,10 +3542,11 @@ describe("stack-neutral agent rules", () => {
 });
 
 // A layer's audience decides what its prose may name. The ground rules reach
-// every agent in every project, so a repo path, a plugin internal or this
-// stack's tooling named there is one project's fact leaking into all of them.
-// Matching is per whole token, so an ordinary English word that contains one
-// stays clean, and each finding names the class, the token and the file.
+// every agent in every project and a role body reaches every project that role
+// runs in, so a repo path, a plugin internal or this stack's tooling named there
+// is one project's fact leaking into all of them. Matching is per whole token, so
+// an ordinary English word that contains one stays clean, and each finding names
+// the class, the token and the file.
 const PURITY_CLASSES = [
   {
     id: "P1",
@@ -3607,16 +3611,20 @@ function purityPattern(token) {
 
 // One finding per token that survived in the text, so a red run names the
 // offending class, token and file rather than only a count.
-function purityFindings(text, file) {
-  const findings = [];
+function purityHits(text) {
+  const hits = [];
   for (const klass of PURITY_CLASSES) {
     for (const token of klass.tokens) {
-      if (purityPattern(token).test(text)) {
-        findings.push(`${file} carries ${klass.id} ${klass.label} token "${token}"`);
-      }
+      if (purityPattern(token).test(text)) hits.push({ klass, token });
     }
   }
-  return findings;
+  return hits;
+}
+
+function purityFindings(text, file) {
+  return purityHits(text).map(
+    ({ klass, token }) => `${file} carries ${klass.id} ${klass.label} token "${token}"`
+  );
 }
 
 // A rule stated for every project names no role of this swarm either. The role
@@ -3640,9 +3648,78 @@ function headingSection(content, heading) {
   return content.slice(start, end === -1 ? undefined : end);
 }
 
+// The skill ratchet's recorded baseline: each skill that names a forbidden
+// token on the day the ratchet landed, with the tokens it already names. Growth
+// is what fails here — a recorded token may stay, an unrecorded one reds, and a
+// burn-down narrows the baseline without reddening it.
+const SKILL_TOKEN_BASELINE = {
+  "committer-checkpoint": ["protocol-gate"],
+  "committer-cleanup": ["protocol-gate"],
+  "committer-preflight": ["protocol-gate"],
+  "kd-system": ["protocol-gate"],
+  "plan-validation-skill": ["node"],
+  "resume-protocol": ["protocol-gate", "knowledge-gate"],
+  "security-audit-skill": ["npm"],
+  "template-analysis": ["protocol-gate"],
+  "template-checkpoint": ["protocol-gate"],
+  "template-cleanup": ["protocol-gate"],
+  "template-composed": ["protocol-gate"],
+  "template-exploration": ["protocol-gate"],
+  "template-impl": ["protocol-gate"],
+  "template-intent": ["protocol-gate"],
+  "template-milestones": [
+    "protocol-gate",
+    "checkAllMilestonesCheckedOff",
+    "SAFETY_STUCK",
+    "SAFETY_ESCAPE",
+  ],
+  "template-plan": ["protocol-gate"],
+  "template-preflight": ["protocol-gate"],
+  "template-process": ["protocol-gate"],
+  "template-report": ["protocol-gate"],
+  "template-review": ["protocol-gate", "REOPEN_TARGET_INVALID", "npm"],
+  "template-spec": ["protocol-gate"],
+  "testing-skill": ["vitest"],
+  "verification-gates": ["REOPEN_TARGET_INVALID", "npm"],
+};
+
 describe("audience purity", () => {
   // The ground rules carry no frontmatter, so the body region is the file.
   const groundRules = readRoot("AGENTS.md");
+
+  // A role definition's body is the region an agent reads as its rules; the
+  // metadata block above it is the entitlement layer, where a stack command is
+  // a grant rather than a leaked fact.
+  function agentBodySites() {
+    return agentFiles().map((file) => [`agents/${file}`, bodyRegion(readAgent(file))]);
+  }
+
+  // Skill bodies load with the task rather than with the session, so each one
+  // is swept whole: a skill has no entitlement layer to except.
+  function skillBodySites() {
+    return readdirSync(join(ROOT, "skills"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+      .map((name) => [`skills/${name}/SKILL.md`, readFileSync(join(ROOT, "skills", name, "SKILL.md"), "utf8")])
+      .map(([site, content]) => [site, bodyRegion(content)]);
+  }
+
+  // A skill may keep what its baseline records and take nothing new: the
+  // finding names the site and the class of the token it added.
+  function ratchetFindings(sites) {
+    const findings = [];
+    for (const [site, text] of sites) {
+      const skill = site.slice("skills/".length, site.indexOf("/SKILL.md"));
+      const recorded = SKILL_TOKEN_BASELINE[skill] || [];
+      for (const { klass, token } of purityHits(text)) {
+        if (!recorded.includes(token)) {
+          findings.push(`${site} carries an unrecorded ${klass.id} ${klass.label} token "${token}"`);
+        }
+      }
+    }
+    return findings;
+  }
 
   it("sweeps the ground rules free of repo, plugin and stack facts", () => {
     expect(purityFindings(bodyRegion(groundRules), "AGENTS.md")).toEqual([]);
@@ -3665,6 +3742,64 @@ describe("audience purity", () => {
     // "nodes" holds "node": a sweep that matched fragments would red on
     // ordinary prose and earn its own deletion.
     expect(purityFindings("Every agent tracks the nodes it hands work to.", "AGENTS.md")).toEqual([]);
+  });
+
+  it("sweeps every role body free of repo, plugin and stack facts", () => {
+    const findings = agentBodySites().flatMap(([site, text]) => purityFindings(text, site));
+    expect(findings).toEqual([]);
+  });
+
+  it("exempts the metadata block and reads the body region alone", () => {
+    // The block carries the grants, and a grant is a stack command this layer is
+    // entitled to name. The split is what keeps the sweep from demanding the
+    // grants be deleted to pass.
+    const content = readAgent("analyzer.md");
+    expect(purityFindings(content, "agents/analyzer.md")).not.toEqual([]);
+    expect(purityFindings(bodyRegion(content), "agents/analyzer.md")).toEqual([]);
+  });
+
+  it("fails a role body that carries a repo, plugin or stack fact", () => {
+    const body = bodyRegion(readAgent("analyzer.md"));
+    const findings = purityFindings(`${body}\nThe plan is decided by plugins/protocol-gate.\n`, "agents/analyzer.md");
+    expect(findings).toContain('agents/analyzer.md carries P1 repo path token "plugins/"');
+    expect(findings).toContain('agents/analyzer.md carries P2 plugin internal token "protocol-gate"');
+
+    const stackFindings = purityFindings(`${body}\nRun \`npx vitest\` before dispatch.\n`, "agents/analyzer.md");
+    expect(stackFindings).toContain('agents/analyzer.md carries P3 stack tooling token "npx"');
+    expect(stackFindings).toContain('agents/analyzer.md carries P3 stack tooling token "vitest"');
+  });
+
+  it("holds the skill ratchet at its recorded baseline", () => {
+    expect(ratchetFindings(skillBodySites())).toEqual([]);
+  });
+
+  it("keys the baseline to the skills on disk", () => {
+    const names = readdirSync(join(ROOT, "skills"));
+    const phantom = Object.keys(SKILL_TOKEN_BASELINE).filter((name) => !names.includes(name));
+    expect(phantom, "a baseline entry for a skill that no longer exists").toEqual([]);
+  });
+
+  it("admits a recorded skill token and fails an unrecorded one", () => {
+    const recorded = ratchetFindings([
+      ["skills/verification-gates/SKILL.md", "Run `npm audit` before the verdict."],
+    ]);
+    expect(recorded).toEqual([]);
+
+    const narrowed = ratchetFindings([["skills/testing-skill/SKILL.md", "Detect the project's framework."]]);
+    expect(narrowed, "a baseline token that stops appearing narrows the baseline").toEqual([]);
+
+    const grown = ratchetFindings([["skills/testing-skill/SKILL.md", "The verdict comes from protocol-gate."]]);
+    expect(grown).toContain(
+      'skills/testing-skill/SKILL.md carries an unrecorded P2 plugin internal token "protocol-gate"'
+    );
+
+    const fresh = ratchetFindings([["skills/backend-skill/SKILL.md", "Run `npx vitest` before dispatch."]]);
+    expect(fresh).toContain(
+      'skills/backend-skill/SKILL.md carries an unrecorded P3 stack tooling token "npx"'
+    );
+    expect(fresh).toContain(
+      'skills/backend-skill/SKILL.md carries an unrecorded P3 stack tooling token "vitest"'
+    );
   });
 });
 
