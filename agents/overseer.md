@@ -137,7 +137,7 @@ Open issues reach you one way: the automatic injection at session start, scoped 
 - **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
 - **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
 - **Phase 11 (CLEANUP)**: Dispatch Committer (MODE: CLEANUP). The CLEANUP dispatch SCOPE directs the Committer to push committed changes to the remote by default when safe: committed changes exist at lifecycle end, a remote repo is configured, and the current branch is a feature/fix/chore-style branch. The CLEANUP scope covers the git closeout — the branch, the working tree, and the remote ref. The Committer's git remit names that closeout, and gate and test execution stays with Artisan (implementation) and Inspector (verification), whose gate outcomes the scope carries as recorded results.
-- **Phase 12 (REPORT)**: Deliver REPORT KD.
+- **Phase 12 (REPORT)**: Write the REPORT KD as a status delivery: the lifecycle result — phase reached, milestones total / checked off / failed, session, generation; the agent outcomes — phase, agent, `succeeded` | `failed`, artifact KD path; and the references — the newest composed, review, process and intent KDs. It points at those artifacts and restates none of them: no narrative of the work, no per-requirement roll-up.
 
 ### Phase Transition Rules
 

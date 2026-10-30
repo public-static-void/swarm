@@ -37,7 +37,7 @@ export const PHASE_INSTRUCTIONS = {
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
   CLEANUP: "Dispatch the Committer agent.",
-  REPORT: "Write a report KD summarizing lifecycle results. Include any corrections and amendments from the lifecycle (e.g., Correction sections) in the report content."
+  REPORT: "Write the report KD as a status delivery: the lifecycle result — phase reached, milestones total / checked off / failed, session, generation; the agent outcomes — phase, agent, succeeded or failed, artifact KD path; and the references — the newest composed, review, process and intent KD paths. Point at those artifacts and restate none of them: no narrative of the work, no per-requirement roll-up."
 };
 
 // The short-term note family is phase-agnostic on purpose. The short-term store

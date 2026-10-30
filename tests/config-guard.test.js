@@ -3673,6 +3673,177 @@ describe("governing disposition", () => {
   });
 });
 
+// The report is a status delivery: it states what the lifecycle reached and who
+// produced what, and it points at the artifacts instead of restating them. The
+// template is the shape a report is written into, so its sections are the
+// contract; the two prose sites that instruct the report are measured by the
+// same token list, because an instruction asking for a narrative undoes the
+// template it renders into.
+const REPORT_TEMPLATE = join("skills", "template-report", "SKILL.md");
+const REPORT_STATUS_SECTIONS = ["## Lifecycle Result", "## Agent Outcomes", "## References"];
+
+// Facts a section owns. A heading that survives with its fact deleted is the
+// narrowing this list detects: the section would still render, and the report
+// would say nothing.
+const REPORT_TEMPLATE_FACTS = [
+  { id: "the phase reached", section: "## Lifecycle Result", pattern: /phase reached/i },
+  {
+    id: "the milestone total, checked-off and failed counts",
+    section: "## Lifecycle Result",
+    pattern: /milestones[\s\S]*total[\s\S]*checked[- ]off[\s\S]*failed/i,
+  },
+  { id: "the session", section: "## Lifecycle Result", pattern: /\bsession\b/i },
+  { id: "the generation", section: "## Lifecycle Result", pattern: /\bgeneration\b/i },
+  { id: "the phase column", section: "## Agent Outcomes", pattern: /\bphase\b/i },
+  { id: "the agent column", section: "## Agent Outcomes", pattern: /\bagent\b/i },
+  { id: "the outcome vocabulary", section: "## Agent Outcomes", pattern: /succeeded[\s\S]*failed/i },
+  { id: "the artifact KD path column", section: "## Agent Outcomes", pattern: /artifact KD path/i },
+  { id: "the composed KD pointer", section: "## References", pattern: /composed/i },
+  { id: "the review KD pointer", section: "## References", pattern: /review/i },
+  { id: "the process KD pointer", section: "## References", pattern: /process/i },
+  { id: "the intent KD pointer", section: "## References", pattern: /intent/i },
+];
+
+// Text that asks for a synthesis rather than a status. Matched as a normalized
+// substring so a re-cased or reflowed copy still names the retired instruction.
+const REPORT_SYNTHESIS_PHRASES = [
+  "what was built",
+  "what changed",
+  "acceptance criteria",
+  "summarizing lifecycle results",
+];
+
+// The shape both instructing sites state: the three status sections' facts in
+// prose. Hyphens read as spaces, so "checked-off" and "checked off" are one
+// token and a reworded copy is still measured.
+const REPORT_SHAPE_TOKENS = [
+  "phase reached",
+  "milestones",
+  "checked off",
+  "succeeded",
+  "failed",
+  "agent outcomes",
+  "artifact kd path",
+  "references",
+  "composed",
+  "review",
+  "process",
+  "intent",
+];
+
+function normalizeReportProse(text) {
+  return text.toLowerCase().replace(/[-–—]/g, " ").replace(/\s+/g, " ");
+}
+
+function reportSynthesisFindings(text, site) {
+  const normalized = normalizeReportProse(text);
+  return REPORT_SYNTHESIS_PHRASES.filter((phrase) => normalized.includes(normalizeReportProse(phrase))).map(
+    (phrase) => `${site} still asks for "${phrase}"`
+  );
+}
+
+function reportTemplateFindings(content) {
+  const findings = [];
+  for (const heading of REPORT_STATUS_SECTIONS) {
+    if (headingSection(content, heading) === "") findings.push(`report template omits ${heading}`);
+  }
+  for (const fact of REPORT_TEMPLATE_FACTS) {
+    const section = headingSection(content, fact.section);
+    if (section !== "" && !fact.pattern.test(section)) {
+      findings.push(`report template ${fact.section} omits ${fact.id}`);
+    }
+  }
+  return [...findings, ...reportSynthesisFindings(content, "report template")];
+}
+
+function reportInstructionFindings(text, site) {
+  const normalized = normalizeReportProse(text);
+  const missing = REPORT_SHAPE_TOKENS.filter((token) => !normalized.includes(token)).map(
+    (token) => `${site} omits ${token}`
+  );
+  return [...missing, ...reportSynthesisFindings(text, site)];
+}
+
+// The Overseer's phase-12 bullet, sliced from the body so a sentence elsewhere
+// in the file cannot satisfy the shape on its behalf.
+const OVERSEER_REPORT_BULLET = /^- \*\*Phase 12 \(REPORT\)\*\*:.*$/m;
+
+function overseerReportBullet(content = readAgent("overseer.md")) {
+  const match = bodyRegion(content).match(OVERSEER_REPORT_BULLET);
+  return match ? match[0] : "";
+}
+
+function reportProseSites() {
+  return [
+    ["the Overseer REPORT bullet", () => overseerReportBullet()],
+    ["the REPORT phase instruction", () => protocolPhases.PHASE_INSTRUCTIONS.REPORT],
+  ];
+}
+
+describe("report status delivery", () => {
+  const template = readRoot(REPORT_TEMPLATE);
+
+  it("carries the three status sections, each with the facts it owns", () => {
+    expect(reportTemplateFindings(template)).toEqual([]);
+  });
+
+  it("fails when a status section is deleted", () => {
+    for (const heading of REPORT_STATUS_SECTIONS) {
+      expect(reportTemplateFindings(template.replace(heading, "")), `${heading} must be pinned`).not.toEqual(
+        []
+      );
+    }
+  });
+
+  it("fails when a section survives without its facts", () => {
+    const hollow = template.replace(/Artifact KD path/g, "Outcome");
+    expect(reportTemplateFindings(hollow)).toEqual([
+      "report template ## Agent Outcomes omits the artifact KD path column",
+    ]);
+  });
+
+  it("fails when ## What Changed is restored", () => {
+    const restored = template.replace(
+      "## References",
+      "## What Changed\n\n- {{file}} — {{change}}\n\n## References"
+    );
+    expect(reportTemplateFindings(restored)).toContain('report template still asks for "what changed"');
+  });
+
+  it("fails when What was built, at a high level is restored", () => {
+    const restored = template.replace(
+      "## Lifecycle Result",
+      "## Summary\n\n{{What was built, at a high level}}\n\n## Lifecycle Result"
+    );
+    expect(reportTemplateFindings(restored)).toContain('report template still asks for "what was built"');
+  });
+
+  it("states the same shape in the Overseer bullet and the REPORT phase instruction", () => {
+    for (const [site, read] of reportProseSites()) {
+      expect(reportInstructionFindings(read(), site)).toEqual([]);
+    }
+  });
+
+  it("fails when the phase instruction keeps asking for a synthesis", () => {
+    const retired = `Write a report KD summarizing lifecycle results. Include any corrections from the lifecycle.`;
+    expect(reportInstructionFindings(retired, "instruction")).toContain(
+      'instruction still asks for "summarizing lifecycle results"'
+    );
+  });
+
+  it("fails when the Overseer bullet drops the outcome vocabulary", () => {
+    const narrowed = overseerReportBullet().replace("succeeded", "completed");
+    expect(reportInstructionFindings(narrowed, "bullet")).not.toEqual([]);
+  });
+
+  it("scopes each site to its own text", () => {
+    // The template's status sections must not satisfy the prose sites: a report
+    // written into the template while both instructions still ask for prose is
+    // the drift this separation detects.
+    expect(reportInstructionFindings(REPORT_STATUS_SECTIONS.join("\n"), "bare headings")).not.toEqual([]);
+  });
+});
+
 // Residue the audit's corrections replaced. Each entry names one phrase the
 // old text carried and the file that carried it; a correction replaces the
 // phrase, so a surviving copy is the regression this table detects. Scoping is
@@ -3709,6 +3880,11 @@ const RESIDUE_FORBIDDEN = [
   { phrase: "A rule lives in the layer that reaches its audience", file: "AGENTS.md" },
   { phrase: "The dedicated Grep tool searches every tree on disk", file: "AGENTS.md" },
   { phrase: "the Committer holds the git reset grant", file: "AGENTS.md" },
+  // The synthesis report: the phase instruction and the template that rendered
+  // it asked for a narrative of the lifecycle. Both sites state the status
+  // delivery now, so a surviving copy is the old instruction coming back.
+  { phrase: "Write a report KD summarizing lifecycle results", file: join("plugins", "protocol-gate", "phases.js") },
+  { phrase: "What was built, at a high level", file: join("skills", "template-report", "SKILL.md") },
 ];
 
 // Normalized match: case-insensitive, with whitespace collapsed and the
