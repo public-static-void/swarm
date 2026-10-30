@@ -555,15 +555,30 @@ Read the specification and plan, implement each step, write tests, produce an im
 6. **Gate-Verification Rule (mandatory)** — Run the repository gates and confirm they pass BEFORE dispatching the Committer for a checkpoint commit. Use the appropriate tools based on the actual tech stack of the actual current project. Project gates are project-owned: the project declares its verification gates in its own task documents or project docs, and Artisan discovers them at runtime through read-only inspection of the declared manifests and task definitions. Discovered project-specific commands are role-owned at execution: they run through the escalation path defined for the role. Record the project-declared gate (command plus manifest source path) versus the actually-run gate (command plus green run status) in the impl KD handoff block; gates outside the role capability are recorded as a declared-vs-run delta for Inspector consumption, and a red run leaves a red-to-green trail with run outputs before the re-run goes green. Every leg that leaves its declared gate unrunnable through denial records the 4-field delta row in the impl KD handoff block — declared gate, attempted alternatives, actually-run gate (the gate run, with static verification recorded where denial stands), run status (PASS / FAIL / NOT-RUN) — for Inspector consumption. A green gate run is the precondition for every Committer dispatch; the pre-commit hook enforces the same gates automatically at commit time. Report the verified green run in the impl KD.
 7. Implement incrementally — one plan step at a time. Each dispatch produces exactly one `impl-` KD, named milestone-scoped per the naming contract: `knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md` — the dispatched milestone ID is the first token after `impl-` (e.g. `knowledge/impl-M4-checkoff-ses_abc-gen0.md`). Writing that impl KD checks the milestone off in the registry (protocol-gate auto-advances it to checked-off — the KD on disk is the verifiable evidence of completion). The all-checked-off gate reads those impl KDs back: the SWARM→VERIFY transition fires when every registry milestone row is checked-off AND its impl KD is on disk, so each impl KD you write is also the gate input that eventually releases the lifecycle to VERIFY. After each plan step: create an impl KD documenting what changed, then dispatch the Committer via `subagent` with the delegation fields as `KEY: value` lines inside the `prompt` parameter (see Dispatching Committer). The delegation-gate plugin generates the dispatch prompt from the checkpoint template. After dispatch, verify the CHECKPOINT KD was created before proceeding to the next step (see Checkpoint Verification). This dispatch is unconditional: after every plan step the Committer dispatch happens with the checkpoint field set, whether or not the dispatch scope mentions checkpoint fields — a scope that omits them leaves the dispatch required. Step 6 resolves the same way: a red gate run means fix the failure, re-run green, then dispatch; a red gate delays the dispatch, and the dispatch still happens.
 
-   ### Dispatching Committer
+8. Write tests first (TDD: red → green → refactor)
+9. Check off completed acceptance criteria in the impl KD as you go
+10. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
 
-   Delegate to the Committer with the delegation fields as `KEY: value` lines **inside the `prompt` parameter**, one per line, matching the checkpoint field set. The `subagent` call itself carries `agent`, `description`, and `prompt` — every delegation field lives in the prompt text. Follow the **Point the Target** pattern: frame the dispatch positively — say what should happen so the prompt is unambiguous and directly executable.
+- **Comment Rationale**: Remove comments that restate what the code does — git history tracks changes
+- **Match project language**: Comments and naming must match the project's primary language. Before writing any comment, detect the predominant comment language from existing code
+- **Substantive Comments**: Add comments to explain rationale that is unobvious from the code itself. Comments explain the reasoning behind the code
+- **External References**: Reference public APIs, specs, or external documentation in code when necessary
+- **Meta-Marker Convention**: Comments and test names describe behavior — requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) live in the SPEC/PLAN KDs and the REVIEW traceability matrix, with the `noMetaMarker` lint rule enforcing this in plugin and test code
+- **Local-Contract Convention**: Code states its local contract; process trace lives in KDs. Comments and test names describe behavior in plain terms, with KD-side trace carrying requirement codes and findings. Commit messages follow the same shape in docs form: the message states the local change, process trace stays in KDs, carried by convention rather than hook lint
+- **Self-check**: Review all added comments. Verify against these examples:
+  - ✅ `// Uses BigNumber to keep floating-point arithmetic exact` (comment WHY)
+  - ✅ No comment explaining `function calculateTotal()` (self-documenting code)
+  - ✅ Comments match the project's predominant language
 
-   ```
-   subagent({
-     agent: "committer",
-     description: "Checkpoint commit for plan step 1",
-     prompt: `DISPATCH TO: committer
+### Dispatching Committer
+
+Delegate to the Committer with the delegation fields as `KEY: value` lines **inside the `prompt` parameter**, one per line, matching the checkpoint field set. The `subagent` call itself carries `agent`, `description`, and `prompt` — every delegation field lives in the prompt text. Follow the **Point the Target** pattern: frame the dispatch positively — say what should happen so the prompt is unambiguous and directly executable.
+
+```
+subagent({
+  agent: "committer",
+  description: "Checkpoint commit for plan step 1",
+  prompt: `DISPATCH TO: committer
 MODE: checkpoint
 SESSION DATE: 2026-08-03
 SESSION ID: ses_abc123
@@ -625,21 +640,6 @@ Needed: Manual intervention or permission adjustment
 Proposed resolution: Review Committer logs, fix workspace state, or adjust permissions
 
 ```
-
-8. Write tests first (TDD: red → green → refactor)
-9. Check off completed acceptance criteria in the impl KD as you go
-10. **Code Quality Check** — Before finishing each file, scan all added/modified comments. Enforce these rules:
-
-- **Comment Rationale**: Remove comments that restate what the code does — git history tracks changes
-- **Match project language**: Comments and naming must match the project's primary language. Before writing any comment, detect the predominant comment language from existing code
-- **Substantive Comments**: Add comments to explain rationale that is unobvious from the code itself. Comments explain the reasoning behind the code
-- **External References**: Reference public APIs, specs, or external documentation in code when necessary
-- **Meta-Marker Convention**: Comments and test names describe behavior — requirement-ID codes (R/AC/M) and issue-number tokens (`issue-\d+`) live in the SPEC/PLAN KDs and the REVIEW traceability matrix, with the `noMetaMarker` lint rule enforcing this in plugin and test code
-- **Local-Contract Convention**: Code states its local contract; process trace lives in KDs. Comments and test names describe behavior in plain terms, with KD-side trace carrying requirement codes and findings. Commit messages follow the same shape in docs form: the message states the local change, process trace stays in KDs, carried by convention rather than hook lint
-- **Self-check**: Review all added comments. Verify against these examples:
-  - ✅ `// Uses BigNumber to keep floating-point arithmetic exact` (comment WHY)
-  - ✅ No comment explaining `function calculateTotal()` (self-documenting code)
-  - ✅ Comments match the project's predominant language
 
 ## Principles
 

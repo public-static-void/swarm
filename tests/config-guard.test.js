@@ -3942,6 +3942,10 @@ const RESIDUE_FORBIDDEN = [
   { phrase: "A rule lives in the layer that reaches its audience", file: "AGENTS.md" },
   { phrase: "The dedicated Grep tool searches every tree on disk", file: "AGENTS.md" },
   { phrase: "the Committer holds the git reset grant", file: "AGENTS.md" },
+  // The Committer's remit sentence: it named staging and committing as the whole
+  // operation while the body ran three git-lifecycle modes. The sentence now
+  // names the lifecycle those modes are.
+  { phrase: "Stage and commit changes as the sole operation", file: join("agents", "committer.md") },
   // The synthesis report: the phase instruction and the template that rendered
   // it asked for a narrative of the lifecycle. Both sites state the status
   // delivery now, so a surviving copy is the old instruction coming back.
@@ -4016,6 +4020,111 @@ describe("audit residue absent", () => {
       `${otherFile} still carries "${entry.phrase}"`,
     ]);
     expect(residueFindings("unrelated prose", [entry])).toEqual([]);
+  });
+});
+
+// The Committer's remit sentence summarises the role, and the mode list below it
+// is what it summarises. A sentence narrowing the whole operation to staging and
+// committing contradicted the three git-lifecycle modes the body runs, so the
+// sentence and the modes are read together and neither can drift alone.
+const COMMITTER_REMIT_MODES = [/pre flight setup/, /checkpoint commit/, /final commit and push/];
+
+function normalizeRemitProse(text) {
+  return text.toLowerCase().replace(/[-–—]/g, " ").replace(/\s+/g, " ");
+}
+
+function committerRemitFindings(content = readAgent("committer.md")) {
+  const remit = headingSection(content, "## Core Responsibility");
+  if (remit === "") return ["committer.md carries no Core Responsibility section"];
+  const normalized = normalizeRemitProse(remit);
+  const findings = [];
+  if (!normalized.includes("git lifecycle management")) {
+    findings.push("committer.md Core Responsibility does not name git lifecycle management");
+  }
+  if (!normalized.includes("sole operation")) {
+    findings.push("committer.md Core Responsibility does not name it the sole operation");
+  }
+  COMMITTER_REMIT_MODES.forEach((pattern, index) => {
+    if (!pattern.test(normalized)) {
+      findings.push(`committer.md Core Responsibility omits mode ${index + 1}`);
+    }
+  });
+  return findings;
+}
+
+describe("committer remit", () => {
+  const committer = readAgent("committer.md");
+
+  it("names git lifecycle management as the sole operation and all three modes", () => {
+    expect(committerRemitFindings(committer)).toEqual([]);
+  });
+
+  it("fails when a mode leaves the remit", () => {
+    const narrowed = committer.replace("final commit and push", "final cleanup");
+    expect(narrowed).not.toBe(committer);
+    expect(committerRemitFindings(narrowed)).not.toEqual([]);
+  });
+
+  it("fails when the operation narrows to staging and committing", () => {
+    const narrowed = committer.replace(
+      "Git lifecycle management is the sole operation",
+      "Stage and commit changes as the sole operation"
+    );
+    expect(narrowed).not.toBe(committer);
+    expect(committerRemitFindings(narrowed)).not.toEqual([]);
+  });
+});
+
+// The Protocol is one list. The steps run 1..10 without a break, and the blocks
+// that explain a step sit after the list rather than between two steps, so a
+// reader counts one sequence instead of resuming a count inside another step's
+// block.
+const PROTOCOL_STEPS = Array.from({ length: 10 }, (_, index) => index + 1);
+
+function protocolStepNumbers(section) {
+  const lines = section.split("\n");
+  const firstBlock = lines.findIndex((line) => line.startsWith("### "));
+  const listLines = firstBlock === -1 ? lines : lines.slice(0, firstBlock);
+  return listLines
+    .map((line) => line.match(/^(\d+)\.\s/))
+    .filter(Boolean)
+    .map((match) => Number(match[1]));
+}
+
+function protocolNumberingFindings(content = readAgent("artisan.md")) {
+  const section = headingSection(content, "## Protocol");
+  if (section === "") return ["artisan.md carries no Protocol section"];
+  const numbers = protocolStepNumbers(section);
+  const expected = PROTOCOL_STEPS.join(",");
+  if (numbers.join(",") !== expected) {
+    return [`artisan.md Protocol numbers read ${numbers.join(",")} instead of ${expected}`];
+  }
+  return [];
+}
+
+describe("artisan protocol numbering", () => {
+  const artisan = readAgent("artisan.md");
+
+  it("numbers the Protocol steps 1..10 contiguously above the step blocks", () => {
+    expect(protocolNumberingFindings(artisan)).toEqual([]);
+  });
+
+  it("fails on an injected gap", () => {
+    const gapped = artisan.replace(/^9\. .*\n/m, "");
+    expect(gapped).not.toBe(artisan);
+    expect(protocolNumberingFindings(gapped)).not.toEqual([]);
+  });
+
+  it("fails on a duplicated step number", () => {
+    const duplicated = artisan.replace(/^8\. /m, "7. ");
+    expect(duplicated).not.toBe(artisan);
+    expect(protocolNumberingFindings(duplicated)).not.toEqual([]);
+  });
+
+  it("fails when a block splits the list", () => {
+    const split = artisan.replace(/^10\. /m, "### Notes\n\n10. ");
+    expect(split).not.toBe(artisan);
+    expect(protocolNumberingFindings(split)).not.toEqual([]);
   });
 });
 
