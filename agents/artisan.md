@@ -610,11 +610,12 @@ Frame every redispatch positively: state the expected action (reuse the same ins
 
 Record the continuity choice on every dispatch: the dispatch SCOPE carries `same`, `fresh: new-task` for a first dispatch or a genuinely new task, or `fresh: <class>` naming the failure a re-dispatch recovered from — record the decision itself rather than the handle value. A dispatch that records no value is a dispatcher-discipline finding. Compaction resume is a separate channel: it travels through a short-term memory note (`memory_note`).
 
-**Unresumable handle** — a handle the host cannot resume reaches you as a dispatch failure, and the failure text names its class. Recover by class, recording the class in the dispatch SCOPE:
+**Unresumable handle** — a handle the host cannot resume reaches you as a dispatch failure, and the failure text carries the class when the host names one. Recover by the named class when the text names one of the three, and record the class in the dispatch SCOPE:
 
 - `session not found` → the handle is dead. Re-dispatch fresh and record `fresh: session-not-found`.
 - An agent-resolution or binding failure → the agent name resolves and the handle is not dead. Re-dispatch the same agent fresh and record `fresh: agent-resolution`.
 - A quota denial → the dispatch was refused. Retry the same handle, escalate through the Overseer when refused again, and record `fresh: quota-denied` when a fresh instance is used.
+- No class named, or a named class that does not match what the failure did → the class is unidentifiable. Record `fresh: unclassified`, re-dispatch the same agent fresh, and report the ambiguity through the Overseer.
 
 The gate adds no fallback of its own, so the recorded class is what tells a later reader which failure occurred and whether the instance changed.
 

@@ -2048,17 +2048,19 @@ describe("rule layers state their rules self-containedly", () => {
   });
 
   // The closed continuity vocabulary. `same` reuses an instance, `fresh:
-  // new-task` covers a first dispatch or a genuinely new task, and one value per
-  // failure a re-dispatch recovers from. A four-value set has no legal value for
-  // a first dispatch, so the instruction that mandates the record cannot be
-  // followed as written; a site that teaches the retired set again is the
-  // regression this pins.
+  // new-task` covers a first dispatch or a genuinely new task, `fresh:
+  // unclassified` covers a failure whose text names no class a dispatcher can act
+  // on, and one value per classed failure a re-dispatch recovers from. A set that
+  // closes before every case has a member leaves the instruction that mandates
+  // the record unfollowable, so a site teaching a set missing a member is what
+  // this pins.
   const CONTINUITY_VALUES = [
     "same",
     "fresh: new-task",
     "fresh: session-not-found",
     "fresh: agent-resolution",
     "fresh: quota-denied",
+    "fresh: unclassified",
   ];
 
   // The shape a dispatcher section uses to name the failure-keyed branch. It is
