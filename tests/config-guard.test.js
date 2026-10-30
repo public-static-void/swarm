@@ -4001,11 +4001,52 @@ describe("registry read phase set", () => {
 // one table drives one group, so a statement added at one site without the
 // other is a red run rather than a silent disagreement.
 //
-// The table holds no pair right now: the Overseer body stopped restating the
-// registry-read phase set, so the one pair it carried has no second site left
-// and retires with the prose. The machinery below stays — the next fact stated
-// twice registers here — and the completeness count is deferred until then.
-const AGREEMENT_PAIRS = [];
+// The completion obligation is the registered pair. The Inspector acts on it
+// the moment a round starts, with no skill file open, and the gate skill
+// teaches it to whichever reviewer loads the skill next, so both sites state
+// the obligation whole rather than pointing at each other.
+const REVIEW_COMPLETION_ID = "review completion obligation";
+
+// One token per half of the obligation: the verdict is written before the
+// round ends, and a review that cannot reach a finding still writes a verdict
+// naming what blocked it. Each fact carries its own pattern so a reader
+// extracts what a site actually says.
+const REVIEW_COMPLETION_FACTS = [
+  { token: "writes the REVIEW KD frontmatter verdict", pattern: /writes the REVIEW KD frontmatter verdict/i },
+  { token: "before it ends", pattern: /before it ends/i },
+  { token: "cannot reach a finding", pattern: /cannot reach a finding/i },
+  { token: "naming the blocking reason", pattern: /naming the blocking reason/i },
+];
+
+// The tokens one site carries, matched by the fact's own pattern rather than
+// read off the table, so a site that loses the obligation reports the half it
+// lost instead of reporting nothing.
+function completionTokens(text) {
+  return REVIEW_COMPLETION_FACTS.filter((fact) => fact.pattern.test(text)).map((fact) => fact.token);
+}
+
+// The Inspector's Protocol step list, above the two protocol blocks it splits
+// into. The narrower region matters: the VERIFY paragraph below the list also
+// speaks of a frontmatter verdict, and a site that matched that sentence would
+// stay green after the step itself left.
+function inspectorProtocol(content = readAgent("inspector.md")) {
+  return sectionBetween(content, "## Protocol", "At VERIFY, the REVIEW KD");
+}
+
+function gatesVerdictSection(content = readRoot(join("skills", "verification-gates", "SKILL.md"))) {
+  return headingSection(content, "## Verdicts");
+}
+
+const AGREEMENT_PAIRS = [
+  {
+    id: REVIEW_COMPLETION_ID,
+    tokens: REVIEW_COMPLETION_FACTS.map((fact) => fact.token),
+    sites: [
+      ["inspector protocol", () => completionTokens(inspectorProtocol())],
+      ["gate verdicts section", () => completionTokens(gatesVerdictSection())],
+    ],
+  },
+];
 
 // One finding per token a site states and its partner does not, so a red run
 // names the side that drifted rather than only the pair. Overrides are keyed
@@ -4025,9 +4066,9 @@ function agreementFindings(pairs, overrides = {}) {
 }
 
 // A synthetic pair with the table's shape, read entirely from fixtures. The
-// table is legitimately empty, so the mutation cases below would pass while
-// proving nothing; they run over this pair as well and keep the detector
-// falsifiable until a real pair registers.
+// detector is exercised here independently of what the table registers, so a
+// reader that agrees with its own site cannot hide a broken comparison, and the
+// token-vocabulary cases below stay provable whatever the table holds.
 function syntheticPair() {
   const sites = {
     left: ["ALPHA", "BETA"],
@@ -4047,10 +4088,10 @@ function syntheticPair() {
 
 describe("duplicated rules agree", () => {
   it("states every registered fact at both of its sites", () => {
-    // The empty table is a legal state between a pair retiring and the next one
-    // registering; the count assertion that would reject it is deferred to the
-    // milestone that restores a full pair set.
-    expect(Array.isArray(AGREEMENT_PAIRS)).toBe(true);
+    // A hole in the table would pass this case trivially, so the registered
+    // pair is named here; the count assertion over the full set belongs to the
+    // milestone that restores every pair.
+    expect(AGREEMENT_PAIRS.map((pair) => pair.id)).toContain(REVIEW_COMPLETION_ID);
     expect(agreementFindings(AGREEMENT_PAIRS)).toEqual([]);
   });
 
@@ -4086,5 +4127,31 @@ describe("duplicated rules agree", () => {
       "synthetic fact: left omits GAMMA",
       "synthetic fact: right omits GAMMA",
     ]);
+  });
+
+  it("reds the pair when a site's prose loses the obligation", () => {
+    // Both halves in one edit: the strip removes the write-before-the-end
+    // clause and the reader reports the tokens that clause carried. The strip
+    // is asserted to have landed, so a reworded site reds on the next line
+    // rather than turning this case into a no-op.
+    const live = inspectorProtocol();
+    const stripped = live.replace("writes the REVIEW KD frontmatter verdict before it ends", "");
+    expect(stripped, "the Inspector Protocol must carry the obligation to strip").not.toBe(live);
+    expect(
+      agreementFindings(AGREEMENT_PAIRS, {
+        [`${REVIEW_COMPLETION_ID}:inspector protocol`]: completionTokens(stripped),
+      })
+    ).not.toEqual([]);
+  });
+
+  it("reds the pair when the gate skill loses the obligation", () => {
+    const live = gatesVerdictSection();
+    const stripped = live.replace("a review that cannot reach a finding", "an incomplete review");
+    expect(stripped, "the gate verdicts section must carry the obligation to strip").not.toBe(live);
+    expect(
+      agreementFindings(AGREEMENT_PAIRS, {
+        [`${REVIEW_COMPLETION_ID}:gate verdicts section`]: completionTokens(stripped),
+      })
+    ).not.toEqual([]);
   });
 });

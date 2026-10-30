@@ -282,6 +282,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 1. Load the appropriate validation skill (code-review-skill, spec-validation-skill, or plan-validation-skill). Load security-audit-skill for the security-audit portion of the review. Also load verification-gates skill as the gate framework.
 2. **One pass, two sections**: perform the standard review (below) AND the security audit (below) in the same read of the codebase, then produce a single REVIEW KD with `## Review Findings` and `## Audit` sections.
 3. **Record an explicit verdict entry per gate item** in the REVIEW KD findings — prevents skipping checks mid-review.
+4. **End every round with a verdict**: a round that begins writes the REVIEW KD frontmatter verdict before it ends — `PASS` when the criteria hold, and `FAIL` naming the blocking reason when the review cannot reach a finding.
 
 At VERIFY, the REVIEW KD is the lifecycle acceptance proof: full suite re-run, dependency and SAST scans, a traceability matrix carrying declared gate → actually-run gate → run status → PASS/FAIL per row, and the frontmatter verdict field carrying the single lifecycle acceptance verdict.
 
