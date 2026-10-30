@@ -3075,6 +3075,13 @@ describe("working-directory boundary (no external literals)", () => {
     }
     expect(overseerScopeFindings(overseer)).toEqual([]);
   });
+
+  it("redirects external evidence requests to workspace-local targets in the project documentation", () => {
+    // The ground rules carried this guidance until that layer stopped naming
+    // repository paths. The architecture home is the layer that carries it now,
+    // so the boundary rule keeps its stated remedy as well as its predicate.
+    expect(readRoot("README.md")).toContain("the working directory is the boundary");
+  });
 });
 
 // The advertised-vs-granted seam (A2): the phase layer advertises a tool by
@@ -3803,6 +3810,245 @@ describe("audience purity", () => {
   });
 });
 
+// The layer policy's fact is the audience each layer reaches. It is asserted in
+// the one layer that reaches maintainers alone, in the table's own order: a
+// deleted row shifts its neighbours and a reassigned audience lands in another
+// row, so both are visible without pinning the prose around them.
+const LAYER_HEADING = "## Layers";
+const AUDIENCE_ROWS = [
+  { layer: "AGENTS.md", audience: /swarm method[\s\S]*every agent[\s\S]*every project/i },
+  { layer: "agent definition body", audience: /rules exclusive to that role[\s\S]*every project/i },
+  { layer: "agent definition frontmatter", audience: /entitlements[\s\S]*mechanism/i },
+  { layer: "skill body", audience: /guidance that loads with the task/i },
+  { layer: "README.md", audience: /this repository's architecture/i },
+];
+
+// Position-based parse of the layer table: the header row and the alignment row
+// are the table's furniture, and every other three-cell row is one layer.
+function layerRows(content) {
+  return headingSection(content, LAYER_HEADING)
+    .split("\n")
+    .filter((line) => line.trim().startsWith("|"))
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split("|")
+        .map((cell) => cell.trim())
+    )
+    .filter((cells) => cells.length === 3 && cells[0] !== "Layer" && !/^:?-+:?$/.test(cells[0]))
+    .map((cells) => ({
+      layer: cells[0].replace(/`/g, ""),
+      content: cells[1],
+      audience: cells[2],
+      text: `${cells[1]} ${cells[2]}`,
+    }));
+}
+
+function audienceLayerFindings(readme, groundRules = readRoot("AGENTS.md")) {
+  const rows = layerRows(readme);
+  const findings = [];
+  if (rows.length !== AUDIENCE_ROWS.length) {
+    findings.push(`README layers table carries ${rows.length} rows, not ${AUDIENCE_ROWS.length}`);
+  }
+  AUDIENCE_ROWS.forEach((expected, index) => {
+    const row = rows[index];
+    if (!row) {
+      findings.push(`README layers table omits row ${index + 1}: ${expected.layer}`);
+      return;
+    }
+    if (row.layer !== expected.layer) {
+      findings.push(`README layers table row ${index + 1} is "${row.layer}", not "${expected.layer}"`);
+    }
+    if (!expected.audience.test(row.text)) {
+      findings.push(`README layers table row ${index + 1} reassigns the ${expected.layer} audience`);
+    }
+  });
+  // The policy left the always-injected layer for this one; a placement section
+  // reappearing in the ground rules is a second home for the same fact.
+  if (/^##\s+Rule Placement\s*$/m.test(groundRules)) {
+    findings.push("AGENTS.md carries a Rule Placement section again");
+  }
+  return findings;
+}
+
+describe("audience layers", () => {
+  const readme = readRoot("README.md");
+
+  it("states the five layers and the audience each one reaches, in order", () => {
+    expect(audienceLayerFindings(readme)).toEqual([]);
+    expect(layerRows(readme).map((row) => row.layer)).toEqual(AUDIENCE_ROWS.map((row) => row.layer));
+  });
+
+  it("fails when a layer row is deleted", () => {
+    const deleted = readme.replace(/\n\| skill body \|.*\n/, "\n");
+    expect(audienceLayerFindings(deleted)).toContain("README layers table carries 4 rows, not 5");
+    expect(audienceLayerFindings(deleted)).toContain(
+      'README layers table row 4 is "README.md", not "skill body"'
+    );
+  });
+
+  it("fails when a row's audience is reassigned", () => {
+    const reassigned = readme.replace(
+      "| `AGENTS.md` | Swarm method | Binds every agent, in every project |",
+      "| `AGENTS.md` | Swarm method | Reaches maintainers of this repository |"
+    );
+    expect(audienceLayerFindings(reassigned)).toContain(
+      "README layers table row 1 reassigns the AGENTS.md audience"
+    );
+  });
+
+  it("fails when a placement section returns to the ground rules", () => {
+    const placement = `${readRoot("AGENTS.md")}\n## Rule Placement\n\nA rule lives in one layer.\n`;
+    expect(audienceLayerFindings(readme, placement)).toContain(
+      "AGENTS.md carries a Rule Placement section again"
+    );
+  });
+});
+
+// README states facts the tree can disprove, so each one is compared against the
+// source that owns it: the manifest names the scripts, the configuration names
+// the plugin set, and the Inspector's body owns the gate runs. A finding names
+// the fact that drifted, so the repair site is the README rather than the guard.
+const GLOBAL_CONFIG_FACT = /global OpenCode config directory/i;
+const README_ARCHITECTURE_SECTIONS = [
+  ["plugin roles", "## Plugins Enforce the Architecture Structurally"],
+  ["test run", "## Running the Tests"],
+  ["security gate", "## Running the Security Gate"],
+  ["debug logging", "## Debug Logging"],
+  ["git contract", "## The Git Contract"],
+];
+const MOVED_GUIDANCE_FACTS = [
+  ["the gitignored trees the search reaches", /node_modules\//],
+  ["the log directory", /plugins\/logs\//],
+  ["the explicit include for log files", /\*\.log/],
+  ["the working-directory boundary", /working directory is the boundary/i],
+];
+
+function readmeFactsFindings({ readme, pkg, config, inspector }) {
+  const findings = [];
+  if (!GLOBAL_CONFIG_FACT.test(readme)) {
+    findings.push("README does not state that this directory is the global OpenCode config directory");
+  }
+
+  const runSection = headingSection(readme, "## Running the Tests");
+  for (const name of Object.keys(pkg.scripts || {})) {
+    if (!runSection.includes(`\`${name}\``)) {
+      findings.push(`README test-run section omits the "${name}" script package.json declares`);
+    }
+  }
+
+  const pluginSection = headingSection(readme, "## Plugins Enforce the Architecture Structurally");
+  for (const entry of config.plugins || []) {
+    const name = entry.split("/").filter(Boolean).pop();
+    if (!pluginSection.includes(name)) {
+      findings.push(`README plugin-roles section omits the "${name}" plugin opencode.json loads`);
+    }
+  }
+
+  const gitSection = headingSection(readme, "## The Git Contract");
+  if (!/\bInspector\b/.test(gitSection)) {
+    findings.push("README git contract does not assign manual gate runs to the Inspector");
+  }
+  if (!inspector.includes("declares its verification gates")) {
+    findings.push("agents/inspector.md no longer states that it runs the declared gates");
+  }
+
+  for (const [id, heading] of README_ARCHITECTURE_SECTIONS) {
+    if (headingSection(readme, heading) === "") {
+      findings.push(`README carries no ${id} section`);
+    }
+  }
+  for (const [id, pattern] of MOVED_GUIDANCE_FACTS) {
+    if (!pattern.test(readme)) findings.push(`README omits the moved investigation guidance: ${id}`);
+  }
+  return findings;
+}
+
+describe("README facts", () => {
+  const readme = readRoot("README.md");
+  const pkg = JSON.parse(readRoot("package.json"));
+  const config = JSON.parse(readRoot("opencode.json"));
+  const inspector = readAgent("inspector.md");
+  const findingsFor = (overrides = {}) =>
+    readmeFactsFindings({ readme, pkg, config, inspector, ...overrides });
+
+  it("states the global-config fact, the moved guidance and the architecture sections", () => {
+    expect(findingsFor()).toEqual([]);
+  });
+
+  it("fails when the global-config statement is missing", () => {
+    const edited = readme.replace(/global OpenCode config directory/gi, "configuration directory");
+    expect(findingsFor({ readme: edited })).toContain(
+      "README does not state that this directory is the global OpenCode config directory"
+    );
+  });
+
+  it("fails when a declared script goes unstated", () => {
+    const edited = readme.replace("`prepare`", "`setup`");
+    expect(findingsFor({ readme: edited })).toContain(
+      'README test-run section omits the "prepare" script package.json declares'
+    );
+  });
+
+  it("fails when a loaded plugin goes unnamed", () => {
+    const edited = readme.replace("**knowledge-gate**", "**issue surfacing**");
+    expect(findingsFor({ readme: edited })).toContain(
+      'README plugin-roles section omits the "knowledge-gate" plugin opencode.json loads'
+    );
+  });
+
+  it("fails when the git contract hands manual gate runs to another role", () => {
+    const edited = readme.replace(
+      "manual gate runs belong to the Inspector",
+      "manual gate runs belong to the Committer"
+    );
+    expect(findingsFor({ readme: edited })).toContain(
+      "README git contract does not assign manual gate runs to the Inspector"
+    );
+  });
+
+  it("fails when the moved investigation guidance leaves", () => {
+    const edited = readme.replace("`node_modules/`", "the dependency tree");
+    expect(findingsFor({ readme: edited })).toContain(
+      "README omits the moved investigation guidance: the gitignored trees the search reaches"
+    );
+  });
+
+  it("fails when an architecture section is deleted", () => {
+    const edited = readme.replace("## Plugins Enforce the Architecture Structurally", "## Plugins");
+    expect(findingsFor({ readme: edited })).toContain("README carries no plugin roles section");
+  });
+
+  it("fails when the layer table loses a row", () => {
+    const edited = readme.replace(/\n\| skill body \|.*\n/, "\n");
+    expect(audienceLayerFindings(edited)).not.toEqual([]);
+  });
+
+  it("compares each fact against the source that owns it", () => {
+    // The sources drifting is the other half: a new script, a new plugin or a
+    // gate-less Inspector body makes the README stale without touching it.
+    const widened = { ...pkg, scripts: { ...pkg.scripts, coverage: "vitest run --coverage" } };
+    expect(findingsFor({ pkg: widened })).toContain(
+      'README test-run section omits the "coverage" script package.json declares'
+    );
+
+    const grown = { ...config, plugins: [...config.plugins, "./plugins/new-gate"] };
+    expect(findingsFor({ config: grown })).toContain(
+      'README plugin-roles section omits the "new-gate" plugin opencode.json loads'
+    );
+
+    const narrowed = inspector.replace(
+      "The project declares its verification gates in its own manifests, task definitions and project documentation.",
+      "The project declares its gates."
+    );
+    expect(findingsFor({ inspector: narrowed })).toContain(
+      "agents/inspector.md no longer states that it runs the declared gates"
+    );
+  });
+});
+
 // The narrowing rule every entitlement change follows: a claim broader than the
 // privilege behind it narrows to that privilege. The pin holds the rule's facts
 // as normalized tokens, and holds the section free of names — no role, file or
@@ -4086,6 +4332,13 @@ const RESIDUE_FORBIDDEN = [
   // delivery now, so a surviving copy is the old instruction coming back.
   { phrase: "Write a report KD summarizing lifecycle results", file: join("plugins", "protocol-gate", "phases.js") },
   { phrase: "What was built, at a high level", file: join("skills", "template-report", "SKILL.md") },
+  // README's three false process claims: a mechanism that keeps no audit trail,
+  // a manifest that ships three scripts rather than one, and an owner the git
+  // contract assigns to the verifying role. Each forbidden phrase and its
+  // correction cannot both be true of the same repository.
+  { phrase: "records the full dispatch text as the audit trail", file: "README.md" },
+  { phrase: "audit script only", file: "README.md" },
+  { phrase: "manual gate runs are the Artisan's job", file: "README.md" },
 ];
 
 // Normalized match: case-insensitive, with whitespace collapsed and the
