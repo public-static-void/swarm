@@ -4341,6 +4341,34 @@ const RESIDUE_FORBIDDEN = [
   { phrase: "manual gate runs are the Artisan's job", file: "README.md" },
 ];
 
+// The inventory the corrections leave, counted per file. The table above is what
+// the detectors read; this one is what a completeness claim needs, because a row
+// deleted from the table would otherwise leave a smaller table that still passes
+// every case it runs. A count that no longer matches names the file a row left.
+const RESIDUE_INVENTORY = [
+  [join("plugins", "protocol-gate", "index.js"), 4],
+  [join("plugins", "delegation-gate", "index.js"), 1],
+  [join("plugins", "protocol-gate", "phases.js"), 2],
+  [join("agents", "overseer.md"), 5],
+  ["AGENTS.md", 3],
+  [join("agents", "committer.md"), 1],
+  [join("skills", "template-report", "SKILL.md"), 1],
+  ["README.md", 3],
+];
+
+// Process commentary is residue of the same kind and is judged the same way, with
+// one difference: it is scoped to a comment block instead of a whole file. A
+// plugin file may keep a history note none of this audit's edits touched, so a
+// file-wide entry would report prose that is deliberately deferred. Each entry
+// names the code marker whose comment block it reads.
+const PROCESS_COMMENTARY = ["previously", "used to", "no longer"].flatMap((phrase) =>
+  [
+    [join("plugins", "protocol-gate", "phases.js"), "export const PHASE_INSTRUCTIONS = {"],
+    [join("plugins", "delegation-gate", "index.js"), "debug(`RAW PROMPT"],
+    [join("plugins", "protocol-gate", "index.js"), "function noWalkFallback"],
+  ].map(([file, anchor]) => ({ phrase, file, anchor }))
+);
+
 // Normalized match: case-insensitive, with whitespace collapsed and the
 // markdown wrappers dropped, so a reflowed, re-cased or re-wrapped copy of a
 // phrase is still that phrase. Code-span backticks and template braces carry no
@@ -4358,6 +4386,29 @@ function residueFindings(content, entries) {
   return entries
     .filter((entry) => normalized.includes(normalizeResidueProse(entry.phrase)))
     .map((entry) => `${entry.file} still carries "${entry.phrase}"`);
+}
+
+// The comment block immediately above a code marker: the contiguous run of `//`
+// lines that ends on the line before the anchor. A null return means the anchor
+// left the file, which is a finding rather than a pass — a moved anchor would
+// otherwise silence every entry scoped to it.
+function commentRegionAbove(content, anchor) {
+  const lines = content.split("\n");
+  const index = lines.findIndex((line) => line.includes(anchor));
+  if (index === -1) return null;
+  let start = index;
+  while (start > 0 && lines[start - 1].trim().startsWith("//")) start -= 1;
+  return lines.slice(start, index).join("\n");
+}
+
+function processCommentaryFindings(content, entries) {
+  return entries.flatMap((entry) => {
+    const region = commentRegionAbove(content, entry.anchor);
+    if (region === null) return [`${entry.file} carries no "${entry.anchor}" anchor`];
+    return residueFindings(region, [entry]).map(
+      (finding) => `${finding}, in the comment above "${entry.anchor}"`
+    );
+  });
 }
 
 describe("audit residue absent", () => {
@@ -4408,6 +4459,56 @@ describe("audit residue absent", () => {
       `${otherFile} still carries "${entry.phrase}"`,
     ]);
     expect(residueFindings("unrelated prose", [entry])).toEqual([]);
+  });
+
+  it("holds the twenty rows the corrections leave, each under its own file", () => {
+    // Completeness is its own fact: the detectors above prove each row works,
+    // and these assertions prove the table still carries every row.
+    expect(RESIDUE_FORBIDDEN).toHaveLength(20);
+    for (const [file, count] of RESIDUE_INVENTORY) {
+      const rows = RESIDUE_FORBIDDEN.filter((entry) => entry.file === file);
+      expect(rows, `${file} carries ${rows.length} rows, not ${count}`).toHaveLength(count);
+    }
+    const distinct = new Set(RESIDUE_FORBIDDEN.map((entry) => `${entry.file}::${entry.phrase}`));
+    expect(distinct.size).toBe(RESIDUE_FORBIDDEN.length);
+    const files = [...new Set(RESIDUE_FORBIDDEN.map((entry) => entry.file))].sort();
+    expect(files).toEqual(RESIDUE_INVENTORY.map(([file]) => file).sort());
+  });
+
+  it("keeps the corrected comment regions free of process commentary", () => {
+    const files = [...new Set(PROCESS_COMMENTARY.map((entry) => entry.file))];
+    const findings = files.flatMap((file) =>
+      processCommentaryFindings(
+        readRoot(file),
+        PROCESS_COMMENTARY.filter((entry) => entry.file === file)
+      )
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it("reds a history note reintroduced above an anchored marker", () => {
+    const entry = PROCESS_COMMENTARY[0];
+    const source = readRoot(entry.file);
+    const injected = source.replace(
+      entry.anchor,
+      `// Previously the table stated this inline.\n${entry.anchor}`
+    );
+    expect(injected, "the anchor must be present to inject above").not.toBe(source);
+    expect(processCommentaryFindings(injected, [entry])).toEqual([
+      `${entry.file} still carries "previously", in the comment above "${entry.anchor}"`,
+    ]);
+  });
+
+  it("leaves a deferred history note outside the anchored region legal", () => {
+    // The protocol gate keeps a history note this audit does not own, so a
+    // file-wide entry would report deferred prose. The anchored entries pass on
+    // the same file that a file-wide match would red.
+    const file = join("plugins", "protocol-gate", "index.js");
+    const source = readRoot(file);
+    const anchored = PROCESS_COMMENTARY.filter((entry) => entry.file === file);
+    expect(anchored.length).toBeGreaterThan(0);
+    expect(processCommentaryFindings(source, anchored)).toEqual([]);
+    expect(residueFindings(source, [{ phrase: "previously", file }])).not.toEqual([]);
   });
 });
 
@@ -4627,7 +4728,60 @@ function reviewVerdictAdjudication(content = readRoot(join("skills", "template-r
   return headingSection(content, "## Verdict");
 }
 
+// The README's three corrected facts are the one pair whose sites live in
+// different files: the document that states them and the sources that own them.
+// Each side is read as one token per fact, so a claim dropped from the document
+// and a fact added to a source both name the fact that drifted.
+const README_FACTS_ID = "README three facts";
+
+function declaredScriptFacts(pkg) {
+  return Object.keys(pkg.scripts || {});
+}
+
+function declaredPluginFacts(config) {
+  return (config.plugins || []).map((entry) => entry.split("/").filter(Boolean).pop());
+}
+
+// What the document claims, read from the section that makes each claim.
+function readmeClaimTokens(readme = readRoot("README.md")) {
+  const tokens = [];
+  const runSection = headingSection(readme, "## Running the Tests");
+  for (const name of declaredScriptFacts(JSON.parse(readRoot("package.json")))) {
+    if (runSection.includes(`\`${name}\``)) tokens.push(`script:${name}`);
+  }
+  const pluginSection = headingSection(readme, "## Plugins Enforce the Architecture Structurally");
+  for (const name of declaredPluginFacts(JSON.parse(readRoot("opencode.json")))) {
+    if (pluginSection.includes(name)) tokens.push(`plugin:${name}`);
+  }
+  if (/\bInspector\b/.test(headingSection(readme, "## The Git Contract"))) {
+    tokens.push("gate runs:Inspector");
+  }
+  return tokens;
+}
+
+// What the sources declare: the manifest's scripts, the loaded plugin set, and
+// the role whose body states that it runs the declared gates.
+function sourceFactTokens(
+  pkg = JSON.parse(readRoot("package.json")),
+  config = JSON.parse(readRoot("opencode.json")),
+  inspector = readAgent("inspector.md")
+) {
+  return [
+    ...declaredScriptFacts(pkg).map((name) => `script:${name}`),
+    ...declaredPluginFacts(config).map((name) => `plugin:${name}`),
+    ...(inspector.includes("declares its verification gates") ? ["gate runs:Inspector"] : []),
+  ];
+}
+
 const AGREEMENT_PAIRS = [
+  {
+    id: README_FACTS_ID,
+    tokens: sourceFactTokens(),
+    sites: [
+      ["README claims", () => readmeClaimTokens()],
+      ["declaring sources", () => sourceFactTokens()],
+    ],
+  },
   {
     id: REVIEW_COMPLETION_ID,
     tokens: REVIEW_COMPLETION_FACTS.map((fact) => fact.token),
@@ -4693,14 +4847,25 @@ function syntheticPair() {
 }
 
 describe("duplicated rules agree", () => {
-  it("states every registered fact at both of its sites", () => {
-    // A hole in the table would pass this case trivially, so every registered
-    // pair is named here; the count assertion over the full set belongs to the
-    // milestone that restores every pair.
+  it("holds exactly the four pairs the corrections leave", () => {
+    // The set, not only its members: a fifth pair, or a re-registered retired
+    // one, would pass a presence check and pass every case it runs.
+    expect(AGREEMENT_PAIRS.map((pair) => pair.id).sort()).toEqual(
+      [README_FACTS_ID, REVIEW_COMPLETION_ID, EVIDENCE_SHAPE_ID, PLAN_SELF_CONSISTENCY_ID].sort()
+    );
+  });
+
+  it("keeps the retired pairs out of the table", () => {
+    // Both retired with the entitlements they matched: the Overseer's
+    // registry-read prose, and the issue-read grants. Named so a later
+    // re-registration reds rather than silently returning.
     const registered = AGREEMENT_PAIRS.map((pair) => pair.id);
-    for (const id of [REVIEW_COMPLETION_ID, EVIDENCE_SHAPE_ID, PLAN_SELF_CONSISTENCY_ID]) {
-      expect(registered).toContain(id);
+    for (const retired of ["registry read phase set", "issue_read reachability"]) {
+      expect(registered).not.toContain(retired);
     }
+  });
+
+  it("states every registered fact at both of its sites", () => {
     expect(agreementFindings(AGREEMENT_PAIRS)).toEqual([]);
   });
 
@@ -4762,5 +4927,25 @@ describe("duplicated rules agree", () => {
         [`${REVIEW_COMPLETION_ID}:gate verdicts section`]: completionTokens(stripped),
       })
     ).not.toEqual([]);
+  });
+
+  it("reds the README pair when a claim leaves the document", () => {
+    const live = readRoot("README.md");
+    const stripped = live.replace("`prepare` points", "`setup` points");
+    expect(stripped, "the test-run section must state the prepare script to strip").not.toBe(live);
+    expect(
+      agreementFindings(AGREEMENT_PAIRS, {
+        [`${README_FACTS_ID}:README claims`]: readmeClaimTokens(stripped),
+      })
+    ).toEqual([`${README_FACTS_ID}: README claims omits script:prepare`]);
+  });
+
+  it("reds the README pair when a source gains a fact the document does not state", () => {
+    // The other direction: the document is untouched and a source grows, which
+    // makes the claim stale without an edit to the file that makes it.
+    const grown = [...sourceFactTokens(), "script:coverage"];
+    expect(
+      agreementFindings(AGREEMENT_PAIRS, { [`${README_FACTS_ID}:declaring sources`]: grown })
+    ).toEqual([`${README_FACTS_ID}: declaring sources names script:coverage`]);
   });
 });
