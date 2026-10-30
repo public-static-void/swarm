@@ -1783,6 +1783,36 @@ function citationSites() {
   ];
 }
 
+// The evidence rule is stated where the matrix is defined and where the gate
+// renders it into a dispatch: the gate protocol that owns the traceability
+// matrix, and the review template a reviewer fills in. A row is evidence only
+// when it carries captured output, so a paraphrase of a result nobody captured
+// — and a row leaning on another row's capture — is the drift this catches.
+const EVIDENCE_SHAPE_ID = "evidence shape";
+
+const EVIDENCE_SHAPE_FACTS = [
+  { token: "the declared command's literal output", pattern: /the declared command's literal output/i },
+  { token: "a durable path to the captured artifact", pattern: /a durable path to the captured artifact/i },
+  { token: "each row stands alone", pattern: /each row stands alone/i },
+];
+
+// The tokens one site carries, matched by the fact's own pattern rather than
+// read off the table, so a site that loses a clause reports the clause it lost.
+function evidenceShapeTokens(text) {
+  return EVIDENCE_SHAPE_FACTS.filter((fact) => fact.pattern.test(text)).map((fact) => fact.token);
+}
+
+// The clause sits under the traceability matrix at both sites, so the region
+// runs from the matrix heading to the next section: a clause left elsewhere in
+// the file cannot keep the site green after its matrix lost it.
+function gatesEvidenceClause(content = readRoot(join("skills", "verification-gates", "SKILL.md"))) {
+  return sectionBetween(content, "### Traceability Matrix", "### Enforcement Rules");
+}
+
+function reviewEvidenceClause(content = readRoot(join("skills", "template-review", "SKILL.md"))) {
+  return sectionBetween(content, "### Traceability Matrix", "## Audit");
+}
+
 describe("VERIFY evidence shape", () => {
   const inspector = readAgent("inspector.md");
   const gates = readRoot(join("skills", "verification-gates", "SKILL.md"));
@@ -1809,6 +1839,38 @@ describe("VERIFY evidence shape", () => {
       expect(content).toContain("Declared Gate");
       expect(content).toContain("Actually-Run Gate");
     }
+  });
+
+  // A row's evidence is the run itself: the command's literal output, or a
+  // durable path to the capture, and never a summary of a run the row does not
+  // hold. Each row stands alone so one unrun command cannot be carried by a
+  // sibling row that did run.
+  it("makes every traceability row evidence of its own declared command", () => {
+    const expected = EVIDENCE_SHAPE_FACTS.map((fact) => fact.token);
+    for (const [site, clause] of [
+      ["gate protocol matrix", gatesEvidenceClause()],
+      ["review template matrix", reviewEvidenceClause()],
+    ]) {
+      expect(clause, `${site} must carry the traceability matrix`).toContain("| Req ID |");
+      expect(evidenceShapeTokens(clause), `${site} must state the whole evidence rule`).toEqual(expected);
+    }
+  });
+
+  it("reds a matrix whose evidence clause is paraphrased away", () => {
+    // The strip is asserted to have landed, so a reworded clause reds on the
+    // next line instead of turning this into a no-op.
+    const gateClause = gatesEvidenceClause();
+    const gateStripped = gateClause.replace(/each row stands alone/i, "each row expounds on the run");
+    expect(gateStripped, "the gate matrix must carry the standalone clause to strip").not.toBe(gateClause);
+    expect(evidenceShapeTokens(gateStripped)).not.toEqual(EVIDENCE_SHAPE_FACTS.map((fact) => fact.token));
+
+    const reviewClause = reviewEvidenceClause();
+    const reviewStripped = reviewClause.replace(
+      /the declared command's literal output/i,
+      "a summary of the declared command"
+    );
+    expect(reviewStripped, "the review matrix must carry the literal-output clause to strip").not.toBe(reviewClause);
+    expect(evidenceShapeTokens(reviewStripped)).not.toEqual(EVIDENCE_SHAPE_FACTS.map((fact) => fact.token));
   });
 
   it("refuses a FAIL with an unusable reopen target under the stale-PASS recency rule", () => {
@@ -4001,10 +4063,9 @@ describe("registry read phase set", () => {
 // one table drives one group, so a statement added at one site without the
 // other is a red run rather than a silent disagreement.
 //
-// The completion obligation is the registered pair. The Inspector acts on it
-// the moment a round starts, with no skill file open, and the gate skill
-// teaches it to whichever reviewer loads the skill next, so both sites state
-// the obligation whole rather than pointing at each other.
+// The completion obligation is acted on the moment a round starts, with no
+// skill file open, and taught to whichever reviewer loads the gate skill next,
+// so both sites state it whole rather than pointing at each other.
 const REVIEW_COMPLETION_ID = "review completion obligation";
 
 // One token per half of the obligation: the verdict is written before the
@@ -4018,11 +4079,32 @@ const REVIEW_COMPLETION_FACTS = [
   { token: "naming the blocking reason", pattern: /naming the blocking reason/i },
 ];
 
+// The DECOMPOSE pass keeps a plan internally consistent. The planner runs it
+// while decomposing and its completeness step is where the obligation is
+// stated; the reviewer adjudicating a contradiction reads the same obligation
+// in the verdict section it writes.
+const PLAN_SELF_CONSISTENCY_ID = "plan self-consistency pass";
+
+const PLAN_SELF_CONSISTENCY_FACTS = [
+  { token: "mutually unsatisfiable", pattern: /mutually unsatisfiable/i },
+  { token: "read from the tree", pattern: /read from the tree/i },
+  { token: "self-consistency pass", pattern: /self-consistency pass/i },
+  { token: "recorded in the PLAN", pattern: /recorded in the PLAN/i },
+];
+
 // The tokens one site carries, matched by the fact's own pattern rather than
-// read off the table, so a site that loses the obligation reports the half it
-// lost instead of reporting nothing.
+// read off the table, so a site that loses half the obligation reports the half
+// it lost instead of reporting nothing.
+function factTokens(facts, text) {
+  return facts.filter((fact) => fact.pattern.test(text)).map((fact) => fact.token);
+}
+
 function completionTokens(text) {
-  return REVIEW_COMPLETION_FACTS.filter((fact) => fact.pattern.test(text)).map((fact) => fact.token);
+  return factTokens(REVIEW_COMPLETION_FACTS, text);
+}
+
+function planSelfConsistencyTokens(text) {
+  return factTokens(PLAN_SELF_CONSISTENCY_FACTS, text);
 }
 
 // The Inspector's Protocol step list, above the two protocol blocks it splits
@@ -4037,6 +4119,17 @@ function gatesVerdictSection(content = readRoot(join("skills", "verification-gat
   return headingSection(content, "## Verdicts");
 }
 
+// The Pathfinder's completeness step closes the protocol list, so the region
+// runs from the step to the next section. An empty region means the step left,
+// which the pair reports as every token missing.
+function pathfinderSelfConsistencyStep(content = readAgent("pathfinder.md")) {
+  return sectionBetween(content, "8. Verify completeness", "\n## Principles");
+}
+
+function reviewVerdictAdjudication(content = readRoot(join("skills", "template-review", "SKILL.md"))) {
+  return headingSection(content, "## Verdict");
+}
+
 const AGREEMENT_PAIRS = [
   {
     id: REVIEW_COMPLETION_ID,
@@ -4044,6 +4137,22 @@ const AGREEMENT_PAIRS = [
     sites: [
       ["inspector protocol", () => completionTokens(inspectorProtocol())],
       ["gate verdicts section", () => completionTokens(gatesVerdictSection())],
+    ],
+  },
+  {
+    id: EVIDENCE_SHAPE_ID,
+    tokens: EVIDENCE_SHAPE_FACTS.map((fact) => fact.token),
+    sites: [
+      ["gate evidence clause", () => evidenceShapeTokens(gatesEvidenceClause())],
+      ["review evidence clause", () => evidenceShapeTokens(reviewEvidenceClause())],
+    ],
+  },
+  {
+    id: PLAN_SELF_CONSISTENCY_ID,
+    tokens: PLAN_SELF_CONSISTENCY_FACTS.map((fact) => fact.token),
+    sites: [
+      ["pathfinder completeness step", () => planSelfConsistencyTokens(pathfinderSelfConsistencyStep())],
+      ["review verdict", () => planSelfConsistencyTokens(reviewVerdictAdjudication())],
     ],
   },
 ];
@@ -4088,10 +4197,13 @@ function syntheticPair() {
 
 describe("duplicated rules agree", () => {
   it("states every registered fact at both of its sites", () => {
-    // A hole in the table would pass this case trivially, so the registered
+    // A hole in the table would pass this case trivially, so every registered
     // pair is named here; the count assertion over the full set belongs to the
     // milestone that restores every pair.
-    expect(AGREEMENT_PAIRS.map((pair) => pair.id)).toContain(REVIEW_COMPLETION_ID);
+    const registered = AGREEMENT_PAIRS.map((pair) => pair.id);
+    for (const id of [REVIEW_COMPLETION_ID, EVIDENCE_SHAPE_ID, PLAN_SELF_CONSISTENCY_ID]) {
+      expect(registered).toContain(id);
+    }
     expect(agreementFindings(AGREEMENT_PAIRS)).toEqual([]);
   });
 

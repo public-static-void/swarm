@@ -41,6 +41,12 @@ nothing, leaving the phase at VERIFY for a user decision. A `FAIL` that both nam
 targets and carries the section is `VERDICT_AMBIGUOUS` and blocks. An empty section
 counts as absent, and `PASS` ignores the section.
 
+Where a finding reports a contradiction, it names which half holds and why: of two
+plan instructions that are mutually unsatisfiable, it states which one the tree
+supports, and where a premise was not read from the tree, it names the premise the
+tree refutes. The self-consistency pass recorded in the PLAN is the record the
+finding measures against, so a finding that contradicts it says so.
+
 ## Verdict Rules (reopen_target mandate)
 
 - A **FAIL** MUST carry `reopen_target` in the frontmatter, naming the checked-off
@@ -81,6 +87,8 @@ counts as absent, and `PASS` ignores the section.
 | ------ | --------- | --------- | ------------- | ----------------- | -------------- | ----------- |
 | R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
 | R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
+
+Each row's evidence is the declared command's literal output or a durable path to the captured artifact, and each row stands alone — a paraphrase of an output, and a row that leans on another row's capture, are not evidence.
 
 ## Audit
 

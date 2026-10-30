@@ -44,6 +44,8 @@ Every REVIEW KD must include a traceability matrix like this:
 | R###   | P###      | `src/login.tsx`   | `npm test`      | `npm test`        | `npm test login` | PASS / FAIL |
 | R###   | P###      | `config/auth.yml` | `npm test`      | `npm test`        | Lint passes      | PASS / FAIL |
 
+A row's evidence is the declared command's literal output or a durable path to the captured artifact — a saved log, a report file, a commit that carries the capture. Each row stands alone: a paraphrase of an output nobody captured, and a row carried by a sibling row that did run, are both non-evidence, so the reader re-runs the command or opens the capture.
+
 ### Enforcement Rules
 
 1. **Every acceptance criterion** in the SPEC KD must have at least one PASS or FAIL entry in the traceability matrix
