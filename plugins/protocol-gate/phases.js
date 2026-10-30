@@ -24,7 +24,8 @@ export const STATES = {
 // The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
 export const PHASE_INSTRUCTIONS = {
   // Absolute single-action directive: names the tool and content, no reasoning gap.
-  // Positive framing per AGENTS.md — no negative "do NOT" instructions.
+  // Each instruction states the expected action; limiter words belong to the
+  // structural layers that enforce them.
   INTENT: "Call write to create an intent KD in one complete write — assemble every section and every amendment or correction before the first write, because the INTENT edit window closes on that successful write. Fill the Raw Request from the classification: a task specification addressed to the swarm is copied verbatim, because a paraphrase mangles what downstream agents must execute; a discussion with you about process is summarized, and its gist — what is to be done — becomes the request, with the message listed in Triage Notes beside its disposition. A message about your conduct or the process state is a disposition only, never request material. Discriminating test: would a downstream agent need these exact words to do its job? Position is a tie-breaker, not the rule — a later message carrying the task specification becomes the Raw Request verbatim. Distill later follow-up messages into Triage Notes with their disposition. The Explorer handles all codebase details after dispatch.",
   PREFLIGHT: "Dispatch the Committer agent.",
   EXPLORE: "Dispatch the Explorer agent.",
@@ -36,7 +37,7 @@ export const PHASE_INSTRUCTIONS = {
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
   CLEANUP: "Dispatch the Committer agent.",
-  REPORT: "Write a report KD summarizing lifecycle results. Include any corrections and amendments from the lifecycle (e.g., Correction sections) in the report content."
+  REPORT: "Write the report KD as a status delivery: the lifecycle result — phase reached, milestones total / checked off / failed, session, generation; the agent outcomes — phase, agent, succeeded or failed, artifact KD path; and the references — the newest composed, review, process and intent KD paths. Point at those artifacts and restate none of them: no narrative of the work, no per-requirement roll-up."
 };
 
 // The short-term note family is phase-agnostic on purpose. The short-term store
@@ -92,7 +93,7 @@ export function admitTool(phaseName, tool) {
 // lists glob advertises the granted scope alongside the name. The grant stands
 // — widening it to match the advertisement is the failure this closes.
 const OVERSEER_GLOB_SCOPE =
-  "ONLY knowledge/*.md, knowledge/impl-*.md, knowledge/checkpoint-*.md — docs-scoped: the Overseer glob grant stays as granted and is never widened to satisfy this advertisement";
+  "ONLY knowledge/intent-*.md, knowledge/report-*.md, knowledge/milestones-*.md — docs-scoped: the Overseer glob grant stays as granted and is never widened to satisfy this advertisement";
 
 export const TOOL_RESTRICTIONS = {
   INTENT: { read: "ONLY intent KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", edit: "ONLY knowledge/intent-*.md files — the intent KD is the phase deliverable; other files are not editable in INTENT phase", shell: "ONLY mkdir for knowledge directory creation" },
@@ -106,5 +107,5 @@ export const TOOL_RESTRICTIONS = {
   EXTRACT: { glob: OVERSEER_GLOB_SCOPE },
   EVOLVE: { glob: OVERSEER_GLOB_SCOPE },
   CLEANUP: { glob: OVERSEER_GLOB_SCOPE },
-  REPORT: { read: "ONLY knowledge KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
+  REPORT: { read: "ONLY report KDs — delegation templates are JSON files auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)" }
 };

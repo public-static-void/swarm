@@ -44,6 +44,8 @@ Every REVIEW KD must include a traceability matrix like this:
 | R###   | P###      | `src/login.tsx`   | `npm test`      | `npm test`        | `npm test login` | PASS / FAIL |
 | R###   | P###      | `config/auth.yml` | `npm test`      | `npm test`        | Lint passes      | PASS / FAIL |
 
+A row's evidence is the declared command's literal output or a durable path to the captured artifact — a saved log, a report file, a commit that carries the capture. Each row stands alone: a paraphrase of an output nobody captured, and a row carried by a sibling row that did run, are both non-evidence, so the reader re-runs the command or opens the capture.
+
 ### Enforcement Rules
 
 1. **Every acceptance criterion** in the SPEC KD must have at least one PASS or FAIL entry in the traceability matrix
@@ -141,6 +143,8 @@ VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the ful
 | PASS        | All criteria met, clean | VERIFY advances under the fresh-PASS rule — the review KD must be newer than the newest impl KD; a stale PASS blocks |
 | FAIL        | Specific fixable issues | The gate auto-regresses VERIFY→SWARM and reopens checked-off milestone rows; the producer fixes the findings and re-submits |
 | FAIL + `Escalation` section | Design-level flaw | The gate blocks VERIFY advancement with `REOPEN_TARGET_INVALID reason=no-reopen-target`, regresses nothing and reopens nothing; the phase stays at VERIFY for a decision that reaches the user through the Overseer — Happy to Delete |
+
+The verdict is written before the round ends: a review that starts writes the REVIEW KD frontmatter verdict before it ends, and a review that cannot reach a finding writes `FAIL` naming the blocking reason. A round with no verdict leaves nothing for the gate to read, so an unfinished review reads as unreviewed rather than as failed.
 
 A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY→SWARM regression (once per KD filename, bounded by the lifecycle cycle cap). Every FAIL names its rows in the frontmatter `reopen_target` field — a list or a scalar of checked-off milestone row ids (`reopen_target: [M3, M7]`). Prose is provenance: the field selects the rows, so milestone-shaped tokens in findings, the traceability matrix or a `References` list stay provenance. A field that is absent, empty, malformed, declared twice, or naming a row the registry does not have is refused with `REOPEN_TARGET_INVALID` and the reason (`no-reopen-target`, `invalid-reopen-target`, `ambiguous-target`, `unresolvable-reopen-target`) — the gate blocks, regresses nothing, and reopens nothing; re-dispatch the review with a usable field. A target naming a row that is not checked-off records `REOPEN_NOOP reason=not-checked-off`, and `PASS` records `REOPEN_TARGET_IGNORED` and reopens nothing.
 

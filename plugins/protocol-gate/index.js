@@ -318,7 +318,7 @@ function getActiveLifecycleGeneration(sessionPhaseMap, sessionID) {
       ["activeGen", anchor.generation],
       ["anchor", anchor.file],
       ["others", others]
-    ], `several lifecycle INTENTs are on disk for this session — the newest anchors the running lifecycle; the others belong to prior or abandoned lifecycles and stay inert only where their generation differs`, `LIFECYCLE_ANCHOR_AMBIGUOUS|${sessionID}|a:${anchor.generation}|f:${anchor.file}|o:${others}`);
+    ], `several lifecycle INTENTs are on disk for this session, so the anchor rule decides which generation this lifecycle runs at: newest by modification time, then by generation, then by name, and every lifecycle-scoped lookup reads artifacts of that generation`, `LIFECYCLE_ANCHOR_AMBIGUOUS|${sessionID}|a:${anchor.generation}|f:${anchor.file}|o:${others}`);
   }
   if (anchor.generation === persisted) return persisted;
   gateRecordEvent("LIFECYCLE_GENERATION_RECONCILED", [
@@ -3258,11 +3258,13 @@ function nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, fallbackTarg
   return { target: null, outcome: "diverged", head, queue: plan };
 }
 
-// The no-walk fallback each forward-advance site supplies (FR-15): the serial
-// next phase, or VERIFY where a force-advance has always pushed forward. Named
-// here so no site spells a forward target of its own.
+// The no-walk fallback each forward-advance site supplies: the phase after the
+// current one, capped at the terminal REPORT phase. A force-advance takes the
+// same step, so its target sits ahead of the phase it leaves and REPORT yields
+// a no-op. From VERIFY the step lands in EXTRACT — a deliberate forward escape.
+// Named here so no site spells a forward target of its own.
 function noWalkFallback(currentPhase, forceToVerify = false) {
-  return forceToVerify ? STATES.VERIFY : currentPhase + 1;
+  return forceToVerify ? Math.min(currentPhase + 1, STATES.REPORT) : currentPhase + 1;
 }
 
 // Names the override/queue state for a refusal: the phase the override pins,
@@ -3613,7 +3615,7 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
           ["registryMtime", registryMtime],
           ["since", overrideAnchor],
           ["reason", "stale-registry"]
-        ], `every milestone row is checked-off with its impl KD on disk, so the gate passed; the pin's fresh-evidence anchor is unmet and a checked-off row is never rewritten — walk the phase past SWARM or land a row transition, because evidence alone cannot satisfy this pin`, `SWARM_GATE_PARKED|${sessionID}|r:${registryMtime}|s:${overrideAnchor}`);
+        ], `every milestone row is checked-off with its impl KD on disk, so the all-checked-off gate passed; the override's freshness pin is unmet because the registry write that would carry a fresh timestamp cannot happen — a checked-off row is never rewritten. Walk the phase past SWARM with /phase: evidence cannot satisfy the pin and a retry changes nothing`, `SWARM_GATE_PARKED|${sessionID}|r:${registryMtime}|s:${overrideAnchor}`);
       }
     } else if (overrideActive && terminalHop) {
       // A terminal override hop completes on its ordinary advancement gate.
@@ -5816,14 +5818,17 @@ async function protocolGateServer(input, options) {
               throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/intent-*.md only — delegation templates are auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", "Read from knowledge/intent-*.md only");
             }
           } else {
-            // REPORT phase: any knowledge KD (needed to compose the report).
+            // REPORT phase: the report KDs the Overseer authored earlier in this
+            // lifecycle, read back to point at them. Composing the report from
+            // other KD families is not this phase's job — the report is a status
+            // delivery — so the reach stops at the report family.
             // Skills are auto-injected via the skill tool — never read here.
             // Delegation templates are auto-injected by delegation-gate at
             // dispatch — not read here.
-            const isKnowledge = relPath.startsWith("knowledge/") || relPath.includes("/knowledge/");
-            if (!isKnowledge) {
-              debug(`read: BLOCKED phase=${phaseName} path=${path} (reads restricted to knowledge KDs)`);
-              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge KDs only — delegation templates are auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", "Read from knowledge KDs only");
+            const isReportKD = /knowledge\/report-/i.test(relPath);
+            if (!isReportKD) {
+              debug(`read: BLOCKED phase=${phaseName} path=${path} (REPORT reads restricted to report KDs)`);
+              throw new ProtocolGateError(ERROR_TEMPLATES.BLOCKED_WRONG_PHASE.code, "❌ BLOCKED: Wrong phase. Read from knowledge/report-*.md only — delegation templates are auto-injected by delegation-gate at dispatch, never read; KD-format templates are auto-loaded skills (load via the skill tool)", "Read from knowledge/report-*.md only");
             }
           }
         }
@@ -6665,6 +6670,11 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       walkExists: (sessionID) => walkExists(sessionPhaseMap, sessionID),
       nextForwardPhase: (sessionID, currentPhase, fallbackTarget) =>
         nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, fallbackTarget),
+      // The no-walk fallback as a value: a returned reference, not a call path,
+      // so the standing suite reads every phase's forced target off the public
+      // surface without seeding stuck state.
+      noWalkFallback: (currentPhase, forceToVerify = false) =>
+        noWalkFallback(currentPhase, forceToVerify),
       argsFromPrompt,
       saveState,
       loadState,

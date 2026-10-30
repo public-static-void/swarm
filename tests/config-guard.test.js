@@ -936,6 +936,77 @@ describe("agent permission allowlists", () => {
 // Only the leading region is read — a file carrying more than one `---` region
 // (the multi-region skill template shape) is out of scope by explicit decision,
 // so a second region is never folded in and never silently scanned.
+//
+// The region's shape is pinned beside its comment purity: a fixed key set and an
+// ordered table of action/resource/effect triples. An entry the rules parser
+// drops for a missing key otherwise reads everywhere else as an absent rule, so
+// a shape defect is named here rather than surfacing as a wrong grant.
+const METADATA_KEYS = ["description", "mode", "steps", "request", "permissions"];
+const PERMISSION_KEYS = ["action", "resource", "effect"];
+
+// Top-level keys of the leading region, in file order. Indented lines belong to
+// the key above them, so a `- action:` entry is never read as a top-level key.
+function metadataTopLevelKeys(content) {
+  const region = frontmatterRegion(content);
+  if (!region) return [];
+  const lines = content.split("\n");
+  const keys = [];
+  for (let i = region.start + 1; i < region.end; i++) {
+    const m = lines[i].match(/^([A-Za-z_][\w-]*):/);
+    if (m) keys.push(m[1]);
+  }
+  return keys;
+}
+
+// Declared-key findings for every definition, reported per file so a mutation
+// names its offender rather than only shifting a helper's return value.
+function metadataKeyFindings(read) {
+  const findings = [];
+  for (const f of agentFiles()) {
+    const keys = metadataTopLevelKeys(read(f));
+    if (keys.join(",") !== METADATA_KEYS.join(",")) {
+      findings.push(`${f}: ${keys.join(", ") || "(no keys)"}`);
+    }
+  }
+  return findings;
+}
+
+// Entries of the `permissions:` block whose key set is not exactly the triple,
+// reported as `line: keys`. The block ends at the next top-level key or the
+// region's closing fence, so a later document shape is never folded in.
+function permissionEntryFindings(content) {
+  const region = frontmatterRegion(content);
+  if (!region) return ["no leading metadata region"];
+  const lines = content.split("\n");
+  const blockStart = lines.findIndex(
+    (line, i) => i > region.start && i < region.end && /^permissions:\s*$/.test(line)
+  );
+  if (blockStart === -1) return ["no permissions block"];
+  const findings = [];
+  let entry = null;
+  const flush = () => {
+    if (!entry) return;
+    const { line, keys } = entry;
+    const triple =
+      keys.length === PERMISSION_KEYS.length && PERMISSION_KEYS.every((k) => keys.includes(k));
+    if (!triple) findings.push(`${line}: ${keys.length ? keys.join("/") : "(no keys)"}`);
+    entry = null;
+  };
+  for (let i = blockStart + 1; i < region.end; i++) {
+    const line = lines[i];
+    if (/^\S/.test(line)) break;
+    if (/^\s*-\s/.test(line)) {
+      flush();
+      entry = { line: i + 1, keys: [] };
+    }
+    if (!entry) continue;
+    const m = line.match(/^\s*(?:-\s*)?([A-Za-z_][\w-]*):/);
+    if (m) entry.keys.push(m[1]);
+  }
+  flush();
+  return findings;
+}
+
 describe("agent metadata block purity", () => {
   it("reports a comment line injected into the leading metadata region", () => {
     // Non-vacuous: the predicate reports the offender at line 2 of an injected
@@ -962,6 +1033,51 @@ describe("agent metadata block purity", () => {
     for (const f of agentFiles()) {
       expect(frontmatterRegion(readAgent(f)), `${f} carries a leading metadata region`).not.toBeNull();
     }
+  });
+
+  it("carries the five declared keys in every agent file", () => {
+    expect(metadataKeyFindings(readAgent)).toEqual([]);
+  });
+
+  it("fails when an undeclared key joins the metadata block", () => {
+    const content = readAgent("artisan.md");
+    const annotated = content.replace(
+      /^steps: /m,
+      "title: rationale moved out of the body\nsteps: "
+    );
+    expect(annotated).not.toBe(content);
+    const findings = metadataKeyFindings((file) => (file === "artisan.md" ? annotated : readAgent(file)));
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain("artisan.md");
+    expect(findings[0]).toContain("title");
+  });
+
+  it("carries only action/resource/effect triples in the permission table", () => {
+    const offenders = [];
+    for (const f of agentFiles()) {
+      for (const finding of permissionEntryFindings(readAgent(f))) {
+        offenders.push(`${f}: ${finding}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("fails when a permission entry drops a key", () => {
+    const content = readAgent("artisan.md");
+    const match = content.match(/  - action: read\n\s*resource: "\*"\n\s*effect: allow\n/);
+    expect(match).toBeTruthy();
+    const dropped = content.replace(match[0], match[0].replace(/\s*effect: allow\n$/, "\n"));
+    expect(dropped).not.toBe(content);
+    expect(permissionEntryFindings(dropped)).toHaveLength(1);
+  });
+
+  it("fails when a permission entry carries an extra key", () => {
+    const content = readAgent("artisan.md");
+    const match = content.match(/  - action: read\n\s*resource: "\*"\n\s*effect: allow\n/);
+    expect(match).toBeTruthy();
+    const extended = content.replace(match[0], match[0].replace(/\n$/, "\n    note: justification\n"));
+    expect(extended).not.toBe(content);
+    expect(permissionEntryFindings(extended)).toHaveLength(1);
   });
 });
 
@@ -1228,6 +1344,129 @@ describe("memory_search reachability", () => {
 
     const duplicated = content.replace(match[0], match[0] + match[0]);
     expect(memorySearchAllows(duplicated)).toHaveLength(2);
+  });
+});
+
+// The issue store belongs to the role that curates it: the Habit Builder writes,
+// updates and moves issues, so it is also the one role that reads them. A grant
+// in any other definition puts the store's read path outside that role, and the
+// knowledge-gate tool admits whichever caller holds the grant — so the narrowing
+// is stated in the frontmatter and pinned here.
+const ISSUE_READ_HOLDER = "habit-builder.md";
+
+describe("issue_read reachability", () => {
+  const files = agentFiles();
+  const ISSUE_READ_ALLOW = /- action: issue_read\n\s*resource: [^\n]*\n\s*effect: allow\n/;
+
+  // Expected count per definition: one allow triple in the curating role, no
+  // entry at all elsewhere. Reported per file so a mutation names its offender.
+  function holderFindings(read) {
+    const findings = [];
+    for (const file of files) {
+      const rules = permissionRules(read(file)).filter((r) => r.action === "issue_read");
+      const allows = rules.filter((r) => r.resource === "*" && r.effect === "allow").length;
+      if (file === ISSUE_READ_HOLDER) {
+        if (allows !== 1) findings.push(`${file}: ${allows} allows, expected 1`);
+      } else if (rules.length !== 0) {
+        findings.push(`${file}: ${rules.length} issue_read entries, expected 0`);
+      }
+    }
+    return findings;
+  }
+
+  it("grants issue_read once, in the role that curates the issue stores", () => {
+    expect(files).toEqual([
+      "analyzer.md",
+      "artisan.md",
+      "committer.md",
+      "explorer.md",
+      "habit-builder.md",
+      "inspector.md",
+      "overseer.md",
+      "pathfinder.md",
+      "scribe.md",
+      "spec-weaver.md",
+    ]);
+    expect(holderFindings(readAgent)).toEqual([]);
+  });
+
+  it("keeps the single grant inside the custom-tool run ahead of the shell table", () => {
+    const offenders = [];
+    const rules = permissionRules(readAgent(ISSUE_READ_HOLDER));
+    const grant = rules.findIndex((r) => r.action === "issue_read");
+    if (grant === -1) {
+      offenders.push(`${ISSUE_READ_HOLDER}: no issue_read grant`);
+    } else {
+      const firstShell = rules.findIndex((r) => r.action === "shell");
+      if (firstShell !== -1 && grant > firstShell) {
+        offenders.push(`${ISSUE_READ_HOLDER}: issue_read sits after the shell table`);
+      }
+      const neighbour = rules.at(grant - 1);
+      if (!neighbour || !/^(issue|memory)_/.test(neighbour.action)) {
+        offenders.push(`${ISSUE_READ_HOLDER}: issue_read does not follow another custom-tool grant`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("fails when the grant is added to another definition", () => {
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const added = readAgent("artisan.md").replace(
+      /(  - action: shell\n\s*resource: "\*"\n\s*effect: deny\n)/,
+      `${match[0]}$1`
+    );
+    expect(added).not.toBe(readAgent("artisan.md"));
+    expect(holderFindings((file) => (file === "artisan.md" ? added : readAgent(file)))).toEqual([
+      "artisan.md: 1 issue_read entries, expected 0",
+    ]);
+  });
+
+  it("fails when the grant leaves the curating role", () => {
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const removed = holder.replace(match[0], "");
+    expect(removed).not.toBe(holder);
+    expect(holderFindings((file) => (file === ISSUE_READ_HOLDER ? removed : readAgent(file)))).toEqual([
+      `${ISSUE_READ_HOLDER}: 0 allows, expected 1`,
+    ]);
+  });
+
+  it("fails when the grant is duplicated", () => {
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const duplicated = holder.replace(match[0], match[0] + match[0]);
+    expect(holderFindings((file) => (file === ISSUE_READ_HOLDER ? duplicated : readAgent(file)))).toEqual([
+      `${ISSUE_READ_HOLDER}: 2 allows, expected 1`,
+    ]);
+  });
+
+  it("fails when the grant is flipped to deny", () => {
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const flipped = holder.replace(match[0], match[0].replace("effect: allow", "effect: deny"));
+    expect(flipped).not.toBe(holder);
+    expect(holderFindings((file) => (file === ISSUE_READ_HOLDER ? flipped : readAgent(file)))).toEqual([
+      `${ISSUE_READ_HOLDER}: 0 allows, expected 1`,
+    ]);
+  });
+
+  it("fails when the grant is narrowed to one store record", () => {
+    const holder = readAgent(ISSUE_READ_HOLDER);
+    const match = holder.match(ISSUE_READ_ALLOW);
+    expect(match).toBeTruthy();
+    const narrowed = holder.replace(
+      match[0],
+      match[0].replace('resource: "*"', 'resource: "knowledge/issues/issue-77.md"')
+    );
+    expect(narrowed).not.toBe(holder);
+    expect(holderFindings((file) => (file === ISSUE_READ_HOLDER ? narrowed : readAgent(file)))).toEqual([
+      `${ISSUE_READ_HOLDER}: 0 allows, expected 1`,
+    ]);
   });
 });
 
@@ -1544,6 +1783,36 @@ function citationSites() {
   ];
 }
 
+// The evidence rule is stated where the matrix is defined and where the gate
+// renders it into a dispatch: the gate protocol that owns the traceability
+// matrix, and the review template a reviewer fills in. A row is evidence only
+// when it carries captured output, so a paraphrase of a result nobody captured
+// — and a row leaning on another row's capture — is the drift this catches.
+const EVIDENCE_SHAPE_ID = "evidence shape";
+
+const EVIDENCE_SHAPE_FACTS = [
+  { token: "the declared command's literal output", pattern: /the declared command's literal output/i },
+  { token: "a durable path to the captured artifact", pattern: /a durable path to the captured artifact/i },
+  { token: "each row stands alone", pattern: /each row stands alone/i },
+];
+
+// The tokens one site carries, matched by the fact's own pattern rather than
+// read off the table, so a site that loses a clause reports the clause it lost.
+function evidenceShapeTokens(text) {
+  return EVIDENCE_SHAPE_FACTS.filter((fact) => fact.pattern.test(text)).map((fact) => fact.token);
+}
+
+// The clause sits under the traceability matrix at both sites, so the region
+// runs from the matrix heading to the next section: a clause left elsewhere in
+// the file cannot keep the site green after its matrix lost it.
+function gatesEvidenceClause(content = readRoot(join("skills", "verification-gates", "SKILL.md"))) {
+  return sectionBetween(content, "### Traceability Matrix", "### Enforcement Rules");
+}
+
+function reviewEvidenceClause(content = readRoot(join("skills", "template-review", "SKILL.md"))) {
+  return sectionBetween(content, "### Traceability Matrix", "## Audit");
+}
+
 describe("VERIFY evidence shape", () => {
   const inspector = readAgent("inspector.md");
   const gates = readRoot(join("skills", "verification-gates", "SKILL.md"));
@@ -1572,8 +1841,43 @@ describe("VERIFY evidence shape", () => {
     }
   });
 
+  // A row's evidence is the run itself: the command's literal output, or a
+  // durable path to the capture, and never a summary of a run the row does not
+  // hold. Each row stands alone so one unrun command cannot be carried by a
+  // sibling row that did run.
+  it("makes every traceability row evidence of its own declared command", () => {
+    const expected = EVIDENCE_SHAPE_FACTS.map((fact) => fact.token);
+    for (const [site, clause] of [
+      ["gate protocol matrix", gatesEvidenceClause()],
+      ["review template matrix", reviewEvidenceClause()],
+    ]) {
+      expect(clause, `${site} must carry the traceability matrix`).toContain("| Req ID |");
+      expect(evidenceShapeTokens(clause), `${site} must state the whole evidence rule`).toEqual(expected);
+    }
+  });
+
+  it("reds a matrix whose evidence clause is paraphrased away", () => {
+    // The strip is asserted to have landed, so a reworded clause reds on the
+    // next line instead of turning this into a no-op.
+    const gateClause = gatesEvidenceClause();
+    const gateStripped = gateClause.replace(/each row stands alone/i, "each row expounds on the run");
+    expect(gateStripped, "the gate matrix must carry the standalone clause to strip").not.toBe(gateClause);
+    expect(evidenceShapeTokens(gateStripped)).not.toEqual(EVIDENCE_SHAPE_FACTS.map((fact) => fact.token));
+
+    const reviewClause = reviewEvidenceClause();
+    const reviewStripped = reviewClause.replace(
+      /the declared command's literal output/i,
+      "a summary of the declared command"
+    );
+    expect(reviewStripped, "the review matrix must carry the literal-output clause to strip").not.toBe(reviewClause);
+    expect(evidenceShapeTokens(reviewStripped)).not.toEqual(EVIDENCE_SHAPE_FACTS.map((fact) => fact.token));
+  });
+
   it("refuses a FAIL with an unusable reopen target under the stale-PASS recency rule", () => {
-    for (const content of [inspector, gates, reviewTemplate]) {
+    // The two skill layers carry the whole verdict contract. The inspector body
+    // states the same contract in role terms and names no gate code, so the
+    // contract's code names are read where the gate's own language belongs.
+    for (const content of [gates, reviewTemplate]) {
       expect(content).toContain("REOPEN_TARGET_INVALID");
       expect(content).toMatch(/no-reopen-target/);
       expect(content).toContain("stale PASS");
@@ -2066,13 +2370,18 @@ describe("inspector rebuild parity and overseer disk-check scope", () => {
     expect(patterns.get("cargo --version*")).toBe("allow");
   });
 
-  it("covers impl and checkpoint KD reads in the overseer glob scope", () => {
+  it("covers the three artifact families in the overseer glob scope and no others", () => {
     const allows = actionEntries(readAgent("overseer.md"), "glob")
       .filter((e) => e.mode === "allow")
       .map((e) => e.pattern);
-    expect(allows).toContain("knowledge/*.md");
-    expect(allows).toContain("knowledge/impl-*.md");
-    expect(allows).toContain("knowledge/checkpoint-*.md");
+    expect(allows).toEqual([
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
+    ]);
+    expect(allows).not.toContain("knowledge/*.md");
+    expect(allows).not.toContain("knowledge/impl-*.md");
+    expect(allows).not.toContain("knowledge/checkpoint-*.md");
   });
 
   it("holds deny-by-default with family-scoped shell and docs-scoped reads", () => {
@@ -2400,7 +2709,7 @@ const RAW_REQUEST_SITES = [
   {
     id: "S3",
     file: "agents/overseer.md",
-    text: () => sectionBetween(readAgent("overseer.md"), "### Entry Point", "### Knowledge Gate Auto-Injection"),
+    text: () => sectionBetween(readAgent("overseer.md"), "### Entry Point", "### Status Surface"),
   },
   {
     id: "S4",
@@ -2756,18 +3065,22 @@ describe("working-directory boundary (no external literals)", () => {
     const overseer = readAgent("overseer.md");
     const readAllows = actionEntries(overseer, "read").filter((e) => e.mode === "allow").map((e) => e.pattern);
     const globAllows = actionEntries(overseer, "glob").filter((e) => e.mode === "allow").map((e) => e.pattern);
-    expect(globAllows).toEqual(["knowledge/*.md", "knowledge/impl-*.md", "knowledge/checkpoint-*.md"]);
+    expect(globAllows).toEqual([
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
+    ]);
     for (const p of [...readAllows, ...globAllows]) {
       expect(p.startsWith("knowledge/"), `${p} must stay in the docs scope`).toBe(true);
     }
     expect(overseerScopeFindings(overseer)).toEqual([]);
   });
 
-  it("redirects external evidence requests to workspace-local targets in the ground rules", () => {
-    const groundRules = readRoot("AGENTS.md");
-    expect(groundRules).toContain("plugins/logs/");
-    expect(groundRules).toMatch(/workspace-local/);
-    expect(groundRules).toMatch(/working directory/);
+  it("redirects external evidence requests to workspace-local targets in the project documentation", () => {
+    // The ground rules carried this guidance until that layer stopped naming
+    // repository paths. The architecture home is the layer that carries it now,
+    // so the boundary rule keeps its stated remedy as well as its predicate.
+    expect(readRoot("README.md")).toContain("the working directory is the boundary");
   });
 });
 
@@ -2833,7 +3146,11 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
 
   it("binds the advertised glob scope to the Overseer's granted glob scope", () => {
     const granted = overseerGlobGrantPatterns();
-    expect(granted).toEqual(["knowledge/*.md", "knowledge/impl-*.md", "knowledge/checkpoint-*.md"]);
+    expect(granted).toEqual([
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
+    ]);
     expect(globScopeFindings(protocolPhases.TOOL_RESTRICTIONS, granted)).toEqual([]);
   });
 
@@ -2842,11 +3159,13 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
     const live = protocolPhases.TOOL_RESTRICTIONS;
     const withSwarmGlob = (text) => ({ ...live, SWARM: { ...live.SWARM, glob: text } });
     // Advertised narrower than granted (a dropped pattern).
-    expect(globScopeFindings(withSwarmGlob("ONLY knowledge/*.md — docs-scoped"), granted)).not.toEqual([]);
+    expect(globScopeFindings(withSwarmGlob("ONLY knowledge/intent-*.md — docs-scoped"), granted)).not.toEqual([]);
     // Advertised wider than granted (an extra resource).
     expect(
       globScopeFindings(
-        withSwarmGlob("ONLY knowledge/*.md, knowledge/impl-*.md, knowledge/checkpoint-*.md, src/*.ts — docs-scoped"),
+        withSwarmGlob(
+          "ONLY knowledge/intent-*.md, knowledge/report-*.md, knowledge/milestones-*.md, src/*.ts — docs-scoped"
+        ),
         granted
       )
     ).not.toEqual([]);
@@ -2854,7 +3173,7 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
     expect(globScopeFindings({ ...live, SWARM: { read: "ONLY milestone registry KDs" } }, granted)).not.toEqual([]);
     // The grant narrowed without the advertisement following.
     expect(
-      globScopeFindings(live, granted.filter((p) => p !== "knowledge/checkpoint-*.md"))
+      globScopeFindings(live, granted.filter((p) => p !== "knowledge/report-*.md"))
     ).not.toEqual([]);
   });
 
@@ -2870,9 +3189,142 @@ describe("advertised-vs-granted seam — Overseer glob scope (A2)", () => {
     // The seam closes on the advertisement side; the grant itself stands.
     expect(overseerScopeFindings(readAgent("overseer.md"))).toEqual([]);
     expect(overseerGlobGrantPatterns()).toEqual([
-      "knowledge/*.md",
-      "knowledge/impl-*.md",
-      "knowledge/checkpoint-*.md",
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
+    ]);
+  });
+});
+
+// The read-side twin of the glob seam above, and the pin on the Overseer's
+// status-only scope. The Overseer authors INTENT and REPORT KDs and tracks the
+// milestone registry, so its reach is exactly those three families: it reads
+// back what it wrote and the record it dispatches from, and nothing else. The
+// advertised classes and the granted patterns are the same three, so
+// advertisement and grant cannot drift apart in either direction: a pattern
+// dropped from the grant breaks an advertisement that names it, and a pattern
+// no advertisement names is reach granted for a phase that never asked for it.
+const OVERSEER_READ_CONTRACT = [
+  "knowledge/intent-*.md",
+  "knowledge/report-*.md",
+  "knowledge/milestones-*.md",
+];
+
+const OVERSEER_READ_PHASES = Object.keys(protocolPhases.STATES).filter((p) =>
+  (protocolPhases.TOOL_ALLOWLIST[p] || []).includes("read")
+);
+
+// Each advertisement names a resource class in prose, and the class is what the
+// grant has to cover. The three classes are disjoint, so the contract is their
+// union: no phase names a class the others already cover.
+const READ_SCOPE_CLASSES = [
+  { id: "intent KDs", scope: /ONLY intent KDs/i, patterns: ["knowledge/intent-*.md"] },
+  { id: "milestone registry KDs", scope: /ONLY milestone registry KDs/i, patterns: ["knowledge/milestones-*.md"] },
+  { id: "report KDs", scope: /ONLY report KDs/i, patterns: ["knowledge/report-*.md"] },
+];
+
+function overseerReadGrantPatterns() {
+  return actionEntries(readAgent("overseer.md"), "read")
+    .filter((e) => e.mode === "allow")
+    .map((e) => e.pattern);
+}
+
+// Compared in both directions, because either one alone hides a failure: a
+// pattern the grant lacks is an advertisement promising a read the host
+// refuses, and a pattern no advertisement names is reach granted for a phase
+// that never asked for it.
+function readScopeFindings(restrictions, grantPatterns) {
+  const findings = [];
+  const granted = new Set(grantPatterns);
+  const required = new Set();
+  for (const phase of OVERSEER_READ_PHASES) {
+    const advertised = restrictions[phase]?.read;
+    if (typeof advertised !== "string" || advertised.length === 0) {
+      findings.push(`${phase}: read is advertised with no scope`);
+      continue;
+    }
+    const backing = READ_SCOPE_CLASSES.find((klass) => klass.scope.test(advertised));
+    if (!backing) {
+      findings.push(`${phase}: advertised scope names no known resource class`);
+      continue;
+    }
+    backing.patterns.forEach((pattern) => required.add(pattern));
+    const unbacked = backing.patterns.filter((pattern) => !granted.has(pattern));
+    if (unbacked.length > 0) {
+      findings.push(`${phase}: advertised "${backing.id}" is not backed by ${unbacked.join(", ")}`);
+    }
+  }
+  for (const pattern of grantPatterns) {
+    if (!required.has(pattern)) findings.push(`grant carries ${pattern}, which no advertised read scope names`);
+  }
+  return findings;
+}
+
+describe("advertised-vs-granted seam — Overseer status scope", () => {
+  it("carries a read restriction entry in every phase that advertises read", () => {
+    expect(OVERSEER_READ_PHASES).toEqual(["INTENT", "DECOMPOSE", "SWARM", "VERIFY", "REPORT"]);
+    const missing = OVERSEER_READ_PHASES.filter(
+      (phase) => typeof protocolPhases.TOOL_RESTRICTIONS[phase]?.read !== "string"
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("grants exactly the contracted read patterns", () => {
+    // Order-insensitive per the contract; the count is the half an order-blind
+    // comparison would otherwise leave to a matcher accident.
+    expect([...overseerReadGrantPatterns()].sort()).toEqual([...OVERSEER_READ_CONTRACT].sort());
+    expect(overseerReadGrantPatterns()).toHaveLength(OVERSEER_READ_CONTRACT.length);
+  });
+
+  it("binds the advertised read scope to the Overseer's granted read scope", () => {
+    expect(readScopeFindings(protocolPhases.TOOL_RESTRICTIONS, overseerReadGrantPatterns())).toEqual([]);
+  });
+
+  it("fails closed when the grant drops a pattern, adds one, or a phase loses its scope entry", () => {
+    const live = protocolPhases.TOOL_RESTRICTIONS;
+    const granted = overseerReadGrantPatterns();
+    // A dropped pattern: the grant narrowed without the advertisement following.
+    expect(readScopeFindings(live, granted.filter((p) => p !== "knowledge/report-*.md"))).not.toEqual([]);
+    // A fourth pattern: reach the advertisements never asked for.
+    expect(readScopeFindings(live, [...granted, "knowledge/spec-*.md"])).not.toEqual([]);
+    // An advertised read with no scope entry behind it.
+    expect(readScopeFindings({ ...live, SWARM: { glob: live.SWARM.glob } }, granted)).not.toEqual([]);
+    // The reach the narrowing removed: an impl or checkpoint pattern is now
+    // unbacked, so re-adding either to the grant reds the seam.
+    expect(readScopeFindings(live, [...granted, "knowledge/impl-*.md"])).not.toEqual([]);
+  });
+
+  it("states the status surface, the vocabulary and the read-back in the Overseer body", () => {
+    const body = bodyRegion(readAgent("overseer.md"));
+    expect(body).toContain("status surface");
+    for (const noun of ["phase", "milestone state", "agent outcome", "succeeded", "failed"]) {
+      expect(body.toLowerCase(), `the status vocabulary must name ${noun}`).toContain(noun);
+    }
+    expect(body).toMatch(/read from the dispatch result/);
+    expect(body).toContain("read back the INTENT and REPORT KDs you author");
+  });
+
+  it("keeps phase scope, disk checks and plugin internals out of the body", () => {
+    // The body states what the role tracks, never the gate mechanics behind it:
+    // a phase-scope enumeration, a disk-check evidence model, a glob-scope
+    // sentence or a plugin internal in this layer is a rule its reader cannot act
+    // on. The four residue rows that carried these facts have their own entries
+    // in `audit residue absent`; this case holds the rest of the class.
+    const body = bodyRegion(readAgent("overseer.md"));
+    for (const phrase of ["permitted in", "blocked in", "disk-check", "glob scope", "glob-scope"]) {
+      expect(body, `the body must carry no "${phrase}"`).not.toContain(phrase);
+    }
+    expect(purityFindings(body, "agents/overseer.md")).toEqual([]);
+  });
+
+  it("keeps the Overseer docs-only scope and the glob seam unchanged", () => {
+    // The read grant stays inside the docs scope, and the glob group's grant —
+    // the pattern set this one mirrors — reads the same as it did before.
+    expect(overseerScopeFindings(readAgent("overseer.md"))).toEqual([]);
+    expect(overseerGlobGrantPatterns()).toEqual([
+      "knowledge/intent-*.md",
+      "knowledge/report-*.md",
+      "knowledge/milestones-*.md",
     ]);
   });
 });
@@ -3093,5 +3545,1407 @@ describe("stack-neutral agent rules", () => {
     expect(body).toContain("declared-vs-run delta");
     expect(body).toContain("matching grant");
     expect(body).not.toContain("tech stack's");
+  });
+});
+
+// A layer's audience decides what its prose may name. The ground rules reach
+// every agent in every project and a role body reaches every project that role
+// runs in, so a repo path, a plugin internal or this stack's tooling named there
+// is one project's fact leaking into all of them. Matching is per whole token, so
+// an ordinary English word that contains one stays clean, and each finding names
+// the class, the token and the file.
+const PURITY_CLASSES = [
+  {
+    id: "P1",
+    label: "repo path",
+    tokens: [
+      "plugins/",
+      "tests/",
+      "agents/",
+      "skills/",
+      "opencode.json",
+      "package.json",
+      "service.json",
+      "eslint.security.config.mjs",
+      ".githooks",
+      ".head-index",
+      "README.md",
+      "AGENTS.md",
+      "eslint.config",
+    ],
+  },
+  {
+    id: "P2",
+    label: "plugin internal",
+    tokens: [
+      "protocol-gate",
+      "delegation-gate",
+      "knowledge-gate",
+      "TOOL_ALLOWLIST",
+      "TOOL_RESTRICTIONS",
+      "PHASE_INSTRUCTIONS",
+      "admitTool",
+      "checkAllMilestonesCheckedOff",
+      "gateRecordEvent",
+      "lifecycle.json",
+      "WRONG_AGENT",
+      "SAFETY_STUCK",
+      "SAFETY_ESCAPE",
+      "REOPEN_TARGET_INVALID",
+      "VERDICT_MISSING",
+      "STALE_PASS",
+      "MISSING_STRUCTURED_FIELDS",
+      "all-checked-off",
+      "disk-advance",
+    ],
+  },
+  {
+    id: "P3",
+    label: "stack tooling",
+    tokens: ["vitest", "eslint", "npm", "npx", "pnpm", "yarn", "node", "pre-commit", "core.hooksPath"],
+  },
+];
+
+// A whole-token match for one token: no letter, digit, underscore or hyphen
+// bounded before it, and none after it when the token ends in one of those. A
+// token ending in a separator (`plugins/`) keeps its tail open, because the
+// path it names continues past the separator.
+function purityPattern(token) {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tail = /\w$/.test(token) ? "(?![A-Za-z0-9_-])" : "";
+  return new RegExp(`(?<![A-Za-z0-9_-])${escaped}${tail}`, "i");
+}
+
+// One finding per token that survived in the text, so a red run names the
+// offending class, token and file rather than only a count.
+function purityHits(text) {
+  const hits = [];
+  for (const klass of PURITY_CLASSES) {
+    for (const token of klass.tokens) {
+      if (purityPattern(token).test(text)) hits.push({ klass, token });
+    }
+  }
+  return hits;
+}
+
+function purityFindings(text, file) {
+  return purityHits(text).map(
+    ({ klass, token }) => `${file} carries ${klass.id} ${klass.label} token "${token}"`
+  );
+}
+
+// A rule stated for every project names no role of this swarm either. The role
+// set is read from the definitions on disk, so a definition added later joins
+// the sweep instead of leaving a name the pin never learned.
+function roleNamePattern() {
+  const forms = agentFiles().flatMap((file) => {
+    const name = file.replace(/\.md$/, "");
+    return [name, name.replace(/-/g, " ")];
+  });
+  return new RegExp(`(?<![A-Za-z0-9-])(?:${forms.join("|")})(?![A-Za-z0-9-])`, "i");
+}
+
+// Level-two section text, from its heading to the next one. An absent heading
+// reads as an empty region, so a deleted section cannot pass by matching prose
+// further down the file.
+function headingSection(content, heading) {
+  const start = content.indexOf(heading);
+  if (start === -1) return "";
+  const end = content.indexOf("\n## ", start + heading.length);
+  return content.slice(start, end === -1 ? undefined : end);
+}
+
+// The skill ratchet's recorded baseline: each skill that names a forbidden
+// token on the day the ratchet landed, with the tokens it already names. Growth
+// is what fails here — a recorded token may stay, an unrecorded one reds, and a
+// burn-down narrows the baseline without reddening it.
+const SKILL_TOKEN_BASELINE = {
+  "committer-checkpoint": ["protocol-gate"],
+  "committer-cleanup": ["protocol-gate"],
+  "committer-preflight": ["protocol-gate"],
+  "kd-system": ["protocol-gate"],
+  "plan-validation-skill": ["node"],
+  "resume-protocol": ["protocol-gate", "knowledge-gate"],
+  "security-audit-skill": ["npm"],
+  "template-analysis": ["protocol-gate"],
+  "template-checkpoint": ["protocol-gate"],
+  "template-cleanup": ["protocol-gate"],
+  "template-composed": ["protocol-gate"],
+  "template-exploration": ["protocol-gate"],
+  "template-impl": ["protocol-gate"],
+  "template-intent": ["protocol-gate"],
+  "template-milestones": [
+    "protocol-gate",
+    "checkAllMilestonesCheckedOff",
+    "SAFETY_STUCK",
+    "SAFETY_ESCAPE",
+  ],
+  "template-plan": ["protocol-gate"],
+  "template-preflight": ["protocol-gate"],
+  "template-process": ["protocol-gate"],
+  "template-report": ["protocol-gate"],
+  "template-review": ["protocol-gate", "REOPEN_TARGET_INVALID", "npm"],
+  "template-spec": ["protocol-gate"],
+  "testing-skill": ["vitest"],
+  "verification-gates": ["REOPEN_TARGET_INVALID", "npm"],
+};
+
+describe("audience purity", () => {
+  // The ground rules carry no frontmatter, so the body region is the file.
+  const groundRules = readRoot("AGENTS.md");
+
+  // A role definition's body is the region an agent reads as its rules; the
+  // metadata block above it is the entitlement layer, where a stack command is
+  // a grant rather than a leaked fact.
+  function agentBodySites() {
+    return agentFiles().map((file) => [`agents/${file}`, bodyRegion(readAgent(file))]);
+  }
+
+  // Skill bodies load with the task rather than with the session, so each one
+  // is swept whole: a skill has no entitlement layer to except.
+  function skillBodySites() {
+    return readdirSync(join(ROOT, "skills"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()
+      .map((name) => [`skills/${name}/SKILL.md`, readFileSync(join(ROOT, "skills", name, "SKILL.md"), "utf8")])
+      .map(([site, content]) => [site, bodyRegion(content)]);
+  }
+
+  // A skill may keep what its baseline records and take nothing new: the
+  // finding names the site and the class of the token it added.
+  function ratchetFindings(sites) {
+    const findings = [];
+    for (const [site, text] of sites) {
+      const skill = site.slice("skills/".length, site.indexOf("/SKILL.md"));
+      const recorded = SKILL_TOKEN_BASELINE[skill] || [];
+      for (const { klass, token } of purityHits(text)) {
+        if (!recorded.includes(token)) {
+          findings.push(`${site} carries an unrecorded ${klass.id} ${klass.label} token "${token}"`);
+        }
+      }
+    }
+    return findings;
+  }
+
+  it("sweeps the ground rules free of repo, plugin and stack facts", () => {
+    expect(purityFindings(bodyRegion(groundRules), "AGENTS.md")).toEqual([]);
+  });
+
+  it("names the offending class, token and file for an injected token", () => {
+    const samples = [
+      ["P1", "Write the sweep output under `plugins/logs/`.", "plugins/"],
+      ["P2", "The verdict comes from protocol-gate.", "protocol-gate"],
+      ["P3", "Run `npx vitest` before dispatch.", "npx"],
+    ];
+    for (const [id, sentence, token] of samples) {
+      const klass = PURITY_CLASSES.find((entry) => entry.id === id);
+      const findings = purityFindings(`${bodyRegion(groundRules)}\n${sentence}\n`, "AGENTS.md");
+      expect(findings).toContain(`AGENTS.md carries ${id} ${klass.label} token "${token}"`);
+    }
+  });
+
+  it("keeps a token fragment inside an ordinary word clean", () => {
+    // "nodes" holds "node": a sweep that matched fragments would red on
+    // ordinary prose and earn its own deletion.
+    expect(purityFindings("Every agent tracks the nodes it hands work to.", "AGENTS.md")).toEqual([]);
+  });
+
+  it("sweeps every role body free of repo, plugin and stack facts", () => {
+    const findings = agentBodySites().flatMap(([site, text]) => purityFindings(text, site));
+    expect(findings).toEqual([]);
+  });
+
+  it("exempts the metadata block and reads the body region alone", () => {
+    // The block carries the grants, and a grant is a stack command this layer is
+    // entitled to name. The split is what keeps the sweep from demanding the
+    // grants be deleted to pass.
+    const content = readAgent("analyzer.md");
+    expect(purityFindings(content, "agents/analyzer.md")).not.toEqual([]);
+    expect(purityFindings(bodyRegion(content), "agents/analyzer.md")).toEqual([]);
+  });
+
+  it("fails a role body that carries a repo, plugin or stack fact", () => {
+    const body = bodyRegion(readAgent("analyzer.md"));
+    const findings = purityFindings(`${body}\nThe plan is decided by plugins/protocol-gate.\n`, "agents/analyzer.md");
+    expect(findings).toContain('agents/analyzer.md carries P1 repo path token "plugins/"');
+    expect(findings).toContain('agents/analyzer.md carries P2 plugin internal token "protocol-gate"');
+
+    const stackFindings = purityFindings(`${body}\nRun \`npx vitest\` before dispatch.\n`, "agents/analyzer.md");
+    expect(stackFindings).toContain('agents/analyzer.md carries P3 stack tooling token "npx"');
+    expect(stackFindings).toContain('agents/analyzer.md carries P3 stack tooling token "vitest"');
+  });
+
+  it("holds the skill ratchet at its recorded baseline", () => {
+    expect(ratchetFindings(skillBodySites())).toEqual([]);
+  });
+
+  it("keys the baseline to the skills on disk", () => {
+    const names = readdirSync(join(ROOT, "skills"));
+    const phantom = Object.keys(SKILL_TOKEN_BASELINE).filter((name) => !names.includes(name));
+    expect(phantom, "a baseline entry for a skill that no longer exists").toEqual([]);
+  });
+
+  it("admits a recorded skill token and fails an unrecorded one", () => {
+    const recorded = ratchetFindings([
+      ["skills/verification-gates/SKILL.md", "Run `npm audit` before the verdict."],
+    ]);
+    expect(recorded).toEqual([]);
+
+    const narrowed = ratchetFindings([["skills/testing-skill/SKILL.md", "Detect the project's framework."]]);
+    expect(narrowed, "a baseline token that stops appearing narrows the baseline").toEqual([]);
+
+    const grown = ratchetFindings([["skills/testing-skill/SKILL.md", "The verdict comes from protocol-gate."]]);
+    expect(grown).toContain(
+      'skills/testing-skill/SKILL.md carries an unrecorded P2 plugin internal token "protocol-gate"'
+    );
+
+    const fresh = ratchetFindings([["skills/backend-skill/SKILL.md", "Run `npx vitest` before dispatch."]]);
+    expect(fresh).toContain(
+      'skills/backend-skill/SKILL.md carries an unrecorded P3 stack tooling token "npx"'
+    );
+    expect(fresh).toContain(
+      'skills/backend-skill/SKILL.md carries an unrecorded P3 stack tooling token "vitest"'
+    );
+  });
+});
+
+// The layer policy's fact is the audience each layer reaches. It is asserted in
+// the one layer that reaches maintainers alone, in the table's own order: a
+// deleted row shifts its neighbours and a reassigned audience lands in another
+// row, so both are visible without pinning the prose around them.
+const LAYER_HEADING = "## Layers";
+const AUDIENCE_ROWS = [
+  { layer: "AGENTS.md", audience: /swarm method[\s\S]*every agent[\s\S]*every project/i },
+  { layer: "agent definition body", audience: /rules exclusive to that role[\s\S]*every project/i },
+  { layer: "agent definition frontmatter", audience: /entitlements[\s\S]*mechanism/i },
+  { layer: "skill body", audience: /guidance that loads with the task/i },
+  { layer: "README.md", audience: /this repository's architecture/i },
+];
+
+// Position-based parse of the layer table: the header row and the alignment row
+// are the table's furniture, and every other three-cell row is one layer.
+function layerRows(content) {
+  return headingSection(content, LAYER_HEADING)
+    .split("\n")
+    .filter((line) => line.trim().startsWith("|"))
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split("|")
+        .map((cell) => cell.trim())
+    )
+    .filter((cells) => cells.length === 3 && cells[0] !== "Layer" && !/^:?-+:?$/.test(cells[0]))
+    .map((cells) => ({
+      layer: cells[0].replace(/`/g, ""),
+      content: cells[1],
+      audience: cells[2],
+      text: `${cells[1]} ${cells[2]}`,
+    }));
+}
+
+function audienceLayerFindings(readme, groundRules = readRoot("AGENTS.md")) {
+  const rows = layerRows(readme);
+  const findings = [];
+  if (rows.length !== AUDIENCE_ROWS.length) {
+    findings.push(`README layers table carries ${rows.length} rows, not ${AUDIENCE_ROWS.length}`);
+  }
+  AUDIENCE_ROWS.forEach((expected, index) => {
+    const row = rows[index];
+    if (!row) {
+      findings.push(`README layers table omits row ${index + 1}: ${expected.layer}`);
+      return;
+    }
+    if (row.layer !== expected.layer) {
+      findings.push(`README layers table row ${index + 1} is "${row.layer}", not "${expected.layer}"`);
+    }
+    if (!expected.audience.test(row.text)) {
+      findings.push(`README layers table row ${index + 1} reassigns the ${expected.layer} audience`);
+    }
+  });
+  // The policy left the always-injected layer for this one; a placement section
+  // reappearing in the ground rules is a second home for the same fact.
+  if (/^##\s+Rule Placement\s*$/m.test(groundRules)) {
+    findings.push("AGENTS.md carries a Rule Placement section again");
+  }
+  return findings;
+}
+
+describe("audience layers", () => {
+  const readme = readRoot("README.md");
+
+  it("states the five layers and the audience each one reaches, in order", () => {
+    expect(audienceLayerFindings(readme)).toEqual([]);
+    expect(layerRows(readme).map((row) => row.layer)).toEqual(AUDIENCE_ROWS.map((row) => row.layer));
+  });
+
+  it("fails when a layer row is deleted", () => {
+    const deleted = readme.replace(/\n\| skill body \|.*\n/, "\n");
+    expect(audienceLayerFindings(deleted)).toContain("README layers table carries 4 rows, not 5");
+    expect(audienceLayerFindings(deleted)).toContain(
+      'README layers table row 4 is "README.md", not "skill body"'
+    );
+  });
+
+  it("fails when a row's audience is reassigned", () => {
+    const reassigned = readme.replace(
+      "| `AGENTS.md` | Swarm method | Binds every agent, in every project |",
+      "| `AGENTS.md` | Swarm method | Reaches maintainers of this repository |"
+    );
+    expect(audienceLayerFindings(reassigned)).toContain(
+      "README layers table row 1 reassigns the AGENTS.md audience"
+    );
+  });
+
+  it("fails when a placement section returns to the ground rules", () => {
+    const placement = `${readRoot("AGENTS.md")}\n## Rule Placement\n\nA rule lives in one layer.\n`;
+    expect(audienceLayerFindings(readme, placement)).toContain(
+      "AGENTS.md carries a Rule Placement section again"
+    );
+  });
+});
+
+// README states facts the tree can disprove, so each one is compared against the
+// source that owns it: the manifest names the scripts, the configuration names
+// the plugin set, and the Inspector's body owns the gate runs. A finding names
+// the fact that drifted, so the repair site is the README rather than the guard.
+const GLOBAL_CONFIG_FACT = /global OpenCode config directory/i;
+const README_ARCHITECTURE_SECTIONS = [
+  ["plugin roles", "## Plugins Enforce the Architecture Structurally"],
+  ["test run", "## Running the Tests"],
+  ["security gate", "## Running the Security Gate"],
+  ["debug logging", "## Debug Logging"],
+  ["git contract", "## The Git Contract"],
+];
+const MOVED_GUIDANCE_FACTS = [
+  ["the gitignored trees the search reaches", /node_modules\//],
+  ["the log directory", /plugins\/logs\//],
+  ["the explicit include for log files", /\*\.log/],
+  ["the working-directory boundary", /working directory is the boundary/i],
+];
+
+function readmeFactsFindings({ readme, pkg, config, inspector }) {
+  const findings = [];
+  if (!GLOBAL_CONFIG_FACT.test(readme)) {
+    findings.push("README does not state that this directory is the global OpenCode config directory");
+  }
+
+  const runSection = headingSection(readme, "## Running the Tests");
+  for (const name of Object.keys(pkg.scripts || {})) {
+    if (!runSection.includes(`\`${name}\``)) {
+      findings.push(`README test-run section omits the "${name}" script package.json declares`);
+    }
+  }
+
+  const pluginSection = headingSection(readme, "## Plugins Enforce the Architecture Structurally");
+  for (const entry of config.plugins || []) {
+    const name = entry.split("/").filter(Boolean).pop();
+    if (!pluginSection.includes(name)) {
+      findings.push(`README plugin-roles section omits the "${name}" plugin opencode.json loads`);
+    }
+  }
+
+  const gitSection = headingSection(readme, "## The Git Contract");
+  if (!/\bInspector\b/.test(gitSection)) {
+    findings.push("README git contract does not assign manual gate runs to the Inspector");
+  }
+  if (!inspector.includes("declares its verification gates")) {
+    findings.push("agents/inspector.md no longer states that it runs the declared gates");
+  }
+
+  for (const [id, heading] of README_ARCHITECTURE_SECTIONS) {
+    if (headingSection(readme, heading) === "") {
+      findings.push(`README carries no ${id} section`);
+    }
+  }
+  for (const [id, pattern] of MOVED_GUIDANCE_FACTS) {
+    if (!pattern.test(readme)) findings.push(`README omits the moved investigation guidance: ${id}`);
+  }
+  return findings;
+}
+
+describe("README facts", () => {
+  const readme = readRoot("README.md");
+  const pkg = JSON.parse(readRoot("package.json"));
+  const config = JSON.parse(readRoot("opencode.json"));
+  const inspector = readAgent("inspector.md");
+  const findingsFor = (overrides = {}) =>
+    readmeFactsFindings({ readme, pkg, config, inspector, ...overrides });
+
+  it("states the global-config fact, the moved guidance and the architecture sections", () => {
+    expect(findingsFor()).toEqual([]);
+  });
+
+  it("fails when the global-config statement is missing", () => {
+    const edited = readme.replace(/global OpenCode config directory/gi, "configuration directory");
+    expect(findingsFor({ readme: edited })).toContain(
+      "README does not state that this directory is the global OpenCode config directory"
+    );
+  });
+
+  it("fails when a declared script goes unstated", () => {
+    const edited = readme.replace("`prepare`", "`setup`");
+    expect(findingsFor({ readme: edited })).toContain(
+      'README test-run section omits the "prepare" script package.json declares'
+    );
+  });
+
+  it("fails when a loaded plugin goes unnamed", () => {
+    const edited = readme.replace("**knowledge-gate**", "**issue surfacing**");
+    expect(findingsFor({ readme: edited })).toContain(
+      'README plugin-roles section omits the "knowledge-gate" plugin opencode.json loads'
+    );
+  });
+
+  it("fails when the git contract hands manual gate runs to another role", () => {
+    const edited = readme.replace(
+      "manual gate runs belong to the Inspector",
+      "manual gate runs belong to the Committer"
+    );
+    expect(findingsFor({ readme: edited })).toContain(
+      "README git contract does not assign manual gate runs to the Inspector"
+    );
+  });
+
+  it("fails when the moved investigation guidance leaves", () => {
+    const edited = readme.replace("`node_modules/`", "the dependency tree");
+    expect(findingsFor({ readme: edited })).toContain(
+      "README omits the moved investigation guidance: the gitignored trees the search reaches"
+    );
+  });
+
+  it("fails when an architecture section is deleted", () => {
+    const edited = readme.replace("## Plugins Enforce the Architecture Structurally", "## Plugins");
+    expect(findingsFor({ readme: edited })).toContain("README carries no plugin roles section");
+  });
+
+  it("fails when the layer table loses a row", () => {
+    const edited = readme.replace(/\n\| skill body \|.*\n/, "\n");
+    expect(audienceLayerFindings(edited)).not.toEqual([]);
+  });
+
+  it("compares each fact against the source that owns it", () => {
+    // The sources drifting is the other half: a new script, a new plugin or a
+    // gate-less Inspector body makes the README stale without touching it.
+    const widened = { ...pkg, scripts: { ...pkg.scripts, coverage: "vitest run --coverage" } };
+    expect(findingsFor({ pkg: widened })).toContain(
+      'README test-run section omits the "coverage" script package.json declares'
+    );
+
+    const grown = { ...config, plugins: [...config.plugins, "./plugins/new-gate"] };
+    expect(findingsFor({ config: grown })).toContain(
+      'README plugin-roles section omits the "new-gate" plugin opencode.json loads'
+    );
+
+    const narrowed = inspector.replace(
+      "The project declares its verification gates in its own manifests, task definitions and project documentation.",
+      "The project declares its gates."
+    );
+    expect(findingsFor({ inspector: narrowed })).toContain(
+      "agents/inspector.md no longer states that it runs the declared gates"
+    );
+  });
+});
+
+// The narrowing rule every entitlement change follows: a claim broader than the
+// privilege behind it narrows to that privilege. The pin holds the rule's facts
+// as normalized tokens, and holds the section free of names — no role, file or
+// tool — because the rule is method shared by every project rather than a fact
+// about this one.
+const GOVERNING_HEADING = "## Governing Disposition";
+const GOVERNING_FACTS = [
+  { id: "the mismatch", pattern: /a mismatch between a broad claim and a narrow entitlement/i },
+  { id: "the narrowing direction", pattern: /resolves by narrowing the broad side/i },
+  { id: "the three broad sides", pattern: /expertise[\s\S]+advertisement[\s\S]+executor check/i },
+  { id: "the entitlement as the boundary", pattern: /to the entitlement/i },
+  { id: "privilege held in place", pattern: /privilege does not grow to meet a claim/i },
+];
+
+function governingFindings(content) {
+  const section = headingSection(content, GOVERNING_HEADING);
+  if (section === "") return ["AGENTS.md carries no Governing Disposition section"];
+  const findings = GOVERNING_FACTS.filter((fact) => !fact.pattern.test(section)).map(
+    (fact) => `AGENTS.md Governing Disposition is missing ${fact.id}`
+  );
+  return [...findings, ...purityFindings(section, "AGENTS.md Governing Disposition")];
+}
+
+describe("governing disposition", () => {
+  const groundRules = readRoot("AGENTS.md");
+
+  it("states the narrowing rule between dispatch shaping and focused execution", () => {
+    expect(governingFindings(groundRules)).toEqual([]);
+    const order = ["## Delegation Integrity", GOVERNING_HEADING, "## Focused Execution"].map((heading) =>
+      groundRules.indexOf(heading)
+    );
+    expect(order.every((index) => index >= 0), "all three headings must be present").toBe(true);
+    expect(order, "the rule reads where a rule about placement used to sit").toEqual(
+      [...order].sort((a, b) => a - b)
+    );
+  });
+
+  it("fails when the section is removed", () => {
+    expect(governingFindings(groundRules.replace(GOVERNING_HEADING, "## Disposition Notes"))).not.toEqual([]);
+  });
+
+  it("fails when the direction reverses", () => {
+    const widened = groundRules.replace(
+      "resolves by narrowing the broad side",
+      "resolves by widening the narrow side"
+    );
+    expect(governingFindings(widened)).not.toEqual([]);
+  });
+
+  it("fails when privilege grows to meet a claim", () => {
+    const grown = groundRules.replace(
+      "Privilege does not grow to meet a claim",
+      "Privilege grows to meet a claim"
+    );
+    expect(governingFindings(grown)).not.toEqual([]);
+  });
+
+  it("names no role, file or tool in the rule", () => {
+    const section = headingSection(groundRules, GOVERNING_HEADING);
+    expect(roleNamePattern().test(section), "the rule binds every project").toBe(false);
+    expect(roleNamePattern().test(`${section}\nThe Artisan narrows its claim.`), "a named role must red").toBe(
+      true
+    );
+    expect(purityFindings(section, "AGENTS.md Governing Disposition")).toEqual([]);
+  });
+});
+
+// The report is a status delivery: it states what the lifecycle reached and who
+// produced what, and it points at the artifacts instead of restating them. The
+// template is the shape a report is written into, so its sections are the
+// contract; the two prose sites that instruct the report are measured by the
+// same token list, because an instruction asking for a narrative undoes the
+// template it renders into.
+const REPORT_TEMPLATE = join("skills", "template-report", "SKILL.md");
+const REPORT_STATUS_SECTIONS = ["## Lifecycle Result", "## Agent Outcomes", "## References"];
+
+// Facts a section owns. A heading that survives with its fact deleted is the
+// narrowing this list detects: the section would still render, and the report
+// would say nothing.
+const REPORT_TEMPLATE_FACTS = [
+  { id: "the phase reached", section: "## Lifecycle Result", pattern: /phase reached/i },
+  {
+    id: "the milestone total, checked-off and failed counts",
+    section: "## Lifecycle Result",
+    pattern: /milestones[\s\S]*total[\s\S]*checked[- ]off[\s\S]*failed/i,
+  },
+  { id: "the session", section: "## Lifecycle Result", pattern: /\bsession\b/i },
+  { id: "the generation", section: "## Lifecycle Result", pattern: /\bgeneration\b/i },
+  { id: "the phase column", section: "## Agent Outcomes", pattern: /\bphase\b/i },
+  { id: "the agent column", section: "## Agent Outcomes", pattern: /\bagent\b/i },
+  { id: "the outcome vocabulary", section: "## Agent Outcomes", pattern: /succeeded[\s\S]*failed/i },
+  { id: "the artifact KD path column", section: "## Agent Outcomes", pattern: /artifact KD path/i },
+  { id: "the composed KD pointer", section: "## References", pattern: /composed/i },
+  { id: "the review KD pointer", section: "## References", pattern: /review/i },
+  { id: "the process KD pointer", section: "## References", pattern: /process/i },
+  { id: "the intent KD pointer", section: "## References", pattern: /intent/i },
+];
+
+// Text that asks for a synthesis rather than a status. Matched as a normalized
+// substring so a re-cased or reflowed copy still names the retired instruction.
+const REPORT_SYNTHESIS_PHRASES = [
+  "what was built",
+  "what changed",
+  "acceptance criteria",
+  "summarizing lifecycle results",
+];
+
+// The shape both instructing sites state: the three status sections' facts in
+// prose. Hyphens read as spaces, so "checked-off" and "checked off" are one
+// token and a reworded copy is still measured.
+const REPORT_SHAPE_TOKENS = [
+  "phase reached",
+  "milestones",
+  "checked off",
+  "succeeded",
+  "failed",
+  "agent outcomes",
+  "artifact kd path",
+  "references",
+  "composed",
+  "review",
+  "process",
+  "intent",
+];
+
+function normalizeReportProse(text) {
+  return text.toLowerCase().replace(/[-–—]/g, " ").replace(/\s+/g, " ");
+}
+
+function reportSynthesisFindings(text, site) {
+  const normalized = normalizeReportProse(text);
+  return REPORT_SYNTHESIS_PHRASES.filter((phrase) => normalized.includes(normalizeReportProse(phrase))).map(
+    (phrase) => `${site} still asks for "${phrase}"`
+  );
+}
+
+function reportTemplateFindings(content) {
+  const findings = [];
+  for (const heading of REPORT_STATUS_SECTIONS) {
+    if (headingSection(content, heading) === "") findings.push(`report template omits ${heading}`);
+  }
+  for (const fact of REPORT_TEMPLATE_FACTS) {
+    const section = headingSection(content, fact.section);
+    if (section !== "" && !fact.pattern.test(section)) {
+      findings.push(`report template ${fact.section} omits ${fact.id}`);
+    }
+  }
+  return [...findings, ...reportSynthesisFindings(content, "report template")];
+}
+
+function reportInstructionFindings(text, site) {
+  const normalized = normalizeReportProse(text);
+  const missing = REPORT_SHAPE_TOKENS.filter((token) => !normalized.includes(token)).map(
+    (token) => `${site} omits ${token}`
+  );
+  return [...missing, ...reportSynthesisFindings(text, site)];
+}
+
+// The Overseer's phase-12 bullet, sliced from the body so a sentence elsewhere
+// in the file cannot satisfy the shape on its behalf.
+const OVERSEER_REPORT_BULLET = /^- \*\*Phase 12 \(REPORT\)\*\*:.*$/m;
+
+function overseerReportBullet(content = readAgent("overseer.md")) {
+  const match = bodyRegion(content).match(OVERSEER_REPORT_BULLET);
+  return match ? match[0] : "";
+}
+
+function reportProseSites() {
+  return [
+    ["the Overseer REPORT bullet", () => overseerReportBullet()],
+    ["the REPORT phase instruction", () => protocolPhases.PHASE_INSTRUCTIONS.REPORT],
+  ];
+}
+
+describe("report status delivery", () => {
+  const template = readRoot(REPORT_TEMPLATE);
+
+  it("carries the three status sections, each with the facts it owns", () => {
+    expect(reportTemplateFindings(template)).toEqual([]);
+  });
+
+  it("fails when a status section is deleted", () => {
+    for (const heading of REPORT_STATUS_SECTIONS) {
+      expect(reportTemplateFindings(template.replace(heading, "")), `${heading} must be pinned`).not.toEqual(
+        []
+      );
+    }
+  });
+
+  it("fails when a section survives without its facts", () => {
+    const hollow = template.replace(/Artifact KD path/g, "Outcome");
+    expect(reportTemplateFindings(hollow)).toEqual([
+      "report template ## Agent Outcomes omits the artifact KD path column",
+    ]);
+  });
+
+  it("fails when ## What Changed is restored", () => {
+    const restored = template.replace(
+      "## References",
+      "## What Changed\n\n- {{file}} — {{change}}\n\n## References"
+    );
+    expect(reportTemplateFindings(restored)).toContain('report template still asks for "what changed"');
+  });
+
+  it("fails when What was built, at a high level is restored", () => {
+    const restored = template.replace(
+      "## Lifecycle Result",
+      "## Summary\n\n{{What was built, at a high level}}\n\n## Lifecycle Result"
+    );
+    expect(reportTemplateFindings(restored)).toContain('report template still asks for "what was built"');
+  });
+
+  it("states the same shape in the Overseer bullet and the REPORT phase instruction", () => {
+    for (const [site, read] of reportProseSites()) {
+      expect(reportInstructionFindings(read(), site)).toEqual([]);
+    }
+  });
+
+  it("fails when the phase instruction keeps asking for a synthesis", () => {
+    const retired = `Write a report KD summarizing lifecycle results. Include any corrections from the lifecycle.`;
+    expect(reportInstructionFindings(retired, "instruction")).toContain(
+      'instruction still asks for "summarizing lifecycle results"'
+    );
+  });
+
+  it("fails when the Overseer bullet drops the outcome vocabulary", () => {
+    const narrowed = overseerReportBullet().replace("succeeded", "completed");
+    expect(reportInstructionFindings(narrowed, "bullet")).not.toEqual([]);
+  });
+
+  it("scopes each site to its own text", () => {
+    // The template's status sections must not satisfy the prose sites: a report
+    // written into the template while both instructions still ask for prose is
+    // the drift this separation detects.
+    expect(reportInstructionFindings(REPORT_STATUS_SECTIONS.join("\n"), "bare headings")).not.toEqual([]);
+  });
+});
+
+// Residue the audit's corrections replaced. Each entry names one phrase the
+// old text carried and the file that carried it; a correction replaces the
+// phrase, so a surviving copy is the regression this table detects. Scoping is
+// per file because a phrase can be legitimate elsewhere — the point is that the
+// corrected site no longer states it, not that the words are banned everywhere.
+const RESIDUE_FORBIDDEN = [
+  { phrase: "always pushed forward", file: join("plugins", "protocol-gate", "index.js") },
+  { phrase: "FR-15", file: join("plugins", "protocol-gate", "index.js") },
+  // Operator messages: the cause the record asserted without support, and the
+  // remedy the parked state forecloses.
+  { phrase: "prior or abandoned lifecycles", file: join("plugins", "protocol-gate", "index.js") },
+  { phrase: "land a row transition", file: join("plugins", "protocol-gate", "index.js") },
+  // Plugin comments: a growth bound no code in the tree establishes, and an
+  // attribution that points the framing rule at another layer.
+  { phrase: "log rotation bounds growth", file: join("plugins", "delegation-gate", "index.js") },
+  { phrase: "Positive framing per AGENTS.md", file: join("plugins", "protocol-gate", "phases.js") },
+  // The registry-read enumeration that stopped at SWARM: the phase table scopes
+  // read in VERIFY too, and a FAIL verdict reopens rows there. The corrected
+  // sentence joins its phases with commas and a trailing conjunction, so this
+  // phrase cannot match it.
+  { phrase: "DECOMPOSE (phase 6) and SWARM (phase 7)", file: join("agents", "overseer.md") },
+  // The status-only body: a phase-scope enumeration, the disk-check evidence
+  // model that scoped glob reads, a plugin-surfaced issue input and a
+  // store-inspection route the role has no entitlement for. The body states what
+  // the role tracks and reads back; the gate keeps the phase scope, and the issue
+  // records stay with their curator.
+  { phrase: "permitted in DECOMPOSE (phase 6), SWARM (phase 7) and VERIFY (phase 8)", file: join("agents", "overseer.md") },
+  { phrase: "The scoped disk-check evidence model applies", file: join("agents", "overseer.md") },
+  { phrase: "issue files surfaced by the Knowledge Gate plugin", file: join("agents", "overseer.md") },
+  { phrase: "inspect the issue stores directly", file: join("agents", "overseer.md") },
+  // Ground rules that stated this repository's architecture: the layer policy,
+  // the investigation walk through the repo's own paths, and an agent-exclusive
+  // grant the shared principles have no business carrying.
+  { phrase: "A rule lives in the layer that reaches its audience", file: "AGENTS.md" },
+  { phrase: "The dedicated Grep tool searches every tree on disk", file: "AGENTS.md" },
+  { phrase: "the Committer holds the git reset grant", file: "AGENTS.md" },
+  // The Committer's remit sentence: it named staging and committing as the whole
+  // operation while the body ran three git-lifecycle modes. The sentence now
+  // names the lifecycle those modes are.
+  { phrase: "Stage and commit changes as the sole operation", file: join("agents", "committer.md") },
+  // The synthesis report: the phase instruction and the template that rendered
+  // it asked for a narrative of the lifecycle. Both sites state the status
+  // delivery now, so a surviving copy is the old instruction coming back.
+  { phrase: "Write a report KD summarizing lifecycle results", file: join("plugins", "protocol-gate", "phases.js") },
+  { phrase: "What was built, at a high level", file: join("skills", "template-report", "SKILL.md") },
+  // README's three false process claims: a mechanism that keeps no audit trail,
+  // a manifest that ships three scripts rather than one, and an owner the git
+  // contract assigns to the verifying role. Each forbidden phrase and its
+  // correction cannot both be true of the same repository.
+  { phrase: "records the full dispatch text as the audit trail", file: "README.md" },
+  { phrase: "audit script only", file: "README.md" },
+  { phrase: "manual gate runs are the Artisan's job", file: "README.md" },
+];
+
+// The inventory the corrections leave, counted per file. The table above is what
+// the detectors read; this one is what a completeness claim needs, because a row
+// deleted from the table would otherwise leave a smaller table that still passes
+// every case it runs. A count that no longer matches names the file a row left.
+const RESIDUE_INVENTORY = [
+  [join("plugins", "protocol-gate", "index.js"), 4],
+  [join("plugins", "delegation-gate", "index.js"), 1],
+  [join("plugins", "protocol-gate", "phases.js"), 2],
+  [join("agents", "overseer.md"), 5],
+  ["AGENTS.md", 3],
+  [join("agents", "committer.md"), 1],
+  [join("skills", "template-report", "SKILL.md"), 1],
+  ["README.md", 3],
+];
+
+// Process commentary is residue of the same kind and is judged the same way, with
+// one difference: it is scoped to a comment block instead of a whole file. A
+// plugin file may keep a history note none of this audit's edits touched, so a
+// file-wide entry would report prose that is deliberately deferred. Each entry
+// names the code marker whose comment block it reads.
+const PROCESS_COMMENTARY = ["previously", "used to", "no longer"].flatMap((phrase) =>
+  [
+    [join("plugins", "protocol-gate", "phases.js"), "export const PHASE_INSTRUCTIONS = {"],
+    [join("plugins", "delegation-gate", "index.js"), "debug(`RAW PROMPT"],
+    [join("plugins", "protocol-gate", "index.js"), "function noWalkFallback"],
+  ].map(([file, anchor]) => ({ phrase, file, anchor }))
+);
+
+// Normalized match: case-insensitive, with whitespace collapsed and the
+// markdown wrappers dropped, so a reflowed, re-cased or re-wrapped copy of a
+// phrase is still that phrase. Code-span backticks and template braces carry no
+// prose meaning — an edit that wraps the same words in backticks changes the
+// rendering, not the fact the phrase states.
+function normalizeResidueProse(text) {
+  return text.toLowerCase().replace(/[{}`]/g, "").replace(/\s+/g, " ");
+}
+
+// Returns one finding per entry whose phrase survives in the content. Entries
+// are filtered by file by the caller, so a phrase legal in another layer never
+// reds the group.
+function residueFindings(content, entries) {
+  const normalized = normalizeResidueProse(content);
+  return entries
+    .filter((entry) => normalized.includes(normalizeResidueProse(entry.phrase)))
+    .map((entry) => `${entry.file} still carries "${entry.phrase}"`);
+}
+
+// The comment block immediately above a code marker: the contiguous run of `//`
+// lines that ends on the line before the anchor. A null return means the anchor
+// left the file, which is a finding rather than a pass — a moved anchor would
+// otherwise silence every entry scoped to it.
+function commentRegionAbove(content, anchor) {
+  const lines = content.split("\n");
+  const index = lines.findIndex((line) => line.includes(anchor));
+  if (index === -1) return null;
+  let start = index;
+  while (start > 0 && lines[start - 1].trim().startsWith("//")) start -= 1;
+  return lines.slice(start, index).join("\n");
+}
+
+function processCommentaryFindings(content, entries) {
+  return entries.flatMap((entry) => {
+    const region = commentRegionAbove(content, entry.anchor);
+    if (region === null) return [`${entry.file} carries no "${entry.anchor}" anchor`];
+    return residueFindings(region, [entry]).map(
+      (finding) => `${finding}, in the comment above "${entry.anchor}"`
+    );
+  });
+}
+
+describe("audit residue absent", () => {
+  it("carries no listed phrase in the file that carried it", () => {
+    const files = [...new Set(RESIDUE_FORBIDDEN.map((entry) => entry.file))];
+    const findings = files.flatMap((file) =>
+      residueFindings(readRoot(file), RESIDUE_FORBIDDEN.filter((entry) => entry.file === file))
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it("fails when a listed phrase is reintroduced", () => {
+    // The mutation case: the same detector that passes on the corrected tree
+    // must fire on a copy carrying the phrase, otherwise the group is a
+    // tautology that cannot report a regression.
+    const [entry] = RESIDUE_FORBIDDEN;
+    const source = readRoot(entry.file);
+    expect(residueFindings(source, [entry])).toEqual([]);
+    expect(residueFindings(`${source}\n// ${entry.phrase}\n`, [entry])).not.toEqual([]);
+  });
+
+  it("matches a re-cased or reflowed copy of a listed phrase", () => {
+    const [entry] = RESIDUE_FORBIDDEN;
+    const recased = entry.phrase.toUpperCase();
+    const reflowed = entry.phrase.replace(/ /g, "\n\t ");
+    expect(residueFindings(recased, [entry])).not.toEqual([]);
+    expect(residueFindings(reflowed, [entry])).not.toEqual([]);
+  });
+
+  it("fails for every listed phrase reintroduced into the file that carried it", () => {
+    // One case per table row rather than per group: a row added without a
+    // working detector would otherwise pass unproven.
+    for (const entry of RESIDUE_FORBIDDEN) {
+      const source = readRoot(entry.file);
+      expect(residueFindings(source, [entry])).toEqual([]);
+      expect(residueFindings(`${source}\n// ${entry.phrase}\n`, [entry])).toEqual([
+        `${entry.file} still carries "${entry.phrase}"`,
+      ]);
+    }
+  });
+
+  it("scopes each entry to its own file", () => {
+    // A phrase listed for one file stays legal in another: the table asserts
+    // the corrected sites, not a repository-wide word ban.
+    const [entry] = RESIDUE_FORBIDDEN;
+    const otherFile = "plugins/delegation-gate/index.js";
+    expect(residueFindings(`${entry.phrase}`, [{ ...entry, file: otherFile }])).toEqual([
+      `${otherFile} still carries "${entry.phrase}"`,
+    ]);
+    expect(residueFindings("unrelated prose", [entry])).toEqual([]);
+  });
+
+  it("holds the twenty rows the corrections leave, each under its own file", () => {
+    // Completeness is its own fact: the detectors above prove each row works,
+    // and these assertions prove the table still carries every row.
+    expect(RESIDUE_FORBIDDEN).toHaveLength(20);
+    for (const [file, count] of RESIDUE_INVENTORY) {
+      const rows = RESIDUE_FORBIDDEN.filter((entry) => entry.file === file);
+      expect(rows, `${file} carries ${rows.length} rows, not ${count}`).toHaveLength(count);
+    }
+    const distinct = new Set(RESIDUE_FORBIDDEN.map((entry) => `${entry.file}::${entry.phrase}`));
+    expect(distinct.size).toBe(RESIDUE_FORBIDDEN.length);
+    const files = [...new Set(RESIDUE_FORBIDDEN.map((entry) => entry.file))].sort();
+    expect(files).toEqual(RESIDUE_INVENTORY.map(([file]) => file).sort());
+  });
+
+  it("keeps the corrected comment regions free of process commentary", () => {
+    const files = [...new Set(PROCESS_COMMENTARY.map((entry) => entry.file))];
+    const findings = files.flatMap((file) =>
+      processCommentaryFindings(
+        readRoot(file),
+        PROCESS_COMMENTARY.filter((entry) => entry.file === file)
+      )
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it("reds a history note reintroduced above an anchored marker", () => {
+    const entry = PROCESS_COMMENTARY[0];
+    const source = readRoot(entry.file);
+    const injected = source.replace(
+      entry.anchor,
+      `// Previously the table stated this inline.\n${entry.anchor}`
+    );
+    expect(injected, "the anchor must be present to inject above").not.toBe(source);
+    expect(processCommentaryFindings(injected, [entry])).toEqual([
+      `${entry.file} still carries "previously", in the comment above "${entry.anchor}"`,
+    ]);
+  });
+
+  it("leaves a deferred history note outside the anchored region legal", () => {
+    // The protocol gate keeps a history note this audit does not own, so a
+    // file-wide entry would report deferred prose. The anchored entries pass on
+    // the same file that a file-wide match would red.
+    const file = join("plugins", "protocol-gate", "index.js");
+    const source = readRoot(file);
+    const anchored = PROCESS_COMMENTARY.filter((entry) => entry.file === file);
+    expect(anchored.length).toBeGreaterThan(0);
+    expect(processCommentaryFindings(source, anchored)).toEqual([]);
+    expect(residueFindings(source, [{ phrase: "previously", file }])).not.toEqual([]);
+  });
+});
+
+// The Committer's remit sentence summarises the role, and the mode list below it
+// is what it summarises. A sentence narrowing the whole operation to staging and
+// committing contradicted the three git-lifecycle modes the body runs, so the
+// sentence and the modes are read together and neither can drift alone.
+const COMMITTER_REMIT_MODES = [/pre flight setup/, /checkpoint commit/, /final commit and push/];
+
+function normalizeRemitProse(text) {
+  return text.toLowerCase().replace(/[-–—]/g, " ").replace(/\s+/g, " ");
+}
+
+function committerRemitFindings(content = readAgent("committer.md")) {
+  const remit = headingSection(content, "## Core Responsibility");
+  if (remit === "") return ["committer.md carries no Core Responsibility section"];
+  const normalized = normalizeRemitProse(remit);
+  const findings = [];
+  if (!normalized.includes("git lifecycle management")) {
+    findings.push("committer.md Core Responsibility does not name git lifecycle management");
+  }
+  if (!normalized.includes("sole operation")) {
+    findings.push("committer.md Core Responsibility does not name it the sole operation");
+  }
+  COMMITTER_REMIT_MODES.forEach((pattern, index) => {
+    if (!pattern.test(normalized)) {
+      findings.push(`committer.md Core Responsibility omits mode ${index + 1}`);
+    }
+  });
+  return findings;
+}
+
+describe("committer remit", () => {
+  const committer = readAgent("committer.md");
+
+  it("names git lifecycle management as the sole operation and all three modes", () => {
+    expect(committerRemitFindings(committer)).toEqual([]);
+  });
+
+  it("fails when a mode leaves the remit", () => {
+    const narrowed = committer.replace("final commit and push", "final cleanup");
+    expect(narrowed).not.toBe(committer);
+    expect(committerRemitFindings(narrowed)).not.toEqual([]);
+  });
+
+  it("fails when the operation narrows to staging and committing", () => {
+    const narrowed = committer.replace(
+      "Git lifecycle management is the sole operation",
+      "Stage and commit changes as the sole operation"
+    );
+    expect(narrowed).not.toBe(committer);
+    expect(committerRemitFindings(narrowed)).not.toEqual([]);
+  });
+});
+
+// The Protocol is one list. The steps run 1..10 without a break, and the blocks
+// that explain a step sit after the list rather than between two steps, so a
+// reader counts one sequence instead of resuming a count inside another step's
+// block.
+const PROTOCOL_STEPS = Array.from({ length: 10 }, (_, index) => index + 1);
+
+function protocolStepNumbers(section) {
+  const lines = section.split("\n");
+  const firstBlock = lines.findIndex((line) => line.startsWith("### "));
+  const listLines = firstBlock === -1 ? lines : lines.slice(0, firstBlock);
+  return listLines
+    .map((line) => line.match(/^(\d+)\.\s/))
+    .filter(Boolean)
+    .map((match) => Number(match[1]));
+}
+
+function protocolNumberingFindings(content = readAgent("artisan.md")) {
+  const section = headingSection(content, "## Protocol");
+  if (section === "") return ["artisan.md carries no Protocol section"];
+  const numbers = protocolStepNumbers(section);
+  const expected = PROTOCOL_STEPS.join(",");
+  if (numbers.join(",") !== expected) {
+    return [`artisan.md Protocol numbers read ${numbers.join(",")} instead of ${expected}`];
+  }
+  return [];
+}
+
+describe("artisan protocol numbering", () => {
+  const artisan = readAgent("artisan.md");
+
+  it("numbers the Protocol steps 1..10 contiguously above the step blocks", () => {
+    expect(protocolNumberingFindings(artisan)).toEqual([]);
+  });
+
+  it("fails on an injected gap", () => {
+    const gapped = artisan.replace(/^9\. .*\n/m, "");
+    expect(gapped).not.toBe(artisan);
+    expect(protocolNumberingFindings(gapped)).not.toEqual([]);
+  });
+
+  it("fails on a duplicated step number", () => {
+    const duplicated = artisan.replace(/^8\. /m, "7. ");
+    expect(duplicated).not.toBe(artisan);
+    expect(protocolNumberingFindings(duplicated)).not.toEqual([]);
+  });
+
+  it("fails when a block splits the list", () => {
+    const split = artisan.replace(/^10\. /m, "### Notes\n\n10. ");
+    expect(split).not.toBe(artisan);
+    expect(protocolNumberingFindings(split)).not.toEqual([]);
+  });
+});
+
+// The registry-read scope is a phase-table fact. The Overseer body names the
+// registry as its status surface without enumerating phases, so the table is the
+// one place the scope is stated and this group derives it from the shipped
+// restriction strings rather than restating them: a phase that gains or loses
+// the scope moves the derived set, and a phase that scopes read without
+// advertising the tool is drift in the other direction.
+function registryReadPhases(restrictions = protocolPhases.TOOL_RESTRICTIONS) {
+  return Object.keys(protocolPhases.STATES).filter((phase) =>
+    /milestone[- ]registry/i.test(restrictions[phase]?.read || "")
+  );
+}
+
+describe("registry read phase set", () => {
+  const PHASE_SET = ["DECOMPOSE", "SWARM", "VERIFY"];
+
+  it("derives the milestone-registry scope from the phase table", () => {
+    expect(registryReadPhases()).toEqual(PHASE_SET);
+    // A phase that scopes read must also advertise read, or the restriction
+    // describes a tool the phase cannot call.
+    const unadvertised = registryReadPhases().filter(
+      (phase) => !(protocolPhases.TOOL_ALLOWLIST[phase] || []).includes("read")
+    );
+    expect(unadvertised).toEqual([]);
+  });
+
+  it("fails when the phase table drops the scope VERIFY relies on", () => {
+    const live = protocolPhases.TOOL_RESTRICTIONS;
+    const narrowed = { ...live, VERIFY: { glob: live.VERIFY.glob } };
+    expect(registryReadPhases(narrowed)).not.toEqual(PHASE_SET);
+    expect(registryReadPhases(narrowed)).toEqual(["DECOMPOSE", "SWARM"]);
+  });
+
+  it("fails when a fourth phase gains the scope", () => {
+    const live = protocolPhases.TOOL_RESTRICTIONS;
+    const widened = { ...live, INTENT: { ...live.INTENT, read: "ONLY milestone registry KDs" } };
+    expect(registryReadPhases(widened)).toEqual(["INTENT", "DECOMPOSE", "SWARM", "VERIFY"]);
+  });
+});
+
+// A fact this configuration deliberately states at more than one site. Each
+// pair names both sites, the token set both must carry, and a reader per site;
+// one table drives one group, so a statement added at one site without the
+// other is a red run rather than a silent disagreement.
+//
+// The completion obligation is acted on the moment a round starts, with no
+// skill file open, and taught to whichever reviewer loads the gate skill next,
+// so both sites state it whole rather than pointing at each other.
+const REVIEW_COMPLETION_ID = "review completion obligation";
+
+// One token per half of the obligation: the verdict is written before the
+// round ends, and a review that cannot reach a finding still writes a verdict
+// naming what blocked it. Each fact carries its own pattern so a reader
+// extracts what a site actually says.
+const REVIEW_COMPLETION_FACTS = [
+  { token: "writes the REVIEW KD frontmatter verdict", pattern: /writes the REVIEW KD frontmatter verdict/i },
+  { token: "before it ends", pattern: /before it ends/i },
+  { token: "cannot reach a finding", pattern: /cannot reach a finding/i },
+  { token: "naming the blocking reason", pattern: /naming the blocking reason/i },
+];
+
+// The DECOMPOSE pass keeps a plan internally consistent. The planner runs it
+// while decomposing and its completeness step is where the obligation is
+// stated; the reviewer adjudicating a contradiction reads the same obligation
+// in the verdict section it writes.
+const PLAN_SELF_CONSISTENCY_ID = "plan self-consistency pass";
+
+const PLAN_SELF_CONSISTENCY_FACTS = [
+  { token: "mutually unsatisfiable", pattern: /mutually unsatisfiable/i },
+  { token: "read from the tree", pattern: /read from the tree/i },
+  { token: "self-consistency pass", pattern: /self-consistency pass/i },
+  { token: "recorded in the PLAN", pattern: /recorded in the PLAN/i },
+];
+
+// The tokens one site carries, matched by the fact's own pattern rather than
+// read off the table, so a site that loses half the obligation reports the half
+// it lost instead of reporting nothing.
+function factTokens(facts, text) {
+  return facts.filter((fact) => fact.pattern.test(text)).map((fact) => fact.token);
+}
+
+function completionTokens(text) {
+  return factTokens(REVIEW_COMPLETION_FACTS, text);
+}
+
+function planSelfConsistencyTokens(text) {
+  return factTokens(PLAN_SELF_CONSISTENCY_FACTS, text);
+}
+
+// The Inspector's Protocol step list, above the two protocol blocks it splits
+// into. The narrower region matters: the VERIFY paragraph below the list also
+// speaks of a frontmatter verdict, and a site that matched that sentence would
+// stay green after the step itself left.
+function inspectorProtocol(content = readAgent("inspector.md")) {
+  return sectionBetween(content, "## Protocol", "At VERIFY, the REVIEW KD");
+}
+
+function gatesVerdictSection(content = readRoot(join("skills", "verification-gates", "SKILL.md"))) {
+  return headingSection(content, "## Verdicts");
+}
+
+// The Pathfinder's completeness step closes the protocol list, so the region
+// runs from the step to the next section. An empty region means the step left,
+// which the pair reports as every token missing.
+function pathfinderSelfConsistencyStep(content = readAgent("pathfinder.md")) {
+  return sectionBetween(content, "8. Verify completeness", "\n## Principles");
+}
+
+function reviewVerdictAdjudication(content = readRoot(join("skills", "template-review", "SKILL.md"))) {
+  return headingSection(content, "## Verdict");
+}
+
+// The README's three corrected facts are the one pair whose sites live in
+// different files: the document that states them and the sources that own them.
+// Each side is read as one token per fact, so a claim dropped from the document
+// and a fact added to a source both name the fact that drifted.
+const README_FACTS_ID = "README three facts";
+
+function declaredScriptFacts(pkg) {
+  return Object.keys(pkg.scripts || {});
+}
+
+function declaredPluginFacts(config) {
+  return (config.plugins || []).map((entry) => entry.split("/").filter(Boolean).pop());
+}
+
+// What the document claims, read from the section that makes each claim.
+function readmeClaimTokens(readme = readRoot("README.md")) {
+  const tokens = [];
+  const runSection = headingSection(readme, "## Running the Tests");
+  for (const name of declaredScriptFacts(JSON.parse(readRoot("package.json")))) {
+    if (runSection.includes(`\`${name}\``)) tokens.push(`script:${name}`);
+  }
+  const pluginSection = headingSection(readme, "## Plugins Enforce the Architecture Structurally");
+  for (const name of declaredPluginFacts(JSON.parse(readRoot("opencode.json")))) {
+    if (pluginSection.includes(name)) tokens.push(`plugin:${name}`);
+  }
+  if (/\bInspector\b/.test(headingSection(readme, "## The Git Contract"))) {
+    tokens.push("gate runs:Inspector");
+  }
+  return tokens;
+}
+
+// What the sources declare: the manifest's scripts, the loaded plugin set, and
+// the role whose body states that it runs the declared gates.
+function sourceFactTokens(
+  pkg = JSON.parse(readRoot("package.json")),
+  config = JSON.parse(readRoot("opencode.json")),
+  inspector = readAgent("inspector.md")
+) {
+  return [
+    ...declaredScriptFacts(pkg).map((name) => `script:${name}`),
+    ...declaredPluginFacts(config).map((name) => `plugin:${name}`),
+    ...(inspector.includes("declares its verification gates") ? ["gate runs:Inspector"] : []),
+  ];
+}
+
+const AGREEMENT_PAIRS = [
+  {
+    id: README_FACTS_ID,
+    tokens: sourceFactTokens(),
+    sites: [
+      ["README claims", () => readmeClaimTokens()],
+      ["declaring sources", () => sourceFactTokens()],
+    ],
+  },
+  {
+    id: REVIEW_COMPLETION_ID,
+    tokens: REVIEW_COMPLETION_FACTS.map((fact) => fact.token),
+    sites: [
+      ["inspector protocol", () => completionTokens(inspectorProtocol())],
+      ["gate verdicts section", () => completionTokens(gatesVerdictSection())],
+    ],
+  },
+  {
+    id: EVIDENCE_SHAPE_ID,
+    tokens: EVIDENCE_SHAPE_FACTS.map((fact) => fact.token),
+    sites: [
+      ["gate evidence clause", () => evidenceShapeTokens(gatesEvidenceClause())],
+      ["review evidence clause", () => evidenceShapeTokens(reviewEvidenceClause())],
+    ],
+  },
+  {
+    id: PLAN_SELF_CONSISTENCY_ID,
+    tokens: PLAN_SELF_CONSISTENCY_FACTS.map((fact) => fact.token),
+    sites: [
+      ["pathfinder completeness step", () => planSelfConsistencyTokens(pathfinderSelfConsistencyStep())],
+      ["review verdict", () => planSelfConsistencyTokens(reviewVerdictAdjudication())],
+    ],
+  },
+];
+
+// One finding per token a site states and its partner does not, so a red run
+// names the side that drifted rather than only the pair. Overrides are keyed
+// "<pair id>:<site>" and let a mutation case edit one site in isolation.
+function agreementFindings(pairs, overrides = {}) {
+  return pairs.flatMap((pair) =>
+    pair.sites.flatMap(([site, read]) => {
+      const tokens = overrides[`${pair.id}:${site}`] || read();
+      const missing = pair.tokens.filter((token) => !tokens.includes(token));
+      const extra = tokens.filter((token) => !pair.tokens.includes(token));
+      return [
+        ...missing.map((token) => `${pair.id}: ${site} omits ${token}`),
+        ...extra.map((token) => `${pair.id}: ${site} names ${token}`),
+      ];
+    })
+  );
+}
+
+// A synthetic pair with the table's shape, read entirely from fixtures. The
+// detector is exercised here independently of what the table registers, so a
+// reader that agrees with its own site cannot hide a broken comparison, and the
+// token-vocabulary cases below stay provable whatever the table holds.
+function syntheticPair() {
+  const sites = {
+    left: ["ALPHA", "BETA"],
+    right: ["ALPHA", "BETA"],
+  };
+  return [
+    {
+      id: "synthetic fact",
+      tokens: ["ALPHA", "BETA"],
+      sites: [
+        ["left", () => sites.left],
+        ["right", () => sites.right],
+      ],
+    },
+  ];
+}
+
+describe("duplicated rules agree", () => {
+  it("holds exactly the four pairs the corrections leave", () => {
+    // The set, not only its members: a fifth pair, or a re-registered retired
+    // one, would pass a presence check and pass every case it runs.
+    expect(AGREEMENT_PAIRS.map((pair) => pair.id).sort()).toEqual(
+      [README_FACTS_ID, REVIEW_COMPLETION_ID, EVIDENCE_SHAPE_ID, PLAN_SELF_CONSISTENCY_ID].sort()
+    );
+  });
+
+  it("keeps the retired pairs out of the table", () => {
+    // Both retired with the entitlements they matched: the Overseer's
+    // registry-read prose, and the issue-read grants. Named so a later
+    // re-registration reds rather than silently returning.
+    const registered = AGREEMENT_PAIRS.map((pair) => pair.id);
+    for (const retired of ["registry read phase set", "issue_read reachability"]) {
+      expect(registered).not.toContain(retired);
+    }
+  });
+
+  it("states every registered fact at both of its sites", () => {
+    expect(agreementFindings(AGREEMENT_PAIRS)).toEqual([]);
+  });
+
+  it("fails when either site of a pair is edited alone", () => {
+    for (const pair of AGREEMENT_PAIRS) {
+      for (const [site, read] of pair.sites) {
+        for (const token of pair.tokens) {
+          const dropped = read().filter((value) => value !== token);
+          expect(
+            agreementFindings(AGREEMENT_PAIRS, { [`${pair.id}:${site}`]: dropped }),
+            `${pair.id}: dropping ${token} from ${site} must red the pair`
+          ).not.toEqual([]);
+        }
+      }
+    }
+  });
+
+  it("reds a registered pair the moment one site drops a token", () => {
+    // Falsifiable with the table empty: a dropped token at either site, and a
+    // token list wider than the sites, each report the drifting side by name.
+    const pair = syntheticPair();
+    expect(agreementFindings(pair)).toEqual([]);
+    for (const site of ["left", "right"]) {
+      expect(agreementFindings(pair, { [`synthetic fact:${site}`]: ["ALPHA"] })).toEqual([
+        `synthetic fact: ${site} omits BETA`,
+      ]);
+    }
+    expect(agreementFindings(pair, { "synthetic fact:left": ["ALPHA", "BETA", "GAMMA"] })).toEqual([
+      "synthetic fact: left names GAMMA",
+    ]);
+    const widened = pair.map((entry) => ({ ...entry, tokens: ["ALPHA", "BETA", "GAMMA"] }));
+    expect(agreementFindings(widened)).toEqual([
+      "synthetic fact: left omits GAMMA",
+      "synthetic fact: right omits GAMMA",
+    ]);
+  });
+
+  it("reds the pair when a site's prose loses the obligation", () => {
+    // Both halves in one edit: the strip removes the write-before-the-end
+    // clause and the reader reports the tokens that clause carried. The strip
+    // is asserted to have landed, so a reworded site reds on the next line
+    // rather than turning this case into a no-op.
+    const live = inspectorProtocol();
+    const stripped = live.replace("writes the REVIEW KD frontmatter verdict before it ends", "");
+    expect(stripped, "the Inspector Protocol must carry the obligation to strip").not.toBe(live);
+    expect(
+      agreementFindings(AGREEMENT_PAIRS, {
+        [`${REVIEW_COMPLETION_ID}:inspector protocol`]: completionTokens(stripped),
+      })
+    ).not.toEqual([]);
+  });
+
+  it("reds the pair when the gate skill loses the obligation", () => {
+    const live = gatesVerdictSection();
+    const stripped = live.replace("a review that cannot reach a finding", "an incomplete review");
+    expect(stripped, "the gate verdicts section must carry the obligation to strip").not.toBe(live);
+    expect(
+      agreementFindings(AGREEMENT_PAIRS, {
+        [`${REVIEW_COMPLETION_ID}:gate verdicts section`]: completionTokens(stripped),
+      })
+    ).not.toEqual([]);
+  });
+
+  it("reds the README pair when a claim leaves the document", () => {
+    const live = readRoot("README.md");
+    const stripped = live.replace("`prepare` points", "`setup` points");
+    expect(stripped, "the test-run section must state the prepare script to strip").not.toBe(live);
+    expect(
+      agreementFindings(AGREEMENT_PAIRS, {
+        [`${README_FACTS_ID}:README claims`]: readmeClaimTokens(stripped),
+      })
+    ).toEqual([`${README_FACTS_ID}: README claims omits script:prepare`]);
+  });
+
+  it("reds the README pair when a source gains a fact the document does not state", () => {
+    // The other direction: the document is untouched and a source grows, which
+    // makes the claim stale without an edit to the file that makes it.
+    const grown = [...sourceFactTokens(), "script:coverage"];
+    expect(
+      agreementFindings(AGREEMENT_PAIRS, { [`${README_FACTS_ID}:declaring sources`]: grown })
+    ).toEqual([`${README_FACTS_ID}: declaring sources names script:coverage`]);
   });
 });

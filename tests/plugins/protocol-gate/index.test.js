@@ -846,7 +846,7 @@ superseded_by: null
     ).rejects.toThrow("Read from knowledge/intent-*.md only");
   });
 
-  it("REPORT-phase read allows knowledge KDs, blocks skill files and delegation-gate template JSON", async () => {
+  it("REPORT-phase read allows report KDs, blocks other knowledge KDs, skill files and delegation-gate template JSON", async () => {
     const s = sid("ac004");
     await initOverseer(s);
     hooks.sessionPhaseMap.set(s, hooks.STATES.REPORT);
@@ -857,9 +857,9 @@ superseded_by: null
         { tool: "read", sessionID: s, callID: "c1" },
         { args: { filePath: "skills/template-report/SKILL.md" } }
       )
-    ).rejects.toThrow("Read from knowledge KDs only");
+    ).rejects.toThrow("Read from knowledge/report-*.md only");
 
-    // Knowledge KD resolves (needed to compose the report)
+    // A report KD resolves (read back to point at it in the report)
     await expect(
       hooks["tool.execute.before"](
         { tool: "read", sessionID: s, callID: "c2" },
@@ -867,13 +867,79 @@ superseded_by: null
       )
     ).resolves.toBeUndefined();
 
+    // Another KD family stays out of reach: the report points at artifacts, it
+    // does not synthesise them.
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "read", sessionID: s, callID: "c4" },
+        { args: { filePath: "knowledge/impl-M1-narrow-scope.md" } }
+      )
+    ).rejects.toThrow("Read from knowledge/report-*.md only");
+
     // Delegation template JSON is auto-injected by delegation-gate, never read
     await expect(
       hooks["tool.execute.before"](
         { tool: "read", sessionID: s, callID: "c3" },
         { args: { filePath: "plugins/delegation-gate/templates/investigate.json" } }
       )
-    ).rejects.toThrow("Read from knowledge KDs only");
+    ).rejects.toThrow("Read from knowledge/report-*.md only");
+  });
+
+  // The read handler's reach, driven directly: the phase layer advertises
+  // `read` in five phases and in no other, so a refusal in the remaining seven
+  // happens at admission and never reaches the handler. Each admitted phase
+  // admits the class it advertises and refuses a KD outside it. Host-level
+  // precedence between the phase gate and the agent's permission block is not
+  // claimed here.
+  describe("read handler — advertised phase reach", () => {
+    const ADMITTED = [
+      ["INTENT", "knowledge/intent-a.md"],
+      ["REPORT", "knowledge/report-a.md"],
+      ["DECOMPOSE", "knowledge/milestones-a.md"],
+      ["SWARM", "knowledge/milestones-b.md"],
+      ["VERIFY", "knowledge/milestones-c.md"],
+    ];
+    const OUTSIDE_CLASS = {
+      INTENT: "knowledge/report-a.md",
+      REPORT: "knowledge/impl-M1-a.md",
+      DECOMPOSE: "knowledge/plan-a.md",
+      SWARM: "knowledge/impl-M1-a.md",
+      VERIFY: "knowledge/spec-a.md",
+    };
+    const NO_READ_PHASES = ["PREFLIGHT", "EXPLORE", "INVESTIGATE", "ALIGN", "EXTRACT", "EVOLVE", "CLEANUP"];
+
+    it.each(ADMITTED)("admits %s a KD of the class the phase advertises", async (phase, filePath) => {
+      const s = sid(`read-admit-${phase.toLowerCase()}`);
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES[phase]);
+      await expect(
+        hooks["tool.execute.before"]({ tool: "read", sessionID: s, callID: "r1" }, { args: { filePath } })
+      ).resolves.toBeUndefined();
+    });
+
+    it.each(ADMITTED)("refuses %s a KD outside the class it advertises", async (phase) => {
+      const s = sid(`read-refuse-class-${phase.toLowerCase()}`);
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES[phase]);
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "r2" },
+          { args: { filePath: OUTSIDE_CLASS[phase] } }
+        )
+      ).rejects.toThrow(/BLOCKED: Wrong phase/);
+    });
+
+    it.each(NO_READ_PHASES)("refuses read in %s, which advertises no read", async (phase) => {
+      const s = sid(`read-refuse-phase-${phase.toLowerCase()}`);
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES[phase]);
+      await expect(
+        hooks["tool.execute.before"](
+          { tool: "read", sessionID: s, callID: "r3" },
+          { args: { filePath: "knowledge/milestones-a.md" } }
+        )
+      ).rejects.toThrow(`Tool "read" is not available in ${phase}`);
+    });
   });
 
   it("normalizes backslash and absolute Windows paths to project-relative knowledge/ paths", async () => {
@@ -7472,7 +7538,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
     it("the overseer entry point mirrors the discriminator and the follow-up dispositions", () => {
       const overseer = readFileSync(join(process.cwd(), "agents", "overseer.md"), "utf8");
       const start = overseer.indexOf("### Entry Point");
-      const end = overseer.indexOf("### Knowledge Gate Auto-Injection");
+      const end = overseer.indexOf("### Status Surface");
       expect(start).toBeGreaterThan(-1);
       expect(end).toBeGreaterThan(start);
       const entryPoint = overseer.slice(start, end);
@@ -8001,6 +8067,148 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
         `❌ BLOCKED: Wrong phase. Tool "write" is not available in EXPLORE. Available tools in EXPLORE: ${hooks.TOOL_ALLOWLIST.EXPLORE.join(", ")}`
       );
       expect(otherRefusal.message).not.toContain("cleanup");
+    });
+  });
+
+  // The fallback a force-advance supplies when no walk queue governs the phase.
+  // Every member of the phase table is asserted: a hardcoded target is only
+  // wrong for the phases nobody happened to exercise, so the table itself is
+  // the expectation and the hook case proves the behaviour end to end.
+  describe("force-advance fallback never targets a phase behind the current one", () => {
+    const allPhases = () =>
+      Object.values(hooks.STATES).filter((p) => typeof p === "number").sort((a, b) => a - b);
+
+    it("steps one phase forward from every phase, capped at the terminal phase", () => {
+      const phases = allPhases();
+      expect(phases).toHaveLength(12);
+      for (const p of phases) {
+        const expected = p < hooks.STATES.REPORT ? p + 1 : hooks.STATES.REPORT;
+        expect(hooks.noWalkFallback(p, true), `forced target from phase ${p}`).toBe(expected);
+      }
+    });
+
+    it("never leaves a phase where it found it", () => {
+      for (const p of allPhases()) {
+        const target = hooks.noWalkFallback(p, true);
+        expect(target, `forced target from phase ${p}`).toBeGreaterThanOrEqual(p);
+        expect(target, `forced target from phase ${p}`).toBeLessThanOrEqual(hooks.STATES.REPORT);
+      }
+    });
+
+    it("an unforced fallback is the serial next phase", () => {
+      for (const p of allPhases()) {
+        expect(hooks.noWalkFallback(p), `serial target from phase ${p}`).toBe(p + 1);
+        expect(hooks.noWalkFallback(p, false), `serial target from phase ${p}`).toBe(p + 1);
+      }
+    });
+
+    it("a force-advance stuck in EXTRACT lands in EVOLVE", async () => {
+      const s = sid("force-extract");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.EXTRACT);
+      // The no-walk path is constructed explicitly: no queue is committed, so
+      // the phase's missing evidence runs the safety counter to its threshold
+      // and the fallback alone decides the target.
+      expect(hooks.walkExists(s)).toBe(false);
+      for (let i = 0; i < 15; i++) {
+        await tick(s, `fx${i}`);
+      }
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EVOLVE);
+      // The recorded safety override names the same hop, so the landing is the
+      // fallback's work rather than an unrelated advancement on the same call.
+      expect(readFileSync(logPath, "utf8")).toContain("SAFETY_OVERRIDE: FORCE ADVANCE — EXTRACT → EVOLVE");
+    });
+
+    it("a walk in progress wins over the fallback", async () => {
+      const s = sid("force-walk");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.EXTRACT);
+      const out = { parts: [] };
+      await hooks["command.execute.before"]({ command: "phase", sessionID: s, arguments: "9,12" }, out);
+      expect(out.phaseError).toBeUndefined();
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+
+      for (let i = 0; i < 15; i++) {
+        await tick(s, `fw${i}`);
+      }
+      // The queue's next named hop is REPORT; the serial fallback (EVOLVE)
+      // never runs while a walk governs the phase.
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.REPORT);
+    });
+  });
+
+  // The two always-on records the gate writes when it cannot advance on
+  // evidence. A record earns its place only when the reader learns which state
+  // holds, which cause the code established, and the one route out — so each
+  // case asserts the facts the sentence must carry and the claims it must not
+  // make, and both lists come from the same emitted line.
+  describe("operator messages name a live remedy and an established cause", () => {
+    it("records the anchor rule and the candidate count without judging the candidates it did not pick", async () => {
+      const s = sid("msg-anchor-ambiguous");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      hooks.sessionPhaseMap.set(`${s}:gen`, 6);
+      // Two INTENTs for one session: the counter has moved past its own label,
+      // so only modification time separates the candidates.
+      createKD(`intent-feature-${s}-gen6.md`);
+      createKD(`intent-feature-${s}-gen5.md`);
+      const now = Date.now() / 1000;
+      utimesSync(join(knowledgeDir, `intent-feature-${s}-gen6.md`), now - 120, now - 120);
+      utimesSync(join(knowledgeDir, `intent-feature-${s}-gen5.md`), now, now);
+      try { rmSync(logPath); } catch (_) {}
+
+      expect(hooks.getActiveLifecycleGeneration(s)).toBe(5);
+
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toContain("LIFECYCLE_ANCHOR_AMBIGUOUS");
+      // Present: the candidate count and the tie-break rule the sort applies,
+      // in the order it applies them.
+      expect(log).toContain("several lifecycle INTENTs");
+      expect(log).toContain("modification time");
+      expect(log).toContain("then by generation");
+      expect(log).toContain("then by name");
+      // Absent: any state asserted for the candidates the sort did not pick. No
+      // code path establishes what became of them, and the case that matters is
+      // a live lifecycle whose own INTENT is the older one.
+      for (const unestablishedClaim of ["prior", "abandoned", "inert", "stale"]) {
+        expect(log).not.toContain(unestablishedClaim);
+      }
+      // The record's fields and its anchor/others pair are unchanged.
+      expect(log).toContain("activeGen=5");
+      expect(log).toContain(`anchor=intent-feature-${s}-gen5.md`);
+      expect(log).toContain(`others=intent-feature-${s}-gen6.md@gen6`);
+    });
+
+    it("names the /phase walk as the way out of a stale-pin park and offers no route the park forecloses", async () => {
+      const s = sid("msg-swarm-parked");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      // Every row complete with its artifact on disk: the gate's own evidence
+      // passes, and the freshness pin alone refuses the transition.
+      createRegistry(s, [["M1", "checked-off"], ["M2", "checked-off"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+      createKD(`impl-M2-feature-${s}.md`);
+      hooks.sessionPhaseMap.set(`${s}:overrideUntil`, { phase: hooks.STATES.SWARM, since: Date.now() + 60_000 });
+      try { rmSync(logPath); } catch (_) {}
+
+      expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
+
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toContain("SWARM_GATE_PARKED");
+      expect(log).toContain("reason=stale-registry");
+      // Present: the gate that passed, the pin that refused, the one live
+      // remedy, and the fact that no further evidence moves the pin.
+      expect(log).toContain("all-checked-off gate passed");
+      expect(log).toContain("freshness pin is unmet");
+      expect(log).toContain("/phase");
+      expect(log).toContain("cannot satisfy the pin");
+      expect(log).toContain("retry");
+      // Absent: the row transition the park state forecloses — a checked-off
+      // row is never rewritten, and the session is parked before that write.
+      expect(log).not.toContain("land a row transition");
+      expect(log).toContain("registry=milestones-feature-");
     });
   });
 });

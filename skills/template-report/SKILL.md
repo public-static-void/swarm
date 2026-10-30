@@ -19,28 +19,34 @@ superseded_by: null
 
 # REPORT: {{feature}}
 
-## Summary
+<!-- A report is a status delivery: it states what the lifecycle reached and who
+produced what, then points at the artifacts. Each row and each pointer comes from
+the lifecycle's own state — the phase, the milestone registry, the dispatch
+results and the KDs on disk — while the artifacts keep their own detail. -->
 
-{{What was built, at a high level}}
+## Lifecycle Result
 
-## What Changed
+- Phase reached: {{phase name}}
+- Milestones: {{total}} total / {{checked-off}} checked off / {{failed}} failed
+- Session: `{{session_id}}`
+- Generation: {{generation}}
 
-- {{File/component}} — {{change description}}
+## Agent Outcomes
 
-## Acceptance Criteria Status
+| Phase | Agent | Outcome | Artifact KD path |
+| ----- | ----- | ------- | ---------------- |
+| {{phase name}} | {{agent}} | {{succeeded or failed}} | `knowledge/{{artifact-kd-file}}` |
 
-- {{X}} / {{Y}} PASS
-- {{Z}} FAIL (see open items)
+## References
+
+- Composed: `knowledge/{{composed-kd-file}}`
+- Review: `knowledge/{{review-kd-file}}`
+- Process: `knowledge/{{process-kd-file}}`
+- Intent: `knowledge/{{intent-kd-file}}`
 
 ## Open Items
 
 - {{Unresolved issues or known limitations}}
-
-## Documentation
-
-- Spec: `knowledge/{{spec-kd-file}}`
-- Plan: `knowledge/{{plan-kd-file}}`
-- Reviews: `knowledge/{{review-kd-file}}`
 
 ## Process Friction
 
