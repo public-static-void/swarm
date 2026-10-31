@@ -2200,6 +2200,99 @@ Body`;
       const raw = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
       expect(raw).toContain("pathfinder");
     });
+
+    describe("append_section channel", () => {
+      const HEADING = "Closure Act";
+      const TEXT = "Shipped in the impl KD.";
+      // The exact tail an append writes: blank-line separation, the heading,
+      // the body, one trailing newline. Byte equality below depends on it.
+      const APPENDED = `\n## ${HEADING}\n\n${TEXT}\n`;
+
+      async function update(id, changes) {
+        return JSON.parse(await hooks.tool.issue_update.execute(
+          { id, scope: "swarm", changes },
+          { agent: "habit-builder", sessionID: "hb-session" }
+        ));
+      }
+
+      it("appends a named section while preserving frontmatter and every pre-existing body byte", async () => {
+        await seedIssue(1);
+        const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        const result = await update(1, { append_section: { heading: HEADING, body: TEXT } });
+        expect(result.error).toBeUndefined();
+        expect(result.message).toContain("updated");
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        // The original file must be a strict byte prefix of the result, so no
+        // pre-existing frontmatter or body byte was normalized away.
+        expect(after).toBe(before + APPENDED);
+        expect(hooks.parseIssueFile(after, "issue-1.md").status).toBe("open");
+      });
+
+      it("preserves pre-existing body bytes when the same call also changes status", async () => {
+        await seedIssue(1);
+        const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        const frontmatter = before.match(/^---\n[\s\S]*?\n---/)[0];
+        const bodyBytes = before.slice(frontmatter.length);
+        const result = await update(1, {
+          status: "resolved",
+          append_section: { heading: HEADING, body: TEXT },
+        });
+        expect(result.error).toBeUndefined();
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        expect(after.endsWith(bodyBytes + APPENDED)).toBe(true);
+        expect(hooks.parseIssueFile(after, "issue-1.md").status).toBe("resolved");
+      });
+
+      it("reports the byte delta of the append", async () => {
+        await seedIssue(1);
+        const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        const result = await update(1, { append_section: { heading: HEADING, body: TEXT } });
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        expect(result.byte_delta.before).toBe(Buffer.byteLength(before, "utf8"));
+        expect(result.byte_delta.appended).toBe(Buffer.byteLength(APPENDED, "utf8"));
+        expect(result.byte_delta.after).toBe(Buffer.byteLength(after, "utf8"));
+        expect(result.byte_delta.after - result.byte_delta.before).toBe(result.byte_delta.appended);
+      });
+
+      it("refuses an append to a resolved issue unless the same call sets status", async () => {
+        await seedIssue(1);
+        await update(1, { status: "resolved" });
+        const resolved = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        const refused = await update(1, { append_section: { heading: HEADING, body: TEXT } });
+        expect(refused.error).toMatch(/resolved/);
+        expect(readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8")).toBe(resolved);
+        const allowed = await update(1, {
+          status: "resolved",
+          append_section: { heading: HEADING, body: TEXT },
+        });
+        expect(allowed.error).toBeUndefined();
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        expect(after).toContain(`## ${HEADING}`);
+        expect(after.endsWith(APPENDED)).toBe(true);
+      });
+
+      it("rejects an unknown changes key by name and leaves the file unmodified", async () => {
+        await seedIssue(1);
+        const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        // A valid sibling key must not make the unknown key succeed silently.
+        const result = await update(1, {
+          append_section: { heading: HEADING, body: TEXT },
+          closure_note: "would be dropped before this check existed",
+        });
+        expect(result.error).toContain("closure_note");
+        expect(readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8")).toBe(before);
+      });
+
+      it("appends a body that opens with a section heading under its own heading", async () => {
+        await seedIssue(1);
+        const result = await update(1, {
+          append_section: { heading: HEADING, body: "## Description\nAppend body." },
+        });
+        expect(result.error).toBeUndefined();
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        expect(after.endsWith(`\n## ${HEADING}\n\n## Description\nAppend body.\n`)).toBe(true);
+      });
+    });
   });
 
   describe("issue_move tool (registered execute)", () => {
