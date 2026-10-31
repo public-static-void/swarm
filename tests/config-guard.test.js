@@ -1813,6 +1813,45 @@ function reviewEvidenceClause(content = readRoot(join("skills", "template-review
   return sectionBetween(content, "### Traceability Matrix", "## Audit");
 }
 
+// A matrix row read cell by cell: the Evidence column is what makes a row's own
+// capture readable, so the header is compared as a column order rather than as a
+// substring that a later column could satisfy.
+function matrixHeaderCells(clause) {
+  const header = clause.split("\n").find((line) => line.trimStart().startsWith("| Req ID |"));
+  return header
+    ? header
+        .trim()
+        .replace(/^\||\|$/g, "")
+        .split("|")
+        .map((cell) => cell.trim())
+    : [];
+}
+
+function matrixBodyRows(clause) {
+  return clause
+    .split("\n")
+    .filter((line) => /^\s*\|/.test(line))
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^\||\|$/g, "")
+        .split("|")
+        .map((cell) => cell.trim())
+    )
+    .filter((cells) => cells[0] !== "Req ID" && !/^:?-+:?$/.test(cells[0]));
+}
+
+const MATRIX_COLUMNS = [
+  "Req ID",
+  "Plan Step",
+  "Artifact",
+  "Declared Gate",
+  "Actually-Run Gate",
+  "Test/Check",
+  "Evidence",
+  "Status",
+];
+
 describe("VERIFY evidence shape", () => {
   const inspector = readAgent("inspector.md");
   const gates = readRoot(join("skills", "verification-gates", "SKILL.md"));
@@ -1839,6 +1878,45 @@ describe("VERIFY evidence shape", () => {
       expect(content).toContain("Declared Gate");
       expect(content).toContain("Actually-Run Gate");
     }
+  });
+
+  // The run and the capture of the run are separate facts: a row that names the
+  // command but not the output leaves the reader re-running it, and a row that
+  // leans on a sibling row's capture states no fact of its own. The Evidence
+  // column gives each row one cell to hold its own capture.
+  it("gives every traceability row an Evidence column of its own", () => {
+    for (const [site, clause] of [
+      ["gate protocol matrix", gatesEvidenceClause()],
+      ["review template matrix", reviewEvidenceClause()],
+    ]) {
+      expect(matrixHeaderCells(clause), `${site} must state the Evidence column in place`).toEqual(MATRIX_COLUMNS);
+      const rows = matrixBodyRows(clause);
+      expect(rows.length, `${site} must carry example rows`).toBeGreaterThan(1);
+      for (const cells of rows) {
+        expect(cells.length, `${site} row "${cells[0]}" must fill every column`).toBe(MATRIX_COLUMNS.length);
+        expect(cells[6], `${site} row "${cells[0]}" must carry its own evidence`).not.toBe("");
+      }
+    }
+  });
+
+  // The handoff block is where the Artisan produces the capture the matrix
+  // judges, so the executed output sits beside the gate line in both blocks.
+  it("records the executed output beside the gate in both impl handoff blocks", () => {
+    const template = readRoot(join("skills", "template-impl", "SKILL.md"));
+    expect(template.match(/actually-run gate:/g) || [], "the handoff blocks the output line joins").toHaveLength(2);
+    expect(template.match(/actually-run output:/g) || [], "each handoff block carries the executed output").toHaveLength(2);
+    expect(template).toContain("literal output or durable capture path");
+  });
+
+  // The reviewer is the agent that inherits a row from a handoff block, so the
+  // refusal lives in the review protocol: a paraphrase of an output nobody
+  // captured and a row carried by a sibling row that did run are both refused.
+  it("refuses a PASS over paraphrased or sibling-carried evidence", () => {
+    const protocol = sectionBetween(readAgent("inspector.md"), "\n## Protocol", "\n### Standard Protocol");
+    expect(protocol, "the review protocol must state the closeout").not.toBe("");
+    expect(protocol).toMatch(/paraphrase/i);
+    expect(protocol).toMatch(/sibling row/i);
+    expect(protocol).toMatch(/names the affected rows/i);
   });
 
   // A row's evidence is the run itself: the command's literal output, or a

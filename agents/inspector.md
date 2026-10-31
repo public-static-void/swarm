@@ -283,6 +283,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 2. **One pass, two sections**: perform the standard review (below) AND the security audit (below) in the same read of the codebase, then produce a single REVIEW KD with `## Review Findings` and `## Audit` sections.
 3. **Record an explicit verdict entry per gate item** in the REVIEW KD findings — prevents skipping checks mid-review.
 4. **End every round with a verdict**: a round that begins writes the REVIEW KD frontmatter verdict before it ends — `PASS` when the criteria hold, and `FAIL` naming the blocking reason when the review cannot reach a finding.
+5. **Close out on captured output**: before a `PASS`, read the Evidence cell of every traceability row. A paraphrase of an output nobody captured, and a row carried by a sibling row that did run, are both refused — the refusal names the affected rows. A row holds evidence when its cell carries the declared command's literal output or a durable path to the capture.
 
 At VERIFY, the REVIEW KD is the lifecycle acceptance proof: full suite re-run, dependency and SAST scans, a traceability matrix carrying declared gate → actually-run gate → run status → PASS/FAIL per row, and the frontmatter verdict field carrying the single lifecycle acceptance verdict.
 

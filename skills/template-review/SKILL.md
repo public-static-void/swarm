@@ -83,10 +83,10 @@ finding measures against, so a finding that contradicts it says so.
 
 ### Traceability Matrix
 
-| Req ID | Plan Step | Artifact  | Declared Gate | Actually-Run Gate | Test/Check     | Status      |
-| ------ | --------- | --------- | ------------- | ----------------- | -------------- | ----------- |
-| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
-| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
+| Req ID | Plan Step | Artifact  | Declared Gate | Actually-Run Gate | Test/Check     | Evidence       | Status      |
+| ------ | --------- | --------- | ------------- | ----------------- | -------------- | -------------- | ----------- |
+| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | `12 passed`    | PASS / FAIL |
+| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | `logs/e2e.log` | PASS / FAIL |
 
 Each row's evidence is the declared command's literal output or a durable path to the captured artifact, and each row stands alone — a paraphrase of an output, and a row that leans on another row's capture, are not evidence.
 

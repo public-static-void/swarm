@@ -38,11 +38,11 @@ Tests ──► Implementation ──► Plan step ──► Requirement (SPEC K
 
 Every REVIEW KD must include a traceability matrix like this:
 
-| Req ID | Plan Step | Artifact          | Declared Gate   | Actually-Run Gate | Test/Check       | Status      |
-| ------ | --------- | ----------------- | --------------- | ----------------- | ---------------- | ----------- |
-| R###   | P###      | `src/auth.ts`     | `npm test auth` | `npm test auth`   | `npm test auth`  | PASS / FAIL |
-| R###   | P###      | `src/login.tsx`   | `npm test`      | `npm test`        | `npm test login` | PASS / FAIL |
-| R###   | P###      | `config/auth.yml` | `npm test`      | `npm test`        | Lint passes      | PASS / FAIL |
+| Req ID | Plan Step | Artifact          | Declared Gate   | Actually-Run Gate | Test/Check       | Evidence                          | Status      |
+| ------ | --------- | ----------------- | --------------- | ----------------- | ---------------- | --------------------------------- | ----------- |
+| R###   | P###      | `src/auth.ts`     | `npm test auth` | `npm test auth`   | `npm test auth`  | auth suite: 12 passed (`logs/auth-test.log`) | PASS / FAIL |
+| R###   | P###      | `src/login.tsx`   | `npm test`      | `npm test`        | `npm test login` | login suite: 8 passed, 0 failed   | PASS / FAIL |
+| R###   | P###      | `config/auth.yml` | `npm test`      | `npm test`        | Lint passes      | lint exit 0, no warnings          | PASS / FAIL |
 
 A row's evidence is the declared command's literal output or a durable path to the captured artifact — a saved log, a report file, a commit that carries the capture. Each row stands alone: a paraphrase of an output nobody captured, and a row carried by a sibling row that did run, are both non-evidence, so the reader re-runs the command or opens the capture.
 
