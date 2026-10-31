@@ -224,6 +224,11 @@ const ERROR_TEMPLATES = {
     code: "GENERATION_HELD",
     message: `❌ GENERATION_HELD: generation ${generation} is already held by an unfinished lifecycle of this session (${(holders || []).join(", ")})`,
     guidance: `Start this lifecycle at a free generation — the gate allocates one above every label on disk and records it as LIFECYCLE_GENERATION_ALLOCATED — then rewrite the INTENT with that number in its filename. At the same generation the filename carries no discriminator, so the two lifecycles' evidence would be one set.`
+  }),
+  LIFECYCLE_SESSION_BUSY: (phaseName, generation) => ({
+    code: "LIFECYCLE_SESSION_BUSY",
+    message: `❌ LIFECYCLE_SESSION_BUSY: this session's lifecycle is still running at ${phaseName} (generation ${generation}), so a second lifecycle cannot start here`,
+    guidance: `Finish the running lifecycle — it reaches REPORT when its report KD is written — and start the next one from there. A session holds one phase and one generation, so an INTENT written while the walk is in progress would replace the state the running lifecycle's evidence resolves against. To move the running lifecycle somewhere else instead, use /phase.`
   })
 };
 
@@ -4522,6 +4527,35 @@ async function protocolGateServer(input, options) {
       return { ok: true, generation };
     }
 
+    // A session holds one live lifecycle. The persisted phase is what says so:
+    // outside INTENT and REPORT the walk a lifecycle started is still in force,
+    // and the phase and generation an INTENT written here would adopt are the
+    // ones that walk's evidence resolves against — the second lifecycle would
+    // take over a state the first is still using, and nothing downstream could
+    // tell the two apart. The start is refused instead of recorded, and the
+    // record names the phase and the number the running lifecycle holds so the
+    // caller can finish it or start the next lifecycle from REPORT.
+    function refuseSecondLiveLifecycle(sessionID) {
+      const persisted = readPersistedLifecycleState(sessionID);
+      // The file is the SSOT; the in-memory phase is the cache a session with no
+      // file of its own is initialized from, and such a session is starting, not
+      // running.
+      const runningPhase = persisted.present && typeof persisted.phase === "number"
+        ? persisted.phase
+        : sessionPhaseMap.get(sessionID);
+      if (runningPhase === STATES.INTENT || runningPhase === STATES.REPORT) return { ok: true };
+      const phaseName = getPhaseName(runningPhase);
+      const generation = persisted.present && typeof persisted.generation === "number"
+        ? persisted.generation
+        : getCurrentGeneration(sessionPhaseMap, sessionID);
+      gateRecordEvent("LIFECYCLE_SESSION_BUSY", [
+        ["session", sessionID],
+        ["phase", phaseName],
+        ["generation", generation]
+      ], `this session's lifecycle is still running at ${phaseName}, so the INTENT written now would start a second live lifecycle in the same session: it would take the phase and the generation the running lifecycle's evidence resolves against, and the write is refused`, `LIFECYCLE_SESSION_BUSY|${sessionID}|p:${phaseName}|g:${generation}`);
+      return { ok: false, reason: "session-busy", phase: runningPhase, phaseName, generation };
+    }
+
     // When the artisan writes its milestone-scoped impl KD,
     // advance that milestone to checked-off in the parent lifecycle's registry.
     // The impl KD on disk IS the verifiable evidence of completion — the
@@ -5749,6 +5783,15 @@ async function protocolGateServer(input, options) {
         // can be judged against a counter that belongs to another lifecycle.
         // Runs after the content validation so a rejected write adopts nothing.
         if (phase === STATES.INTENT && isIntentKD) {
+          // One session hosts one live lifecycle. The persisted phase outranks
+          // this process's cache: a start attempted while the session's own walk
+          // is in progress is refused before a number is adopted and before the
+          // write lands.
+          const busy = refuseSecondLiveLifecycle(sessionID);
+          if (!busy.ok) {
+            const template = ERROR_TEMPLATES.LIFECYCLE_SESSION_BUSY(busy.phaseName, busy.generation);
+            throw new ProtocolGateError(template.code, template.message, template.guidance);
+          }
           const adopted = adoptLifecycleGenerationOnIntent(sessionID, relPath);
           // A held number blocks the write: a lifecycle that started at a number
           // another unfinished lifecycle carries would merge the two evidence
@@ -6644,6 +6687,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       findLifecycleAnchor: (sessionID) => findLifecycleAnchor(sessionID),
       allocateLifecycleGeneration: (sessionID) => allocateLifecycleGeneration(sessionPhaseMap, sessionID),
       adoptLifecycleGenerationOnIntent,
+      refuseSecondLiveLifecycle,
       isDocumentPayload,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,
