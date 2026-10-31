@@ -1746,6 +1746,67 @@ describe("planning shape and scribe composition discipline", () => {
   });
 });
 
+// The PLAN shape carries the slot the self-consistency pass is written into.
+// Two prompts name what the pass checks and the section points at the table
+// that overrides the SPEC where a user decision exists. The slot is read as a
+// section, so an obligation stated elsewhere in the file leaves the slot empty
+// while the file still reads as though it carries the pass.
+const PLAN_TEMPLATE_SELF_CONSISTENCY_TOKENS = [
+  { token: "mutually unsatisfiable", pattern: /mutually unsatisfiable/i },
+  { token: "read from the tree", pattern: /read from the tree/i },
+  { token: "re-established by the check it rests on", pattern: /re-established by the check it rests on/i },
+  { token: "## Binding Resolutions", pattern: /## Binding Resolutions/ },
+];
+
+function planTemplate(content = readRoot(join("skills", "template-plan", "SKILL.md"))) {
+  return headingSection(content, "## Self-Consistency");
+}
+
+function planTemplateObligations(section) {
+  return PLAN_TEMPLATE_SELF_CONSISTENCY_TOKENS.filter((entry) => entry.pattern.test(section)).map(
+    (entry) => entry.token
+  );
+}
+
+describe("PLAN template self-consistency slot", () => {
+  const template = readRoot(join("skills", "template-plan", "SKILL.md"));
+
+  it("places the slot between the steps and the binding resolutions", () => {
+    const positions = ["## Steps", "## Self-Consistency", "## Binding Resolutions"].map((heading) =>
+      template.indexOf(heading)
+    );
+    expect(positions.every((position) => position >= 0), "all three headings exist").toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+  });
+
+  it("carries both prompts and the binding-resolutions reference", () => {
+    expect(planTemplateObligations(planTemplate(template))).toEqual(
+      PLAN_TEMPLATE_SELF_CONSISTENCY_TOKENS.map((entry) => entry.token)
+    );
+  });
+
+  it("reds the slot when an obligation leaves it", () => {
+    // Each obligation is stripped on its own, so a report names the half the
+    // slot lost rather than the whole section.
+    for (const entry of PLAN_TEMPLATE_SELF_CONSISTENCY_TOKENS) {
+      const live = planTemplate(template);
+      const stripped = live.replace(entry.pattern, "");
+      expect(stripped, `${entry.token} is present to strip`).not.toBe(live);
+      expect(planTemplateObligations(stripped)).not.toContain(entry.token);
+    }
+  });
+
+  it("reads the obligations from the slot alone", () => {
+    // A token surviving elsewhere in the file leaves the slot empty while the
+    // file reads as though it carries the pass, so the empty region is the
+    // finding.
+    const withoutSlot = template.replace(planTemplate(template), "");
+    expect(withoutSlot, "the slot is present to remove").not.toBe(template);
+    expect(planTemplate(withoutSlot)).toBe("");
+    expect(planTemplateObligations(planTemplate(withoutSlot))).toEqual([]);
+  });
+});
+
 // The retired prose-citation rule. A FAIL used to be said to reopen the rows its
 // findings cite, and a FAIL citing none was called MALFORMED; protocol-gate reads
 // the frontmatter `reopen_target` field and derives no target from prose. A site
