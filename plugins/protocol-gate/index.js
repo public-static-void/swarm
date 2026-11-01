@@ -3035,10 +3035,26 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
     debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} verdict=FAIL → ${regressed ? "regressed to SWARM" : "blocked (fix-cycle guard or no regression handler)"}`);
     return false;
   }
-  if (!verdictInfo || !verdictInfo.verdict) {
+  // Two different defects, two different repairs: a session with no review KD
+  // at all is an unreviewed row, while a review KD whose verdict field is absent
+  // or invalid is a review round that ended before its verdict was written. One
+  // token for both reads as "never reviewed" in the log, which hides the second.
+  if (!verdictInfo) {
+    gateRecordEvent("REVIEW_KD_MISSING", [
+      ["session", sessionID],
+      ["artifact", "<none>"],
+      ["reason", "no-review-kd"]
+    ], "no review- KD exists for this session — VERIFY advancement is blocked with nothing reviewed; the phase needs a review artifact carrying verdict: PASS or FAIL", `REVIEW_KD_MISSING|${sessionID}|r:no-review-kd`);
+    return false;
+  }
+  if (!verdictInfo.verdict) {
     // MISSING: an absent/invalid verdict field blocks advancement — the
     // Inspector must emit a real verdict. Never treated as PASS.
-    debug(`VERDICT_MISSING: newest review KD ${verdictInfo ? verdictInfo.filename : "(none)"} lacks a valid verdict field — advancement blocked`);
+    gateRecordEvent("VERDICT_MISSING", [
+      ["session", sessionID],
+      ["review", verdictInfo.filename],
+      ["reason", "no-valid-verdict"]
+    ], `newest review KD ${verdictInfo.filename} carries no valid verdict field — VERIFY advancement is blocked; write verdict: PASS or FAIL in its frontmatter`, `VERDICT_MISSING|${sessionID}|a:${verdictInfo.filename}|r:no-valid-verdict`);
     return false;
   }
   // PASS never reopens (FR-13): the field is read only on FAIL, so a PASS that
@@ -3060,7 +3076,12 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
   const verdictMtime = getFileMtimeMs(join(getKnowledgeDir(sessionID), verdictInfo.filename));
   const newestImpl = newestImplMtimeMs(sessionFiles, sessionID);
   if (newestImpl > verdictMtime) {
-    debug(`STALE_PASS: verdict KD ${verdictInfo.filename} mtime=${verdictMtime} < newest impl KD mtime=${newestImpl} — fresh review required after last fix`);
+    gateRecordEvent("STALE_PASS", [
+      ["session", sessionID],
+      ["review", verdictInfo.filename],
+      ["reviewMtime", verdictMtime],
+      ["implMtime", newestImpl]
+    ], `PASS review KD ${verdictInfo.filename} predates the newest impl KD — VERIFY advancement is blocked until a fresh review; the fix cycle landed after the verdict it would have to judge`, `STALE_PASS|${sessionID}|a:${verdictInfo.filename}|i:${newestImpl}`);
     return false;
   }
   // The merged review+audit surface advances on a single review KD.
@@ -3130,7 +3151,12 @@ function evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap, anch
   if (anchor !== null && info) {
     const mtime = getFileMtimeMs(join(getKnowledgeDir(sessionID), info.filename));
     if (mtime < anchor) {
-      debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → false (stale under override since=${anchor})`);
+      gateRecordEvent("PREFLIGHT_STALE_UNDER_OVERRIDE", [
+        ["session", sessionID],
+        ["preflight", info.filename],
+        ["mtime", mtime],
+        ["since", anchor]
+      ], `newest preflight KD ${info.filename} predates the override anchor ${anchor} — PREFLIGHT advancement is blocked; a stale verdict never undoes the override, so write a fresh preflight KD`, `PREFLIGHT_STALE_UNDER_OVERRIDE|${sessionID}|a:${info.filename}|s:${anchor}`);
       return false;
     }
   }
@@ -3458,7 +3484,12 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     const walkMarker = getOverrideUntil(sessionPhaseMap, sessionID);
     if (walkMarker && Array.isArray(walkMarker.phases) && walkMarker.phases.length > 0
       && typeof phase === "number" && phase > walkMarker.phases[0]) {
-      debug(`Disk check: walk divergence — phase=${phase} head=${walkMarker.phases[0]} queue=${JSON.stringify(walkMarker.phases)} — refusing to advance`);
+      gateRecordEvent("WALK_DIVERGED_BACKSTOP", [
+        ["session", sessionID],
+        ["phase", String(phase)],
+        ["head", String(walkMarker.phases[0])],
+        ["queue", `[${walkMarker.phases.join(",")}]`]
+      ], `phase ${getPhaseName(phase)} (${phase}) is ahead of the walk head ${walkMarker.phases[0]} — advancement is refused on this evaluation path too, not only where the caller already records the divergence`, `WALK_DIVERGED_BACKSTOP|${sessionID}|p:${phase}|h:${walkMarker.phases[0]}`);
       return false;
     }
   }
@@ -3468,7 +3499,10 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // Without this, a plan KD from a different session instantly advances PREFLIGHT.
   const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
   if (!storedSID) {
-    debug(`Disk check: no session ID set for ${sessionID} — skipping`);
+    gateRecordEvent("SESSION_ID_MISSING", [
+      ["session", sessionID],
+      ["reason", "no-stored-session-id"]
+    ], "no session ID is stored for this session — advancement is blocked because KD evidence cannot be attributed to a session without one", `SESSION_ID_MISSING|${sessionID}`);
     return false;
   }
 
@@ -3480,7 +3514,11 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   try {
     files = readdirSync(knowledgeDir);
   } catch (e) {
-    debug(`Disk check: knowledge/ dir not found for session ${sessionID}`);
+    gateRecordEvent("KNOWLEDGE_DIR_MISSING", [
+      ["session", sessionID],
+      ["dir", knowledgeDir],
+      ["reason", "unreadable"]
+    ], `the knowledge directory ${knowledgeDir} cannot be read — advancement is blocked because no evidence KD can be seen`, `KNOWLEDGE_DIR_MISSING|${sessionID}|d:${knowledgeDir}`);
     return false;
   }
 
@@ -3576,12 +3614,22 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     if (overrideActive) {
       const verdictInfo = findNewestVerdictKD(sessionFiles, sessionID);
       if (!verdictInfo) {
-        debug(`Disk check VERIFY: no review KD — cannot advance under override (since=${overrideAnchor})`);
+        gateRecordEvent("REVIEW_KD_MISSING", [
+          ["session", sessionID],
+          ["artifact", "<none>"],
+          ["reason", "no-review-kd-under-override"],
+          ["since", overrideAnchor]
+        ], `no review- KD exists for this session, so the VERIFY hop cannot be satisfied under the override anchored at ${overrideAnchor} — write a review artifact carrying verdict: PASS or FAIL`, `REVIEW_KD_MISSING|${sessionID}|r:no-review-kd-under-override|s:${overrideAnchor}`);
         return false;
       }
       const mtime = getFileMtimeMs(join(knowledgeDir, verdictInfo.filename));
       if (mtime < overrideAnchor) {
-        debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} mtime=${mtime} < since=${overrideAnchor} — not fresh (override)`);
+        gateRecordEvent("VERDICT_STALE_UNDER_OVERRIDE", [
+          ["session", sessionID],
+          ["review", verdictInfo.filename],
+          ["mtime", mtime],
+          ["since", overrideAnchor]
+        ], `newest review KD ${verdictInfo.filename} predates the override anchor ${overrideAnchor} — a verdict written before the override never re-advances the hop; write a fresh review KD`, `VERDICT_STALE_UNDER_OVERRIDE|${sessionID}|a:${verdictInfo.filename}|s:${overrideAnchor}`);
         return false;
       }
       debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} is fresh (mtime=${mtime} >= since=${overrideAnchor}) — evaluating verdict`);
@@ -4805,7 +4853,17 @@ async function protocolGateServer(input, options) {
     // Returns true when the parent session advanced.
     function advanceParentSessionFromSwarm(candidate) {
       const currentPhase = sessionPhaseMap.get(candidate);
-      if (currentPhase !== STATES.SWARM) return false;
+      if (currentPhase !== STATES.SWARM) {
+        // Post-write auto-advance ran for a parent that is not standing in
+        // SWARM. Recorded so "the write landed and nothing advanced" is a
+        // readable state rather than an absent line.
+        gateRecordEvent("SWARM_PARENT_NOT_ADVANCING", [
+          ["session", candidate],
+          ["phase", currentPhase === undefined ? "(unset)" : String(currentPhase)],
+          ["reason", "parent-not-in-swarm"]
+        ], `a subagent write completed for parent session ${candidate}, which stands in phase ${currentPhase === undefined ? "(unset)" : getPhaseName(currentPhase)} — there is no SWARM gate to evaluate, so nothing advanced`, `SWARM_PARENT_NOT_ADVANCING|${candidate}|p:${currentPhase}|r:parent-not-in-swarm`);
+        return false;
+      }
       // The queue decides the next hop here too: a walk naming SWARM followed by
       // EVOLVE hand the parent to EVOLVE, and a walk still behind SWARM resumes.
       const decision = nextForwardPhase(sessionPhaseMap, candidate, currentPhase, noWalkFallback(currentPhase));

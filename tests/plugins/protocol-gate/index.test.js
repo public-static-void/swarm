@@ -5086,6 +5086,120 @@ milestones:
     });
   });
 
+  // A blocked advance is never silent. Every advance-path branch that returns
+  // without advancing writes an always-on record, so with the debug flag unset
+  // an operator still reads "advance evaluated and blocked" instead of
+  // inferring "never evaluated" from a log that says nothing.
+  describe("blocked advance records always-on", () => {
+    // Counts whole record lines for one token — the dedupe assertion needs
+    // lines, not substring hits: a cause text may name another token.
+    function countRecords(log, token) {
+      const pattern = new RegExp(`^\\[[^\\]]+\\] \\[protocol-gate\\] ${token}:`, "gm");
+      return (log.match(pattern) || []).length;
+    }
+
+    // Runs one evaluation with the debug channel off, restoring the suite's
+    // flag afterwards. Only an always-on record survives this window, which is
+    // what "diagnosable from the log alone" means for a normal run.
+    async function withDebugOff(fn) {
+      const prior = process.env.PROTOCOL_GATE_DEBUG;
+      delete process.env.PROTOCOL_GATE_DEBUG;
+      try { return await fn(); } finally {
+        if (prior === undefined) delete process.env.PROTOCOL_GATE_DEBUG;
+        else process.env.PROTOCOL_GATE_DEBUG = prior;
+      }
+    }
+
+    function seedVerifySession(s) {
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+    }
+
+    it("no REVIEW KD and a verdictless REVIEW KD are distinct recorded states", async () => {
+      const noKd = sid("m6-no-review-kd");
+      await initOverseer(noKd);
+      hooks.sessionPhaseMap.set(noKd, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${noKd}:sid`, noKd);
+      seedVerifySession(noKd);
+      try { rmSync(logPath); } catch (_) {}
+
+      const noKdAdvanced = await withDebugOff(() =>
+        hooks.checkDiskAdvancement(noKd, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      expect(noKdAdvanced).toBe(false);
+      const noKdLog = readFileSync(logPath, "utf8");
+      expect(noKdLog).toContain(`REVIEW_KD_MISSING: session=${noKd}`);
+      // The unreviewed row and the review-without-verdict row must not collapse
+      // into one token: the repairs differ (review the work vs. write the verdict).
+      expect(countRecords(noKdLog, "VERDICT_MISSING")).toBe(0);
+
+      const verdictless = sid("m6-verdictless");
+      await initOverseer(verdictless);
+      hooks.sessionPhaseMap.set(verdictless, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${verdictless}:sid`, verdictless);
+      seedVerifySession(verdictless);
+      // A review round that ended before its verdict was written.
+      createKD(`review-abandoned-${verdictless}.md`, "## Review Findings\n\nNo verdict was written.\n");
+      try { rmSync(logPath); } catch (_) {}
+
+      const verdictlessAdvanced = await withDebugOff(() =>
+        hooks.checkDiskAdvancement(verdictless, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      expect(verdictlessAdvanced).toBe(false);
+      const verdictlessLog = readFileSync(logPath, "utf8");
+      expect(verdictlessLog).toContain(`VERDICT_MISSING: session=${verdictless}`);
+      // Each record names the artifact inspected — here the verdictless KD.
+      expect(verdictlessLog).toContain(`review-abandoned-${verdictless}.md`);
+      expect(countRecords(verdictlessLog, "REVIEW_KD_MISSING")).toBe(0);
+    });
+
+    it("a stale PASS records STALE_PASS always-on, naming both artifacts compared", async () => {
+      const s = sid("m6-stale-pass");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      seedVerifySession(s);
+      createKD(`review-pass-${s}.md`, reviewKD("PASS"));
+      // A fix cycle landed after the review, so the PASS is stale evidence.
+      const implPath = join(knowledgeDir, `impl-M1-feature-${s}.md`);
+      utimesSync(implPath, new Date(), new Date(Date.now() + 5000));
+      try { rmSync(logPath); } catch (_) {}
+
+      const advanced = await withDebugOff(() =>
+        hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      expect(advanced).toBe(false);
+      const log = readFileSync(logPath, "utf8");
+      expect(log).toContain(`STALE_PASS: session=${s}`);
+      expect(log).toContain(`review-pass-${s}.md`);
+    });
+
+    it("a repeated identical blocked evaluation writes one record", async () => {
+      const s = sid("m6-dedupe");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      seedVerifySession(s);
+      try { rmSync(logPath); } catch (_) {}
+
+      // The gate re-evaluates on every lifecycle tool call; unchanged state must
+      // not grow the log by one line per call.
+      for (let i = 0; i < 3; i++) {
+        await withDebugOff(() => hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount));
+        expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      }
+      const log = readFileSync(logPath, "utf8");
+      expect(countRecords(log, "REVIEW_KD_MISSING")).toBe(1);
+
+      // A different blocking condition is a different event, not a repeat.
+      createKD(`review-abandoned-${s}.md`, "## Review Findings\n\nNo verdict was written.\n");
+      await withDebugOff(() => hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount));
+      const grown = readFileSync(logPath, "utf8");
+      expect(countRecords(grown, "VERDICT_MISSING")).toBe(1);
+      expect(countRecords(grown, "REVIEW_KD_MISSING")).toBe(1);
+    });
+  });
+
   describe("verdict-aware PREFLIGHT gate", () => {
     it("an escalation preflight KD blocks advancement past PREFLIGHT", async () => {
       const s = sid("preflight-escalation");
@@ -5176,7 +5290,7 @@ milestones:
       try { rmSync(logPath); } catch (_) {}
       await tick(s, "o1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
-      expect(readFileSync(logPath, "utf8")).toContain(`newest=preflight-old-${s}.md verdict=PASS → false (stale under override`);
+      expect(readFileSync(logPath, "utf8")).toContain(`PREFLIGHT_STALE_UNDER_OVERRIDE: session=${s} preflight=preflight-old-${s}.md`);
 
       createFreshKD(`preflight-fresh-${s}.md`, preflightKD("PASS"));
       await tick(s, "o2");
