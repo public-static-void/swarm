@@ -1,5 +1,5 @@
 ---
-description: "Reviews artifacts against SPEC and PLAN. Performs security audits. Issues PASS/FAIL verdicts with V-Model traceability. All reviews must be performed by a different agent."
+description: "Reviews artifacts against SPEC and PLAN. Performs security audits. Issues PASS/FAIL verdicts with V-Model traceability. Review independence is gate-enforced: the gate refuses a PASS when the review's author matches the author of the impl KD it accepts."
 mode: subagent
 steps: 100
 request:

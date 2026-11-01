@@ -2739,6 +2739,25 @@ function readRetiredVerdictToken(filePath) {
   return RETIRED_REVIEW_VERDICTS.includes(literal) ? literal : null;
 }
 
+// Reads the `author` field from a KD's leading frontmatter — the producing
+// agent's name, which the review-independence rule compares. Surrounding
+// quotes are stripped because a YAML string may be written either way. Returns
+// null for an absent or empty field and for an unreadable file, so the caller
+// distinguishes "no author declared" from "a different author".
+function readAuthorFrontmatter(filePath) {
+  try {
+    const content = readFileSync(filePath, "utf8");
+    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!frontmatter) return null;
+    const authorMatch = frontmatter[1].match(/^author\s*:\s*(.+?)\s*$/m);
+    if (!authorMatch) return null;
+    const author = authorMatch[1].replace(/^["']|["']$/g, "").trim();
+    return author.length > 0 ? author : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Detects the escalation marker in a review KD body: a level-2 heading reading
 // `Escalation` outside a fenced code block, followed by at least one non-empty
 // line before the next level-2 heading or end of file. An empty section and a
@@ -2888,19 +2907,30 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 // review frontmatter is the only target source, parsed by parseReopenTarget.
 
 
+// Newest session-scoped impl KD. "Newest" mirrors the review-KD rule: greatest
+// file mtime, tie-break by greatest filename. One resolver serves both the
+// fresh-PASS freshness comparison and the review-independence author
+// comparison, so the two rules always judge the same artifact.
+function findNewestImplKD(sessionFiles, sessionID = undefined) {
+  const implFiles = sessionFiles.filter(f => /^impl-/i.test(f));
+  if (implFiles.length === 0) return null;
+  const knowledgeDir = getKnowledgeDir(sessionID);
+  implFiles.sort((a, b) => {
+    let mtimeDiff = 0;
+    try { mtimeDiff = statSync(join(knowledgeDir, b)).mtimeMs - statSync(join(knowledgeDir, a)).mtimeMs; } catch (_) {}
+    if (mtimeDiff !== 0) return mtimeDiff;
+    return b > a ? 1 : b < a ? -1 : 0;
+  });
+  return implFiles[0];
+}
+
 // Newest session-scoped impl KD mtime — the freshness baseline for the
 // fresh-PASS-after-fix and fix-cycle-tied regression rules. -Infinity when no
 // impl KD exists (no fix cycle has ever landed, so freshness is trivially met).
 function newestImplMtimeMs(sessionFiles, sessionID = undefined) {
-  const implFiles = sessionFiles.filter(f => /^impl-/i.test(f));
-  if (implFiles.length === 0) return -Infinity;
-  const knowledgeDir = getKnowledgeDir(sessionID);
-  let newest = -Infinity;
-  for (const f of implFiles) {
-    const m = getFileMtimeMs(join(knowledgeDir, f));
-    if (m > newest) newest = m;
-  }
-  return newest;
+  const newest = findNewestImplKD(sessionFiles, sessionID);
+  if (!newest) return -Infinity;
+  return getFileMtimeMs(join(getKnowledgeDir(sessionID), newest));
 }
 
 // Reads a review KD's full content for citation parsing. Returns "" on read
@@ -3067,6 +3097,37 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
         ["review", verdictInfo.filename],
         ["target", passTarget.tokens.length > 0 ? passTarget.tokens.join(",") : "<empty>"]
       ], `PASS review KD ${verdictInfo.filename} carries reopen_target — the field is read only on FAIL, so nothing reopened`, `REOPEN_TARGET_IGNORED|${verdictInfo.filename}|t:${passTarget.tokens.length > 0 ? passTarget.tokens.join(",") : "<empty>"}`);
+    }
+  }
+  // Review independence: the reviewer must not be the author of the evidence
+  // the PASS accepts. The comparison keys on the newest impl KD — the same
+  // artifact the fresh-PASS rule below reads — so a review spanning several
+  // authors is judged against one named artifact. An absent author on either
+  // side is not equality and is not evidence of independence either: it is
+  // recorded so the pair is visible, and the PASS proceeds.
+  const newestImplKD = findNewestImplKD(sessionFiles, sessionID);
+  if (newestImplKD) {
+    const reviewAuthor = readAuthorFrontmatter(join(getKnowledgeDir(sessionID), verdictInfo.filename));
+    const implAuthor = readAuthorFrontmatter(join(getKnowledgeDir(sessionID), newestImplKD));
+    if (!reviewAuthor || !implAuthor) {
+      const absent = !reviewAuthor && !implAuthor
+        ? `neither ${verdictInfo.filename} (review) nor ${newestImplKD} (impl) declares an author`
+        : `no author field in ${reviewAuthor ? newestImplKD : verdictInfo.filename}`;
+      const reason = reviewAuthor ? "impl-author-absent" : implAuthor ? "review-author-absent" : "both-authors-absent";
+      gateRecordEvent("VERDICT_AUTHOR_UNKNOWN", [
+        ["session", sessionID],
+        ["review", verdictInfo.filename],
+        ["impl", newestImplKD],
+        ["reason", reason]
+      ], `${absent} — review independence cannot be compared for the PASS on ${verdictInfo.filename}; the verdict is not refused, so write author: <agent name> in both KDs to make the comparison meaningful`, `VERDICT_AUTHOR_UNKNOWN|${sessionID}|a:${verdictInfo.filename}|i:${newestImplKD}|r:${reason}`);
+    } else if (reviewAuthor === implAuthor) {
+      gateRecordEvent("VERDICT_AUTHOR_CONFLICT", [
+        ["session", sessionID],
+        ["review", verdictInfo.filename],
+        ["impl", newestImplKD],
+        ["author", reviewAuthor]
+      ], `PASS review KD ${verdictInfo.filename} and the newest impl KD ${newestImplKD} share author ${reviewAuthor} — the review cannot accept work by its own author, so VERIFY advancement is blocked; have a different agent review`, `VERDICT_AUTHOR_CONFLICT|${sessionID}|a:${verdictInfo.filename}|i:${newestImplKD}`);
+      return false;
     }
   }
   // Fresh-PASS-after-fix: a PASS verdict advances only when it is at

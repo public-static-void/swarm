@@ -5200,6 +5200,106 @@ milestones:
     });
   });
 
+  // Review independence: a PASS review and the impl KD it accepts must not
+  // share an author. The comparison keys on the newest impl KD — the artifact
+  // the fresh-PASS rule already reads — so one named artifact decides it.
+  describe("review independence on the PASS path", () => {
+    function countRecords(log, token) {
+      const pattern = new RegExp(`^\\[[^\\]]+\\] \\[protocol-gate\\] ${token}:`, "gm");
+      return (log.match(pattern) || []).length;
+    }
+
+    async function withDebugOff(fn) {
+      const prior = process.env.PROTOCOL_GATE_DEBUG;
+      delete process.env.PROTOCOL_GATE_DEBUG;
+      try { return await fn(); } finally {
+        if (prior === undefined) delete process.env.PROTOCOL_GATE_DEBUG;
+        else process.env.PROTOCOL_GATE_DEBUG = prior;
+      }
+    }
+
+    function seedVerifySession(s) {
+      createRegistry(s, [["M1", "checked-off"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+    }
+
+    // Rewrites the fixture's single frontmatter author line; `undefined` drops
+    // it, which is the KD written without an author field.
+    function withAuthor(content, author) {
+      return author === undefined
+        ? content.replace(/^author: .*$\n/m, "")
+        : content.replace(/^author: .*$/m, `author: ${author}`);
+    }
+
+    it("a PASS is refused when the reviewer authored the accepted impl KD", async () => {
+      const s = sid("m9-author-equal");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      seedVerifySession(s);
+      createKD(`review-pass-${s}.md`, withAuthor(reviewKD("PASS"), "Artisan"));
+      try { rmSync(logPath); } catch (_) {}
+
+      const advanced = await withDebugOff(() =>
+        hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      expect(advanced).toBe(false);
+      const log = readFileSync(logPath, "utf8");
+      expect(countRecords(log, "VERDICT_AUTHOR_CONFLICT")).toBe(1);
+      // The record names both artifacts compared.
+      expect(log).toContain(`review-pass-${s}.md`);
+      expect(log).toContain(`impl-M1-feature-${s}.md`);
+
+      // The gate re-evaluates on every lifecycle tool call; an unchanged
+      // author pair is one condition, so it writes one record.
+      await withDebugOff(() =>
+        hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      expect(countRecords(readFileSync(logPath, "utf8"), "VERDICT_AUTHOR_CONFLICT")).toBe(1);
+    });
+
+    it("a review by a different author advances unchanged", async () => {
+      const s = sid("m9-author-differs");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      seedVerifySession(s);
+      createKD(`review-pass-${s}.md`, reviewKD("PASS"));
+      try { rmSync(logPath); } catch (_) {}
+
+      const advanced = await withDebugOff(() =>
+        hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      expect(advanced).toBe(true);
+      // An advancing evaluation under the debug flag off writes no log line at
+      // all, so the log may not exist yet.
+      const log = existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+      expect(countRecords(log, "VERDICT_AUTHOR_CONFLICT")).toBe(0);
+      expect(countRecords(log, "VERDICT_AUTHOR_UNKNOWN")).toBe(0);
+    });
+
+    it("an absent author is recorded as unknown and does not refuse the PASS", async () => {
+      const s = sid("m9-author-absent");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      seedVerifySession(s);
+      createKD(`review-pass-${s}.md`, withAuthor(reviewKD("PASS"), undefined));
+      try { rmSync(logPath); } catch (_) {}
+
+      const advanced = await withDebugOff(() =>
+        hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      // Absence is not equality: the pair is uncomparable, so the PASS stands
+      // and the gap is visible in the log rather than silently accepted.
+      expect(advanced).toBe(true);
+      const log = readFileSync(logPath, "utf8");
+      expect(countRecords(log, "VERDICT_AUTHOR_UNKNOWN")).toBe(1);
+      expect(countRecords(log, "VERDICT_AUTHOR_CONFLICT")).toBe(0);
+      expect(log).toContain(`review-pass-${s}.md`);
+    });
+  });
+
   describe("verdict-aware PREFLIGHT gate", () => {
     it("an escalation preflight KD blocks advancement past PREFLIGHT", async () => {
       const s = sid("preflight-escalation");
