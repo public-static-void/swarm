@@ -273,6 +273,17 @@ function storeDirFor(kind, storeRoot) {
   return join(storeRoot, "knowledge", kind);
 }
 
+// Issue curator set: the roles holding an `issue_read` grant in `agents/`,
+// which are the roles that curate the issue stores. The executor checks this
+// set before any store access and both descriptions advertise it, so the
+// advertised reach never exceeds the enforced one.
+const ISSUE_CURATORS = ["habit-builder"];
+const ISSUE_CURATOR_LABEL = "Habit Builder";
+
+function isIssueCurator(agent) {
+  return ISSUE_CURATORS.includes(agent);
+}
+
 // Config-store dirs (swarm scope) — the historical single-store defaults,
 // routed through the per-store helper so both stores share the seam.
 const MEMORY_DIR = storeDirFor("memory", CONFIG_STORE_ROOT);
@@ -370,6 +381,37 @@ function debug(msg) {
       _droppedLogCount++;
     }
   }
+}
+
+// Always-on records: an operator-visible line that lands whether or not debug
+// is enabled, for conditions an operator must be able to see after the fact —
+// currently a refused tool call. Signature, rendered shape and dedupe
+// semantics mirror protocol-gate's gateRecordEvent, so both gates' logs read
+// alike. Keys are process-local and never released: a refused call under
+// unchanged state adds no second line, which is what keeps a repeated refusal
+// from flooding the log.
+const _gateRecordKeys = new Set();
+
+function gateRecord(line) {
+  try {
+    appendFileSync(getLogFile(), `[${new Date().toISOString()}] [knowledge-gate] ${line}\n`);
+  } catch (_) {
+    _droppedLogCount++;
+  }
+}
+
+function gateRecordEvent(token, fields, cause, dedupeKey) {
+  if (dedupeKey) {
+    if (_gateRecordKeys.has(dedupeKey)) return false;
+    _gateRecordKeys.add(dedupeKey);
+  }
+  const rendered = fields.map(([k, v]) => `${k}=${v}`).join(" ");
+  gateRecord(cause ? `${token}: ${rendered} cause=${cause}` : `${token}: ${rendered}`);
+  return true;
+}
+
+function resetGateRecordKeys() {
+  _gateRecordKeys.clear();
 }
 
 // Log-collapse budget (first-N-plus-count): repetitive per-call debug lines
@@ -2279,11 +2321,28 @@ async function knowledgeGateServer(input, options) {
         }
       },
       issue_read: {
-        description: "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.",
+        description: "Read an issue from the store named by scope (project|generic|swarm). Only Habit Builder may read — the role that curates the issue stores; callers outside that set are refused before any store access. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.",
         args: V2_SCHEMAS.issue_read,
         async execute(args, context) {
           const { id, scope, project_name } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // Authorization precedes argument validation and every store access:
+          // a caller outside the curator set learns nothing about the store,
+          // not even which ids exist.
+          if (!isIssueCurator(agent)) {
+            const store = scope || "(unspecified)";
+            const caller = agent || "unknown";
+            gateRecordEvent(
+              "ISSUE_READ_REFUSED",
+              [["agent", caller], ["store", store]],
+              "caller outside the curator set",
+              `issue_read_refused|${caller}|${store}`
+            );
+            return JSON.stringify({
+              error: `Only ${ISSUE_CURATOR_LABEL} may read issues. Called by: ${caller} (store: ${store})`
+            });
+          }
 
           // id must be a positive integer (guards path traversal into the
           // store dirs, mirroring issue_update).
@@ -2794,7 +2853,7 @@ async function knowledgeGateServer(input, options) {
       }
 
       if (toolID === "issue_read") {
-        output.description = "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
+        output.description = "Read an issue from the store named by scope (project|generic|swarm). Only Habit Builder may read — the role that curates the issue stores; callers outside that set are refused before any store access. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
         debug(`toolDefinition: provided description for issue_read`);
       }
 
@@ -3001,6 +3060,9 @@ async function knowledgeGateServer(input, options) {
       // Log-collapse counter reset: test seam so collapse tests start from
       // a zero count regardless of prior tool calls in the same process.
       resetLogCollapse,
+      // Always-on record keys: test seam so a dedupe assertion is not
+      // satisfied or silenced by another case's identical refusal.
+      resetGateRecordKeys,
       // Enablement introspection: structured state, load-signal trigger,
       // status-file path, writability probe, and the dropped-write counter
       // so the standing suite reads behavior off the public surface.

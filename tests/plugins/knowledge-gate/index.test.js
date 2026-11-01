@@ -2490,6 +2490,16 @@ Body`;
       expect(typeof hooks.tool.issue_read.execute).toBe("function");
     });
 
+    it("advertises the curator set at both registration sites", async () => {
+      expect(hooks.tool.issue_read.description).not.toContain("Any agent may read");
+      expect(hooks.tool.issue_read.description).toContain("Habit Builder");
+
+      const output = { description: "orig", parameters: { type: "object", properties: {} } };
+      await hooks["tool.definition"]({ toolID: "issue_read" }, output);
+      expect(output.description).not.toContain("Any agent may read");
+      expect(output.description).toContain("Habit Builder");
+    });
+
     it("returns the full issue content for a Habit Builder caller", async () => {
       await seedIssue(1);
       const result = await hooks.tool.issue_read.execute(
@@ -2513,15 +2523,58 @@ Body`;
       expect(parsed.body).toContain("## Acceptance Criteria");
     });
 
-    it("allows any agent to read an issue (tool-exclusivity read path)", async () => {
+    it("refuses a non-curator caller and returns no issue content", async () => {
       await seedIssue(2);
       const result = await hooks.tool.issue_read.execute(
         { id: 2, scope: "swarm" },
         { agent: "artisan", sessionID: "artisan-session" }
       );
       const parsed = JSON.parse(result);
-      expect(parsed.error).toBeUndefined();
-      expect(parsed.title).toBe("Read seed 2");
+      // The refusal names both the caller and the store it asked for.
+      expect(parsed.error).toContain("artisan");
+      expect(parsed.error).toContain("swarm");
+      expect(parsed.title).toBeUndefined();
+      expect(parsed.body).toBeUndefined();
+    });
+
+    it("refuses a non-curator before the existence check, so ids cannot be probed", async () => {
+      await seedIssue(11);
+      const absent = JSON.parse(await hooks.tool.issue_read.execute(
+        { id: 999, scope: "swarm" },
+        { agent: "artisan", sessionID: "artisan-session" }
+      ));
+      const present = JSON.parse(await hooks.tool.issue_read.execute(
+        { id: 11, scope: "swarm" },
+        { agent: "artisan", sessionID: "artisan-session" }
+      ));
+      // Present and absent ids are indistinguishable: the refusal lands first.
+      expect(absent.error).toBe(present.error);
+      expect(absent.error).not.toContain("not found");
+    });
+
+    it("records one always-on ISSUE_READ_REFUSED line for a repeated identical refusal", async () => {
+      hooks.resetGateRecordKeys?.();
+      const priorDebug = process.env.KNOWLEDGE_GATE_DEBUG;
+      delete process.env.KNOWLEDGE_GATE_DEBUG;
+      try {
+        const before = existsSync(KG_TEMP_LOG_FILE) ? readFileSync(KG_TEMP_LOG_FILE, "utf8") : "";
+        for (let i = 0; i < 2; i++) {
+          await hooks.tool.issue_read.execute(
+            { id: 7, scope: "generic" },
+            { agent: "scribe", sessionID: "scribe-session" }
+          );
+        }
+        const appended = readFileSync(KG_TEMP_LOG_FILE, "utf8").slice(before.length);
+        const refusalLines = appended.split("\n").filter((line) => line.includes("ISSUE_READ_REFUSED"));
+        // Always-on: the line lands with DEBUG off, and the dedupe key keeps a
+        // repeated identical call to one line.
+        expect(refusalLines).toHaveLength(1);
+        expect(refusalLines[0]).toContain("agent=scribe");
+        expect(refusalLines[0]).toContain("store=generic");
+      } finally {
+        if (priorDebug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+        else process.env.KNOWLEDGE_GATE_DEBUG = priorDebug;
+      }
     });
 
     it("rejects a missing scope", async () => {
@@ -2902,7 +2955,7 @@ Body`;
 
       const result = JSON.parse(await nameHooks.tool.issue_read.execute(
         { id: 1, scope: "project", project_name: "rt-lstm-read" },
-        { agent: "artisan", sessionID: "s" }
+        { agent: "habit-builder", sessionID: "hb" }
       ));
       expect(result.error).toBeUndefined();
       expect(result.title).toBe("Read named");
@@ -2921,7 +2974,7 @@ Body`;
 
       const result = JSON.parse(await nameHooks.tool.issue_read.execute(
         { id: 1, scope: "project" },
-        { agent: "artisan", sessionID: "s" }
+        { agent: "habit-builder", sessionID: "hb" }
       ));
       expect(result.error).toBeUndefined();
       expect(result.title).toBe("Read default");
@@ -2931,7 +2984,7 @@ Body`;
     it("issue_read rejects an invalid project_name with a path-separator error", async () => {
       const result = JSON.parse(await nameHooks.tool.issue_read.execute(
         { id: 1, scope: "project", project_name: "../escape" },
-        { agent: "artisan", sessionID: "s" }
+        { agent: "habit-builder", sessionID: "hb" }
       ));
       expect(result.error).toContain("project_name must be a non-empty string without path separators");
     });
