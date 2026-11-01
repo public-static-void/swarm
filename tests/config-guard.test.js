@@ -2060,6 +2060,117 @@ describe("VERIFY evidence shape", () => {
   });
 });
 
+// A finding that names the artifact and the defect but not the phase that owns
+// the repair leaves VERIFY with no owner to dispatch to: the regression route
+// reopens SWARM rows, so an upstream defect reads as a SWARM defect and the
+// phase that has to fix it never sees the finding. Every finding shape names its
+// owning phase and the act that consumed the artifact, the vocabulary it offers
+// is the lifecycle's own phases upstream of VERIFY, and the verdict rules name
+// the backward route that reaches each of them.
+describe("review findings name their owning phase", () => {
+  const reviewTemplate = readRoot(join("skills", "template-review", "SKILL.md"));
+  const lifecycle = JSON.parse(readRoot(join("plugins", "protocol-gate", "lifecycle.json")));
+
+  // INTENT is the requester's own artifact, so the upstream set starts there;
+  // VERIFY is the reviewing phase, so it never owns the repair of a finding its
+  // own review raised.
+  const UPSTREAM_PHASES = lifecycle.phases.slice(0, lifecycle.phases.indexOf("VERIFY"));
+
+  const OWNER_FIELDS = ["Owning Phase", "Consuming Act"];
+  const ROUTE_FACTS = ["Owning Phase", "Consuming Act", "dispatched backward", "INTENT"];
+
+  const FINDING_SHAPES = [
+    ["review finding", sectionBetween(reviewTemplate, "### F001:", "### F002:")],
+    ["audit finding", sectionBetween(reviewTemplate, "### A001:", "### A002:")],
+  ];
+
+  function fieldLine(shape, field) {
+    return shape.split("\n").find((line) => line.includes(`**${field}**`)) || "";
+  }
+
+  // The phases a shape offers, read from its `Owning Phase` placeholder.
+  function owningPhases(shape) {
+    const placeholder = fieldLine(shape, "Owning Phase").match(/\{\{([^}]*)\}\}/);
+    if (!placeholder) return [];
+    return placeholder[1]
+      .split("/")
+      .map((phase) => phase.trim())
+      .filter(Boolean);
+  }
+
+  // A field whose placeholder is missing or empty states a label and no value,
+  // which reads as filled-in while carrying nothing the owner can act on.
+  function unfilledFields(shape) {
+    return OWNER_FIELDS.filter((field) => {
+      const placeholder = fieldLine(shape, field).match(/\{\{([^}]*)\}\}/);
+      return !placeholder || placeholder[1].trim() === "";
+    });
+  }
+
+  function missingRouteFacts(text) {
+    return ROUTE_FACTS.filter((fact) => !text.includes(fact));
+  }
+
+  const inspectorVerdicts = sectionBetween(readAgent("inspector.md"), "## Verdict Rules", "\n## ");
+  const shapedVerdicts = sectionBetween(reviewTemplate, "## Verdict", "\n## Verdict Rules");
+
+  it("gives every finding shape an owning phase and a consuming act", () => {
+    for (const [site, shape] of FINDING_SHAPES) {
+      expect(shape, `${site} shape must be readable`).not.toBe("");
+      expect(unfilledFields(shape), `${site} must fill both owner fields`).toEqual([]);
+      expect(shape, `${site} must keep the milestone line as provenance`).toMatch(/provenance/);
+    }
+  });
+
+  it("draws the owning-phase vocabulary from the phases upstream of the review", () => {
+    expect(UPSTREAM_PHASES, "the lifecycle must declare the phases upstream of VERIFY").toContain("SWARM");
+    for (const [site, shape] of FINDING_SHAPES) {
+      expect(owningPhases(shape), `${site} must offer exactly the phases upstream of VERIFY`).toEqual(
+        UPSTREAM_PHASES
+      );
+    }
+    // The vocabulary is the lifecycle's phase list, not free text: a shape that
+    // offers a phase the lifecycle does not have reds above, and the review
+    // cannot own the repair of a finding it raised itself.
+    expect(owningPhases(FINDING_SHAPES[0][1])).not.toContain("VERIFY");
+  });
+
+  it("declares a backward route to every owning phase that can carry one", () => {
+    const reachable = lifecycle.backwardTransitions.VERIFY || [];
+    expect(reachable, "a defect in a SPEC artifact must be routable to the phase that owns it").toContain(
+      "ALIGN"
+    );
+    // Every phase a finding may name is reachable except INTENT, which is the
+    // requester's artifact: the verdict rules name that case as the one that
+    // escalates instead of routing.
+    expect(UPSTREAM_PHASES.filter((phase) => phase !== "INTENT" && !reachable.includes(phase))).toEqual([]);
+    expect(reachable).not.toContain("INTENT");
+  });
+
+  it("states the route in the verdict rules and in the shape its author fills", () => {
+    for (const [site, text] of [
+      ["inspector verdict rules", inspectorVerdicts],
+      ["review template verdict section", shapedVerdicts],
+    ]) {
+      expect(text, `${site} must be readable — an empty read makes the sweep vacuous`).not.toBe("");
+      expect(missingRouteFacts(text), `${site} must name the route and its one exception`).toEqual([]);
+    }
+  });
+
+  it("reds the route one fact at a time at both sites", () => {
+    for (const [site, text] of [
+      ["inspector verdict rules", inspectorVerdicts],
+      ["review template verdict section", shapedVerdicts],
+    ]) {
+      for (const fact of ROUTE_FACTS) {
+        const stripped = text.split(fact).join("the route");
+        expect(stripped, `${site} must carry ${fact} to strip`).not.toBe(text);
+        expect(missingRouteFacts(stripped), `${site} must red without ${fact}`).not.toEqual([]);
+      }
+    }
+  });
+});
+
 // The rules layer reaches its audience by injection — an agent definition to
 // that agent alone, a skill at the moment an agent loads it, AGENTS.md to every
 // agent. The reader does not open a sibling file at runtime, so a layer that
