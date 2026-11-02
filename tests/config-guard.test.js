@@ -4368,6 +4368,86 @@ describe("governing disposition", () => {
   });
 });
 
+// The compound-command rule reaches every role that runs a shell, so the
+// always-injected layer states the invariant alone: the failure mode, the
+// recovery and the outcome. An ordering of alternatives that depends on which
+// grants a caller holds belongs beside those grants, and the example that names
+// one role's evasion belongs in that role's own definition — a rule stated for
+// every project names no role of this swarm.
+const COMPOUND_ITEM = "⚠ Compound Commands";
+const COMPOUND_FACTS = [
+  { id: "the segment-allowlist invariant", pattern: /passes iff every segment is allowlisted/ },
+  { id: "the denial naming the command", pattern: /denial is feedback about the named command/ },
+  { id: "the scoped segment isolated and re-run", pattern: /isolate the scoped segment by re-running each segment alone/ },
+  { id: "the directory passed through workdir", pattern: /`workdir` parameter/ },
+  { id: "the dedicated-tool outcome", pattern: /dedicated tool instead of shell/ },
+];
+const COMPOUND_LADDER = ["idiomatic target family", "role's runners", "where held"];
+
+// The prohibition the ground rules cannot carry: a role's own definition is
+// where its restrictions read as that role's.
+const OVERSEER_BYPASS_FACTS = [
+  { id: "the subagent route it refuses", pattern: /subagent/i },
+  { id: "the by-design wall it protects", pattern: /bypass(?:es)? a by-design wall/i },
+];
+
+function compoundRuleFindings(groundRules, overseerBody = bodyRegion(readAgent("overseer.md"))) {
+  const findings = [];
+  if (roleNamePattern().test(groundRules)) findings.push("AGENTS.md names a role");
+  const item = groundRules.split("\n").find((line) => line.includes(COMPOUND_ITEM));
+  if (!item) {
+    findings.push(`AGENTS.md carries no "${COMPOUND_ITEM}" item`);
+  } else {
+    for (const fact of COMPOUND_FACTS) {
+      if (!fact.pattern.test(item)) findings.push(`the compound-command item is missing ${fact.id}`);
+    }
+    for (const phrase of COMPOUND_LADDER) {
+      if (item.includes(phrase)) {
+        findings.push(`the compound-command item orders a per-role alternative ("${phrase}")`);
+      }
+    }
+  }
+  for (const fact of OVERSEER_BYPASS_FACTS) {
+    if (!fact.pattern.test(overseerBody)) findings.push(`agents/overseer.md is missing ${fact.id}`);
+  }
+  return findings;
+}
+
+describe("compound-command layering", () => {
+  const groundRules = readRoot("AGENTS.md");
+
+  it("states the invariant on the always-injected layer and the prohibition in the role definition", () => {
+    expect(compoundRuleFindings(groundRules)).toEqual([]);
+  });
+
+  it("fails when the item is deleted", () => {
+    expect(compoundRuleFindings(groundRules.replace(COMPOUND_ITEM, "⚠ Shell Calls"))).toContain(
+      `AGENTS.md carries no "${COMPOUND_ITEM}" item`
+    );
+  });
+
+  it("fails when a role name returns to the ground rules", () => {
+    const named = `${groundRules}\nThe Artisan narrows its claim.\n`;
+    expect(compoundRuleFindings(named)).toContain("AGENTS.md names a role");
+  });
+
+  it("fails when a per-role alternative ladder returns", () => {
+    const laddered = groundRules.replace(
+      "and report each attempted command",
+      "and take the caller's idiomatic target family where held, then report each attempted command"
+    );
+    expect(laddered).not.toEqual(groundRules);
+    expect(compoundRuleFindings(laddered)).not.toEqual([]);
+  });
+
+  it("fails when the role definition drops the prohibition", () => {
+    const body = bodyRegion(readAgent("overseer.md"));
+    const stripped = body.replace(/bypass(?:es)? a by-design wall/gi, (match) => match.replace(/bypass/gi, "pass"));
+    expect(stripped).not.toEqual(body);
+    expect(compoundRuleFindings(readRoot("AGENTS.md"), stripped)).not.toEqual([]);
+  });
+});
+
 // The report is a status delivery: it states what the lifecycle reached and who
 // produced what, and it points at the artifacts instead of restating them. The
 // template is the shape a report is written into, so its sections are the
