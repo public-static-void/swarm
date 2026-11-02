@@ -33,7 +33,6 @@ A mismatch between a broad claim and a narrow entitlement resolves by narrowing 
 - ⚠ Revert and Retry — Know when to revert and retry
 - ⚠ Verify Output — Verify all output before accepting
 - ⚠ Compound Commands — A compound/piped shell command (`&&`, `||`, `;`, `|`) passes iff every segment is allowlisted, and is denied as a unit iff any segment is forbidden; a single allowlisted command passes. A denial is feedback about the named command: isolate the scoped segment by re-running each segment alone, pass the directory through the tool's `workdir` parameter so the caller's grant covers the call, and report each attempted command with its observed allow/deny outcome. Legitimate fallback reaches an allowed outcome through a dedicated tool instead of shell; bypass evades a by-design wall and fails review. A "shell denied / cannot do job" escalation is malformed without a multi-alternative attempt log recording every alternative tried with its per-command observed allow/deny outcome.
-- ⚠ Fewer Rules — More rules degrade compliance. Use focused agents and refinement loops.
 
 ## After Compaction
 

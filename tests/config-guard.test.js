@@ -4159,6 +4159,49 @@ describe("audience layers", () => {
   });
 });
 
+// The rule-count principle advises whoever writes the next rule, so it belongs
+// where maintainers read it. Stated in the ground rules it would spend always-on
+// context on every agent to reach an audience of maintainers, so the guard holds
+// it in the maintainer layer and keeps it from drifting back.
+const FEWER_RULES_TOKEN = /\bFewer Rules\b/i;
+const RULE_COUNT_FACTS = [
+  { id: "the rule-count effect", pattern: /more rules degrade compliance/i },
+  { id: "the focused-agent remedy", pattern: /focused agent/i },
+  { id: "the refinement-loop remedy", pattern: /refinement loop/i },
+];
+
+function ruleCountFindings(maintainerLayer, groundRules) {
+  const findings = [];
+  if (FEWER_RULES_TOKEN.test(groundRules)) findings.push("AGENTS.md carries a Fewer Rules item");
+  const guidance = headingSection(maintainerLayer, LAYER_HEADING);
+  for (const fact of RULE_COUNT_FACTS) {
+    if (!fact.pattern.test(guidance)) findings.push(`README maintenance guidance omits ${fact.id}`);
+  }
+  return findings;
+}
+
+describe("rule-count layering", () => {
+  const groundRules = readRoot("AGENTS.md");
+  const readme = readRoot("README.md");
+
+  it("states the principle in the maintainer layer and not in the ground rules", () => {
+    expect(ruleCountFindings(readme, groundRules)).toEqual([]);
+  });
+
+  it("fails when the item returns to the ground rules", () => {
+    const restored = `${groundRules}\n- ⚠ Fewer Rules — More rules degrade compliance.\n`;
+    expect(ruleCountFindings(readme, restored)).toEqual(["AGENTS.md carries a Fewer Rules item"]);
+  });
+
+  it("fails when the maintainer layer drops the principle", () => {
+    const stripped = readme.replace(/more rules degrade compliance/gi, "rule count is a metric");
+    expect(stripped).not.toEqual(readme);
+    expect(ruleCountFindings(stripped, groundRules)).toContain(
+      "README maintenance guidance omits the rule-count effect"
+    );
+  });
+});
+
 // README states facts the tree can disprove, so each one is compared against the
 // source that owns it: the manifest names the scripts, the configuration names
 // the plugin set, and the Inspector's body owns the gate runs. A finding names
