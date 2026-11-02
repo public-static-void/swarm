@@ -4744,6 +4744,16 @@ const PROCESS_COMMENTARY = ["previously", "used to", "no longer"].flatMap((phras
   ].map(([file, anchor]) => ({ phrase, file, anchor }))
 );
 
+// The framing above the phase table: the table states what each phase does, so
+// the comment says what the table is and nothing about the list it replaced. A
+// claim about a superseded mechanism reads as a fact about this one.
+const PHASE_TABLE_FRAMING = {
+  anchor: "export const PHASE_INSTRUCTIONS = {",
+  states: "injected into the system prompt per phase",
+  retired: "instead of a tool list",
+  directive: "Each instruction states the expected action",
+};
+
 // Normalized match: case-insensitive, with whitespace collapsed and the
 // markdown wrappers dropped, so a reflowed, re-cased or re-wrapped copy of a
 // phrase is still that phrase. Code-span backticks and template braces carry no
@@ -4784,6 +4794,25 @@ function processCommentaryFindings(content, entries) {
       (finding) => `${finding}, in the comment above "${entry.anchor}"`
     );
   });
+}
+
+function phaseTableFramingFindings(content) {
+  const region = commentRegionAbove(content, PHASE_TABLE_FRAMING.anchor);
+  if (region === null) return [`phases.js carries no "${PHASE_TABLE_FRAMING.anchor}" anchor`];
+  const normalized = normalizeResidueProse(region);
+  const findings = [];
+  if (!normalized.includes(normalizeResidueProse(PHASE_TABLE_FRAMING.states))) {
+    findings.push("phases.js carries no statement of what the phase table is");
+  }
+  if (normalized.includes(normalizeResidueProse(PHASE_TABLE_FRAMING.retired))) {
+    findings.push(
+      `phases.js describes the tool list it replaced, in the comment above "${PHASE_TABLE_FRAMING.anchor}"`
+    );
+  }
+  if (!content.includes(PHASE_TABLE_FRAMING.directive)) {
+    findings.push("phases.js carries no corrected directive over its phase instructions");
+  }
+  return findings;
 }
 
 describe("audit residue absent", () => {
@@ -4884,6 +4913,35 @@ describe("audit residue absent", () => {
     expect(anchored.length).toBeGreaterThan(0);
     expect(processCommentaryFindings(source, anchored)).toEqual([]);
     expect(residueFindings(source, [{ phrase: "previously", file }])).not.toEqual([]);
+  });
+
+  it("describes the phase table as it stands, not the list it replaced", () => {
+    const source = readRoot(join("plugins", "protocol-gate", "phases.js"));
+    expect(phaseTableFramingFindings(source)).toEqual([]);
+  });
+
+  it("reds a replaced tool list described above the phase table", () => {
+    const source = readRoot(join("plugins", "protocol-gate", "phases.js"));
+    const framed = source.replace(
+      PHASE_TABLE_FRAMING.anchor,
+      `// The Overseer sees these instead of a tool list.\n${PHASE_TABLE_FRAMING.anchor}`
+    );
+    expect(framed, "the anchor must be present to inject above").not.toBe(source);
+    expect(phaseTableFramingFindings(framed)).toEqual([
+      `phases.js describes the tool list it replaced, in the comment above "${PHASE_TABLE_FRAMING.anchor}"`,
+    ]);
+  });
+
+  it("reds a phase table stripped of its framing and its corrected directive", () => {
+    const source = readRoot(join("plugins", "protocol-gate", "phases.js"));
+    const unframed = source
+      .replace(PHASE_TABLE_FRAMING.states, "phase scoped")
+      .replace(PHASE_TABLE_FRAMING.directive, "Each instruction is a directive.");
+    expect(unframed).not.toBe(source);
+    expect(phaseTableFramingFindings(unframed)).toEqual([
+      "phases.js carries no statement of what the phase table is",
+      "phases.js carries no corrected directive over its phase instructions",
+    ]);
   });
 });
 

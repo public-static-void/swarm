@@ -21,7 +21,6 @@ export const STATES = {
 };
 
 // Behavioral constraints injected into the system prompt per phase.
-// The Overseer sees these instead of a tool list — tells it WHAT to do and what NOT to do.
 export const PHASE_INSTRUCTIONS = {
   // Absolute single-action directive: names the tool and content, no reasoning gap.
   // Each instruction states the expected action; limiter words belong to the
