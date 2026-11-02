@@ -2536,6 +2536,37 @@ describe("rule layers state their rules self-containedly", () => {
     expect(missingFacts(region, ["Req ID", "Declared Gate", "Actually-Run Gate", "Status"])).toEqual([]);
     expect(LAYER_DEFERRAL.test(region), "traceability shape states its rule without a pointer").toBe(false);
   });
+
+  // A review criterion judges the change in front of the reviewer. One worded
+  // around a single role's grants stops applying the moment that role's
+  // permission block moves, and reads as a fact about that role rather than a
+  // rule the reviewer applies to whatever diff it is handed.
+  const reviewSkill = readRoot(join("skills", "code-review-skill", "SKILL.md"));
+  const permissionCoherence = headingRegion(reviewSkill, "### Permission Coherence", "\n### ");
+  const instructionFraming = headingRegion(reviewSkill, "### Instruction Framing", "\n### ");
+
+  it("states the permission-coherence criterion without naming a role", () => {
+    expect(permissionCoherence, "code-review-skill must carry the Permission Coherence section").not.toBe("");
+    expect(missingFacts(permissionCoherence, ["grant", "`ask`", "`question`"])).toEqual([]);
+    expect(
+      roleNamePattern().test(permissionCoherence),
+      `Permission Coherence names a role: ${permissionCoherence}`
+    ).toBe(false);
+  });
+
+  it("names the reviewed change as the Instruction Framing subject", () => {
+    expect(instructionFraming, "code-review-skill must carry the Instruction Framing section").not.toBe("");
+    expect(instructionFraming).toContain("reviewed change");
+  });
+
+  it("fails a criterion worded around one role or left without a subject", () => {
+    // Injected offenders: the role-specific wording the criterion used to carry,
+    // and a criterion that names no subject at all. Both pass the fact checks
+    // above, so these assertions are what the section's shape actually rests on.
+    const roleBound = `${permissionCoherence}- [ ] Verify each \`ask\` on the Artisan's install entries.`;
+    expect(roleNamePattern().test(roleBound), "a role name must red").toBe(true);
+    expect("Every behavioral instruction states the expected action directly").not.toContain("reviewed change");
+  });
 });
 
 // The escalation route names the skill the Overseer reaches for, so the

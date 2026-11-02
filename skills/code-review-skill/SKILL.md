@@ -44,7 +44,8 @@ Covers systematic code review processes including review criteria evaluation, V-
 
 ### Permission Coherence
 
-- [ ] Ask-vs-question cross-check — verify each proposed `ask` effect against that agent's `question` grant; an `ask` on Artisan SWARM-path install/exec entries pairs with an open `question` channel, and a proposal pairing `ask` with `question: deny` goes back for an `allow` revision or user-requested human-in-loop approval; the pre-existing destructive `mv*`/`rm*` `ask` boundary stands as the guarded-destructive carve-out outside this check
+- [ ] Grant-consumer check — every advertised grant has a consumer: a tool, skill, or action that the instructions shipping beside it reach for. A grant nothing reaches for is an unowned entitlement — either the instruction it serves is missing or the grant is surplus
+- [ ] Ask-vs-question cross-check — every `ask` effect pairs with an open `question` channel, so the confirmation an `ask` raises has a route to be answered. An `ask` effect beside a denied `question` goes back for an `allow` revision or a user-requested human-in-loop approval; a guarded-destructive `ask` boundary is a deliberate carve-out and sits outside this check
 
 ### Testing and Traceability
 
@@ -62,7 +63,7 @@ Covers systematic code review processes including review criteria evaluation, V-
 
 ### Instruction Framing
 
-- [ ] Every behavioral instruction states the expected action directly — LLM-amplified negations stay out of executable docs
+- [ ] The reviewed change states every behavioral instruction as the expected action — a prohibition is restated as the behavior it wants performed, because a reader acts on the action it is given and a negation leaves that action to be inferred
 
 ### Security and Performance
 
