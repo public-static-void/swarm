@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import pluginModule from "../../../plugins/protocol-gate/index.js";
@@ -483,5 +483,58 @@ ${table}
     );
     expect(hooks.getCurrentGeneration(s)).toBe(6);
     expect(readLog()).toContain("LIFECYCLE_GENERATION_ADOPTED");
+  });
+
+  it("refuses a second lifecycle start while the session's own lifecycle is still running", async () => {
+    const s = "lcgen-busy-1";
+    await openLifecycle(s, { persistedGen: 6, anchorGen: 5 });
+    // The persisted phase is the SSOT for whether a lifecycle is running: a
+    // process that has not reconciled this session starts at INTENT while the
+    // file still records the walk in force.
+    hooks.sessionPhaseMap.set(s, hooks.STATES.INTENT);
+    clearLog();
+
+    const second = `knowledge/intent-second-${s}-gen7.md`;
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "write", sessionID: s, callID: "c-intent-busy" },
+        { args: { filePath: second, content: intentKD(s) } }
+      )
+    ).rejects.toThrow(/LIFECYCLE_SESSION_BUSY/);
+
+    // The refusal precedes the write, so the second lifecycle left no INTENT
+    // on disk and took no number from the allocator.
+    expect(existsSync(join(knowledgeDir, `intent-second-${s}-gen7.md`))).toBe(false);
+
+    const log = readLog();
+    expect(log).toContain(`LIFECYCLE_SESSION_BUSY: session=${s}`);
+    expect(log).toContain("phase=SWARM");
+    expect(log).toContain("generation=6");
+    expect(hooks.getCurrentGeneration(s)).toBe(6);
+
+    // One record per condition: a repeated attempt is refused again and adds no
+    // second line.
+    await expect(
+      hooks["tool.execute.before"](
+        { tool: "write", sessionID: s, callID: "c-intent-busy-again" },
+        { args: { filePath: second, content: intentKD(s) } }
+      )
+    ).rejects.toThrow(/LIFECYCLE_SESSION_BUSY/);
+    expect((readLog().match(/LIFECYCLE_SESSION_BUSY/g) || []).length).toBe(1);
+
+    // Paired positive: the same session starts the next lifecycle once the
+    // running one has reached REPORT — the refusal keys on the persisted phase,
+    // not on INTENT writes.
+    writeFileSync(
+      join(stateDir, `.protocol-state-${s}.json`),
+      JSON.stringify({ phase: hooks.STATES.REPORT, generation: 6, sid: s, timestamp: Date.now() })
+    );
+    clearLog();
+    await hooks["tool.execute.before"](
+      { tool: "write", sessionID: s, callID: "c-intent-after-report" },
+      { args: { filePath: `knowledge/intent-after-${s}-gen7.md`, content: intentKD(s) } }
+    );
+    expect(hooks.getCurrentGeneration(s)).toBe(7);
+    expect(readLog()).not.toContain("LIFECYCLE_SESSION_BUSY");
   });
 });

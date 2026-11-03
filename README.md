@@ -74,6 +74,8 @@ The configuration is organized in five layers. Each layer has one audience, and 
 
 The five layers are exhaustive for rule text: a rule belongs to the narrowest audience that needs it, and no always-injected layer restates this table. Enforcement is the sixth mechanism rather than a sixth layer — `plugins/` turns a rule into a tool-layer constraint, so an operation is rejected instead of relying on an agent to remember.
 
+The layer model is a budget as much as a map: more rules degrade compliance, so a rule earns its place by narrowing to the audience that acts on it. Where a rule is already failing, the remedy is a focused agent or a refinement loop, not another rule restating it.
+
 ## Investigating Gitignored Trees
 
 The dedicated Grep tool searches every tree on disk — gitignored directories (`knowledge/`, `references/`, `node_modules/`) included. Log files (`*.log`, such as those under `plugins/logs/`) fall outside its default file-type set: pass an explicit `include` glob such as `"*.log"`, or read them with the Read tool and allowlisted read commands (`cat*`, `head*`, `tail*`). This repository's logs and config are workspace-relative paths, so investigate them in-tree under `plugins/logs/`. An external evidence request is redirected to a workspace-local target — the working directory is the boundary, and no out-of-project path is admitted.

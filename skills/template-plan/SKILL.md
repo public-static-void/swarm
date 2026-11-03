@@ -61,6 +61,16 @@ Every milestone is an independently dispatchable unit: one Artisan dispatch comp
 - **Completion**: {{condition}}
 - **Output**: {{artifacts}}
 
+## Self-Consistency
+
+This pass runs before the plan leaves DECOMPOSE, and the section records what it found. Read the whole plan for it rather than one step at a time.
+
+**Satisfiability prompt.** Read every pair of instructions that shares a file, a milestone or a check and confirm the pair holds together: two steps editing one region are ordered or folded into one milestone, and two requirements pulling in different directions carry the resolution that settles them. A pair that is mutually unsatisfiable is a plan defect — resolve it in the plan, or record the resolution that defers it and the milestone that carries the debt. List the shared-surface pairs you checked, so a reviewer tests the ordering instead of re-deriving it.
+
+**Premise-source prompt.** Every premise the plan asserts about the code is read from the tree at the baseline the plan names, with the file and line recorded, or it is re-established by the check it rests on. A premise the tree refutes is corrected in the milestone that leaned on it, and a premise outside the plan's reach is named as pending with the check that settles it.
+
+**Binding resolutions.** A user-confirmed resolution is recorded in `## Binding Resolutions` below, and it supersedes contrary SPEC language at the named milestone alone. With none recorded, the SPEC's defaults bind and that section states so.
+
 ## Binding Resolutions
 
 User-confirmed resolutions recorded here are binding and supersede any contrary language in the SPEC's `## Open Questions`.

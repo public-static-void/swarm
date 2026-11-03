@@ -1,5 +1,5 @@
 ---
-description: "Reviews artifacts against SPEC and PLAN. Performs security audits. Issues PASS/FAIL verdicts with V-Model traceability. All reviews must be performed by a different agent."
+description: "Reviews artifacts against SPEC and PLAN. Performs security audits. Issues PASS/FAIL verdicts with V-Model traceability. Review independence is gate-enforced: the gate refuses a PASS when the review's author matches the author of the impl KD it accepts."
 mode: subagent
 steps: 100
 request:
@@ -283,6 +283,7 @@ Read the specification, plan, and implementation artifact. Cross-check every acc
 2. **One pass, two sections**: perform the standard review (below) AND the security audit (below) in the same read of the codebase, then produce a single REVIEW KD with `## Review Findings` and `## Audit` sections.
 3. **Record an explicit verdict entry per gate item** in the REVIEW KD findings — prevents skipping checks mid-review.
 4. **End every round with a verdict**: a round that begins writes the REVIEW KD frontmatter verdict before it ends — `PASS` when the criteria hold, and `FAIL` naming the blocking reason when the review cannot reach a finding.
+5. **Close out on captured output**: before a `PASS`, read the Evidence cell of every traceability row. A paraphrase of an output nobody captured, and a row carried by a sibling row that did run, are both refused — the refusal names the affected rows. A row holds evidence when its cell carries the declared command's literal output or a durable path to the capture.
 
 At VERIFY, the REVIEW KD is the lifecycle acceptance proof: full suite re-run, dependency and SAST scans, a traceability matrix carrying declared gate → actually-run gate → run status → PASS/FAIL per row, and the frontmatter verdict field carrying the single lifecycle acceptance verdict.
 
@@ -335,6 +336,7 @@ Write the verdict into the REVIEW KD **frontmatter** (`verdict: PASS | FAIL`) �
 - **Fresh PASS contract**: a `PASS` verdict advances when this review KD's mtime is ≥ the newest `impl-*` KD mtime; a stale PASS (older than the newest impl KD) blocks — re-review required.
 - **FAIL `reopen_target` mandate (binding)**: write the rows under repair into the frontmatter — `reopen_target: [M3, M7]` or `reopen_target: M3`. That field selects the reopen targets; the gate reads it rather than tokens from findings, the traceability matrix or a `References` list, so keep those as provenance. A field that is absent, empty, malformed, declared twice, or naming a row the registry lacks is refused with the unusable-target refusal and its reason (`no-reopen-target`, `invalid-reopen-target`, `ambiguous-target`, `unresolvable-reopen-target`): the gate blocks, regresses nothing and reopens nothing — re-issue the review with a usable field. A target naming a row that is not checked-off records `REOPEN_NOOP reason=not-checked-off`, and a `PASS` carrying the field records `REOPEN_TARGET_IGNORED` and reopens nothing.
 - A `FAIL` verdict machine-triggers the VERIFY→SWARM regression — no explicit dispatch and no `BACKWARD: true` flag is required. The regression fires once per review KD filename; a re-review with a new filename may trigger the next cycle, bounded by the lifecycle's cycle cap. A single review KD (with both sections) is the sole VERIFY surface.
+- **Owning phase names the repair; a FAIL above SWARM routes backward**: every finding carries `Owning Phase` — the phase whose artifact must change — and `Consuming Act`, the act in this review that consumed the artifact and saw the defect. A `FAIL` whose owning phase sits above SWARM reports a repair with an owner, not a design flaw: the verdict names that phase, and the repair is dispatched backward to it through the backward transition the lifecycle declares for VERIFY, with the reopened rows covering the SWARM-owned share. A defect in a SPEC, PLAN, registry or INTENT artifact therefore does not read as a SWARM defect and is not escalated as one. Where the owning phase is INTENT, no declared transition reaches it and the escalation route is what remains — escalation is for a flaw no phase can repair, not for a defect whose owner is simply upstream.
 
 ## Constraints
 

@@ -40,6 +40,7 @@ handoff:
   declared gate: {{project-declared command plus manifest source path}}
   attempted alternatives: {{what was tried when the declared gate could not run, or n/a — gate ran as declared}}
   actually-run gate: {{executed command plus green run status}}
+  actually-run output: {{literal output or durable capture path}}
   run status: {{PASS | FAIL | NOT-RUN}}
   full-gate status: {{green run precondition for Committer dispatch}}
 
@@ -53,6 +54,7 @@ handoff:
   declared gate: {{project-declared command plus manifest source path}}
   attempted alternatives: {{what was tried when the declared gate could not run, or n/a — gate ran as declared}}
   actually-run gate: {{executed command plus green run status}}
+  actually-run output: {{literal output or durable capture path}}
   run status: {{PASS | FAIL | NOT-RUN}}
   full-gate status: {{green run precondition for Committer dispatch}}
 
@@ -60,7 +62,7 @@ handoff:
 
 The durable copy of the dispatch's continuity decision: the SCOPE records it at dispatch time, this section keeps it with the work.
 
-- decision: `same` | `fresh: new-task` | `fresh: session-not-found` | `fresh: agent-resolution` | `fresh: quota-denied`
+- decision: `same` | `fresh: new-task` | `fresh: session-not-found` | `fresh: agent-resolution` | `fresh: quota-denied` | `fresh: unclassified`
 - note: {{what changed, without the handle value}}
 
 ## Process Friction

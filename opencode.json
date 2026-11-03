@@ -8,6 +8,7 @@
   "experimental": {
     "subagent_depth": 2
   },
+  "model": "opencode/mimo-v2.6-flash-free",
   "default_agent": "overseer",
   "agents": {
     "build": {
@@ -24,37 +25,6 @@
     },
     "scout": {
       "disabled": true
-    },
-
-    "overseer": {
-      "model": "opencode/deepseek-v4.1-flash-free"
-    },
-    "explorer": {
-      "model": "opencode/deepseek-v4.1-flash-free"
-    },
-    "spec-weaver": {
-      "model": "opencode/deepseek-v4.1-flash-free"
-    },
-    "pathfinder": {
-      "model": "opencode/deepseek-v4.1-flash-free"
-    },
-    "analyzer": {
-      "model": "opencode/deepseek-v4.1-flash-free"
-    },
-    "artisan": {
-      "model": "opencode/deepseek-v4.1-flash-free"
-    },
-    "committer": {
-      "model": "opencode/deepseek-v4.1-flash-free"
-    },
-    "inspector": {
-      "model": "opencode/deepseek-v4.1-flash-free"
-    },
-    "scribe": {
-      "model": "opencode/deepseek-v4.1-flash-free"
-    },
-    "habit-builder": {
-      "model": "opencode/deepseek-v4.1-flash-free"
     }
   }
 }

@@ -150,8 +150,17 @@ const V2_SCHEMAS = {
           status: { type: "string", enum: ["open", "resolved"] },
           resolution: { type: "string" },
           assigned_to: { type: ["string", "null"] },
+          append_section: {
+            type: "object",
+            properties: {
+              heading: { type: "string" },
+              body: { type: "string" },
+            },
+            required: ["heading", "body"],
+            additionalProperties: false,
+          },
         },
-        additionalProperties: true,
+        additionalProperties: false,
       },
       project_name: { type: "string" },
     },
@@ -264,6 +273,17 @@ function storeDirFor(kind, storeRoot) {
   return join(storeRoot, "knowledge", kind);
 }
 
+// Issue curator set: the roles holding an `issue_read` grant in `agents/`,
+// which are the roles that curate the issue stores. The executor checks this
+// set before any store access and both descriptions advertise it, so the
+// advertised reach never exceeds the enforced one.
+const ISSUE_CURATORS = ["habit-builder"];
+const ISSUE_CURATOR_LABEL = "Habit Builder";
+
+function isIssueCurator(agent) {
+  return ISSUE_CURATORS.includes(agent);
+}
+
 // Config-store dirs (swarm scope) — the historical single-store defaults,
 // routed through the per-store helper so both stores share the seam.
 const MEMORY_DIR = storeDirFor("memory", CONFIG_STORE_ROOT);
@@ -361,6 +381,37 @@ function debug(msg) {
       _droppedLogCount++;
     }
   }
+}
+
+// Always-on records: an operator-visible line that lands whether or not debug
+// is enabled, for conditions an operator must be able to see after the fact —
+// currently a refused tool call. Signature, rendered shape and dedupe
+// semantics mirror protocol-gate's gateRecordEvent, so both gates' logs read
+// alike. Keys are process-local and never released: a refused call under
+// unchanged state adds no second line, which is what keeps a repeated refusal
+// from flooding the log.
+const _gateRecordKeys = new Set();
+
+function gateRecord(line) {
+  try {
+    appendFileSync(getLogFile(), `[${new Date().toISOString()}] [knowledge-gate] ${line}\n`);
+  } catch (_) {
+    _droppedLogCount++;
+  }
+}
+
+function gateRecordEvent(token, fields, cause, dedupeKey) {
+  if (dedupeKey) {
+    if (_gateRecordKeys.has(dedupeKey)) return false;
+    _gateRecordKeys.add(dedupeKey);
+  }
+  const rendered = fields.map(([k, v]) => `${k}=${v}`).join(" ");
+  gateRecord(cause ? `${token}: ${rendered} cause=${cause}` : `${token}: ${rendered}`);
+  return true;
+}
+
+function resetGateRecordKeys() {
+  _gateRecordKeys.clear();
 }
 
 // Log-collapse budget (first-N-plus-count): repetitive per-call debug lines
@@ -1983,7 +2034,7 @@ async function knowledgeGateServer(input, options) {
         }
       },
       issue_update: {
-        description: "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to), project_name (optional — overrides the project subfolder when scope is project). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.",
+        description: "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to, append_section {heading, body}), project_name (optional — overrides the project subfolder when scope is project). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. append_section appends a ## heading section with the supplied body, leaving the frontmatter and every pre-existing body byte untouched and the status unchanged; appending to a resolved issue requires status in the same call. Any other changes key is an error naming the key. Returns { message, id, path } — plus byte_delta { before, after, appended } on an append — or { error }.",
         args: V2_SCHEMAS.issue_update,
         async execute(args, context) {
           const { id, scope, changes, project_name } = args;
@@ -2007,6 +2058,18 @@ async function knowledgeGateServer(input, options) {
           if (!changes || typeof changes !== "object") {
             return JSON.stringify({ error: "changes must be an object" });
           }
+          // An unknown key is a hard error naming the key: the executor reads
+          // exactly the declared keys, so an undeclared key would otherwise
+          // vanish behind a success response.
+          const declaredChangeKeys = ["status", "resolution", "assigned_to", "append_section"];
+          for (const key of Object.keys(changes)) {
+            if (!declaredChangeKeys.includes(key)) {
+              debug(`issue_update: rejected unknown changes key "${key}"`);
+              return JSON.stringify({
+                error: `Unknown changes key "${key}" — declared keys are ${declaredChangeKeys.join(", ")}`,
+              });
+            }
+          }
           if (changes.status !== undefined && !["open", "resolved"].includes(changes.status)) {
             return JSON.stringify({ error: `status must be "open" or "resolved", got "${changes.status}"` });
           }
@@ -2016,7 +2079,19 @@ async function knowledgeGateServer(input, options) {
           if (changes.assigned_to !== undefined && changes.assigned_to !== null && typeof changes.assigned_to !== "string") {
             return JSON.stringify({ error: "assigned_to must be a string or null" });
           }
-          if (changes.status === undefined && changes.resolution === undefined && changes.assigned_to === undefined) {
+          const appendSection = changes.append_section;
+          if (appendSection !== undefined) {
+            if (appendSection === null || typeof appendSection !== "object" || Array.isArray(appendSection)) {
+              return JSON.stringify({ error: "append_section must be an object with heading and body" });
+            }
+            if (typeof appendSection.heading !== "string" || !appendSection.heading.trim() || /[\r\n]/.test(appendSection.heading)) {
+              return JSON.stringify({ error: "append_section.heading must be a single-line non-empty string without the \"## \" marker" });
+            }
+            if (typeof appendSection.body !== "string") {
+              return JSON.stringify({ error: "append_section.body must be a string" });
+            }
+          }
+          if (changes.status === undefined && changes.resolution === undefined && changes.assigned_to === undefined && appendSection === undefined) {
             return JSON.stringify({ error: "Nothing to update" });
           }
 
@@ -2045,6 +2120,17 @@ async function knowledgeGateServer(input, options) {
             return JSON.stringify({ error: `Issue ${id} has no valid frontmatter` });
           }
 
+          // A closure block lands on an open issue; appending to a closed
+          // record is refused unless the call also sets status, so a resolved
+          // issue cannot be edited behind an unchanged status.
+          if (appendSection !== undefined && changes.status === undefined) {
+            const statusLine = (fmMatch[1].match(/^status:[ \t]*(.*)$/m) || [])[1];
+            if (statusLine !== undefined && statusLine.trim().replace(/^["']|["']$/g, "") === "resolved") {
+              debug(`issue_update: refused append to resolved issue ${id} without a status change`);
+              return JSON.stringify({ error: `Issue ${id} is resolved — pass status with append_section to append a section` });
+            }
+          }
+
           // Surgical frontmatter update: replace only the touched lines and
           // keep every other frontmatter field byte-identical, so the issue
           // schema is preserved. A resolution implies closing.
@@ -2070,8 +2156,23 @@ async function knowledgeGateServer(input, options) {
             outLines.push(`assigned_to: ${changes.assigned_to === null ? "" : JSON.stringify(changes.assigned_to)}`);
           }
 
-          const body = raw.slice(fmMatch[0].length).replace(/^\n+/, "");
-          let newContent = `---\n${outLines.join("\n")}\n---\n\n${body.replace(/\s+$/, "")}\n`;
+          const appendText = appendSection !== undefined
+            ? `\n## ${appendSection.heading.trim()}\n\n${appendSection.body.replace(/\s+$/, "")}\n`
+            : "";
+
+          let newContent;
+          if (appendSection !== undefined) {
+            // Byte-preserving path: the bytes after the frontmatter are sliced
+            // verbatim instead of normalized, so every pre-existing body byte
+            // survives the append and the append is the only change.
+            const frontmatterBlock = newStatus !== null || changes.assigned_to !== undefined
+              ? `---\n${outLines.join("\n")}\n---`
+              : fmMatch[0];
+            newContent = frontmatterBlock + raw.slice(fmMatch[0].length) + appendText;
+          } else {
+            const body = raw.slice(fmMatch[0].length).replace(/^\n+/, "");
+            newContent = `---\n${outLines.join("\n")}\n---\n\n${body.replace(/\s+$/, "")}\n`;
+          }
           if (changes.resolution !== undefined) {
             const resolutionDate = new Date().toISOString().slice(0, 10);
             newContent += `\n## Resolution (${resolutionDate})\n\n${changes.resolution.replace(/\s+$/, "")}\n`;
@@ -2080,7 +2181,15 @@ async function knowledgeGateServer(input, options) {
           try {
             writeFileSync(found.filePath, newContent, "utf8");
             debug(`issue_update: updated ${found.filePath} (status ${newStatus || "unchanged"})`);
-            return JSON.stringify({ message: "Issue updated", id, path: found.filePath });
+            const response = { message: "Issue updated", id, path: found.filePath };
+            if (appendSection !== undefined) {
+              response.byte_delta = {
+                before: Buffer.byteLength(raw, "utf8"),
+                after: Buffer.byteLength(newContent, "utf8"),
+                appended: Buffer.byteLength(appendText, "utf8"),
+              };
+            }
+            return JSON.stringify(response);
           } catch (e) {
             debug(`issue_update: write failed — ${e.message}`);
             return JSON.stringify({ error: `Failed to update issue ${id}: ${e.message}` });
@@ -2212,11 +2321,28 @@ async function knowledgeGateServer(input, options) {
         }
       },
       issue_read: {
-        description: "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.",
+        description: "Read an issue from the store named by scope (project|generic|swarm). Only Habit Builder may read — the role that curates the issue stores; callers outside that set are refused before any store access. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.",
         args: V2_SCHEMAS.issue_read,
         async execute(args, context) {
           const { id, scope, project_name } = args;
           const agent = (context.agent || sessionAgentMap.get(context.sessionID) || "").toLowerCase();
+
+          // Authorization precedes argument validation and every store access:
+          // a caller outside the curator set learns nothing about the store,
+          // not even which ids exist.
+          if (!isIssueCurator(agent)) {
+            const store = scope || "(unspecified)";
+            const caller = agent || "unknown";
+            gateRecordEvent(
+              "ISSUE_READ_REFUSED",
+              [["agent", caller], ["store", store]],
+              "caller outside the curator set",
+              `issue_read_refused|${caller}|${store}`
+            );
+            return JSON.stringify({
+              error: `Only ${ISSUE_CURATOR_LABEL} may read issues. Called by: ${caller} (store: ${store})`
+            });
+          }
 
           // id must be a positive integer (guards path traversal into the
           // store dirs, mirroring issue_update).
@@ -2717,7 +2843,7 @@ async function knowledgeGateServer(input, options) {
       }
 
       if (toolID === "issue_update") {
-        output.description = "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to), project_name (optional — overrides the project subfolder when scope is project). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. Returns { message, id, path } or { error }.";
+        output.description = "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to, append_section {heading, body}), project_name (optional — overrides the project subfolder when scope is project). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. append_section appends a ## heading section with the supplied body, leaving the frontmatter and every pre-existing body byte untouched and the status unchanged; appending to a resolved issue requires status in the same call. Any other changes key is an error naming the key. Returns { message, id, path } — plus byte_delta { before, after, appended } on an append — or { error }.";
         debug(`toolDefinition: provided description for issue_update`);
       }
 
@@ -2727,7 +2853,7 @@ async function knowledgeGateServer(input, options) {
       }
 
       if (toolID === "issue_read") {
-        output.description = "Read an issue from the store named by scope (project|generic|swarm). Any agent may read. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
+        output.description = "Read an issue from the store named by scope (project|generic|swarm). Only Habit Builder may read — the role that curates the issue stores; callers outside that set are refused before any store access. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
         debug(`toolDefinition: provided description for issue_read`);
       }
 
@@ -2934,6 +3060,9 @@ async function knowledgeGateServer(input, options) {
       // Log-collapse counter reset: test seam so collapse tests start from
       // a zero count regardless of prior tool calls in the same process.
       resetLogCollapse,
+      // Always-on record keys: test seam so a dedupe assertion is not
+      // satisfied or silenced by another case's identical refusal.
+      resetGateRecordKeys,
       // Enablement introspection: structured state, load-signal trigger,
       // status-file path, writability probe, and the dropped-write counter
       // so the standing suite reads behavior off the public surface.

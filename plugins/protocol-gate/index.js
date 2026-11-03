@@ -224,6 +224,11 @@ const ERROR_TEMPLATES = {
     code: "GENERATION_HELD",
     message: `❌ GENERATION_HELD: generation ${generation} is already held by an unfinished lifecycle of this session (${(holders || []).join(", ")})`,
     guidance: `Start this lifecycle at a free generation — the gate allocates one above every label on disk and records it as LIFECYCLE_GENERATION_ALLOCATED — then rewrite the INTENT with that number in its filename. At the same generation the filename carries no discriminator, so the two lifecycles' evidence would be one set.`
+  }),
+  LIFECYCLE_SESSION_BUSY: (phaseName, generation) => ({
+    code: "LIFECYCLE_SESSION_BUSY",
+    message: `❌ LIFECYCLE_SESSION_BUSY: this session's lifecycle is still running at ${phaseName} (generation ${generation}), so a second lifecycle cannot start here`,
+    guidance: `Finish the running lifecycle — it reaches REPORT when its report KD is written — and start the next one from there. A session holds one phase and one generation, so an INTENT written while the walk is in progress would replace the state the running lifecycle's evidence resolves against. To move the running lifecycle somewhere else instead, use /phase.`
   })
 };
 
@@ -2734,6 +2739,25 @@ function readRetiredVerdictToken(filePath) {
   return RETIRED_REVIEW_VERDICTS.includes(literal) ? literal : null;
 }
 
+// Reads the `author` field from a KD's leading frontmatter — the producing
+// agent's name, which the review-independence rule compares. Surrounding
+// quotes are stripped because a YAML string may be written either way. Returns
+// null for an absent or empty field and for an unreadable file, so the caller
+// distinguishes "no author declared" from "a different author".
+function readAuthorFrontmatter(filePath) {
+  try {
+    const content = readFileSync(filePath, "utf8");
+    const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (!frontmatter) return null;
+    const authorMatch = frontmatter[1].match(/^author\s*:\s*(.+?)\s*$/m);
+    if (!authorMatch) return null;
+    const author = authorMatch[1].replace(/^["']|["']$/g, "").trim();
+    return author.length > 0 ? author : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Detects the escalation marker in a review KD body: a level-2 heading reading
 // `Escalation` outside a fenced code block, followed by at least one non-empty
 // line before the next level-2 heading or end of file. An empty section and a
@@ -2883,19 +2907,30 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
 // review frontmatter is the only target source, parsed by parseReopenTarget.
 
 
+// Newest session-scoped impl KD. "Newest" mirrors the review-KD rule: greatest
+// file mtime, tie-break by greatest filename. One resolver serves both the
+// fresh-PASS freshness comparison and the review-independence author
+// comparison, so the two rules always judge the same artifact.
+function findNewestImplKD(sessionFiles, sessionID = undefined) {
+  const implFiles = sessionFiles.filter(f => /^impl-/i.test(f));
+  if (implFiles.length === 0) return null;
+  const knowledgeDir = getKnowledgeDir(sessionID);
+  implFiles.sort((a, b) => {
+    let mtimeDiff = 0;
+    try { mtimeDiff = statSync(join(knowledgeDir, b)).mtimeMs - statSync(join(knowledgeDir, a)).mtimeMs; } catch (_) {}
+    if (mtimeDiff !== 0) return mtimeDiff;
+    return b > a ? 1 : b < a ? -1 : 0;
+  });
+  return implFiles[0];
+}
+
 // Newest session-scoped impl KD mtime — the freshness baseline for the
 // fresh-PASS-after-fix and fix-cycle-tied regression rules. -Infinity when no
 // impl KD exists (no fix cycle has ever landed, so freshness is trivially met).
 function newestImplMtimeMs(sessionFiles, sessionID = undefined) {
-  const implFiles = sessionFiles.filter(f => /^impl-/i.test(f));
-  if (implFiles.length === 0) return -Infinity;
-  const knowledgeDir = getKnowledgeDir(sessionID);
-  let newest = -Infinity;
-  for (const f of implFiles) {
-    const m = getFileMtimeMs(join(knowledgeDir, f));
-    if (m > newest) newest = m;
-  }
-  return newest;
+  const newest = findNewestImplKD(sessionFiles, sessionID);
+  if (!newest) return -Infinity;
+  return getFileMtimeMs(join(getKnowledgeDir(sessionID), newest));
 }
 
 // Reads a review KD's full content for citation parsing. Returns "" on read
@@ -3030,10 +3065,26 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
     debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} verdict=FAIL → ${regressed ? "regressed to SWARM" : "blocked (fix-cycle guard or no regression handler)"}`);
     return false;
   }
-  if (!verdictInfo || !verdictInfo.verdict) {
+  // Two different defects, two different repairs: a session with no review KD
+  // at all is an unreviewed row, while a review KD whose verdict field is absent
+  // or invalid is a review round that ended before its verdict was written. One
+  // token for both reads as "never reviewed" in the log, which hides the second.
+  if (!verdictInfo) {
+    gateRecordEvent("REVIEW_KD_MISSING", [
+      ["session", sessionID],
+      ["artifact", "<none>"],
+      ["reason", "no-review-kd"]
+    ], "no review- KD exists for this session — VERIFY advancement is blocked with nothing reviewed; the phase needs a review artifact carrying verdict: PASS or FAIL", `REVIEW_KD_MISSING|${sessionID}|r:no-review-kd`);
+    return false;
+  }
+  if (!verdictInfo.verdict) {
     // MISSING: an absent/invalid verdict field blocks advancement — the
     // Inspector must emit a real verdict. Never treated as PASS.
-    debug(`VERDICT_MISSING: newest review KD ${verdictInfo ? verdictInfo.filename : "(none)"} lacks a valid verdict field — advancement blocked`);
+    gateRecordEvent("VERDICT_MISSING", [
+      ["session", sessionID],
+      ["review", verdictInfo.filename],
+      ["reason", "no-valid-verdict"]
+    ], `newest review KD ${verdictInfo.filename} carries no valid verdict field — VERIFY advancement is blocked; write verdict: PASS or FAIL in its frontmatter`, `VERDICT_MISSING|${sessionID}|a:${verdictInfo.filename}|r:no-valid-verdict`);
     return false;
   }
   // PASS never reopens (FR-13): the field is read only on FAIL, so a PASS that
@@ -3048,6 +3099,37 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
       ], `PASS review KD ${verdictInfo.filename} carries reopen_target — the field is read only on FAIL, so nothing reopened`, `REOPEN_TARGET_IGNORED|${verdictInfo.filename}|t:${passTarget.tokens.length > 0 ? passTarget.tokens.join(",") : "<empty>"}`);
     }
   }
+  // Review independence: the reviewer must not be the author of the evidence
+  // the PASS accepts. The comparison keys on the newest impl KD — the same
+  // artifact the fresh-PASS rule below reads — so a review spanning several
+  // authors is judged against one named artifact. An absent author on either
+  // side is not equality and is not evidence of independence either: it is
+  // recorded so the pair is visible, and the PASS proceeds.
+  const newestImplKD = findNewestImplKD(sessionFiles, sessionID);
+  if (newestImplKD) {
+    const reviewAuthor = readAuthorFrontmatter(join(getKnowledgeDir(sessionID), verdictInfo.filename));
+    const implAuthor = readAuthorFrontmatter(join(getKnowledgeDir(sessionID), newestImplKD));
+    if (!reviewAuthor || !implAuthor) {
+      const absent = !reviewAuthor && !implAuthor
+        ? `neither ${verdictInfo.filename} (review) nor ${newestImplKD} (impl) declares an author`
+        : `no author field in ${reviewAuthor ? newestImplKD : verdictInfo.filename}`;
+      const reason = reviewAuthor ? "impl-author-absent" : implAuthor ? "review-author-absent" : "both-authors-absent";
+      gateRecordEvent("VERDICT_AUTHOR_UNKNOWN", [
+        ["session", sessionID],
+        ["review", verdictInfo.filename],
+        ["impl", newestImplKD],
+        ["reason", reason]
+      ], `${absent} — review independence cannot be compared for the PASS on ${verdictInfo.filename}; the verdict is not refused, so write author: <agent name> in both KDs to make the comparison meaningful`, `VERDICT_AUTHOR_UNKNOWN|${sessionID}|a:${verdictInfo.filename}|i:${newestImplKD}|r:${reason}`);
+    } else if (reviewAuthor === implAuthor) {
+      gateRecordEvent("VERDICT_AUTHOR_CONFLICT", [
+        ["session", sessionID],
+        ["review", verdictInfo.filename],
+        ["impl", newestImplKD],
+        ["author", reviewAuthor]
+      ], `PASS review KD ${verdictInfo.filename} and the newest impl KD ${newestImplKD} share author ${reviewAuthor} — the review cannot accept work by its own author, so VERIFY advancement is blocked; have a different agent review`, `VERDICT_AUTHOR_CONFLICT|${sessionID}|a:${verdictInfo.filename}|i:${newestImplKD}`);
+      return false;
+    }
+  }
   // Fresh-PASS-after-fix: a PASS verdict advances only when it is at
   // least as new as the newest impl-* KD. A fix cycle that landed after the
   // review (newer impl KD) makes the PASS stale — a fresh review is required
@@ -3055,7 +3137,12 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
   const verdictMtime = getFileMtimeMs(join(getKnowledgeDir(sessionID), verdictInfo.filename));
   const newestImpl = newestImplMtimeMs(sessionFiles, sessionID);
   if (newestImpl > verdictMtime) {
-    debug(`STALE_PASS: verdict KD ${verdictInfo.filename} mtime=${verdictMtime} < newest impl KD mtime=${newestImpl} — fresh review required after last fix`);
+    gateRecordEvent("STALE_PASS", [
+      ["session", sessionID],
+      ["review", verdictInfo.filename],
+      ["reviewMtime", verdictMtime],
+      ["implMtime", newestImpl]
+    ], `PASS review KD ${verdictInfo.filename} predates the newest impl KD — VERIFY advancement is blocked until a fresh review; the fix cycle landed after the verdict it would have to judge`, `STALE_PASS|${sessionID}|a:${verdictInfo.filename}|i:${newestImpl}`);
     return false;
   }
   // The merged review+audit surface advances on a single review KD.
@@ -3125,7 +3212,12 @@ function evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap, anch
   if (anchor !== null && info) {
     const mtime = getFileMtimeMs(join(getKnowledgeDir(sessionID), info.filename));
     if (mtime < anchor) {
-      debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → false (stale under override since=${anchor})`);
+      gateRecordEvent("PREFLIGHT_STALE_UNDER_OVERRIDE", [
+        ["session", sessionID],
+        ["preflight", info.filename],
+        ["mtime", mtime],
+        ["since", anchor]
+      ], `newest preflight KD ${info.filename} predates the override anchor ${anchor} — PREFLIGHT advancement is blocked; a stale verdict never undoes the override, so write a fresh preflight KD`, `PREFLIGHT_STALE_UNDER_OVERRIDE|${sessionID}|a:${info.filename}|s:${anchor}`);
       return false;
     }
   }
@@ -3453,7 +3545,12 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     const walkMarker = getOverrideUntil(sessionPhaseMap, sessionID);
     if (walkMarker && Array.isArray(walkMarker.phases) && walkMarker.phases.length > 0
       && typeof phase === "number" && phase > walkMarker.phases[0]) {
-      debug(`Disk check: walk divergence — phase=${phase} head=${walkMarker.phases[0]} queue=${JSON.stringify(walkMarker.phases)} — refusing to advance`);
+      gateRecordEvent("WALK_DIVERGED_BACKSTOP", [
+        ["session", sessionID],
+        ["phase", String(phase)],
+        ["head", String(walkMarker.phases[0])],
+        ["queue", `[${walkMarker.phases.join(",")}]`]
+      ], `phase ${getPhaseName(phase)} (${phase}) is ahead of the walk head ${walkMarker.phases[0]} — advancement is refused on this evaluation path too, not only where the caller already records the divergence`, `WALK_DIVERGED_BACKSTOP|${sessionID}|p:${phase}|h:${walkMarker.phases[0]}`);
       return false;
     }
   }
@@ -3463,7 +3560,10 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // Without this, a plan KD from a different session instantly advances PREFLIGHT.
   const storedSID = sessionPhaseMap.get(`${sessionID}:sid`);
   if (!storedSID) {
-    debug(`Disk check: no session ID set for ${sessionID} — skipping`);
+    gateRecordEvent("SESSION_ID_MISSING", [
+      ["session", sessionID],
+      ["reason", "no-stored-session-id"]
+    ], "no session ID is stored for this session — advancement is blocked because KD evidence cannot be attributed to a session without one", `SESSION_ID_MISSING|${sessionID}`);
     return false;
   }
 
@@ -3475,7 +3575,11 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   try {
     files = readdirSync(knowledgeDir);
   } catch (e) {
-    debug(`Disk check: knowledge/ dir not found for session ${sessionID}`);
+    gateRecordEvent("KNOWLEDGE_DIR_MISSING", [
+      ["session", sessionID],
+      ["dir", knowledgeDir],
+      ["reason", "unreadable"]
+    ], `the knowledge directory ${knowledgeDir} cannot be read — advancement is blocked because no evidence KD can be seen`, `KNOWLEDGE_DIR_MISSING|${sessionID}|d:${knowledgeDir}`);
     return false;
   }
 
@@ -3571,12 +3675,22 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     if (overrideActive) {
       const verdictInfo = findNewestVerdictKD(sessionFiles, sessionID);
       if (!verdictInfo) {
-        debug(`Disk check VERIFY: no review KD — cannot advance under override (since=${overrideAnchor})`);
+        gateRecordEvent("REVIEW_KD_MISSING", [
+          ["session", sessionID],
+          ["artifact", "<none>"],
+          ["reason", "no-review-kd-under-override"],
+          ["since", overrideAnchor]
+        ], `no review- KD exists for this session, so the VERIFY hop cannot be satisfied under the override anchored at ${overrideAnchor} — write a review artifact carrying verdict: PASS or FAIL`, `REVIEW_KD_MISSING|${sessionID}|r:no-review-kd-under-override|s:${overrideAnchor}`);
         return false;
       }
       const mtime = getFileMtimeMs(join(knowledgeDir, verdictInfo.filename));
       if (mtime < overrideAnchor) {
-        debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} mtime=${mtime} < since=${overrideAnchor} — not fresh (override)`);
+        gateRecordEvent("VERDICT_STALE_UNDER_OVERRIDE", [
+          ["session", sessionID],
+          ["review", verdictInfo.filename],
+          ["mtime", mtime],
+          ["since", overrideAnchor]
+        ], `newest review KD ${verdictInfo.filename} predates the override anchor ${overrideAnchor} — a verdict written before the override never re-advances the hop; write a fresh review KD`, `VERDICT_STALE_UNDER_OVERRIDE|${sessionID}|a:${verdictInfo.filename}|s:${overrideAnchor}`);
         return false;
       }
       debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} is fresh (mtime=${mtime} >= since=${overrideAnchor}) — evaluating verdict`);
@@ -4522,6 +4636,35 @@ async function protocolGateServer(input, options) {
       return { ok: true, generation };
     }
 
+    // A session holds one live lifecycle. The persisted phase is what says so:
+    // outside INTENT and REPORT the walk a lifecycle started is still in force,
+    // and the phase and generation an INTENT written here would adopt are the
+    // ones that walk's evidence resolves against — the second lifecycle would
+    // take over a state the first is still using, and nothing downstream could
+    // tell the two apart. The start is refused instead of recorded, and the
+    // record names the phase and the number the running lifecycle holds so the
+    // caller can finish it or start the next lifecycle from REPORT.
+    function refuseSecondLiveLifecycle(sessionID) {
+      const persisted = readPersistedLifecycleState(sessionID);
+      // The file is the SSOT; the in-memory phase is the cache a session with no
+      // file of its own is initialized from, and such a session is starting, not
+      // running.
+      const runningPhase = persisted.present && typeof persisted.phase === "number"
+        ? persisted.phase
+        : sessionPhaseMap.get(sessionID);
+      if (runningPhase === STATES.INTENT || runningPhase === STATES.REPORT) return { ok: true };
+      const phaseName = getPhaseName(runningPhase);
+      const generation = persisted.present && typeof persisted.generation === "number"
+        ? persisted.generation
+        : getCurrentGeneration(sessionPhaseMap, sessionID);
+      gateRecordEvent("LIFECYCLE_SESSION_BUSY", [
+        ["session", sessionID],
+        ["phase", phaseName],
+        ["generation", generation]
+      ], `this session's lifecycle is still running at ${phaseName}, so the INTENT written now would start a second live lifecycle in the same session: it would take the phase and the generation the running lifecycle's evidence resolves against, and the write is refused`, `LIFECYCLE_SESSION_BUSY|${sessionID}|p:${phaseName}|g:${generation}`);
+      return { ok: false, reason: "session-busy", phase: runningPhase, phaseName, generation };
+    }
+
     // When the artisan writes its milestone-scoped impl KD,
     // advance that milestone to checked-off in the parent lifecycle's registry.
     // The impl KD on disk IS the verifiable evidence of completion — the
@@ -4771,7 +4914,17 @@ async function protocolGateServer(input, options) {
     // Returns true when the parent session advanced.
     function advanceParentSessionFromSwarm(candidate) {
       const currentPhase = sessionPhaseMap.get(candidate);
-      if (currentPhase !== STATES.SWARM) return false;
+      if (currentPhase !== STATES.SWARM) {
+        // Post-write auto-advance ran for a parent that is not standing in
+        // SWARM. Recorded so "the write landed and nothing advanced" is a
+        // readable state rather than an absent line.
+        gateRecordEvent("SWARM_PARENT_NOT_ADVANCING", [
+          ["session", candidate],
+          ["phase", currentPhase === undefined ? "(unset)" : String(currentPhase)],
+          ["reason", "parent-not-in-swarm"]
+        ], `a subagent write completed for parent session ${candidate}, which stands in phase ${currentPhase === undefined ? "(unset)" : getPhaseName(currentPhase)} — there is no SWARM gate to evaluate, so nothing advanced`, `SWARM_PARENT_NOT_ADVANCING|${candidate}|p:${currentPhase}|r:parent-not-in-swarm`);
+        return false;
+      }
       // The queue decides the next hop here too: a walk naming SWARM followed by
       // EVOLVE hand the parent to EVOLVE, and a walk still behind SWARM resumes.
       const decision = nextForwardPhase(sessionPhaseMap, candidate, currentPhase, noWalkFallback(currentPhase));
@@ -5749,6 +5902,15 @@ async function protocolGateServer(input, options) {
         // can be judged against a counter that belongs to another lifecycle.
         // Runs after the content validation so a rejected write adopts nothing.
         if (phase === STATES.INTENT && isIntentKD) {
+          // One session hosts one live lifecycle. The persisted phase outranks
+          // this process's cache: a start attempted while the session's own walk
+          // is in progress is refused before a number is adopted and before the
+          // write lands.
+          const busy = refuseSecondLiveLifecycle(sessionID);
+          if (!busy.ok) {
+            const template = ERROR_TEMPLATES.LIFECYCLE_SESSION_BUSY(busy.phaseName, busy.generation);
+            throw new ProtocolGateError(template.code, template.message, template.guidance);
+          }
           const adopted = adoptLifecycleGenerationOnIntent(sessionID, relPath);
           // A held number blocks the write: a lifecycle that started at a number
           // another unfinished lifecycle carries would merge the two evidence
@@ -6644,6 +6806,7 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       findLifecycleAnchor: (sessionID) => findLifecycleAnchor(sessionID),
       allocateLifecycleGeneration: (sessionID) => allocateLifecycleGeneration(sessionPhaseMap, sessionID),
       adoptLifecycleGenerationOnIntent,
+      refuseSecondLiveLifecycle,
       isDocumentPayload,
       getCurrentGeneration: (sessionID) => getCurrentGeneration(sessionPhaseMap, sessionID),
       parsePhaseArg,

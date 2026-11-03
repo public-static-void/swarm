@@ -1746,6 +1746,67 @@ describe("planning shape and scribe composition discipline", () => {
   });
 });
 
+// The PLAN shape carries the slot the self-consistency pass is written into.
+// Two prompts name what the pass checks and the section points at the table
+// that overrides the SPEC where a user decision exists. The slot is read as a
+// section, so an obligation stated elsewhere in the file leaves the slot empty
+// while the file still reads as though it carries the pass.
+const PLAN_TEMPLATE_SELF_CONSISTENCY_TOKENS = [
+  { token: "mutually unsatisfiable", pattern: /mutually unsatisfiable/i },
+  { token: "read from the tree", pattern: /read from the tree/i },
+  { token: "re-established by the check it rests on", pattern: /re-established by the check it rests on/i },
+  { token: "## Binding Resolutions", pattern: /## Binding Resolutions/ },
+];
+
+function planTemplate(content = readRoot(join("skills", "template-plan", "SKILL.md"))) {
+  return headingSection(content, "## Self-Consistency");
+}
+
+function planTemplateObligations(section) {
+  return PLAN_TEMPLATE_SELF_CONSISTENCY_TOKENS.filter((entry) => entry.pattern.test(section)).map(
+    (entry) => entry.token
+  );
+}
+
+describe("PLAN template self-consistency slot", () => {
+  const template = readRoot(join("skills", "template-plan", "SKILL.md"));
+
+  it("places the slot between the steps and the binding resolutions", () => {
+    const positions = ["## Steps", "## Self-Consistency", "## Binding Resolutions"].map((heading) =>
+      template.indexOf(heading)
+    );
+    expect(positions.every((position) => position >= 0), "all three headings exist").toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+  });
+
+  it("carries both prompts and the binding-resolutions reference", () => {
+    expect(planTemplateObligations(planTemplate(template))).toEqual(
+      PLAN_TEMPLATE_SELF_CONSISTENCY_TOKENS.map((entry) => entry.token)
+    );
+  });
+
+  it("reds the slot when an obligation leaves it", () => {
+    // Each obligation is stripped on its own, so a report names the half the
+    // slot lost rather than the whole section.
+    for (const entry of PLAN_TEMPLATE_SELF_CONSISTENCY_TOKENS) {
+      const live = planTemplate(template);
+      const stripped = live.replace(entry.pattern, "");
+      expect(stripped, `${entry.token} is present to strip`).not.toBe(live);
+      expect(planTemplateObligations(stripped)).not.toContain(entry.token);
+    }
+  });
+
+  it("reads the obligations from the slot alone", () => {
+    // A token surviving elsewhere in the file leaves the slot empty while the
+    // file reads as though it carries the pass, so the empty region is the
+    // finding.
+    const withoutSlot = template.replace(planTemplate(template), "");
+    expect(withoutSlot, "the slot is present to remove").not.toBe(template);
+    expect(planTemplate(withoutSlot)).toBe("");
+    expect(planTemplateObligations(planTemplate(withoutSlot))).toEqual([]);
+  });
+});
+
 // The retired prose-citation rule. A FAIL used to be said to reopen the rows its
 // findings cite, and a FAIL citing none was called MALFORMED; protocol-gate reads
 // the frontmatter `reopen_target` field and derives no target from prose. A site
@@ -1813,6 +1874,45 @@ function reviewEvidenceClause(content = readRoot(join("skills", "template-review
   return sectionBetween(content, "### Traceability Matrix", "## Audit");
 }
 
+// A matrix row read cell by cell: the Evidence column is what makes a row's own
+// capture readable, so the header is compared as a column order rather than as a
+// substring that a later column could satisfy.
+function matrixHeaderCells(clause) {
+  const header = clause.split("\n").find((line) => line.trimStart().startsWith("| Req ID |"));
+  return header
+    ? header
+        .trim()
+        .replace(/^\||\|$/g, "")
+        .split("|")
+        .map((cell) => cell.trim())
+    : [];
+}
+
+function matrixBodyRows(clause) {
+  return clause
+    .split("\n")
+    .filter((line) => /^\s*\|/.test(line))
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^\||\|$/g, "")
+        .split("|")
+        .map((cell) => cell.trim())
+    )
+    .filter((cells) => cells[0] !== "Req ID" && !/^:?-+:?$/.test(cells[0]));
+}
+
+const MATRIX_COLUMNS = [
+  "Req ID",
+  "Plan Step",
+  "Artifact",
+  "Declared Gate",
+  "Actually-Run Gate",
+  "Test/Check",
+  "Evidence",
+  "Status",
+];
+
 describe("VERIFY evidence shape", () => {
   const inspector = readAgent("inspector.md");
   const gates = readRoot(join("skills", "verification-gates", "SKILL.md"));
@@ -1839,6 +1939,45 @@ describe("VERIFY evidence shape", () => {
       expect(content).toContain("Declared Gate");
       expect(content).toContain("Actually-Run Gate");
     }
+  });
+
+  // The run and the capture of the run are separate facts: a row that names the
+  // command but not the output leaves the reader re-running it, and a row that
+  // leans on a sibling row's capture states no fact of its own. The Evidence
+  // column gives each row one cell to hold its own capture.
+  it("gives every traceability row an Evidence column of its own", () => {
+    for (const [site, clause] of [
+      ["gate protocol matrix", gatesEvidenceClause()],
+      ["review template matrix", reviewEvidenceClause()],
+    ]) {
+      expect(matrixHeaderCells(clause), `${site} must state the Evidence column in place`).toEqual(MATRIX_COLUMNS);
+      const rows = matrixBodyRows(clause);
+      expect(rows.length, `${site} must carry example rows`).toBeGreaterThan(1);
+      for (const cells of rows) {
+        expect(cells.length, `${site} row "${cells[0]}" must fill every column`).toBe(MATRIX_COLUMNS.length);
+        expect(cells[6], `${site} row "${cells[0]}" must carry its own evidence`).not.toBe("");
+      }
+    }
+  });
+
+  // The handoff block is where the Artisan produces the capture the matrix
+  // judges, so the executed output sits beside the gate line in both blocks.
+  it("records the executed output beside the gate in both impl handoff blocks", () => {
+    const template = readRoot(join("skills", "template-impl", "SKILL.md"));
+    expect(template.match(/actually-run gate:/g) || [], "the handoff blocks the output line joins").toHaveLength(2);
+    expect(template.match(/actually-run output:/g) || [], "each handoff block carries the executed output").toHaveLength(2);
+    expect(template).toContain("literal output or durable capture path");
+  });
+
+  // The reviewer is the agent that inherits a row from a handoff block, so the
+  // refusal lives in the review protocol: a paraphrase of an output nobody
+  // captured and a row carried by a sibling row that did run are both refused.
+  it("refuses a PASS over paraphrased or sibling-carried evidence", () => {
+    const protocol = sectionBetween(readAgent("inspector.md"), "\n## Protocol", "\n### Standard Protocol");
+    expect(protocol, "the review protocol must state the closeout").not.toBe("");
+    expect(protocol).toMatch(/paraphrase/i);
+    expect(protocol).toMatch(/sibling row/i);
+    expect(protocol).toMatch(/names the affected rows/i);
   });
 
   // A row's evidence is the run itself: the command's literal output, or a
@@ -1918,6 +2057,117 @@ describe("VERIFY evidence shape", () => {
     expect(milestonesTemplate).toContain("fails closed");
     const gateSource = readFileSync(join(ROOT, "plugins", "protocol-gate", "index.js"), "utf8");
     expect(gateSource).toContain("function checkAllMilestonesCheckedOff");
+  });
+});
+
+// A finding that names the artifact and the defect but not the phase that owns
+// the repair leaves VERIFY with no owner to dispatch to: the regression route
+// reopens SWARM rows, so an upstream defect reads as a SWARM defect and the
+// phase that has to fix it never sees the finding. Every finding shape names its
+// owning phase and the act that consumed the artifact, the vocabulary it offers
+// is the lifecycle's own phases upstream of VERIFY, and the verdict rules name
+// the backward route that reaches each of them.
+describe("review findings name their owning phase", () => {
+  const reviewTemplate = readRoot(join("skills", "template-review", "SKILL.md"));
+  const lifecycle = JSON.parse(readRoot(join("plugins", "protocol-gate", "lifecycle.json")));
+
+  // INTENT is the requester's own artifact, so the upstream set starts there;
+  // VERIFY is the reviewing phase, so it never owns the repair of a finding its
+  // own review raised.
+  const UPSTREAM_PHASES = lifecycle.phases.slice(0, lifecycle.phases.indexOf("VERIFY"));
+
+  const OWNER_FIELDS = ["Owning Phase", "Consuming Act"];
+  const ROUTE_FACTS = ["Owning Phase", "Consuming Act", "dispatched backward", "INTENT"];
+
+  const FINDING_SHAPES = [
+    ["review finding", sectionBetween(reviewTemplate, "### F001:", "### F002:")],
+    ["audit finding", sectionBetween(reviewTemplate, "### A001:", "### A002:")],
+  ];
+
+  function fieldLine(shape, field) {
+    return shape.split("\n").find((line) => line.includes(`**${field}**`)) || "";
+  }
+
+  // The phases a shape offers, read from its `Owning Phase` placeholder.
+  function owningPhases(shape) {
+    const placeholder = fieldLine(shape, "Owning Phase").match(/\{\{([^}]*)\}\}/);
+    if (!placeholder) return [];
+    return placeholder[1]
+      .split("/")
+      .map((phase) => phase.trim())
+      .filter(Boolean);
+  }
+
+  // A field whose placeholder is missing or empty states a label and no value,
+  // which reads as filled-in while carrying nothing the owner can act on.
+  function unfilledFields(shape) {
+    return OWNER_FIELDS.filter((field) => {
+      const placeholder = fieldLine(shape, field).match(/\{\{([^}]*)\}\}/);
+      return !placeholder || placeholder[1].trim() === "";
+    });
+  }
+
+  function missingRouteFacts(text) {
+    return ROUTE_FACTS.filter((fact) => !text.includes(fact));
+  }
+
+  const inspectorVerdicts = sectionBetween(readAgent("inspector.md"), "## Verdict Rules", "\n## ");
+  const shapedVerdicts = sectionBetween(reviewTemplate, "## Verdict", "\n## Verdict Rules");
+
+  it("gives every finding shape an owning phase and a consuming act", () => {
+    for (const [site, shape] of FINDING_SHAPES) {
+      expect(shape, `${site} shape must be readable`).not.toBe("");
+      expect(unfilledFields(shape), `${site} must fill both owner fields`).toEqual([]);
+      expect(shape, `${site} must keep the milestone line as provenance`).toMatch(/provenance/);
+    }
+  });
+
+  it("draws the owning-phase vocabulary from the phases upstream of the review", () => {
+    expect(UPSTREAM_PHASES, "the lifecycle must declare the phases upstream of VERIFY").toContain("SWARM");
+    for (const [site, shape] of FINDING_SHAPES) {
+      expect(owningPhases(shape), `${site} must offer exactly the phases upstream of VERIFY`).toEqual(
+        UPSTREAM_PHASES
+      );
+    }
+    // The vocabulary is the lifecycle's phase list, not free text: a shape that
+    // offers a phase the lifecycle does not have reds above, and the review
+    // cannot own the repair of a finding it raised itself.
+    expect(owningPhases(FINDING_SHAPES[0][1])).not.toContain("VERIFY");
+  });
+
+  it("declares a backward route to every owning phase that can carry one", () => {
+    const reachable = lifecycle.backwardTransitions.VERIFY || [];
+    expect(reachable, "a defect in a SPEC artifact must be routable to the phase that owns it").toContain(
+      "ALIGN"
+    );
+    // Every phase a finding may name is reachable except INTENT, which is the
+    // requester's artifact: the verdict rules name that case as the one that
+    // escalates instead of routing.
+    expect(UPSTREAM_PHASES.filter((phase) => phase !== "INTENT" && !reachable.includes(phase))).toEqual([]);
+    expect(reachable).not.toContain("INTENT");
+  });
+
+  it("states the route in the verdict rules and in the shape its author fills", () => {
+    for (const [site, text] of [
+      ["inspector verdict rules", inspectorVerdicts],
+      ["review template verdict section", shapedVerdicts],
+    ]) {
+      expect(text, `${site} must be readable — an empty read makes the sweep vacuous`).not.toBe("");
+      expect(missingRouteFacts(text), `${site} must name the route and its one exception`).toEqual([]);
+    }
+  });
+
+  it("reds the route one fact at a time at both sites", () => {
+    for (const [site, text] of [
+      ["inspector verdict rules", inspectorVerdicts],
+      ["review template verdict section", shapedVerdicts],
+    ]) {
+      for (const fact of ROUTE_FACTS) {
+        const stripped = text.split(fact).join("the route");
+        expect(stripped, `${site} must carry ${fact} to strip`).not.toBe(text);
+        expect(missingRouteFacts(stripped), `${site} must red without ${fact}`).not.toEqual([]);
+      }
+    }
   });
 });
 
@@ -2048,17 +2298,19 @@ describe("rule layers state their rules self-containedly", () => {
   });
 
   // The closed continuity vocabulary. `same` reuses an instance, `fresh:
-  // new-task` covers a first dispatch or a genuinely new task, and one value per
-  // failure a re-dispatch recovers from. A four-value set has no legal value for
-  // a first dispatch, so the instruction that mandates the record cannot be
-  // followed as written; a site that teaches the retired set again is the
-  // regression this pins.
+  // new-task` covers a first dispatch or a genuinely new task, `fresh:
+  // unclassified` covers a failure whose text names no class a dispatcher can act
+  // on, and one value per classed failure a re-dispatch recovers from. A set that
+  // closes before every case has a member leaves the instruction that mandates
+  // the record unfollowable, so a site teaching a set missing a member is what
+  // this pins.
   const CONTINUITY_VALUES = [
     "same",
     "fresh: new-task",
     "fresh: session-not-found",
     "fresh: agent-resolution",
     "fresh: quota-denied",
+    "fresh: unclassified",
   ];
 
   // The shape a dispatcher section uses to name the failure-keyed branch. It is
@@ -2283,6 +2535,37 @@ describe("rule layers state their rules self-containedly", () => {
     expect(region, "code-review-skill must carry the V-Model Traceability section").not.toBe("");
     expect(missingFacts(region, ["Req ID", "Declared Gate", "Actually-Run Gate", "Status"])).toEqual([]);
     expect(LAYER_DEFERRAL.test(region), "traceability shape states its rule without a pointer").toBe(false);
+  });
+
+  // A review criterion judges the change in front of the reviewer. One worded
+  // around a single role's grants stops applying the moment that role's
+  // permission block moves, and reads as a fact about that role rather than a
+  // rule the reviewer applies to whatever diff it is handed.
+  const reviewSkill = readRoot(join("skills", "code-review-skill", "SKILL.md"));
+  const permissionCoherence = headingRegion(reviewSkill, "### Permission Coherence", "\n### ");
+  const instructionFraming = headingRegion(reviewSkill, "### Instruction Framing", "\n### ");
+
+  it("states the permission-coherence criterion without naming a role", () => {
+    expect(permissionCoherence, "code-review-skill must carry the Permission Coherence section").not.toBe("");
+    expect(missingFacts(permissionCoherence, ["grant", "`ask`", "`question`"])).toEqual([]);
+    expect(
+      roleNamePattern().test(permissionCoherence),
+      `Permission Coherence names a role: ${permissionCoherence}`
+    ).toBe(false);
+  });
+
+  it("names the reviewed change as the Instruction Framing subject", () => {
+    expect(instructionFraming, "code-review-skill must carry the Instruction Framing section").not.toBe("");
+    expect(instructionFraming).toContain("reviewed change");
+  });
+
+  it("fails a criterion worded around one role or left without a subject", () => {
+    // Injected offenders: the role-specific wording the criterion used to carry,
+    // and a criterion that names no subject at all. Both pass the fact checks
+    // above, so these assertions are what the section's shape actually rests on.
+    const roleBound = `${permissionCoherence}- [ ] Verify each \`ask\` on the Artisan's install entries.`;
+    expect(roleNamePattern().test(roleBound), "a role name must red").toBe(true);
+    expect("Every behavioral instruction states the expected action directly").not.toContain("reviewed change");
   });
 });
 
@@ -3907,6 +4190,49 @@ describe("audience layers", () => {
   });
 });
 
+// The rule-count principle advises whoever writes the next rule, so it belongs
+// where maintainers read it. Stated in the ground rules it would spend always-on
+// context on every agent to reach an audience of maintainers, so the guard holds
+// it in the maintainer layer and keeps it from drifting back.
+const FEWER_RULES_TOKEN = /\bFewer Rules\b/i;
+const RULE_COUNT_FACTS = [
+  { id: "the rule-count effect", pattern: /more rules degrade compliance/i },
+  { id: "the focused-agent remedy", pattern: /focused agent/i },
+  { id: "the refinement-loop remedy", pattern: /refinement loop/i },
+];
+
+function ruleCountFindings(maintainerLayer, groundRules) {
+  const findings = [];
+  if (FEWER_RULES_TOKEN.test(groundRules)) findings.push("AGENTS.md carries a Fewer Rules item");
+  const guidance = headingSection(maintainerLayer, LAYER_HEADING);
+  for (const fact of RULE_COUNT_FACTS) {
+    if (!fact.pattern.test(guidance)) findings.push(`README maintenance guidance omits ${fact.id}`);
+  }
+  return findings;
+}
+
+describe("rule-count layering", () => {
+  const groundRules = readRoot("AGENTS.md");
+  const readme = readRoot("README.md");
+
+  it("states the principle in the maintainer layer and not in the ground rules", () => {
+    expect(ruleCountFindings(readme, groundRules)).toEqual([]);
+  });
+
+  it("fails when the item returns to the ground rules", () => {
+    const restored = `${groundRules}\n- ⚠ Fewer Rules — More rules degrade compliance.\n`;
+    expect(ruleCountFindings(readme, restored)).toEqual(["AGENTS.md carries a Fewer Rules item"]);
+  });
+
+  it("fails when the maintainer layer drops the principle", () => {
+    const stripped = readme.replace(/more rules degrade compliance/gi, "rule count is a metric");
+    expect(stripped).not.toEqual(readme);
+    expect(ruleCountFindings(stripped, groundRules)).toContain(
+      "README maintenance guidance omits the rule-count effect"
+    );
+  });
+});
+
 // README states facts the tree can disprove, so each one is compared against the
 // source that owns it: the manifest names the scripts, the configuration names
 // the plugin set, and the Inspector's body owns the gate runs. A finding names
@@ -4113,6 +4439,86 @@ describe("governing disposition", () => {
       true
     );
     expect(purityFindings(section, "AGENTS.md Governing Disposition")).toEqual([]);
+  });
+});
+
+// The compound-command rule reaches every role that runs a shell, so the
+// always-injected layer states the invariant alone: the failure mode, the
+// recovery and the outcome. An ordering of alternatives that depends on which
+// grants a caller holds belongs beside those grants, and the example that names
+// one role's evasion belongs in that role's own definition — a rule stated for
+// every project names no role of this swarm.
+const COMPOUND_ITEM = "⚠ Compound Commands";
+const COMPOUND_FACTS = [
+  { id: "the segment-allowlist invariant", pattern: /passes iff every segment is allowlisted/ },
+  { id: "the denial naming the command", pattern: /denial is feedback about the named command/ },
+  { id: "the scoped segment isolated and re-run", pattern: /isolate the scoped segment by re-running each segment alone/ },
+  { id: "the directory passed through workdir", pattern: /`workdir` parameter/ },
+  { id: "the dedicated-tool outcome", pattern: /dedicated tool instead of shell/ },
+];
+const COMPOUND_LADDER = ["idiomatic target family", "role's runners", "where held"];
+
+// The prohibition the ground rules cannot carry: a role's own definition is
+// where its restrictions read as that role's.
+const OVERSEER_BYPASS_FACTS = [
+  { id: "the subagent route it refuses", pattern: /subagent/i },
+  { id: "the by-design wall it protects", pattern: /bypass(?:es)? a by-design wall/i },
+];
+
+function compoundRuleFindings(groundRules, overseerBody = bodyRegion(readAgent("overseer.md"))) {
+  const findings = [];
+  if (roleNamePattern().test(groundRules)) findings.push("AGENTS.md names a role");
+  const item = groundRules.split("\n").find((line) => line.includes(COMPOUND_ITEM));
+  if (!item) {
+    findings.push(`AGENTS.md carries no "${COMPOUND_ITEM}" item`);
+  } else {
+    for (const fact of COMPOUND_FACTS) {
+      if (!fact.pattern.test(item)) findings.push(`the compound-command item is missing ${fact.id}`);
+    }
+    for (const phrase of COMPOUND_LADDER) {
+      if (item.includes(phrase)) {
+        findings.push(`the compound-command item orders a per-role alternative ("${phrase}")`);
+      }
+    }
+  }
+  for (const fact of OVERSEER_BYPASS_FACTS) {
+    if (!fact.pattern.test(overseerBody)) findings.push(`agents/overseer.md is missing ${fact.id}`);
+  }
+  return findings;
+}
+
+describe("compound-command layering", () => {
+  const groundRules = readRoot("AGENTS.md");
+
+  it("states the invariant on the always-injected layer and the prohibition in the role definition", () => {
+    expect(compoundRuleFindings(groundRules)).toEqual([]);
+  });
+
+  it("fails when the item is deleted", () => {
+    expect(compoundRuleFindings(groundRules.replace(COMPOUND_ITEM, "⚠ Shell Calls"))).toContain(
+      `AGENTS.md carries no "${COMPOUND_ITEM}" item`
+    );
+  });
+
+  it("fails when a role name returns to the ground rules", () => {
+    const named = `${groundRules}\nThe Artisan narrows its claim.\n`;
+    expect(compoundRuleFindings(named)).toContain("AGENTS.md names a role");
+  });
+
+  it("fails when a per-role alternative ladder returns", () => {
+    const laddered = groundRules.replace(
+      "and report each attempted command",
+      "and take the caller's idiomatic target family where held, then report each attempted command"
+    );
+    expect(laddered).not.toEqual(groundRules);
+    expect(compoundRuleFindings(laddered)).not.toEqual([]);
+  });
+
+  it("fails when the role definition drops the prohibition", () => {
+    const body = bodyRegion(readAgent("overseer.md"));
+    const stripped = body.replace(/bypass(?:es)? a by-design wall/gi, (match) => match.replace(/bypass/gi, "pass"));
+    expect(stripped).not.toEqual(body);
+    expect(compoundRuleFindings(readRoot("AGENTS.md"), stripped)).not.toEqual([]);
   });
 });
 
@@ -4369,6 +4775,16 @@ const PROCESS_COMMENTARY = ["previously", "used to", "no longer"].flatMap((phras
   ].map(([file, anchor]) => ({ phrase, file, anchor }))
 );
 
+// The framing above the phase table: the table states what each phase does, so
+// the comment says what the table is and nothing about the list it replaced. A
+// claim about a superseded mechanism reads as a fact about this one.
+const PHASE_TABLE_FRAMING = {
+  anchor: "export const PHASE_INSTRUCTIONS = {",
+  states: "injected into the system prompt per phase",
+  retired: "instead of a tool list",
+  directive: "Each instruction states the expected action",
+};
+
 // Normalized match: case-insensitive, with whitespace collapsed and the
 // markdown wrappers dropped, so a reflowed, re-cased or re-wrapped copy of a
 // phrase is still that phrase. Code-span backticks and template braces carry no
@@ -4409,6 +4825,25 @@ function processCommentaryFindings(content, entries) {
       (finding) => `${finding}, in the comment above "${entry.anchor}"`
     );
   });
+}
+
+function phaseTableFramingFindings(content) {
+  const region = commentRegionAbove(content, PHASE_TABLE_FRAMING.anchor);
+  if (region === null) return [`phases.js carries no "${PHASE_TABLE_FRAMING.anchor}" anchor`];
+  const normalized = normalizeResidueProse(region);
+  const findings = [];
+  if (!normalized.includes(normalizeResidueProse(PHASE_TABLE_FRAMING.states))) {
+    findings.push("phases.js carries no statement of what the phase table is");
+  }
+  if (normalized.includes(normalizeResidueProse(PHASE_TABLE_FRAMING.retired))) {
+    findings.push(
+      `phases.js describes the tool list it replaced, in the comment above "${PHASE_TABLE_FRAMING.anchor}"`
+    );
+  }
+  if (!content.includes(PHASE_TABLE_FRAMING.directive)) {
+    findings.push("phases.js carries no corrected directive over its phase instructions");
+  }
+  return findings;
 }
 
 describe("audit residue absent", () => {
@@ -4509,6 +4944,35 @@ describe("audit residue absent", () => {
     expect(anchored.length).toBeGreaterThan(0);
     expect(processCommentaryFindings(source, anchored)).toEqual([]);
     expect(residueFindings(source, [{ phrase: "previously", file }])).not.toEqual([]);
+  });
+
+  it("describes the phase table as it stands, not the list it replaced", () => {
+    const source = readRoot(join("plugins", "protocol-gate", "phases.js"));
+    expect(phaseTableFramingFindings(source)).toEqual([]);
+  });
+
+  it("reds a replaced tool list described above the phase table", () => {
+    const source = readRoot(join("plugins", "protocol-gate", "phases.js"));
+    const framed = source.replace(
+      PHASE_TABLE_FRAMING.anchor,
+      `// The Overseer sees these instead of a tool list.\n${PHASE_TABLE_FRAMING.anchor}`
+    );
+    expect(framed, "the anchor must be present to inject above").not.toBe(source);
+    expect(phaseTableFramingFindings(framed)).toEqual([
+      `phases.js describes the tool list it replaced, in the comment above "${PHASE_TABLE_FRAMING.anchor}"`,
+    ]);
+  });
+
+  it("reds a phase table stripped of its framing and its corrected directive", () => {
+    const source = readRoot(join("plugins", "protocol-gate", "phases.js"));
+    const unframed = source
+      .replace(PHASE_TABLE_FRAMING.states, "phase scoped")
+      .replace(PHASE_TABLE_FRAMING.directive, "Each instruction is a directive.");
+    expect(unframed).not.toBe(source);
+    expect(phaseTableFramingFindings(unframed)).toEqual([
+      "phases.js carries no statement of what the phase table is",
+      "phases.js carries no corrected directive over its phase instructions",
+    ]);
   });
 });
 

@@ -2200,6 +2200,99 @@ Body`;
       const raw = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
       expect(raw).toContain("pathfinder");
     });
+
+    describe("append_section channel", () => {
+      const HEADING = "Closure Act";
+      const TEXT = "Shipped in the impl KD.";
+      // The exact tail an append writes: blank-line separation, the heading,
+      // the body, one trailing newline. Byte equality below depends on it.
+      const APPENDED = `\n## ${HEADING}\n\n${TEXT}\n`;
+
+      async function update(id, changes) {
+        return JSON.parse(await hooks.tool.issue_update.execute(
+          { id, scope: "swarm", changes },
+          { agent: "habit-builder", sessionID: "hb-session" }
+        ));
+      }
+
+      it("appends a named section while preserving frontmatter and every pre-existing body byte", async () => {
+        await seedIssue(1);
+        const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        const result = await update(1, { append_section: { heading: HEADING, body: TEXT } });
+        expect(result.error).toBeUndefined();
+        expect(result.message).toContain("updated");
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        // The original file must be a strict byte prefix of the result, so no
+        // pre-existing frontmatter or body byte was normalized away.
+        expect(after).toBe(before + APPENDED);
+        expect(hooks.parseIssueFile(after, "issue-1.md").status).toBe("open");
+      });
+
+      it("preserves pre-existing body bytes when the same call also changes status", async () => {
+        await seedIssue(1);
+        const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        const frontmatter = before.match(/^---\n[\s\S]*?\n---/)[0];
+        const bodyBytes = before.slice(frontmatter.length);
+        const result = await update(1, {
+          status: "resolved",
+          append_section: { heading: HEADING, body: TEXT },
+        });
+        expect(result.error).toBeUndefined();
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        expect(after.endsWith(bodyBytes + APPENDED)).toBe(true);
+        expect(hooks.parseIssueFile(after, "issue-1.md").status).toBe("resolved");
+      });
+
+      it("reports the byte delta of the append", async () => {
+        await seedIssue(1);
+        const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        const result = await update(1, { append_section: { heading: HEADING, body: TEXT } });
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        expect(result.byte_delta.before).toBe(Buffer.byteLength(before, "utf8"));
+        expect(result.byte_delta.appended).toBe(Buffer.byteLength(APPENDED, "utf8"));
+        expect(result.byte_delta.after).toBe(Buffer.byteLength(after, "utf8"));
+        expect(result.byte_delta.after - result.byte_delta.before).toBe(result.byte_delta.appended);
+      });
+
+      it("refuses an append to a resolved issue unless the same call sets status", async () => {
+        await seedIssue(1);
+        await update(1, { status: "resolved" });
+        const resolved = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        const refused = await update(1, { append_section: { heading: HEADING, body: TEXT } });
+        expect(refused.error).toMatch(/resolved/);
+        expect(readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8")).toBe(resolved);
+        const allowed = await update(1, {
+          status: "resolved",
+          append_section: { heading: HEADING, body: TEXT },
+        });
+        expect(allowed.error).toBeUndefined();
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        expect(after).toContain(`## ${HEADING}`);
+        expect(after.endsWith(APPENDED)).toBe(true);
+      });
+
+      it("rejects an unknown changes key by name and leaves the file unmodified", async () => {
+        await seedIssue(1);
+        const before = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        // A valid sibling key must not make the unknown key succeed silently.
+        const result = await update(1, {
+          append_section: { heading: HEADING, body: TEXT },
+          closure_note: "would be dropped before this check existed",
+        });
+        expect(result.error).toContain("closure_note");
+        expect(readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8")).toBe(before);
+      });
+
+      it("appends a body that opens with a section heading under its own heading", async () => {
+        await seedIssue(1);
+        const result = await update(1, {
+          append_section: { heading: HEADING, body: "## Description\nAppend body." },
+        });
+        expect(result.error).toBeUndefined();
+        const after = readFileSync(join(ISSUES_DIR, "issue-1.md"), "utf8");
+        expect(after.endsWith(`\n## ${HEADING}\n\n## Description\nAppend body.\n`)).toBe(true);
+      });
+    });
   });
 
   describe("issue_move tool (registered execute)", () => {
@@ -2397,6 +2490,16 @@ Body`;
       expect(typeof hooks.tool.issue_read.execute).toBe("function");
     });
 
+    it("advertises the curator set at both registration sites", async () => {
+      expect(hooks.tool.issue_read.description).not.toContain("Any agent may read");
+      expect(hooks.tool.issue_read.description).toContain("Habit Builder");
+
+      const output = { description: "orig", parameters: { type: "object", properties: {} } };
+      await hooks["tool.definition"]({ toolID: "issue_read" }, output);
+      expect(output.description).not.toContain("Any agent may read");
+      expect(output.description).toContain("Habit Builder");
+    });
+
     it("returns the full issue content for a Habit Builder caller", async () => {
       await seedIssue(1);
       const result = await hooks.tool.issue_read.execute(
@@ -2420,15 +2523,58 @@ Body`;
       expect(parsed.body).toContain("## Acceptance Criteria");
     });
 
-    it("allows any agent to read an issue (tool-exclusivity read path)", async () => {
+    it("refuses a non-curator caller and returns no issue content", async () => {
       await seedIssue(2);
       const result = await hooks.tool.issue_read.execute(
         { id: 2, scope: "swarm" },
         { agent: "artisan", sessionID: "artisan-session" }
       );
       const parsed = JSON.parse(result);
-      expect(parsed.error).toBeUndefined();
-      expect(parsed.title).toBe("Read seed 2");
+      // The refusal names both the caller and the store it asked for.
+      expect(parsed.error).toContain("artisan");
+      expect(parsed.error).toContain("swarm");
+      expect(parsed.title).toBeUndefined();
+      expect(parsed.body).toBeUndefined();
+    });
+
+    it("refuses a non-curator before the existence check, so ids cannot be probed", async () => {
+      await seedIssue(11);
+      const absent = JSON.parse(await hooks.tool.issue_read.execute(
+        { id: 999, scope: "swarm" },
+        { agent: "artisan", sessionID: "artisan-session" }
+      ));
+      const present = JSON.parse(await hooks.tool.issue_read.execute(
+        { id: 11, scope: "swarm" },
+        { agent: "artisan", sessionID: "artisan-session" }
+      ));
+      // Present and absent ids are indistinguishable: the refusal lands first.
+      expect(absent.error).toBe(present.error);
+      expect(absent.error).not.toContain("not found");
+    });
+
+    it("records one always-on ISSUE_READ_REFUSED line for a repeated identical refusal", async () => {
+      hooks.resetGateRecordKeys?.();
+      const priorDebug = process.env.KNOWLEDGE_GATE_DEBUG;
+      delete process.env.KNOWLEDGE_GATE_DEBUG;
+      try {
+        const before = existsSync(KG_TEMP_LOG_FILE) ? readFileSync(KG_TEMP_LOG_FILE, "utf8") : "";
+        for (let i = 0; i < 2; i++) {
+          await hooks.tool.issue_read.execute(
+            { id: 7, scope: "generic" },
+            { agent: "scribe", sessionID: "scribe-session" }
+          );
+        }
+        const appended = readFileSync(KG_TEMP_LOG_FILE, "utf8").slice(before.length);
+        const refusalLines = appended.split("\n").filter((line) => line.includes("ISSUE_READ_REFUSED"));
+        // Always-on: the line lands with DEBUG off, and the dedupe key keeps a
+        // repeated identical call to one line.
+        expect(refusalLines).toHaveLength(1);
+        expect(refusalLines[0]).toContain("agent=scribe");
+        expect(refusalLines[0]).toContain("store=generic");
+      } finally {
+        if (priorDebug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+        else process.env.KNOWLEDGE_GATE_DEBUG = priorDebug;
+      }
     });
 
     it("rejects a missing scope", async () => {
@@ -2809,7 +2955,7 @@ Body`;
 
       const result = JSON.parse(await nameHooks.tool.issue_read.execute(
         { id: 1, scope: "project", project_name: "rt-lstm-read" },
-        { agent: "artisan", sessionID: "s" }
+        { agent: "habit-builder", sessionID: "hb" }
       ));
       expect(result.error).toBeUndefined();
       expect(result.title).toBe("Read named");
@@ -2828,7 +2974,7 @@ Body`;
 
       const result = JSON.parse(await nameHooks.tool.issue_read.execute(
         { id: 1, scope: "project" },
-        { agent: "artisan", sessionID: "s" }
+        { agent: "habit-builder", sessionID: "hb" }
       ));
       expect(result.error).toBeUndefined();
       expect(result.title).toBe("Read default");
@@ -2838,7 +2984,7 @@ Body`;
     it("issue_read rejects an invalid project_name with a path-separator error", async () => {
       const result = JSON.parse(await nameHooks.tool.issue_read.execute(
         { id: 1, scope: "project", project_name: "../escape" },
-        { agent: "artisan", sessionID: "s" }
+        { agent: "habit-builder", sessionID: "hb" }
       ));
       expect(result.error).toContain("project_name must be a non-empty string without path separators");
     });

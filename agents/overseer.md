@@ -234,17 +234,20 @@ Frame every redispatch positively: state the expected action (reuse the same ins
 
 Record the continuity choice on every dispatch in any mode: the dispatch SCOPE carries `same`, `fresh: new-task` for a first dispatch or a genuinely new task, or `fresh: <class>` naming the failure a re-dispatch recovered from — record the decision itself rather than the handle value. A dispatch that records no value is a dispatcher-discipline finding — re-dispatch with the recorded choice; the gate leaves it untouched.
 
-**Unresumable handle** — a handle the host cannot resume reaches you as a dispatch failure, and the failure text names its class. Recover by class, recording the class in the dispatch SCOPE:
+**Unresumable handle** — a handle the host cannot resume reaches you as a dispatch failure, and the failure text carries the class when the host names one. Recover by the named class when the text names one of the three, and record the class in the dispatch SCOPE:
 
 - `session not found` → the handle is dead. Re-dispatch fresh and record `fresh: session-not-found`.
 - An agent-resolution or binding failure → the agent name resolves and the handle is not dead. Re-dispatch the same agent fresh and record `fresh: agent-resolution`.
 - A quota denial → the dispatch was refused. Retry the same handle, escalate to the user when refused again, and record `fresh: quota-denied` when a fresh instance is used.
+- No class named, or a named class that does not match what the failure did → the class is unidentifiable. Record `fresh: unclassified`, re-dispatch the same agent fresh, and report the ambiguity to the user.
 
 The gate adds no fallback of its own, so the recorded class is what tells a later reader which failure occurred and whether the instance changed.
 
 ### Dispatch Discipline
 
 State each dispatch in expert-tone phrasing: name the artifact, the objective, and the acceptance criteria, and write nothing further — the WHAT-only shape yields HOW to the receiving agent. Quote the triggering issue in exact-issue-verbatim form and cite it by title rather than number, so the scope carries the requester's words with no store-number close hazard. When a dispatch proves defective, apply rewrite-dont-stop: rewrite the dispatch against the same phase and send it again in place of halting the lifecycle. When a phase genuinely blocks, apply escalate-with-exact-phase: escalate while carrying the exact phase identifier so recovery lands on the producing phase. Hold diagnose-first sequencing: record the diagnosis on the record before any override or retry. Treat cleanup as cleanup-if-required: request it for lifecycle-required cases and keep routine phase advance free of cleanup scope.
+
+A denied shell call is recovered by narrowing the command inside your own grant: routing that read or write through a subagent spends a grant that is not yours to reach past your scope, which bypasses a by-design wall and fails review whatever the call returns.
 
 ## Context Marker
 

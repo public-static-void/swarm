@@ -41,6 +41,15 @@ nothing, leaving the phase at VERIFY for a user decision. A `FAIL` that both nam
 targets and carries the section is `VERDICT_AMBIGUOUS` and blocks. An empty section
 counts as absent, and `PASS` ignores the section.
 
+A `FAIL` whose owning phase sits above SWARM routes backward rather than escalating:
+`Owning Phase` names the phase that must repair the artifact and `Consuming Act`
+names the act in this review that consumed it and saw the defect, so a defect in a
+SPEC, PLAN, registry or INTENT artifact is a repair with an owner, dispatched backward
+to that phase through the transition the lifecycle declares for VERIFY, and not a
+design flaw. The reopened SWARM rows cover the SWARM-owned share of the finding.
+Where the owning phase is INTENT, no declared transition reaches it, so the
+escalation route is what remains.
+
 Where a finding reports a contradiction, it names which half holds and why: of two
 plan instructions that are mutually unsatisfiable, it states which one the tree
 supports, and where a premise was not read from the tree, it names the premise the
@@ -69,6 +78,13 @@ finding measures against, so a finding that contradicts it says so.
 
 ## Review Findings
 
+A finding names who owns the repair: `Owning Phase` is the phase whose artifact must
+change, so a defect in a SPEC, PLAN, registry or INTENT artifact does not read as a
+SWARM defect, and `Consuming Act` is the act in this review that consumed the
+artifact and saw the defect — the traceability pass, the audit sweep or the purpose
+check — so the owning phase knows which consumption found it. `Milestone` stays
+provenance: the gate reads `reopen_target`.
+
 ### F001: {{finding title}}
 
 - **Requirement**: {{R001}}
@@ -77,16 +93,18 @@ finding measures against, so a finding that contradicts it says so.
 - **Severity**: {{critical / major / minor}}
 - **Status**: {{PASS / FAIL}}
 - **Detail**: {{what's wrong and why}}
+- **Owning Phase**: {{INTENT / PREFLIGHT / EXPLORE / INVESTIGATE / ALIGN / DECOMPOSE / SWARM}}
+- **Consuming Act**: {{the act that consumed the artifact and saw the defect — traceability pass / audit sweep / purpose check}}
 - **Milestone** (provenance — the gate reads `reopen_target`, not this line): {{M\d+ id}}
 
 ### F002: {{finding title}}
 
 ### Traceability Matrix
 
-| Req ID | Plan Step | Artifact  | Declared Gate | Actually-Run Gate | Test/Check     | Status      |
-| ------ | --------- | --------- | ------------- | ----------------- | -------------- | ----------- |
-| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
-| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | PASS / FAIL |
+| Req ID | Plan Step | Artifact  | Declared Gate | Actually-Run Gate | Test/Check     | Evidence       | Status      |
+| ------ | --------- | --------- | ------------- | ----------------- | -------------- | -------------- | ----------- |
+| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | `12 passed`    | PASS / FAIL |
+| R###   | P###      | `src/...` | `npm test`    | `npm test`        | `npm test ...` | `logs/e2e.log` | PASS / FAIL |
 
 Each row's evidence is the declared command's literal output or a durable path to the captured artifact, and each row stands alone — a paraphrase of an output, and a row that leans on another row's capture, are not evidence.
 
@@ -113,6 +131,8 @@ third-party dependency versions, SAST/dependency scan output}}
 - **File**: {{path}}
 - **Description**: {{the vulnerability}}
 - **Remediation**: {{how to fix}}
+- **Owning Phase**: {{INTENT / PREFLIGHT / EXPLORE / INVESTIGATE / ALIGN / DECOMPOSE / SWARM}}
+- **Consuming Act**: {{the act that consumed the artifact and saw the finding — traceability pass / audit sweep / purpose check}}
 - **Milestone** (provenance — the gate reads `reopen_target`, not this line): {{M\d+ id}}
 
 ### A002: ...
