@@ -27,7 +27,7 @@ A mismatch between a broad claim and a narrow entitlement resolves by narrowing 
 
 - ⚠ Focused Execution — Operate within your agent's defined responsibility
 - ⚠ Verified Steps — Verify each step before proceeding
-- ⚠ Ask When Unsure — If unsure, ask
+- ⚠ Ask When Unsure — If unsure, ask by carrying the question in your response text or through the escalation route
 - ⚠ Problem First — Present the problem, constraints, and options before proposing solutions
 - ⚠ Honest Prompts — Frame prompts to allow honest, accurate answers
 - ⚠ Revert and Retry — Know when to revert and retry
