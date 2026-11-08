@@ -40,9 +40,9 @@ Every REVIEW KD must include a traceability matrix like this:
 
 | Req ID | Plan Step | Artifact          | Declared Gate   | Actually-Run Gate | Test/Check       | Evidence                          | Status      |
 | ------ | --------- | ----------------- | --------------- | ----------------- | ---------------- | --------------------------------- | ----------- |
-| R###   | P###      | `src/auth.ts`     | `npm test auth` | `npm test auth`   | `npm test auth`  | auth suite: 12 passed (`logs/auth-test.log`) | PASS / FAIL |
-| R###   | P###      | `src/login.tsx`   | `npm test`      | `npm test`        | `npm test login` | login suite: 8 passed, 0 failed   | PASS / FAIL |
-| R###   | P###      | `config/auth.yml` | `npm test`      | `npm test`        | Lint passes      | lint exit 0, no warnings          | PASS / FAIL |
+| R###   | P###      | `src/auth.ts`     | `npm test auth` | `npm test auth`   | `npm test auth`  | auth suite: 12 passed (`logs/auth-test.log`) | PASS / FAIL / deferred |
+| R###   | P###      | `src/login.tsx`   | `npm test`      | `npm test`        | `npm test login` | login suite: 8 passed, 0 failed   | PASS / FAIL / deferred |
+| R###   | P###      | `config/auth.yml` | `npm test`      | `npm test`        | Lint passes      | lint exit 0, no warnings          | PASS / FAIL / deferred |
 
 A row's evidence is the declared command's literal output or a durable path to the captured artifact — a saved log, a report file, a commit that carries the capture. Each row stands alone: a paraphrase of an output nobody captured, and a row carried by a sibling row that did run, are both non-evidence, so the reader re-runs the command or opens the capture.
 
@@ -53,6 +53,7 @@ A row's evidence is the declared command's literal output or a durable path to t
 3. **Every plan step** must map to at least one requirement — unplanned work is a FAIL
 4. If any row in the matrix has **unchecked requirements** (neither PASS nor FAIL), the verdict is FAIL
 5. The Inspector must verify the matrix is complete before issuing a verdict
+6. A `deferred` row records a named check that was not re-run: it satisfies no criterion, reads as recorded rather than unreviewed, and leaves rule 4's FAIL verdict standing
 
 ## Gate Locations
 
