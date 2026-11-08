@@ -33,6 +33,8 @@ superseded_by: null
 
 ## Verification Notes
 
+A row whose named check was not re-run reads `deferred`; a row claiming a named command carries its literal output inline.
+
 tests touched: {{suite files created or extended for this milestone behavior}}
 handoff:
   touched surface: {{files and behaviors this milestone changed}}
