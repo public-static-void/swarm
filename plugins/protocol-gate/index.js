@@ -335,6 +335,41 @@ function getActiveLifecycleGeneration(sessionPhaseMap, sessionID) {
   return anchor.generation;
 }
 
+// The promotion/advancement refusal for an unresolvable lifecycle identity:
+// with several lifecycle INTENTs on disk and the anchor's generation at odds
+// with the persisted counter, nothing on disk records which lifecycle is
+// running, so a row promotion or a phase advance under either number could be
+// the wrong lifecycle's. The state change is refused and the always-on record
+// names both values, the candidate count, the tie-break that picked the
+// anchor, and the reason. Lookup behavior is untouched — evidence still
+// resolves against the anchor (getActiveLifecycleGeneration above); the
+// correction sits only where state changes. A single candidate stays on the
+// reconciliation path above. Returns true when the caller must refuse.
+function refuseAmbiguousAnchor(sessionPhaseMap, sessionID) {
+  const persistedState = readPersistedLifecycleState(sessionID);
+  const inMap = sessionPhaseMap.get(`${sessionID}:gen`);
+  const persisted = typeof inMap === "number" ? inMap : (persistedState.generation ?? 0);
+  const phase = sessionPhaseMap.get(sessionID) ?? persistedState.phase;
+  // Same gate as the lookup: before INTENT no anchor governs, and one
+  // candidate is a disagreement the anchor fallback already reconciles.
+  if (!(typeof phase === "number" && phase > STATES.INTENT)) return false;
+  const anchor = findLifecycleAnchor(sessionID);
+  if (!anchor || anchor.candidates.length < 2) return false;
+  if (anchor.generation === persisted) return false;
+  const others = anchor.candidates.slice(1).map(c => `${c.file}@gen${c.generation}`).join(",");
+  gateRecordEvent("LIFECYCLE_ANCHOR_AMBIGUOUS", [
+    ["session", sessionID],
+    ["activeGen", anchor.generation],
+    ["anchor", anchor.file],
+    ["others", others],
+    ["persistedGen", persisted],
+    ["candidates", anchor.candidates.length],
+    ["reason", "anchor-counter-disagreement"],
+    ["promoted", "false"]
+  ], `several lifecycle INTENTs are on disk for this session, so the anchor rule decides which generation this lifecycle runs at: newest by modification time, then by generation, then by name; the persisted counter holds ${persisted} while the anchor names ${anchor.generation}, and nothing on disk records which lifecycle is running, so promotion and advancement are refused until the counter and the anchor carry the same generation`, `LIFECYCLE_ANCHOR_AMBIGUOUS|${sessionID}|a:${anchor.generation}|f:${anchor.file}|o:${others}|refuse`);
+  return true;
+}
+
 // The number the lifecycle starting now will carry. Handing out a number an
 // existing artifact of this session already carries is what lets an unfinished
 // lifecycle's evidence pass for a fresh one's, so the allocator takes one above
@@ -2347,6 +2382,10 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return settled; }
   const persistedGeneration = getCurrentGeneration(sessionPhaseMap, sessionID);
+  // Refusal precedes generation resolution and the mismatch evaluation in the
+  // loop below: while several candidates disagree with the persisted counter,
+  // no row promotes from any generation and no skip is recorded.
+  if (refuseAmbiguousAnchor(sessionPhaseMap, sessionID)) return settled;
   const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   let promoted = 0;
   for (const row of stuck) {
@@ -3593,6 +3632,10 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // Reads scan the current session's KDs only — cross-session
   // adoption is removed, so a fresh session can never advance off another
   // lifecycle's KDs. lookupSIDs stays single-session (diagnostic only).
+  // Refusal precedes evidence resolution: while several candidates disagree
+  // with the persisted counter, no phase advances on evidence this gate
+  // cannot attribute to a lifecycle.
+  if (refuseAmbiguousAnchor(sessionPhaseMap, sessionID)) return false;
   const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const lookupSIDs = getKDLookupSIDs(sessionPhaseMap, sessionID);
   const sessionFiles = [];
@@ -4757,6 +4800,10 @@ async function protocolGateServer(input, options) {
         // the active lifecycle's declines with an always-on GEN_MISMATCH_SKIP
         // record instead of checking off.
         const persisted = getPersistedGeneration(candidate) ?? getCurrentGeneration(sessionPhaseMap, candidate);
+        // Refusal precedes both the generation resolution and the mismatch
+        // evaluation below: while several candidates disagree with the
+        // persisted counter, no row promotes from any generation.
+        if (refuseAmbiguousAnchor(sessionPhaseMap, candidate)) return;
         const generation = getActiveLifecycleGeneration(sessionPhaseMap, candidate);
         const base = relPath.replace(/\\/g, "/").split("/").pop();
         const fileGen = extractImplKDGeneration(base, candidate);
