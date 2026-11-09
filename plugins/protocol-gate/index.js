@@ -3152,10 +3152,28 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
       debug(`VERDICT_AMBIGUOUS: FAIL review KD ${verdictInfo.filename} names ${resolvable.length} resolvable milestone(s) and carries a non-empty ## Escalation section — blocked, no regression, no reopen; re-issue the review as a fixable FAIL without the marker or as an escalation FAIL with no target`);
       return false;
     }
+    const regressionWired = Boolean(f1Options && f1Options.verdictRegressedKDs && typeof f1Options.backwardTransition === "function");
     let regressed = false;
-    if (f1Options && f1Options.verdictRegressedKDs && typeof f1Options.backwardTransition === "function") {
+    if (regressionWired) {
       regressed = regressVerifyOnFail(sessionID, verdictInfo.filename, sessionFiles, sessionPhaseMap, resolvable, f1Options.verdictRegressedKDs, f1Options.backwardTransition);
     }
+    // Always-on outcome line for the FAIL evaluation: the reopen records only
+    // fire for cited rows, and a consumed verdict otherwise blocks with debug()
+    // as its only channel. One line per review and outcome — a repeated
+    // evaluation of an unchanged outcome dedupes into it.
+    gateRecordEvent("VERDICT_FAIL_EVALUATED", [
+      ["session", sessionID],
+      ["phase", "VERIFY"],
+      ["review", verdictInfo.filename],
+      ["regressed", String(regressed)],
+      ["reason", regressed ? "fail-regression-applied" : "fail-blocked"],
+      ["promoted", "false"]
+    ], regressed
+      ? `review KD ${verdictInfo.filename} carries verdict FAIL — VERIFY regressed to SWARM and the cited rows reopened; a new review ends the cycle`
+      : regressionWired
+        ? `review KD ${verdictInfo.filename} carries verdict FAIL and this regression cycle already consumed it — VERIFY does not advance until the review is re-emitted or replaced`
+        : `review KD ${verdictInfo.filename} carries verdict FAIL but no regression handler is wired — VERIFY does not advance`,
+      `VERDICT_FAIL_EVALUATED|${sessionID}|a:${verdictInfo.filename}|g:${regressed ? "regressed" : "blocked"}`);
     debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} verdict=FAIL → ${regressed ? "regressed to SWARM" : "blocked (fix-cycle guard or no regression handler)"}`);
     return false;
   }

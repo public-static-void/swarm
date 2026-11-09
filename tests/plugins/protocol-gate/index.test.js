@@ -5386,6 +5386,7 @@ milestones:
       const log = readLogQuiet();
       expect(countRecords(log, "GEN_MISMATCH_SKIP")).toBe(1);
       expect(log).toContain(`GEN_MISMATCH_SKIP: session=${s}`);
+      expect(log).toContain("phase=SWARM");
       expect(log).toContain(`file=spec-stale-${s}-gen1.md`);
       expect(log).toContain("fileGen=1");
       expect(log).toContain("activeGen=0");
@@ -5445,6 +5446,31 @@ milestones:
       expect(log).toContain(`POST_WRITE_BLOCKED: session=${s}`);
       expect(log).toContain("phase=SWARM");
       expect(log).toContain("reason=swarm-gate-not-passed");
+      expect(log).toContain("promoted=false");
+    });
+
+    it("a FAIL verdict records its evaluation outcome always-on, naming the regression it applied", async () => {
+      const s = await seedVerifySession("r006-fail-verdict");
+      createKD(`review-fail-${s}.md`, reviewKD("FAIL", "impl-M1 defect", "", ["M1"]));
+      try { rmSync(logPath); } catch (_) {}
+
+      // Driven through the before-hook so the regression handler is wired — the
+      // record then names the regression the FAIL verdict applied, which the
+      // reopen records only mention per cited row.
+      await withDebugOff(() =>
+        hooks["tool.execute.before"](
+          { tool: "glob", sessionID: s, callID: "c1" },
+          { args: { pattern: "knowledge/*.md" } }
+        )
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const log = readLogQuiet();
+      expect(countRecords(log, "VERDICT_FAIL_EVALUATED")).toBe(1);
+      expect(log).toContain(`VERDICT_FAIL_EVALUATED: session=${s}`);
+      expect(log).toContain("phase=VERIFY");
+      expect(log).toContain(`review=review-fail-${s}.md`);
+      expect(log).toContain("regressed=true");
+      expect(log).toContain("reason=fail-regression-applied");
       expect(log).toContain("promoted=false");
     });
   });
