@@ -47,7 +47,7 @@ milestones:
 
 ## SWARM→VERIFY Gate
 
-SWARM advances to VERIFY when every milestone row is `checked-off` AND each row has its milestone-scoped impl KD on disk (`checkAllMilestonesCheckedOff` — registry state cross-checked against `checkMilestoneCheckedOff` disk evidence). The gate fails closed on missing/empty/unparsable registries (logs `REGISTRY_MISSING`/`REGISTRY_EMPTY`). Count signals (`MILESTONE_COUNT`, dispatch counts) have no gating effect. The user's `/phase` override is the escape hatch from a stuck SWARM and logs `SAFETY_ESCAPE`.
+SWARM advances to VERIFY when every milestone row is `checked-off` AND each row has its milestone-scoped impl KD on disk (`checkAllMilestonesCheckedOff` — registry state cross-checked against `checkMilestoneCheckedOff` disk evidence). The gate fails closed on missing/empty/unparsable registries (records `REGISTRY_MISSING`/`REGISTRY_EMPTY` on the gate log even with the debug flag unset). Count signals (`MILESTONE_COUNT`, dispatch counts) have no gating effect. The user's `/phase` override is the escape hatch from a stuck SWARM and logs `SAFETY_ESCAPE`.
 
 ## Parsing Contract
 
