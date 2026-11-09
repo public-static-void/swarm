@@ -5200,6 +5200,255 @@ milestones:
     });
   });
 
+  // Every advance-evaluator refusal writes an always-on record the same way:
+  // one line naming the phase, the session, the deciding values and the
+  // reason, so a run with the debug flag unset can still read why the phase
+  // did not move instead of inferring it from silence.
+  describe("advance-evaluator refusals record always-on", () => {
+    // Counts whole record lines for one token — a cause text may name another
+    // token, so substring hits would over-count.
+    function countRecords(log, token) {
+      const pattern = new RegExp(`^\\[[^\\]]+\\] \\[protocol-gate\\] ${token}:`, "gm");
+      return (log.match(pattern) || []).length;
+    }
+
+    // Runs one evaluation with the debug channel off, restoring the suite's
+    // flag afterwards. Only always-on records survive this window.
+    async function withDebugOff(fn) {
+      const prior = process.env.PROTOCOL_GATE_DEBUG;
+      delete process.env.PROTOCOL_GATE_DEBUG;
+      try { return await fn(); } finally {
+        if (prior === undefined) delete process.env.PROTOCOL_GATE_DEBUG;
+        else process.env.PROTOCOL_GATE_DEBUG = prior;
+      }
+    }
+
+    // Reads the gate log without failing when nothing was written — with the
+    // debug flag unset an unconverted site leaves the file absent, and that
+    // absence is the red state these cases exist to catch.
+    function readLogQuiet() {
+      try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
+    }
+
+    async function seedSwarmSession(name) {
+      const s = sid(name);
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      return s;
+    }
+
+    async function seedVerifySession(name) {
+      const s = sid(name);
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createRegistry(s, [["M1", "checked-off"]]);
+      return s;
+    }
+
+    it("a missing or empty milestone registry blocks SWARM with an always-on record naming the condition", async () => {
+      const s = await seedSwarmSession("r006-registry-missing");
+      try { rmSync(logPath); } catch (_) {}
+
+      // Repeated evaluations of the same state must not grow the log.
+      for (let i = 0; i < 2; i++) {
+        const advanced = await withDebugOff(() =>
+          hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+        );
+        expect(advanced).toBe(false);
+      }
+      const missingLog = readLogQuiet();
+      expect(countRecords(missingLog, "REGISTRY_MISSING")).toBe(1);
+      expect(missingLog).toContain(`REGISTRY_MISSING: session=${s}`);
+      expect(missingLog).toContain("phase=SWARM");
+      expect(missingLog).toContain("reason=no-registry");
+      expect(missingLog).toContain("promoted=false");
+
+      const empty = await seedSwarmSession("r006-registry-empty");
+      createKD(`milestones-empty-${empty}.md`, registryContent([]));
+      try { rmSync(logPath); } catch (_) {}
+      const emptyAdvanced = await withDebugOff(() =>
+        hooks.checkDiskAdvancement(empty, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      expect(emptyAdvanced).toBe(false);
+      const emptyLog = readLogQuiet();
+      expect(countRecords(emptyLog, "REGISTRY_EMPTY")).toBe(1);
+      expect(emptyLog).toContain(`REGISTRY_EMPTY: session=${empty}`);
+      expect(emptyLog).toContain("phase=SWARM");
+      expect(emptyLog).toContain("reason=no-rows");
+      expect(emptyLog).toContain("promoted=false");
+    });
+
+    it("unchecked registry rows block SWARM with one always-on record naming the stuck rows", async () => {
+      const s = await seedSwarmSession("r006-not-all-checked-off");
+      createRegistry(s, [["M1", "in-progress"]]);
+      try { rmSync(logPath); } catch (_) {}
+
+      // The gate helper and the disk-check site both emit the event; the
+      // shared dedupe key collapses them to one line per stuck set, however
+      // often the gate re-evaluates.
+      for (let i = 0; i < 2; i++) {
+        const advanced = await withDebugOff(() =>
+          hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+        );
+        expect(advanced).toBe(false);
+      }
+      const log = readLogQuiet();
+      expect(countRecords(log, "SWARM_GATE_BLOCKED")).toBe(1);
+      expect(log).toContain(`SWARM_GATE_BLOCKED: session=${s}`);
+      expect(log).toContain("phase=SWARM");
+      expect(log).toContain("blocked=M1");
+      expect(log).toContain("checkedOff=0");
+      expect(log).toContain("total=1");
+      expect(log).toContain("reason=not-all-checked-off");
+      expect(log).toContain("promoted=false");
+    });
+
+    it("a retired verdict token blocks VERIFY with an always-on record naming the retired literal", async () => {
+      const s = await seedVerifySession("r006-retired-verdict");
+      createKD(`review-fund-${s}.md`, reviewKD("FUNDAMENTAL"));
+      try { rmSync(logPath); } catch (_) {}
+
+      const advanced = await withDebugOff(() =>
+        hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      expect(advanced).toBe(false);
+      const log = readLogQuiet();
+      expect(countRecords(log, "FUNDAMENTAL_RETIRED")).toBe(1);
+      expect(log).toContain(`FUNDAMENTAL_RETIRED: session=${s}`);
+      expect(log).toContain(`review=review-fund-${s}.md`);
+      expect(log).toContain("phase=VERIFY");
+      expect(log).toContain("retired=FUNDAMENTAL");
+      expect(log).toContain("promoted=false");
+    });
+
+    it("a FAIL carrying both a resolvable target and an escalation blocks with an always-on ambiguity record", async () => {
+      const s = await seedVerifySession("r006-ambiguous-verdict");
+      createKD(`review-amb-${s}.md`, reviewKD(
+        "FAIL",
+        "impl-M1 defect",
+        "\n## Escalation\n\nUnclear whether M1 is fixable at all.\n",
+        ["M1"]
+      ));
+      try { rmSync(logPath); } catch (_) {}
+
+      const advanced = await withDebugOff(() =>
+        hooks.checkDiskAdvancement(s, hooks.STATES.VERIFY, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+      );
+      expect(advanced).toBe(false);
+      const log = readLogQuiet();
+      expect(countRecords(log, "VERDICT_AMBIGUOUS")).toBe(1);
+      expect(log).toContain(`VERDICT_AMBIGUOUS: session=${s}`);
+      expect(log).toContain(`review=review-amb-${s}.md`);
+      expect(log).toContain("phase=VERIFY");
+      expect(log).toContain("resolvable=M1");
+      expect(log).toContain("promoted=false");
+    });
+
+    it("a preflight verdict that is not PASS blocks with an always-on record naming the verdict", async () => {
+      const s = sid("r006-preflight-not-pass");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.PREFLIGHT);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createKD(`preflight-escalation-${s}.md`, preflightKD("ESCALATION"));
+      try { rmSync(logPath); } catch (_) {}
+
+      for (let i = 0; i < 2; i++) {
+        const advanced = await withDebugOff(() =>
+          hooks.checkDiskAdvancement(s, hooks.STATES.PREFLIGHT, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+        );
+        expect(advanced).toBe(false);
+      }
+      const log = readLogQuiet();
+      expect(countRecords(log, "PREFLIGHT_VERDICT_BLOCKED")).toBe(1);
+      expect(log).toContain(`PREFLIGHT_VERDICT_BLOCKED: session=${s}`);
+      expect(log).toContain(`preflight=preflight-escalation-${s}.md`);
+      expect(log).toContain("phase=PREFLIGHT");
+      expect(log).toContain("verdict=ESCALATION");
+      expect(log).toContain("promoted=false");
+    });
+
+    it("a prior-generation KD is skipped from the disk-advance walk with an always-on record", async () => {
+      const s = await seedSwarmSession("r006-walk-skip");
+      // A non-INTENT artifact at a prior generation: no lifecycle anchor
+      // governs a session that never wrote an INTENT, so the counter's
+      // generation 0 stands and the walk must skip the gen-1 file.
+      createKD(`spec-stale-${s}-gen1.md`);
+      try { rmSync(logPath); } catch (_) {}
+
+      for (let i = 0; i < 2; i++) {
+        const advanced = await withDebugOff(() =>
+          hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+        );
+        expect(advanced).toBe(false);
+      }
+      const log = readLogQuiet();
+      expect(countRecords(log, "GEN_MISMATCH_SKIP")).toBe(1);
+      expect(log).toContain(`GEN_MISMATCH_SKIP: session=${s}`);
+      expect(log).toContain(`file=spec-stale-${s}-gen1.md`);
+      expect(log).toContain("fileGen=1");
+      expect(log).toContain("activeGen=0");
+      expect(log).toContain("reason=gen-mismatch");
+      expect(log).toContain("promoted=false");
+    });
+
+    it("a plan KD without a parseable registry blocks DECOMPOSE with an always-on record", async () => {
+      const s = sid("r006-decompose-plan-only");
+      await initOverseer(s);
+      hooks.sessionPhaseMap.set(s, hooks.STATES.DECOMPOSE);
+      hooks.sessionPhaseMap.set(`${s}:sid`, s);
+      createFreshKD(`plan-only-${s}.md`);
+      try { rmSync(logPath); } catch (_) {}
+
+      for (let i = 0; i < 2; i++) {
+        const advanced = await withDebugOff(() =>
+          hooks.checkDiskAdvancement(s, hooks.STATES.DECOMPOSE, hooks.sessionPhaseMap, hooks.swarmDispatchCount)
+        );
+        expect(advanced).toBe(false);
+      }
+      const log = readLogQuiet();
+      expect(countRecords(log, "DECOMPOSE_GATE_BLOCKED")).toBe(1);
+      expect(log).toContain(`DECOMPOSE_GATE_BLOCKED: session=${s}`);
+      expect(log).toContain("phase=DECOMPOSE");
+      expect(log).toContain("plan=true");
+      expect(log).toContain("milestones=false");
+      expect(log).toContain("registryParses=false");
+      expect(log).toContain("promoted=false");
+    });
+
+    it("a subagent write that cannot advance the parent records the refusal always-on", async () => {
+      const s = await seedSwarmSession("r006-postwrite-blocked");
+      createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
+      createKD(`impl-M1-feature-${s}.md`);
+
+      // The artisan writes an impl KD whose filename names no open row, so the
+      // landed write leaves the parent's gate exactly as it found it.
+      const artisan = sid("r006-postwrite-blocked-art");
+      await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: artisan, callID: "c1" },
+        { args: { filePath: `knowledge/impl-M3-mismatch-${s}.md`, content: liveImplKD() } }
+      );
+      createKD(`impl-M3-mismatch-${s}.md`);
+      try { rmSync(logPath); } catch (_) {}
+
+      await withDebugOff(() =>
+        hooks["tool.execute.after"](
+          { tool: "write", sessionID: artisan, callID: "c1" },
+          { output: "done", title: "impl" }
+        )
+      );
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      const log = readLogQuiet();
+      expect(countRecords(log, "POST_WRITE_BLOCKED")).toBe(1);
+      expect(log).toContain(`POST_WRITE_BLOCKED: session=${s}`);
+      expect(log).toContain("phase=SWARM");
+      expect(log).toContain("reason=swarm-gate-not-passed");
+      expect(log).toContain("promoted=false");
+    });
+  });
+
   // Review independence: a PASS review and the impl KD it accepts must not
   // share an author. The comparison keys on the newest impl KD — the artifact
   // the fresh-PASS rule already reads — so one named artifact decides it.
