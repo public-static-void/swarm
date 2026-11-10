@@ -15,7 +15,13 @@ permissions:
     effect: allow
   - action: read
     resource: "knowledge/memory/*.json"
-    effect: deny
+    effect: allow
+  - action: read
+    resource: "knowledge/generic/memory/*.json"
+    effect: allow
+  - action: read
+    resource: "knowledge/projects/*/memory/*.json"
+    effect: allow
   - action: read
     resource: "knowledge/issues/*.md"
     effect: deny
