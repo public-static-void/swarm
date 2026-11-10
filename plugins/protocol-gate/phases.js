@@ -31,7 +31,7 @@ export const PHASE_INSTRUCTIONS = {
   INVESTIGATE: "Dispatch the Analyzer agent.",
   ALIGN: "Dispatch the Spec Weaver agent.",
   DECOMPOSE: "Dispatch the Pathfinder agent.",
-  SWARM: "Dispatch the Artisan agent. Read the milestone registry KD to track milestone state before each dispatch. Include exactly one MILESTONE ID: matching the registry row you are dispatching. Name the dispatch's RESULT KD milestone-scoped — knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md — so the impl KD checks that milestone off on write.",
+  SWARM: "Dispatch the Artisan agent. Read the milestone registry KD to track milestone state before each dispatch. The registry carries state, not scope; scope travels in the plan the dispatch's KD PATHS names. Include exactly one MILESTONE ID: matching the registry row you are dispatching. Name the dispatch's RESULT KD milestone-scoped — knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md — so the impl KD checks that milestone off on write.",
   VERIFY: "Dispatch the Inspector agent.",
   EXTRACT: "Dispatch the Scribe agent.",
   EVOLVE: "Dispatch the Habit Builder agent.",
