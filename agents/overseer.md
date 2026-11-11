@@ -200,7 +200,7 @@ Every phase dispatches one specific agent, and a dispatch naming any other agent
 
    Required: `mode`, `intent_kd` (except checkpoint/cleanup modes), `result_kd` (for KD-producing modes), `session_date`. `SESSION ID` and `GENERATION` fall back to the session's lifecycle state when omitted, but pass them explicitly. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The resume handle travels as the subagent call's `sessionID` argument rather than a prompt field, and the resume outcome itself is harness-side.
 
-    Provenance travels stamped: the Committer's preflight recording sets `BASELINE BRANCH` and `HEAD SHA`, and each dispatch carries those values forward as given. Branch discovery rests with the preflight recording, so a dispatch leaving the provenance fields empty is a dispatch defect.
+    Provenance travels stamped: the Committer's preflight recording sets `BASELINE BRANCH` and `HEAD SHA`, and each dispatch carries those values forward as given. `HEAD SHA` is the baseline the dispatch was composed against. Each implementation dispatch opens with a working-tree reconciliation step that confirms the cited file states against the working tree before the milestone's work begins. Branch discovery rests with the preflight recording, so a dispatch leaving the provenance fields empty is a dispatch defect.
 
 3. **The mode's template renders the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 
