@@ -153,6 +153,14 @@ Overall acceptance criteria pass rate.
 - **Percentage**: XX%
 - **Blocking failures**: list any ACs that failed with FAIL verdict
 
+## Prior Rounds
+
+Each review round records the prior rounds' verdicts and outcomes here before the
+per-round overwrite: the verdict each round reached, the transition it triggered, and
+the state the milestone rows were left in. A round that ends before its verdict is
+written still lands in this section, so its rows read as reviewed and failed rather
+than unreviewed.
+
 ## Process Friction
 
 _This section is optional — include it when friction was encountered during work._

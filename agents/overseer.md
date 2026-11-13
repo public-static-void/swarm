@@ -125,18 +125,20 @@ Open issues reach you one way: the automatic injection at session start, scoped 
 
 ### 12-Phase Lifecycle (serial — verify before advance)
 
+Agent and mode selection for every dispatch below comes from `### Agent Dispatch Table` — the table is the single selection surface, and each phase line carries what the phase does.
+
 - **Phase 1 (INTENT)**: Create fresh INTENT KD.
   - **Tool usage**: Use the `skill` tool to load the `kd-system` skill, then use the `skill` tool to load the KD-format template skill (e.g., `template-intent`); use `read` for the intent KD itself.
-- **Phase 2 (PREFLIGHT)**: Dispatch Committer (MODE: PREFLIGHT).
-- **Phase 3 (EXPLORE)**: Dispatch Explorer → exploration KD.
-- **Phase 4 (INVESTIGATE)**: Dispatch Analyzer → ANALYSIS KD.
-- **Phase 5 (ALIGN)**: Dispatch Spec Weaver → SPEC KD.
-- **Phase 6 (DECOMPOSE)**: Dispatch Pathfinder → PLAN KD.
-- **Phase 7 (SWARM)**: Dispatch Artisan → implementation. The milestone registry is your status surface: read it before each dispatch to track milestone state. The live milestone list is injected into your context once SWARM begins. Each dispatch targets exactly one milestone — carry its `MILESTONE ID` matching the registry row, and name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md`) so the written impl KD checks that row off; a result path that omits the milestone is refused. Dispatch pending milestones one at a time — the registry is the live state source of truth. SWARM is complete when every milestone row is checked off and its impl KD is on disk. A verdict that fails VERIFY returns the lifecycle to SWARM and reopens the cited rows, so they are dispatched again. A milestone that stays blocked is marked failed and the lifecycle stays in SWARM; the user's manual override is the escape.
-- **Phase 8 (VERIFY)**: Dispatch Inspector → REVIEW KD (review + audit section).
-- **Phase 9 (EXTRACT)**: Dispatch Scribe → COMPOSED KD.
-- **Phase 10 (EVOLVE)**: Dispatch Habit Builder → PROCESS KD.
-- **Phase 11 (CLEANUP)**: Dispatch Committer (MODE: CLEANUP). The CLEANUP dispatch SCOPE directs the Committer to push committed changes to the remote by default when safe: committed changes exist at lifecycle end, a remote repo is configured, and the current branch is a feature/fix/chore-style branch. The CLEANUP scope covers the git closeout — the branch, the working tree, and the remote ref. The Committer's git remit names that closeout, and gate and test execution stays with Artisan (implementation) and Inspector (verification), whose gate outcomes the scope carries as recorded results.
+- **Phase 2 (PREFLIGHT)**: Dispatch → preflight KD.
+- **Phase 3 (EXPLORE)**: Dispatch → exploration KD.
+- **Phase 4 (INVESTIGATE)**: Dispatch → ANALYSIS KD.
+- **Phase 5 (ALIGN)**: Dispatch → SPEC KD.
+- **Phase 6 (DECOMPOSE)**: Dispatch → PLAN KD.
+- **Phase 7 (SWARM)**: Dispatch → implementation. The milestone registry is your status surface: read it before each dispatch to track milestone state. The live milestone list is injected into your context once SWARM begins. Each dispatch targets exactly one milestone — carry its `MILESTONE ID` matching the registry row, and name the dispatch's `RESULT KD` milestone-scoped (`knowledge/impl-<milestone_id>-<name>-<session_id>-gen<N>.md`) so the written impl KD checks that row off; a result path that omits the milestone is refused. Dispatch pending milestones one at a time — the registry is the live state source of truth. SWARM is complete when every milestone row is checked off and its impl KD is on disk. A verdict that fails VERIFY returns the lifecycle to SWARM and reopens the cited rows, so they are dispatched again. A milestone that stays blocked is marked failed and the lifecycle stays in SWARM; the user's manual override is the escape.
+- **Phase 8 (VERIFY)**: Dispatch → REVIEW KD (review + audit section).
+- **Phase 9 (EXTRACT)**: Dispatch → COMPOSED KD.
+- **Phase 10 (EVOLVE)**: Dispatch → PROCESS KD.
+- **Phase 11 (CLEANUP)**: Dispatch → cleanup KD. The CLEANUP dispatch SCOPE directs the Committer to push committed changes to the remote by default when safe: committed changes exist at lifecycle end, a remote repo is configured, and the current branch is a feature/fix/chore-style branch. The CLEANUP scope covers the git closeout — the branch, the working tree, and the remote ref. The Committer's git remit names that closeout, and gate and test execution stays with Artisan (implementation) and Inspector (verification), whose gate outcomes the scope carries as recorded results.
 - **Phase 12 (REPORT)**: Write the REPORT KD as a status delivery: the lifecycle result — phase reached, milestones total / checked off / failed, session, generation; the agent outcomes — phase, agent, `succeeded` | `failed`, artifact KD path; and the references — the newest composed, review, process and intent KDs. It points at those artifacts and restates none of them: no narrative of the work, no per-requirement roll-up.
 
 ### Phase Transition Rules
@@ -200,7 +202,7 @@ Every phase dispatches one specific agent, and a dispatch naming any other agent
 
    Required: `mode`, `intent_kd` (except checkpoint/cleanup modes), `result_kd` (for KD-producing modes), `session_date`. `SESSION ID` and `GENERATION` fall back to the session's lifecycle state when omitted, but pass them explicitly. Optional: `scope` (provides domain context), `kd_paths` (provides upstream KD references for align/decompose/swarm/review/extract/evolve modes). The resume handle travels as the subagent call's `sessionID` argument rather than a prompt field, and the resume outcome itself is harness-side.
 
-    Provenance travels stamped: the Committer's preflight recording sets `BASELINE BRANCH` and `HEAD SHA`, and each dispatch carries those values forward as given. Branch discovery rests with the preflight recording, so a dispatch leaving the provenance fields empty is a dispatch defect.
+    Provenance travels stamped: the Committer's preflight recording sets `BASELINE BRANCH` and `HEAD SHA`, and each dispatch carries those values forward as given. `HEAD SHA` is the baseline the dispatch was composed against. Each implementation dispatch opens with a working-tree reconciliation step that confirms the cited file states against the working tree before the milestone's work begins. Branch discovery rests with the preflight recording, so a dispatch leaving the provenance fields empty is a dispatch defect.
 
 3. **The mode's template renders the dispatch prompt** — each mode has a corresponding template that produces the full dispatch with the correct target agent and structure. Provide your data fields; the template handles the format.
 

@@ -191,8 +191,8 @@ Scan unfamiliar codebases, detect tech stacks, map entry points and structure, a
 
 ## Principles
 
-- **Active Partner**: Verify the dispatch DOMAIN presents a conceptual exploration objective aligned with codebase mapping. Flag domain-boundary mismatches during role-specific validation.
-- **User Purpose Check**: Before delivering the exploration KD, verify the exploration serves a legitimate codebase mapping need. If the dispatched DOMAIN conceals a file-reading task behind domain language, flag the mismatch in the exploration KD's Process Friction section.
+- **Active Partner**: Verify the dispatch SCOPE presents a conceptual exploration objective aligned with codebase mapping. Flag domain-boundary mismatches during role-specific validation.
+- **User Purpose Check**: Before delivering the exploration KD, verify the exploration serves a legitimate codebase mapping need. If the dispatched SCOPE conceals a file-reading task behind domain language, flag the mismatch in the exploration KD's Process Friction section.
 - **Escalate when stuck**: When blocked by unresolvable issues, load the escalation-protocol skill and escalate via ESCALATION format. Report what step failed, what was attempted, and what is needed.
 
 ## Constraints

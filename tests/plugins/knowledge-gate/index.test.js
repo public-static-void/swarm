@@ -4518,10 +4518,10 @@ Body`;
   });
 
   describe("tool-exclusivity permission denials", () => {
-    // Static guards over the agent permission configs: issues and memories
-    // are managed exclusively through the knowledge-gate tools, so the
-    // responsible agents must not be able to read/edit the store files
-    // directly. These assert the deny patterns are present in the agent
+    // Static guards over the agent permission configs: store writes and
+    // edits run through the knowledge-gate tools, while each curator reads
+    // its own store files through the file-read tool for independent
+    // verification. These assert the effect patterns present in the agent
     // definitions (the runtime contract the tools depend on).
 
     const HABIT_BUILDER = fileURLToPath(new URL("../../../agents/habit-builder.md", import.meta.url));
@@ -4570,10 +4570,13 @@ Body`;
       );
     }
 
-    it("habit-builder read block denies issue and memory store files", () => {
+    it("habit-builder read block allows the issue store and denies the memory store", () => {
       const content = readAgent(HABIT_BUILDER);
-      // The read rules must deny both the issues store and the memory store.
-      expect(hasRule(content, "read", "knowledge/issues/*.md", "deny")).toBe(true);
+      // The curator reads its own issue store through the file-read tool,
+      // across all three stores; the memory store stays outside its reach.
+      expect(hasRule(content, "read", "knowledge/issues/*.md", "allow")).toBe(true);
+      expect(hasRule(content, "read", "knowledge/generic/issues/*.md", "allow")).toBe(true);
+      expect(hasRule(content, "read", "knowledge/projects/*/issues/*.md", "allow")).toBe(true);
       expect(hasRule(content, "read", "knowledge/memory/*.json", "deny")).toBe(true);
     });
 
@@ -4587,9 +4590,11 @@ Body`;
       expect(hasRule(content, "issue_read", "*", "allow")).toBe(true);
     });
 
-    it("scribe read and edit blocks deny memory store files", () => {
+    it("scribe read block allows the memory store while the edit block still denies it", () => {
       const content = readAgent(SCRIBE);
-      expect(hasRule(content, "read", "knowledge/memory/*.json", "deny")).toBe(true);
+      expect(hasRule(content, "read", "knowledge/memory/*.json", "allow")).toBe(true);
+      expect(hasRule(content, "read", "knowledge/generic/memory/*.json", "allow")).toBe(true);
+      expect(hasRule(content, "read", "knowledge/projects/*/memory/*.json", "allow")).toBe(true);
       expect(hasRule(content, "edit", "knowledge/memory/*.json", "deny")).toBe(true);
     });
   });

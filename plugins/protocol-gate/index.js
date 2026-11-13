@@ -335,6 +335,41 @@ function getActiveLifecycleGeneration(sessionPhaseMap, sessionID) {
   return anchor.generation;
 }
 
+// The promotion/advancement refusal for an unresolvable lifecycle identity:
+// with several lifecycle INTENTs on disk and the anchor's generation at odds
+// with the persisted counter, nothing on disk records which lifecycle is
+// running, so a row promotion or a phase advance under either number could be
+// the wrong lifecycle's. The state change is refused and the always-on record
+// names both values, the candidate count, the tie-break that picked the
+// anchor, and the reason. Lookup behavior is untouched — evidence still
+// resolves against the anchor (getActiveLifecycleGeneration above); the
+// correction sits only where state changes. A single candidate stays on the
+// reconciliation path above. Returns true when the caller must refuse.
+function refuseAmbiguousAnchor(sessionPhaseMap, sessionID) {
+  const persistedState = readPersistedLifecycleState(sessionID);
+  const inMap = sessionPhaseMap.get(`${sessionID}:gen`);
+  const persisted = typeof inMap === "number" ? inMap : (persistedState.generation ?? 0);
+  const phase = sessionPhaseMap.get(sessionID) ?? persistedState.phase;
+  // Same gate as the lookup: before INTENT no anchor governs, and one
+  // candidate is a disagreement the anchor fallback already reconciles.
+  if (!(typeof phase === "number" && phase > STATES.INTENT)) return false;
+  const anchor = findLifecycleAnchor(sessionID);
+  if (!anchor || anchor.candidates.length < 2) return false;
+  if (anchor.generation === persisted) return false;
+  const others = anchor.candidates.slice(1).map(c => `${c.file}@gen${c.generation}`).join(",");
+  gateRecordEvent("LIFECYCLE_ANCHOR_AMBIGUOUS", [
+    ["session", sessionID],
+    ["activeGen", anchor.generation],
+    ["anchor", anchor.file],
+    ["others", others],
+    ["persistedGen", persisted],
+    ["candidates", anchor.candidates.length],
+    ["reason", "anchor-counter-disagreement"],
+    ["promoted", "false"]
+  ], `several lifecycle INTENTs are on disk for this session, so the anchor rule decides which generation this lifecycle runs at: newest by modification time, then by generation, then by name; the persisted counter holds ${persisted} while the anchor names ${anchor.generation}, and nothing on disk records which lifecycle is running, so promotion and advancement are refused until the counter and the anchor carry the same generation`, `LIFECYCLE_ANCHOR_AMBIGUOUS|${sessionID}|a:${anchor.generation}|f:${anchor.file}|o:${others}|refuse`);
+  return true;
+}
+
 // The number the lifecycle starting now will carry. Handing out a number an
 // existing artifact of this session already carries is what lets an unfinished
 // lifecycle's evidence pass for a fresh one's, so the allocator takes one above
@@ -2347,6 +2382,10 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   let files = [];
   try { files = readdirSync(knowledgeDir); } catch (_) { return settled; }
   const persistedGeneration = getCurrentGeneration(sessionPhaseMap, sessionID);
+  // Refusal precedes generation resolution and the mismatch evaluation in the
+  // loop below: while several candidates disagree with the persisted counter,
+  // no row promotes from any generation and no skip is recorded.
+  if (refuseAmbiguousAnchor(sessionPhaseMap, sessionID)) return settled;
   const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   let promoted = 0;
   for (const row of stuck) {
@@ -2527,10 +2566,26 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   const settled = settleStampClearsForSession(sessionID, sessionPhaseMap, "swarm-gate");
   let registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
+    // Always-on first: a lifecycle that cannot read its registry must be
+    // diagnosable from the log alone; the debug line stays as narration.
+    gateRecordEvent("REGISTRY_MISSING", [
+      ["session", sessionID],
+      ["phase", "SWARM"],
+      ["registry", "<none>"],
+      ["reason", "no-registry"],
+      ["promoted", "false"]
+    ], `no milestone registry for session ${sessionID} — SWARM cannot advance`, `REGISTRY_MISSING|${sessionID}|r:no-registry`);
     debug(`REGISTRY_MISSING: no milestone registry for session ${sessionID} — SWARM cannot advance`);
     return { ok: false, total: 0, checkedOff: 0, rows: [] };
   }
   if (registry.rows.length === 0) {
+    gateRecordEvent("REGISTRY_EMPTY", [
+      ["session", sessionID],
+      ["phase", "SWARM"],
+      ["registry", registry.path.split("/").pop()],
+      ["reason", "no-rows"],
+      ["promoted", "false"]
+    ], `milestone registry has no rows for session ${sessionID} — SWARM cannot advance`, `REGISTRY_EMPTY|${sessionID}|r:no-rows`);
     debug(`REGISTRY_EMPTY: milestone registry has no rows for session ${sessionID} — SWARM cannot advance`);
     return { ok: false, total: 0, checkedOff: 0, rows: [] };
   }
@@ -2540,6 +2595,13 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   if (settled > 0 || reconciled > 0) {
     registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
     if (!registry) {
+      gateRecordEvent("REGISTRY_MISSING", [
+        ["session", sessionID],
+        ["phase", "SWARM"],
+        ["registry", "<none>"],
+        ["reason", "lost-after-reconciliation"],
+        ["promoted", "false"]
+      ], `milestone registry lost after reconciliation for session ${sessionID} — SWARM cannot advance`, `REGISTRY_MISSING|${sessionID}|r:lost-after-reconciliation`);
       debug(`REGISTRY_MISSING: milestone registry lost after reconciliation for session ${sessionID} — SWARM cannot advance`);
       return { ok: false, total: 0, checkedOff: 0, rows: [] };
     }
@@ -2553,7 +2615,20 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   const ok = checkedOff === rows.length;
   if (!ok) {
     const stuck = rows.filter(r => !r.checkedOff);
-    warn(`SWARM gate: ${checkedOff}/${rows.length} milestones checked-off — blocked by: ${stuck.map(r => r.id).join(", ")}`);
+    const blockedBy = stuck.map(r => r.id).join(", ");
+    // The gate's verdict, recorded where the rows are known: the stuck ids are
+    // the deciding values a reader needs to act. The disk-check site emits the
+    // same event under the same key, so one stuck set reads as one line.
+    gateRecordEvent("SWARM_GATE_BLOCKED", [
+      ["session", sessionID],
+      ["phase", "SWARM"],
+      ["blocked", blockedBy],
+      ["checkedOff", checkedOff],
+      ["total", rows.length],
+      ["reason", "not-all-checked-off"],
+      ["promoted", "false"]
+    ], `SWARM gate: ${checkedOff}/${rows.length} milestones checked-off — blocked by: ${blockedBy}`, `SWARM_GATE_BLOCKED|${sessionID}|b:${blockedBy}|c:${checkedOff}/${rows.length}`);
+    warn(`SWARM gate: ${checkedOff}/${rows.length} milestones checked-off — blocked by: ${blockedBy}`);
   }
   return { ok, total: rows.length, checkedOff, rows };
 }
@@ -3007,7 +3082,16 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
   if (verdictInfo && verdictInfo.retiredToken) {
     // Fail closed on a token that left the vocabulary, and tell the author
     // what to write instead: a FAIL plus a non-empty `## Escalation` section
-    // carries the same block-and-escalate intent.
+    // carries the same block-and-escalate intent. Recorded always-on first so
+    // the block is readable without the debug flag; the debug line narrates.
+    gateRecordEvent("FUNDAMENTAL_RETIRED", [
+      ["session", sessionID],
+      ["phase", "VERIFY"],
+      ["review", verdictInfo.filename],
+      ["retired", verdictInfo.retiredToken],
+      ["reason", "retired-verdict-token"],
+      ["promoted", "false"]
+    ], `review KD ${verdictInfo.filename} carries retired verdict ${verdictInfo.retiredToken} — VERIFY advancement blocked; issue FAIL with a non-empty ## Escalation section instead`, `FUNDAMENTAL_RETIRED|${sessionID}|a:${verdictInfo.filename}|r:${verdictInfo.retiredToken}`);
     debug(`FUNDAMENTAL_RETIRED: review KD ${verdictInfo.filename} carries retired verdict ${verdictInfo.retiredToken} — VERIFY advancement blocked; issue FAIL with a non-empty ## Escalation section instead`);
     return false;
   }
@@ -3055,13 +3139,41 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
     if (escalated) {
       // Both intents in one verdict: a fix loop would have to guess which one
       // the reviewer meant, so fail closed and let a re-review pick one.
+      // Always-on: a blocked VERIFY must name the verdict and the targets it
+      // would have reopened, with or without the debug flag.
+      gateRecordEvent("VERDICT_AMBIGUOUS", [
+        ["session", sessionID],
+        ["phase", "VERIFY"],
+        ["review", verdictInfo.filename],
+        ["resolvable", resolvable.join(",")],
+        ["reason", "target-and-escalation"],
+        ["promoted", "false"]
+      ], `FAIL review KD ${verdictInfo.filename} names ${resolvable.length} resolvable milestone(s) and carries a non-empty ## Escalation section — blocked, no regression, no reopen; re-issue the review as a fixable FAIL without the marker or as an escalation FAIL with no target`, `VERDICT_AMBIGUOUS|${sessionID}|a:${verdictInfo.filename}|t:${resolvable.join(",")}`);
       debug(`VERDICT_AMBIGUOUS: FAIL review KD ${verdictInfo.filename} names ${resolvable.length} resolvable milestone(s) and carries a non-empty ## Escalation section — blocked, no regression, no reopen; re-issue the review as a fixable FAIL without the marker or as an escalation FAIL with no target`);
       return false;
     }
+    const regressionWired = Boolean(f1Options && f1Options.verdictRegressedKDs && typeof f1Options.backwardTransition === "function");
     let regressed = false;
-    if (f1Options && f1Options.verdictRegressedKDs && typeof f1Options.backwardTransition === "function") {
+    if (regressionWired) {
       regressed = regressVerifyOnFail(sessionID, verdictInfo.filename, sessionFiles, sessionPhaseMap, resolvable, f1Options.verdictRegressedKDs, f1Options.backwardTransition);
     }
+    // Always-on outcome line for the FAIL evaluation: the reopen records only
+    // fire for cited rows, and a consumed verdict otherwise blocks with debug()
+    // as its only channel. One line per review and outcome — a repeated
+    // evaluation of an unchanged outcome dedupes into it.
+    gateRecordEvent("VERDICT_FAIL_EVALUATED", [
+      ["session", sessionID],
+      ["phase", "VERIFY"],
+      ["review", verdictInfo.filename],
+      ["regressed", String(regressed)],
+      ["reason", regressed ? "fail-regression-applied" : "fail-blocked"],
+      ["promoted", "false"]
+    ], regressed
+      ? `review KD ${verdictInfo.filename} carries verdict FAIL — VERIFY regressed to SWARM and the cited rows reopened; a new review ends the cycle`
+      : regressionWired
+        ? `review KD ${verdictInfo.filename} carries verdict FAIL and this regression cycle already consumed it — VERIFY does not advance until the review is re-emitted or replaced`
+        : `review KD ${verdictInfo.filename} carries verdict FAIL but no regression handler is wired — VERIFY does not advance`,
+      `VERDICT_FAIL_EVALUATED|${sessionID}|a:${verdictInfo.filename}|g:${regressed ? "regressed" : "blocked"}`);
     debug(`Disk check VERIFY: newest KD ${verdictInfo.filename} verdict=FAIL → ${regressed ? "regressed to SWARM" : "blocked (fix-cycle guard or no regression handler)"}`);
     return false;
   }
@@ -3222,6 +3334,19 @@ function evaluatePreflightVerdict(sessionID, sessionFiles, sessionPhaseMap, anch
     }
   }
   const result = !!info && info.verdict === "PASS";
+  // Every decline records on the always-on channel: a phase parked on a
+  // missing or non-PASS verdict must read from the log alone, naming the
+  // artifact inspected and the verdict that decided it.
+  if (!result) {
+    gateRecordEvent("PREFLIGHT_VERDICT_BLOCKED", [
+      ["session", sessionID],
+      ["phase", "PREFLIGHT"],
+      ["preflight", newest],
+      ["verdict", verdictLabel],
+      ["reason", "not-pass"],
+      ["promoted", "false"]
+    ], `newest preflight KD ${newest} carries verdict ${verdictLabel} — PREFLIGHT advancement needs verdict PASS on the newest preflight KD of this session`, `PREFLIGHT_VERDICT_BLOCKED|${sessionID}|a:${newest}|v:${verdictLabel}`);
+  }
   debug(`Disk check PREFLIGHT: newest=${newest} verdict=${verdictLabel} → ${result}`);
   return result;
 }
@@ -3593,6 +3718,10 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
   // Reads scan the current session's KDs only — cross-session
   // adoption is removed, so a fresh session can never advance off another
   // lifecycle's KDs. lookupSIDs stays single-session (diagnostic only).
+  // Refusal precedes evidence resolution: while several candidates disagree
+  // with the persisted counter, no phase advances on evidence this gate
+  // cannot attribute to a lifecycle.
+  if (refuseAmbiguousAnchor(sessionPhaseMap, sessionID)) return false;
   const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
   const lookupSIDs = getKDLookupSIDs(sessionPhaseMap, sessionID);
   const sessionFiles = [];
@@ -3601,9 +3730,21 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
       sessionFiles.push(f);
     } else if (lookupSIDs.some(sid => f.endsWith(`-${sid}.md`) || f.includes(`-${sid}-gen`))) {
       // Same session but different generation — stale prior-lifecycle KD.
-      // Log the skip so generation mismatches are diagnosable.
+      // Recorded on the always-on channel alongside the debug narration: a
+      // walk that silently drops a visible artifact is the ambiguity this
+      // record exists to remove. The key carries the file and both
+      // generations, so one stale file logs once however often the walk runs.
       const fileGenMatch = f.match(/-gen(\d+)\.md$/);
       const fileGen = fileGenMatch ? parseInt(fileGenMatch[1], 10) : 0;
+      gateRecordEvent("GEN_MISMATCH_SKIP", [
+        ["session", sessionID],
+        ["phase", getPhaseName(phase)],
+        ["file", f],
+        ["fileGen", fileGen],
+        ["activeGen", generation],
+        ["reason", "gen-mismatch"],
+        ["promoted", "false"]
+      ], `KD ${f} carries generation ${fileGen}, not the active lifecycle's ${generation} — the walk skips it, so it cannot advance this phase`, `GEN_MISMATCH_SKIP|s:${sessionID}|a:${f}|fg:${fileGen}|ag:${generation}`);
       debug(`Skipped KD ${f}: generation mismatch (file=${fileGen}, current=${generation})`);
     }
   }
@@ -3660,6 +3801,20 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     const registryParses = hasMilestones && locateMilestoneRegistry(sessionID, sessionPhaseMap) !== null;
     const result = hasPlan && registryParses;
     const anchorNote = overrideActive ? `override fresh-evidence since ${overrideAnchor}` : `phase-entry anchor ${freshnessAnchor}`;
+    // A declined dual-KD gate records its three deciding values always-on: a
+    // phase stuck at DECOMPOSE must show which of the pair is missing without
+    // the debug flag.
+    if (!result) {
+      gateRecordEvent("DECOMPOSE_GATE_BLOCKED", [
+        ["session", sessionID],
+        ["phase", "DECOMPOSE"],
+        ["plan", String(hasPlan)],
+        ["milestones", String(hasMilestones)],
+        ["registryParses", String(registryParses)],
+        ["reason", "dual-kd-incomplete"],
+        ["promoted", "false"]
+      ], `DECOMPOSE needs a plan- KD and a milestones- KD whose registry parses, both fresh under the ${anchorNote} — plan=${hasPlan}, milestones=${hasMilestones}, registry-parses=${registryParses}`, `DECOMPOSE_GATE_BLOCKED|${sessionID}|p:${hasPlan}|m:${hasMilestones}|r:${registryParses}`);
+    }
     debug(`Disk check DECOMPOSE: plan=${hasPlan}, milestones=${hasMilestones}, registry-parses=${registryParses} → ${result} (${anchorNote})`);
     return result;
   }
@@ -3739,6 +3894,27 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
       // origin-return permanently. A genuine single-phase pin keeps the anchor
       // (contract #5), handled by the branch above.
       overrideNote = ", terminal override hop — registry-mtime freshness anchor not applied";
+    }
+    // The phase-level refusal: every evaluation that declines the advance
+    // records why, whether the decline came from the gate's rows or from a
+    // registry the gate could not read. Same event and key as the gate
+    // helper's record above, so one stuck set stays one line.
+    if (!gate.ok) {
+      const stuck = gate.rows.filter(r => !r.checkedOff);
+      const blockedBy = stuck.map(r => r.id).join(", ");
+      const reason = gate.rows.length > 0 ? "not-all-checked-off" : "no-registry";
+      const cause = gate.rows.length > 0
+        ? `the SWARM disk check declines: ${gate.checkedOff}/${gate.total} milestone rows are checked-off with impl-KD evidence on disk; every row must be checked-off before SWARM advances`
+        : "the SWARM disk check declines: the milestone registry is missing, empty, or unparsable, so no row can be checked-off";
+      gateRecordEvent("SWARM_GATE_BLOCKED", [
+        ["session", sessionID],
+        ["phase", "SWARM"],
+        ["blocked", blockedBy],
+        ["checkedOff", gate.checkedOff],
+        ["total", gate.total],
+        ["reason", reason],
+        ["promoted", "false"]
+      ], cause, `SWARM_GATE_BLOCKED|${sessionID}|b:${blockedBy}|c:${gate.checkedOff}/${gate.total}`);
     }
     debug(`Disk check SWARM: all-checked-off gate → ${gate.ok} (${gate.checkedOff}/${gate.total})${overrideNote}`);
     return result;
@@ -4757,6 +4933,10 @@ async function protocolGateServer(input, options) {
         // the active lifecycle's declines with an always-on GEN_MISMATCH_SKIP
         // record instead of checking off.
         const persisted = getPersistedGeneration(candidate) ?? getCurrentGeneration(sessionPhaseMap, candidate);
+        // Refusal precedes both the generation resolution and the mismatch
+        // evaluation below: while several candidates disagree with the
+        // persisted counter, no row promotes from any generation.
+        if (refuseAmbiguousAnchor(sessionPhaseMap, candidate)) return;
         const generation = getActiveLifecycleGeneration(sessionPhaseMap, candidate);
         const base = relPath.replace(/\\/g, "/").split("/").pop();
         const fileGen = extractImplKDGeneration(base, candidate);
@@ -4942,12 +5122,33 @@ async function protocolGateServer(input, options) {
         if (stalledMarker && Array.isArray(stalledMarker.phases) && currentPhase === getOverrideTargetPhase(stalledMarker)) {
           sessionPhaseMap.set(`${candidate}:overrideEvals`, (sessionPhaseMap.get(`${candidate}:overrideEvals`) || 0) + 1);
         }
+        // The landed write is evidence, not a phase move: record at the
+        // parent level that the write completed and nothing advanced. The
+        // inner gate's records name what blocks it; this line names the
+        // post-write attempt itself, which would otherwise leave no trace.
+        gateRecordEvent("POST_WRITE_BLOCKED", [
+          ["session", candidate],
+          ["phase", getPhaseName(currentPhase)],
+          ["reason", "swarm-gate-not-passed"],
+          ["promoted", "false"]
+        ], `a subagent write landed for parent session ${candidate}, but the parent's SWARM gate declined the advance — the gate's records in this log name what blocks it`, `POST_WRITE_BLOCKED|${candidate}|r:swarm-gate-not-passed`);
         return false;
       }
       // The one transition commit owns the phase entry, the marker settle and
       // the record — the queue is authoritative here as at every other site.
       const applied = applyForwardAdvance(candidate, currentPhase, decision);
-      if (applied.entered === null) return false;
+      if (applied.entered === null) {
+        // Defensive: the queue produced no forward target after the gate
+        // passed. Recorded rather than returned silently, so a parent that
+        // never advances reads as a committed-nothing state, not as absence.
+        gateRecordEvent("POST_WRITE_BLOCKED", [
+          ["session", candidate],
+          ["phase", getPhaseName(currentPhase)],
+          ["reason", "no-transition-committed"],
+          ["promoted", "false"]
+        ], `a subagent write landed for parent session ${candidate} and the SWARM gate passed, but the queue committed no forward transition — nothing advanced`, `POST_WRITE_BLOCKED|${candidate}|r:no-transition-committed`);
+        return false;
+      }
       const newPhase = applied.entered;
       diskCheckFailures.set(candidate, 0);
       inFlightDispatches.delete(candidate);

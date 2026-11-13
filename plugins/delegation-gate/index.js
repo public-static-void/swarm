@@ -71,7 +71,7 @@ const ERRORS = {
   CODE_BLOCK: { code: "CODE_BLOCK", message: "Code blocks detected in prompt", guidance: "Remove all code blocks from delegation prompt" },
   FOREIGN_PATH: { code: "FOREIGN_PATH", message: "Foreign paths detected", guidance: "Use only knowledge/*.md paths" },
   BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include required fields: agent, mode, intent_kd, session_date" },
-  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Put the delegation fields as KEY: value lines in the prompt parameter, one per line: DISPATCH TO / MODE / SESSION DATE / SESSION ID / GENERATION / SCOPE / RESULT KD" },
+  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Put the delegation fields as KEY: value lines in the prompt parameter, one per line. Required: agent (DISPATCH TO), mode (MODE), session_date (SESSION DATE), intent_kd (INTENT KD) for every mode except checkpoint and cleanup, and result_kd (RESULT KD) for KD-producing modes. Optional line fields: SCOPE, GENERATION, SESSION ID" },
   INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope should not contain code blocks (security) or absolute /home/ paths (info leak)" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },

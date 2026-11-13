@@ -240,12 +240,14 @@ ${table}
     expect(registryBody(s, 5)).toContain("  M1: checked-off");
   });
 
-  it("anchors the running lifecycle on its newest INTENT when two lifecycles are on disk", async () => {
+  it("refuses promotion and advancement while two lifecycle INTENTs disagree with the persisted counter", async () => {
     const s = "lcgen-ambiguous-1";
     await openLifecycle(s, { persistedGen: 6, anchorGen: 5 });
     // An earlier, unfinished lifecycle of the same session left its INTENT and
     // registry behind at the counter's own generation. Its artifact is older,
-    // so it does not name the lifecycle in force.
+    // so the anchor rule picks the gen5 INTENT — and with two candidates on
+    // disk nothing records which lifecycle is running, so no row may promote
+    // while the anchor and the counter disagree.
     const older = join(knowledgeDir, `intent-feature-${s}-gen6.md`);
     createKD(`intent-feature-${s}-gen6.md`, intentKD(s));
     createKD(`milestones-feature-${s}-gen6.md`, registryContent([["M1", "in-progress"]]));
@@ -254,18 +256,52 @@ ${table}
     utimesSync(join(knowledgeDir, `intent-feature-${s}-gen5.md`), now, now);
     clearLog();
 
+    // The write at the anchor's own generation is refused: no row moves in
+    // either registry, and the refusal line carries both generations, the
+    // candidate count, the tie-break that picked the anchor, and the reason.
     await writeAsArtisan(`${s}-art`, `knowledge/impl-M1-feat-${s}-gen5.md`, implKD(s));
     createKD(`impl-M1-feat-${s}-gen5.md`, implKD(s));
 
-    const log = readLog();
-    expect(log).toContain("LIFECYCLE_ANCHOR_AMBIGUOUS");
-    expect(log).toContain(`activeGen=5`);
-    expect(log).toContain(`intent-feature-${s}-gen5.md`);
-    expect(log).toContain(`intent-feature-${s}-gen6.md`);
-    // The live lifecycle's row promotes; the abandoned lifecycle's row does not
-    // — the two lifecycles share a session but not a generation.
-    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+    let log = readLog();
+    const refusal = log.split("\n").find(l => l.includes("LIFECYCLE_ANCHOR_AMBIGUOUS") && l.includes("persistedGen="));
+    expect(refusal).toBeDefined();
+    expect(refusal).toContain(`session=${s}`);
+    expect(refusal).toContain(`anchor=intent-feature-${s}-gen5.md`);
+    expect(refusal).toContain("persistedGen=6");
+    expect(refusal).toContain("candidates=2");
+    expect(refusal).toContain("newest by modification time, then by generation, then by name");
+    expect(refusal).toContain("reason=anchor-counter-disagreement");
+    expect(refusal).toContain("promoted=false");
+    expect(registryBody(s, 5)).toContain("  M1: in-progress");
     expect(registryBody(s, 6)).toContain("  M1: in-progress");
+
+    // The refusal precedes generation-mismatch evaluation: a write at the
+    // counter's own generation would be skipped under the old resolution, and
+    // while the refusal holds no skip is recorded either.
+    await writeAsArtisan(`${s}-art`, `knowledge/impl-M1-feat-${s}-gen6.md`, implKD(s));
+    log = readLog();
+    expect(log).not.toContain("GEN_MISMATCH_SKIP");
+    expect(registryBody(s, 5)).toContain("  M1: in-progress");
+    expect(registryBody(s, 6)).toContain("  M1: in-progress");
+
+    // No phase advances: complete evidence at the anchor's generation would
+    // move SWARM → VERIFY but for the refusal.
+    writeFileSync(registryPath(s, 5), registryContent([["M1", "checked-off"], ["M2", "checked-off"]]));
+    createKD(`impl-M2-feat-${s}-gen5.md`, implKD(s));
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, new Map())).toBe(false);
+    expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+
+    // Paired positive: adoption settles the disagreement — the counter takes
+    // the anchor's number — and the same evidence then promotes and advances.
+    expect(hooks.adoptLifecycleGenerationOnIntent(s, `knowledge/intent-feature-${s}-gen5.md`))
+      .toEqual({ ok: true, generation: 5 });
+    writeFileSync(registryPath(s, 5), registryContent([["M1", "in-progress"], ["M2", "checked-off"]]));
+    clearLog();
+    await writeAsArtisan(`${s}-art`, `knowledge/impl-M1-feat-${s}-gen5.md`, implKD(s));
+
+    expect(readLog()).toContain(`CHECKOFF: milestone=M1 artifact=impl-M1-feat-${s}-gen5.md promoted=true reason=live-evidence`);
+    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+    expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, new Map())).toBe(true);
   });
 
   it("allocates the next lifecycle above every label already on disk, not just above the counter", async () => {
