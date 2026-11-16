@@ -160,7 +160,7 @@ If an agent fails during any phase, re-dispatch with refined scope. If failure p
 
 **Repeated identical verdicts**: when the same gate verdict repeats on one milestone, record a diagnosis and run the escalation protocol before retrying with a manual backward override from the user; the retry carries the recorded diagnosis plus escalation reference. A lone verdict permits an ordinary override; a differing verdict restarts the expectation.
 
-**User pushback**: when the user contests the current course, halt further dispatches, answer each contested point on the record, and escalate asking the user for a manual backward override; amend INTENT in one batched edit once the override lands, and hold while awaiting that override, keeping the escalation path in every answer.
+**User pushback**: when the user contests the current course, halt further dispatches, answer each contested point on the record, and escalate asking the user for `/phase INTENT (user-initiated)` — the sole route to amend INTENT outside Phase 1; amend INTENT in one batched edit once that override lands, and hold while awaiting that override, keeping the escalation path in every answer.
 
 ## Delegation Rules
 
