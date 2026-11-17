@@ -71,7 +71,7 @@ const ERRORS = {
   CODE_BLOCK: { code: "CODE_BLOCK", message: "Code blocks detected in prompt", guidance: "Remove all code blocks from delegation prompt" },
   FOREIGN_PATH: { code: "FOREIGN_PATH", message: "Foreign paths detected", guidance: "Use only knowledge/*.md paths" },
   BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include required fields: agent, mode, intent_kd, session_date" },
-  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Put the delegation fields as KEY: value lines in the prompt parameter, one per line. Required: agent (DISPATCH TO), mode (MODE), session_date (SESSION DATE), intent_kd (INTENT KD) for every mode except checkpoint and cleanup, and result_kd (RESULT KD) for KD-producing modes. Optional line fields: SCOPE, GENERATION, SESSION ID" },
+  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Put the delegation fields as KEY: value lines in the prompt parameter, one per line. Required: agent (DISPATCH TO), mode (MODE), session_date (SESSION DATE), baseline_branch (BASELINE BRANCH), head_sha (HEAD SHA), intent_kd (INTENT KD) for every mode except checkpoint and cleanup, and result_kd (RESULT KD) for KD-producing modes. Optional line fields: SCOPE, GENERATION, SESSION ID" },
   INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope should not contain code blocks (security) or absolute /home/ paths (info leak)" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },
@@ -871,8 +871,10 @@ async function delegationGateServer(input, options) {
       // intent_kd is not required for the committer-owned modes (checkpoint,
       // cleanup) — their templates render no INTENT KD reference, so requiring
       // the field serves no purpose. Only non-committer modes need intent_kd
-      // to identify the upstream KD.
-      const requiredFields = ["agent", "mode", "session_date"];
+      // to identify the upstream KD. baseline_branch and head_sha are provenance
+      // every dispatch must carry: a prompt cannot state tree facts it has not
+      // read, and the gate is where that gets enforced.
+      const requiredFields = ["agent", "mode", "session_date", "baseline_branch", "head_sha"];
       if (fields.mode?.toLowerCase() !== "checkpoint" && fields.mode?.toLowerCase() !== "cleanup") {
         requiredFields.push("intent_kd");
       }
@@ -888,7 +890,10 @@ async function delegationGateServer(input, options) {
       }
 
       for (const field of requiredFields) {
-        if (fields[field] === undefined || fields[field] === null) {
+        // Empty or whitespace-only counts as missing: the extractor trims, so
+        // `BASELINE BRANCH:` with no value lands here as "" and must not pass.
+        const value = fields[field];
+        if (value === undefined || value === null || String(value).trim() === "") {
           debug(`VALIDATION FAILED: missing required field '${field}'`);
           throw new DelegationGateError(ERRORS.MISSING_STRUCTURED_FIELDS.code, ERRORS.MISSING_STRUCTURED_FIELDS.message, ERRORS.MISSING_STRUCTURED_FIELDS.guidance);
         }
