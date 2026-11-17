@@ -5651,7 +5651,7 @@ milestones:
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
     });
 
-    it("a stale PASS KD does not advance under override while a fresh PASS does", async () => {
+    it("a stale PASS KD holds the override while a fresh PASS completes the hop back to origin", async () => {
       const s = sid("preflight-override");
       await initOverseer(s);
       createKD(`preflight-old-${s}.md`, preflightKD("PASS"));
@@ -5669,7 +5669,7 @@ milestones:
 
       createFreshKD(`preflight-fresh-${s}.md`, preflightKD("PASS"));
       await tick(s, "o2");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
   });
@@ -6851,7 +6851,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
     });
 
-    it("a fresh post-override KD advances and clears the marker; pre-existing later-phase KDs then advance normally", async () => {
+    it("a fresh post-override KD returns the session to origin and clears the marker; normal disk-evidence advancement then resumes", async () => {
       const s = sid("ac007-override");
       await initOverseer(s);
       createKD(`preflight-old-${s}.md`, preflightKD("PASS"));
@@ -6865,18 +6865,27 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await tick(s, "o1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
 
-      // A NEW preflight KD (mtime >= since) advances PREFLIGHT → EXPLORE and
-      // clears the override marker (advance-away).
+      // A NEW preflight KD (mtime >= since) completes the pinned hop: the
+      // session returns to its origin phase and the override marker clears.
       createFreshKD(`preflight-fresh-${s}.md`, preflightKD("PASS"));
       await tick(s, "o2");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
 
-      // The pre-existing exploration KD (written before the override) now
-      // advances EXPLORE → INVESTIGATE normally — disk-evidence semantics
-      // resume once the marker clears.
+      // Disk-evidence semantics resume once the marker clears: a fresh intent
+      // KD moves INTENT → PREFLIGHT (the PREFLIGHT-entry tick is skipped by
+      // design, giving the Overseer time to dispatch), the fresh preflight
+      // PASS then reaches EXPLORE, and the pre-existing exploration KD
+      // advances to INVESTIGATE.
+      createFreshKD(`intent-resume-${s}.md`);
       await tick(s, "o3");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      await tick(s, "o4");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      await tick(s, "o5");
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
+      await tick(s, "o6");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
     });
 
@@ -6895,10 +6904,11 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await tick(s, "k2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
-      // A matching exploration KD for the current session advances and clears.
+      // A matching exploration KD for the current session completes the hop —
+      // the session returns to origin and the marker clears.
       createFreshKD(`exploration-override-${s}.md`);
       await tick(s, "k3");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
 
@@ -6956,10 +6966,11 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await tick(s, "r1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXPLORE);
 
-      // A fresh exploration KD advances and clears the restored marker.
+      // A fresh exploration KD completes the restored override hop — the
+      // session returns to origin and the restored marker clears.
       createFreshKD(`exploration-fresh-${s}.md`);
       await tick(s, "r2");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INVESTIGATE);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
 
@@ -6984,13 +6995,14 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await tick(s, "d2");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.DECOMPOSE);
 
-      // A fresh milestones KD completes the dual-KD gate → advance + clear.
+      // A fresh milestones KD completes the dual-KD gate → the session returns
+      // to origin and the marker clears.
       // The stale registry is removed first — a second milestones KD for the
       // same session/generation is a duplicate registry, which fails closed.
       removeKD(`milestones-old-${s}.md`);
       createFreshKD(`milestones-fresh-${s}.md`, registryContent([["M1", "checked-off"]]));
       await tick(s, "d3");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
 
@@ -7021,7 +7033,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       removeKD(`milestones-pair-stale-${s}.md`);
       createFreshKD(`milestones-pair-fresh-${s}.md`, registry);
       await tick(s, "pair-a1");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
 
@@ -7042,10 +7054,11 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await tick(s, "sw1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
 
-      // A fresh registry write advances SWARM → VERIFY and clears the marker.
+      // A fresh registry write completes the override hop — the session
+      // returns to origin and the marker clears.
       createFreshRegistry(s, [["M1", "checked-off"]]);
       await tick(s, "sw2");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
 
@@ -7063,11 +7076,11 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await tick(s, "v1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
 
-      // A fresh PASS review KD advances + clears: the merged surface needs a
-      // single fresh review KD (no separate audit KD).
+      // A fresh PASS review KD completes the hop + clears: the merged surface
+      // needs a single fresh review KD (no separate audit KD).
       createFreshKD(`review-fresh-${s}.md`, reviewKD("PASS"));
       await tick(s, "v2");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.EXTRACT);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
     });
 
@@ -7747,7 +7760,7 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`).phase).toBe(hooks.STATES.INTENT);
     });
 
-    it("a fresh post-override intent KD advances a /phase INTENT override and clears the marker", async () => {
+    it("a fresh post-override intent KD completes a /phase INTENT override hop and clears the marker", async () => {
       const s = sid("f2-ac005b");
       await initOverseer(s);
       createKD(`intent-old-${s}.md`);
@@ -7763,11 +7776,11 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       await tick(s, "f2-1");
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
 
-      // A FRESH intent KD (mtime >= since) advances INTENT → PREFLIGHT and
-      // clears the override marker (advance-away).
+      // A FRESH intent KD (mtime >= since) completes the pinned hop — the
+      // session returns to its origin phase and the override marker clears.
       createFreshKD(`intent-fresh-${s}.md`);
       await tick(s, "f2-2");
-      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.PREFLIGHT);
+      expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       expect(hooks.sessionPhaseMap.has(`${s}:overrideUntil`)).toBe(false);
       expect(JSON.parse(readFileSync(statePath(s), "utf8")).overrideUntil).toBeUndefined();
     });
