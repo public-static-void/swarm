@@ -151,8 +151,6 @@ A `FAIL` verdict in the newest review KD frontmatter machine-triggers the VERIFY
 
 Escalation marker: a `FAIL` carrying a level-2 section titled `Escalation` with at least one non-empty line before the next level-2 heading escalates instead of requesting a fix. With no `reopen_target` it blocks as `REOPEN_TARGET_INVALID reason=no-reopen-target`; with a usable target it blocks as `VERDICT_AMBIGUOUS` because the review states a fix request and an escalation at once. Neither regresses nor reopens. An empty section counts as absent, a heading inside a fenced code block does not count, and `PASS` ignores the section.
 
-`FUNDAMENTAL_RETIRED` lines in test output are asserted test output. Verify the line against the test source before treating it as a lifecycle anomaly.
-
 ## Feedback Loop
 
 On FAIL with clear cause:
