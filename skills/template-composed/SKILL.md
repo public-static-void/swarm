@@ -62,6 +62,8 @@ These are NOT needed for this task:
 
 _This section is optional — include it when friction was encountered during work._
 
+When consolidating friction, sweep the `## Process Friction` tables of every lifecycle KD — checkpoint KDs included.
+
 | ID     | Issue                       | Severity            | Status                  | Fixed by            |
 | ------ | --------------------------- | ------------------- | ----------------------- | ------------------- |
 | PF-001 | {{description of friction}} | {{low/medium/high}} | {{unresolved/resolved}} | {{agent or PR ref}} |
