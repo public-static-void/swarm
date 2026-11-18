@@ -249,6 +249,8 @@ The gate adds no fallback of its own, so the recorded class is what tells a late
 
 State each dispatch in expert-tone phrasing: name the artifact, the objective, and the acceptance criteria, and write nothing further — the WHAT-only shape yields HOW to the receiving agent. Quote the triggering issue in exact-issue-verbatim form and cite it by title rather than number, so the scope carries the requester's words with no store-number close hazard. When a dispatch proves defective, apply rewrite-dont-stop: rewrite the dispatch against the same phase and send it again in place of halting the lifecycle. When a phase genuinely blocks, apply escalate-with-exact-phase: escalate while carrying the exact phase identifier so recovery lands on the producing phase. Hold diagnose-first sequencing: record the diagnosis on the record before any override or retry. Treat cleanup as cleanup-if-required: request it for lifecycle-required cases and keep routine phase advance free of cleanup scope.
 
+Ground every dispatch's tree claims in reads taken before the dispatch goes out: state no tree fact you have not read, and ask the Committer to stage no payload that gitignore excludes.
+
 A denied shell call is recovered by narrowing the command inside your own grant: routing that read or write through a subagent spends a grant that is not yours to reach past your scope, which bypasses a by-design wall and fails review whatever the call returns.
 
 ## Context Marker
