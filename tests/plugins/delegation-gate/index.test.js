@@ -73,6 +73,8 @@ describe("Delegation-Gate Plugin", () => {
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md`;
 
@@ -85,6 +87,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: explore
 intent_kd: knowledge/intent-foo.md
 session_date: 2026-07-15
+baseline_branch: main
+head_sha: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 result_kd: knowledge/exploration-foo.md`;
       const out2 = { args: { prompt: underscore } };
@@ -99,6 +103,8 @@ result_kd: knowledge/exploration-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md`;
         const output = { args: { prompt } };
@@ -125,6 +131,8 @@ RESULT KD: knowledge/exploration-foo.md`;
           description: `MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md`,
           subagent_type: "artisan"
@@ -140,6 +148,8 @@ RESULT KD: knowledge/exploration-foo.md`,
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md`,
           description: `SESSION DATE: 2099-01-01
@@ -160,6 +170,8 @@ RESULT KD: knowledge/wrong.md`
       const description = `MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-27
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md
 Delegation Prompt Format:
@@ -190,6 +202,8 @@ KD PATHS: upstream KD paths, comma-separated (optional)`;
           prompt: `You are the Explorer agent in explore mode.
 Read the INTENT KD at knowledge/intent-foo.md for context.
 SESSION DATE: 2026-07-23
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Explore the memory system
 RESULT KD: knowledge/exploration-foo.md`,
           subagent_type: "explorer"
@@ -205,6 +219,8 @@ RESULT KD: knowledge/exploration-foo.md`,
 MODE: explore
 INTENT KD: knowledge/intent-structured.md
 SESSION DATE: 2026-07-23
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Fix bug
 RESULT KD: knowledge/exploration-foo.md
 
@@ -220,6 +236,8 @@ Also reference knowledge/intent-prose.md in context.`
 **MODE:** **explore**
 **INTENT KD:** **knowledge/intent-foo.md**
 **SESSION DATE:** **2026-07-21**
+**BASELINE BRANCH:** **main**
+**HEAD SHA:** **219f80d977ca0370e6b1b9e4818da972083116c6**
 **SCOPE:** **Implement feature X**
 **RESULT KD:** **knowledge/exploration-foo.md**`;
 
@@ -232,12 +250,108 @@ Also reference knowledge/intent-prose.md in context.`
     });
   });
 
+  describe("Dispatch Provenance Required", () => {
+    const SHA = "219f80d977ca0370e6b1b9e4818da972083116c6";
+    const committerModes = ["checkpoint", "cleanup"];
+
+    // A fully stamped prompt for any mode: provenance lines are present, and
+    // mode-dependent fields follow the same rules the gate enforces (no
+    // INTENT KD for committer modes; milestone-scoped result KD for swarm).
+    const stampedPrompt = (mode) => {
+      const intentLine = committerModes.includes(mode) ? "" : "INTENT KD: knowledge/intent-foo.md\n";
+      const milestoneLine = mode === "swarm" ? "MILESTONE ID: M1\n" : "";
+      const resultKd = mode === "swarm" ? "knowledge/impl-M1-provenance-ses_abc-gen0.md" : `knowledge/${mode}-foo.md`;
+      return `DISPATCH TO: artisan
+MODE: ${mode}
+${intentLine}SESSION DATE: 2026-11-17
+BASELINE BRANCH: main
+HEAD SHA: ${SHA}
+${milestoneLine}SCOPE: Test provenance for ${mode}
+RESULT KD: ${resultKd}`;
+    };
+
+    const run = (prompt) =>
+      hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_prov", callID: "c1" }, { args: { prompt } });
+
+    it("refuses a prompt with no BASELINE BRANCH line", async () => {
+      const prompts = [
+        // Both provenance lines absent
+        `DISPATCH TO: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-11-17
+SCOPE: Test provenance
+RESULT KD: knowledge/exploration-foo.md`,
+        // Only HEAD SHA present — BASELINE BRANCH absent
+        `DISPATCH TO: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-11-17
+HEAD SHA: ${SHA}
+SCOPE: Test provenance
+RESULT KD: knowledge/exploration-foo.md`,
+      ];
+      for (const prompt of prompts) {
+        const output = { args: { prompt } };
+        const err = await hooks["tool.execute.before"](
+          { tool: "task", sessionID: "ses_prov", callID: "c1" },
+          output
+        ).catch((e) => e);
+        expect(err.code).toBe("MISSING_STRUCTURED_FIELDS");
+        // Refused before rendering: the raw prompt is untouched.
+        expect(output.args.prompt).toBe(prompt);
+      }
+    });
+
+    it("refuses empty or whitespace-only provenance values", async () => {
+      const variants = [
+        { label: "empty", baseline: "", head: "" },
+        { label: "whitespace", baseline: "   ", head: "\t " },
+      ];
+      for (const v of variants) {
+        const prompt = `DISPATCH TO: artisan
+MODE: explore
+INTENT KD: knowledge/intent-foo.md
+SESSION DATE: 2026-11-17
+BASELINE BRANCH:${v.baseline ? ` ${v.baseline}` : ""}
+HEAD SHA:${v.head ? ` ${v.head}` : ""}
+SCOPE: Test provenance
+RESULT KD: knowledge/exploration-foo.md`;
+        const err = await run(prompt).catch((e) => e);
+        expect(err.code, `variant ${v.label}`).toBe("MISSING_STRUCTURED_FIELDS");
+      }
+    });
+
+    it("passes a fully stamped prompt for every mode header shape", async () => {
+      const modes = Object.keys(hooks.defaultTemplates);
+      expect(modes).toHaveLength(11);
+      for (const mode of modes) {
+        const prompt = stampedPrompt(mode);
+        const output = { args: { prompt } };
+        await hooks["tool.execute.before"](
+          { tool: "task", sessionID: "ses_prov", callID: "c1" },
+          output
+        );
+        expect(output.args.prompt, `mode ${mode}`).toContain(`BASELINE BRANCH: main`);
+        expect(output.args.prompt, `mode ${mode}`).toContain(`HEAD SHA: ${SHA}`);
+      }
+    });
+
+    it("names both provenance fields in the missing-fields guidance", () => {
+      const guidance = hooks.ERRORS.MISSING_STRUCTURED_FIELDS.guidance;
+      expect(guidance).toContain("BASELINE BRANCH");
+      expect(guidance).toContain("HEAD SHA");
+    });
+  });
+
   describe("Content Validators", () => {
     it("rejects code blocks in the prompt", async () => {
       const codeBlock = `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md
 
@@ -255,6 +369,8 @@ console.log("test");
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md
 ${body}`;
@@ -271,6 +387,8 @@ ${body}`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-27
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md
 
@@ -287,6 +405,8 @@ Update the agents/*.md and knowledge/issues/*.md files per the plan.`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-27
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md
 ${body}`;
@@ -315,6 +435,8 @@ ${body}`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md
 ${body}`;
@@ -329,6 +451,8 @@ ${body}`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: invalid-path.md`;
 
@@ -342,6 +466,8 @@ RESULT KD: invalid-path.md`;
 MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD:`;
 
@@ -356,17 +482,23 @@ RESULT KD:`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: {scope}`,
         `AGENT: artisan
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: {result_kd}`,
         `AGENT: artisan
 MODE: checkpoint
 INTENT KD: {intent_kd}
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X`,
       ];
       for (const prompt of prompts) {
@@ -386,6 +518,8 @@ SCOPE: Implement feature X`,
 MODE: <mode>
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`,
         // Each standalone angle-bracket field
@@ -399,6 +533,8 @@ RESULT KD: knowledge/impl-foo.md`,
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: <session-id>
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`,
@@ -406,6 +542,8 @@ RESULT KD: knowledge/impl-foo.md`,
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 GENERATION: <generation>
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`,
@@ -413,12 +551,16 @@ RESULT KD: knowledge/impl-foo.md`,
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: <optional context>
 RESULT KD: knowledge/impl-foo.md`,
         `AGENT: artisan
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: <milestone-id>
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-M1-foo.md`,
@@ -437,6 +579,8 @@ RESULT KD: knowledge/impl-M1-foo.md`,
 MODE: swarm
 INTENT KD: knowledge/intent-phase-dispatch-fix-ses_023f1f066ffecWQJC5SF8v1B8U-gen1.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_023f1f066ffecWQJC5SF8v1B8U
 GENERATION: 1
 MILESTONE ID: M1
@@ -455,6 +599,8 @@ KD PATHS: knowledge/spec-foo.md, knowledge/plan-foo.md`;
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Preflight with real values
 RESULT KD: knowledge/preflight-foo.md`;
       const out2 = { args: { prompt: preflight } };
@@ -469,6 +615,8 @@ RESULT KD: knowledge/preflight-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/<type>-<name>.md`;
 
@@ -483,6 +631,8 @@ RESULT KD: knowledge/<type>-<name>.md`;
       const description = `MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: <session-id>
 GENERATION: <generation>
 SCOPE: <optional context>
@@ -498,6 +648,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_real
 GENERATION: 1
 SCOPE: real context
@@ -518,6 +670,8 @@ SCOPE: <optional context>`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 RESULT KD: knowledge/exploration-foo.md`;
 
       const output = { args: { prompt } };
@@ -545,6 +699,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-16
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: ${scope}
 RESULT KD: knowledge/exploration-foo.md`;
         const output = { args: { prompt } };
@@ -558,6 +714,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 RESULT KD: knowledge/preflight-foo.md`;
 
       const output = { args: { prompt } };
@@ -570,6 +728,8 @@ RESULT KD: knowledge/preflight-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Fix the bug
 RESULT KD: knowledge/impl-foo.md`;
 
@@ -588,6 +748,8 @@ RESULT KD: knowledge/impl-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-10
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: ${scopeLines[0]}
 ${scopeLines[1]}
 ${scopeLines[2]}
@@ -608,6 +770,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-10
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Wrap prose across lines
 \`\`\`js
 console.log("injected");
@@ -626,12 +790,16 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md`,
         `AGENT: committer
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Setup workspace
 RESULT KD: knowledge/preflight-foo.md`,
       ];
@@ -661,6 +829,8 @@ RESULT KD: knowledge/preflight-foo.md`,
 MODE: ${c.mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Test ${c.mode}
 RESULT KD: ${c.result}
 ${c.kdPaths ? `KD PATHS: ${c.kdPaths}` : ""}`;
@@ -689,6 +859,8 @@ ${c.kdPaths ? `KD PATHS: ${c.kdPaths}` : ""}`;
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 ${milestoneId ? `MILESTONE ID: ${milestoneId}\n` : ""}SCOPE: Test ${mode}
 RESULT KD: ${kd}`;
 
@@ -707,6 +879,8 @@ RESULT KD: ${kd}`;
       const withoutIntent = `AGENT: committer
 MODE: cleanup
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Commit and push remaining changes
 RESULT KD: knowledge/cleanup-foo.md`;
 
@@ -721,6 +895,8 @@ RESULT KD: knowledge/cleanup-foo.md`;
 MODE: cleanup
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Commit and push remaining changes
 RESULT KD: knowledge/cleanup-foo.md`;
 
@@ -762,6 +938,8 @@ RESULT KD: knowledge/cleanup-foo.md`;
       const prompt = `AGENT: committer
 MODE: cleanup
 SESSION DATE: 2026-08-29
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Test cleanup
 RESULT KD: knowledge/cleanup-foo.md`;
 
@@ -791,6 +969,8 @@ RESULT KD: knowledge/cleanup-foo.md`;
 MODE: evolve
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-06
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Test evolve memory scope
 RESULT KD: knowledge/process-foo.md`;
 
@@ -828,6 +1008,8 @@ RESULT KD: knowledge/process-foo.md`;
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Test conditional KD PATHS
 RESULT KD: ${result}`;
 
@@ -849,6 +1031,8 @@ RESULT KD: ${result}`;
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Test conditional KD PATHS
 RESULT KD: ${result}
 KD PATHS: knowledge/upstream-foo.md`;
@@ -865,6 +1049,8 @@ KD PATHS: knowledge/upstream-foo.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M1
 SCOPE: Execute milestone M1
 RESULT KD: knowledge/impl-M1-foo.md
@@ -928,6 +1114,8 @@ KD PATHS: knowledge/plan-foo.md`;
         `MODE: ${mode}`,
         "INTENT KD: knowledge/intent-foo.md",
         "SESSION DATE: 2026-08-21",
+        "BASELINE BRANCH: main",
+        "HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6",
       ];
       if (overrides.milestone) lines.push(`MILESTONE ID: ${overrides.milestone}`);
       lines.push(`SESSION ID: ${SID}`);
@@ -1075,6 +1263,8 @@ KD PATHS: knowledge/plan-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
@@ -1105,6 +1295,8 @@ RESULT KD: knowledge/impl-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
@@ -1125,6 +1317,8 @@ RESULT KD: knowledge/impl-foo.md`;
 MODE: ${c.mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Investigate the plugin system
 RESULT KD: knowledge/${c.mode === "investigate" ? "analysis" : "preflight"}-foo.md`;
 
@@ -1146,6 +1340,8 @@ RESULT KD: knowledge/${c.mode === "investigate" ? "analysis" : "preflight"}-foo.
 MODE: review
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Review implementation
 RESULT KD: knowledge/review-foo.md`;
 
@@ -1167,6 +1363,8 @@ RESULT KD: knowledge/review-foo.md`;
 MODE: unknown
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Test unknown mode
 RESULT KD: knowledge/unknown-foo.md`;
 
@@ -1187,6 +1385,8 @@ RESULT KD: knowledge/unknown-foo.md`;
 MODE: audit
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Audit implementation
 RESULT KD: knowledge/audit-foo.md`;
 
@@ -1207,6 +1407,8 @@ RESULT KD: knowledge/audit-foo.md`;
 MODE: review
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Review implementation
 RESULT KD: knowledge/review-foo.md`;
 
@@ -1251,6 +1453,8 @@ RESULT KD: knowledge/review-foo.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M3
 SCOPE: Execute implementation
 RESULT KD: knowledge/impl-M3-foo.md`;
@@ -1265,6 +1469,8 @@ RESULT KD: knowledge/impl-M3-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Commit X
 RESULT KD: knowledge/checkpoint-foo.md`;
 
@@ -1320,6 +1526,8 @@ RESULT KD: knowledge/checkpoint-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
@@ -1344,6 +1552,8 @@ RESULT KD: knowledge/impl-foo.md`;
       const prompt = `MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md`;
 
@@ -1358,6 +1568,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-17
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md`;
 
@@ -1371,6 +1583,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md`;
 
@@ -1402,7 +1616,7 @@ RESULT KD: knowledge/exploration-foo.md`;
       const input = {
         agent: "committer",
         description: "Preflight git setup",
-        prompt: "MODE: preflight\nINTENT KD: knowledge/intent-foo.md\nRESULT KD: knowledge/preflight-foo.md\nSESSION DATE: 2026-09-18\nSESSION ID: ses_trace\nGENERATION: 0\nSCOPE: Prepare clean git working state",
+        prompt: "MODE: preflight\nINTENT KD: knowledge/intent-foo.md\nRESULT KD: knowledge/preflight-foo.md\nSESSION DATE: 2026-09-18\nBASELINE BRANCH: main\nHEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6\nSESSION ID: ses_trace\nGENERATION: 0\nSCOPE: Prepare clean git working state",
       };
       await captured["execute.before"]({ tool: "subagent", sessionID: "ses_trace", id: "c1", input });
       expect(input.prompt).toContain("DISPATCH TO: committer");
@@ -1415,7 +1629,7 @@ RESULT KD: knowledge/exploration-foo.md`;
         agent: "committer",
         subagent_type: "explorer",
         description: "",
-        prompt: "MODE: explore\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-09-18\nRESULT KD: knowledge/exploration-foo.md",
+        prompt: "MODE: explore\nINTENT KD: knowledge/intent-foo.md\nSESSION DATE: 2026-09-18\nBASELINE BRANCH: main\nHEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6\nRESULT KD: knowledge/exploration-foo.md",
       };
       await captured["execute.before"]({ tool: "subagent", sessionID: "s1", id: "c1", input });
       expect(input.prompt).toContain("DISPATCH TO: explorer");
@@ -1435,6 +1649,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: abc-123-def
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
@@ -1449,6 +1665,8 @@ RESULT KD: knowledge/impl-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
@@ -1462,6 +1680,8 @@ RESULT KD: knowledge/impl-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: prompt-session-99
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
@@ -1477,6 +1697,8 @@ RESULT KD: knowledge/impl-foo.md`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X
 RESULT KD: knowledge/impl-foo.md`;
 
@@ -1516,6 +1738,8 @@ RESULT KD: knowledge/impl-foo.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-09-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_abc
 GENERATION: 1
 MILESTONE ID: M1
@@ -1527,6 +1751,8 @@ RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-09-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Explore
 RESULT KD: knowledge/exploration-foo.md`;
 
@@ -1569,6 +1795,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-09-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_abc
 GENERATION: 1${milestone ? `\nMILESTONE ID: ${milestone}` : ""}
 SCOPE: ${mode} dispatch
@@ -1604,6 +1832,8 @@ RESULT KD: ${resultKd}`;
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-09-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Commit X
 RESULT KD: knowledge/checkpoint-foo.md`;
       const ckptOutput = { args: { prompt: ckptPrompt } };
@@ -1649,6 +1879,8 @@ RESULT KD: knowledge/checkpoint-foo.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-09-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_abc
 GENERATION: 1
 MILESTONE ID: M1
@@ -1674,6 +1906,8 @@ RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-09-08
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 GENERATION: 1
 MILESTONE ID: M1
 SCOPE: Continue milestone M1
@@ -1709,11 +1943,15 @@ RESULT KD: knowledge/impl-M1-foo-ses_abc-gen1.md`;
         { prompt: `You are the Committer agent in checkpoint mode. 
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Setup workspace
 RESULT KD: knowledge/checkpoint-foo.md`, subagent: "committer", expected: "checkpoint" },
         { prompt: `Delegate to artisan for explore phase. 
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Analyze the codebase
 RESULT KD: knowledge/exploration-foo.md`, subagent: "artisan", expected: "explore" },
       ];
@@ -1729,6 +1967,8 @@ RESULT KD: knowledge/exploration-foo.md`, subagent: "artisan", expected: "explor
 MODE: investigate
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: This is an explore task
 RESULT KD: knowledge/analysis-foo.md`;
 
@@ -1744,6 +1984,8 @@ RESULT KD: knowledge/analysis-foo.md`;
 Run the explore phase then checkpoint.
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Test multiple modes
 RESULT KD: knowledge/checkpoint-foo.md`;
 
@@ -1757,6 +1999,8 @@ RESULT KD: knowledge/checkpoint-foo.md`;
 Run the checkpoints process.
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Test partial match`;
 
       await expect(
@@ -1786,6 +2030,8 @@ SCOPE: Test partial match`;
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: ${scope}`;
 
         await expect(
@@ -1801,6 +2047,8 @@ SCOPE: ${scope}`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M3
 SCOPE: Implement milestone M3
 RESULT KD: knowledge/impl-M3-foo.md`;
@@ -1815,6 +2063,8 @@ RESULT KD: knowledge/impl-M3-foo.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Execute implementation
 RESULT KD: knowledge/impl-foo.md`;
 
@@ -1829,6 +2079,8 @@ RESULT KD: knowledge/impl-foo.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M1, M2
 SCOPE: Execute implementation
 RESULT KD: knowledge/impl-foo.md`,
@@ -1836,6 +2088,8 @@ RESULT KD: knowledge/impl-foo.md`,
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M1
 MILESTONE ID: M2
 SCOPE: Execute implementation
@@ -1853,6 +2107,8 @@ RESULT KD: knowledge/impl-foo.md`,
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: !bad
 SCOPE: Execute implementation
 RESULT KD: knowledge/impl-foo.md`;
@@ -1867,6 +2123,8 @@ RESULT KD: knowledge/impl-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-31
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Explore
 RESULT KD: knowledge/exploration-foo.md`;
 
@@ -1888,6 +2146,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-01
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: ${c.milestone}
 SCOPE: Execute milestone ${c.milestone}
 RESULT KD: ${c.kd}`;
@@ -1905,6 +2165,8 @@ RESULT KD: ${c.kd}`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-01
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M4
 SCOPE: Execute milestone M4
 RESULT KD: knowledge/impl-M5-feature-ses_x-gen0.md`,
@@ -1913,6 +2175,8 @@ RESULT KD: knowledge/impl-M5-feature-ses_x-gen0.md`,
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-01
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M4
 SCOPE: Execute milestone M4
 RESULT KD: knowledge/impl-feature-ses_x-gen0.md`,
@@ -1929,6 +2193,8 @@ RESULT KD: knowledge/impl-feature-ses_x-gen0.md`,
 MODE: checkpoint
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-01
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Commit X
 RESULT KD: knowledge/checkpoint-foo.md`;
 
@@ -1942,6 +2208,8 @@ RESULT KD: knowledge/checkpoint-foo.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-01
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M-core
 SCOPE: Execute milestone M-core
 RESULT KD: knowledge/impl-M-core-feature-ses_x-gen0.md`;
@@ -1956,6 +2224,8 @@ RESULT KD: knowledge/impl-M-core-feature-ses_x-gen0.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-01
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M-core
 SCOPE: Execute milestone M-core
 RESULT KD: knowledge/impl-m-core-feature-ses_x-gen0.md`;
@@ -1970,6 +2240,8 @@ RESULT KD: knowledge/impl-m-core-feature-ses_x-gen0.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-01
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 MILESTONE ID: M-core
 SCOPE: Execute milestone M-core
 RESULT KD: knowledge/impl-M5-feature-ses_x-gen0.md`;
@@ -1988,6 +2260,8 @@ RESULT KD: knowledge/impl-M5-feature-ses_x-gen0.md`;
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Test preflight without BRANCH
 RESULT KD: knowledge/preflight-foo.md`;
 
@@ -2001,6 +2275,8 @@ RESULT KD: knowledge/preflight-foo.md`;
 MODE: preflight
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 BRANCH: fix/old-style
 SCOPE: Test backward compat
 RESULT KD: knowledge/preflight-foo.md`;
@@ -2020,6 +2296,8 @@ RESULT KD: knowledge/preflight-foo.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_gen
 GENERATION: 2
 MILESTONE ID: M1
@@ -2039,6 +2317,8 @@ RESULT KD: knowledge/impl-M1-foo-ses_gen-gen2.md`;
       const prompt = `AGENT: committer
 MODE: checkpoint
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_delegation_legacy
 SCOPE: Commit X
 RESULT KD: knowledge/checkpoint-foo-ses_delegation_legacy.md`;
@@ -2055,6 +2335,8 @@ RESULT KD: knowledge/checkpoint-foo-ses_delegation_legacy.md`;
       const prompt = `AGENT: committer
 MODE: checkpoint
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_ckpt
 GENERATION: 1
 SCOPE: Commit X
@@ -2074,6 +2356,8 @@ RESULT KD: knowledge/checkpoint-step1-ses_ckpt-gen1.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-21
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Explore the codebase
 RESULT KD: knowledge/exploration-foo.md`;
 
@@ -2094,6 +2378,8 @@ RESULT KD: knowledge/exploration-foo.md`;
       const prompt = `AGENT: artisan
 MODE: checkpoint
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_ac306_isolated
 SCOPE: Implement feature X
 RESULT KD: knowledge/checkpoint-foo.md`;
@@ -2110,6 +2396,8 @@ RESULT KD: knowledge/checkpoint-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_pt
 SCOPE: Implement feature X
 RESULT KD: knowledge/exploration-foo.md`;
@@ -2127,6 +2415,8 @@ RESULT KD: knowledge/exploration-foo.md`;
 MODE: evolve
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-30
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_scope3
 GENERATION: 0
 SCOPE: Evolve process
@@ -2142,6 +2432,8 @@ RESULT KD: knowledge/process-foo-ses_scope3-gen0.md`;
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-30
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_scope2
 GENERATION: 0
 MILESTONE ID: M2
@@ -2160,6 +2452,8 @@ KD PATHS: knowledge/spec-foo.md, knowledge/plan-foo.md`;
 MODE: ${mode}
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Log isolation test
 RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
 
@@ -2317,6 +2611,8 @@ RESULT KD: knowledge/${overrides.kd || "exploration"}-foo.md`;
 MODE: explore
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-08-03
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: ${longScope}
 RESULT KD: knowledge/exploration-foo.md`;
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "s1", callID: "c1" }, { args: { prompt } });

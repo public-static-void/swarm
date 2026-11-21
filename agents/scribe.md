@@ -145,7 +145,7 @@ After verification passes, read all knowledge documents produced during the life
 ## Protocol
 
 1. Load the kd-system skill before creating any KD
-2. Read all KDs produced in the current lifecycle (INTENT, SPEC, PLAN, REVIEW, etc.)
+2. Read all KDs produced in the current lifecycle (INTENT, SPEC, PLAN, REVIEW, CHECKPOINT, etc.)
 3. Compose recurring patterns, insights, and decisions into COMPOSED KDs
 4. Identify knowledge gaps or stale documentation
 5. Compose COMPOSED KDs: for each downstream agent, assemble the minimal set of KDs needed for its task (reference KDs using their file paths exclusively)

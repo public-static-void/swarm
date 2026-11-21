@@ -3461,7 +3461,14 @@ function nextForwardPhase(sessionPhaseMap, sessionID, currentPhase, fallbackTarg
     }
     const safePoint = sessionPhaseMap.get(`${sessionID}:overrideSafePoint`);
     const origin = safePoint && typeof safePoint.phase === "number" ? safePoint.phase : null;
-    const returnsToOrigin = origin !== null && origin > currentPhase;
+    // A single-phase pin's return leg wins unconditionally: once the pinned
+    // hop completes, the exhausted queue returns to the origin even when the
+    // origin sits behind the hop, so the detour re-enters the phase the
+    // operator left instead of drifting forward past it on the serial step.
+    // A walk's terminal hop keeps the forward-only comparison — an origin
+    // behind its last hop still takes the serial step, which the multi-phase
+    // suite pins as the documented forward-plan behavior.
+    const returnsToOrigin = origin !== null && (!isWalk || origin > currentPhase);
     return {
       target: returnsToOrigin ? origin : fallbackTarget,
       outcome: "origin-return",

@@ -50,6 +50,13 @@ design flaw. The reopened SWARM rows cover the SWARM-owned share of the finding.
 Where the owning phase is INTENT, no declared transition reaches it, so the
 escalation route is what remains.
 
+A finding carried forward by a `PASS` verdict names its **scheduled consuming act**
+alongside `Owning Phase` and `Consuming Act`: the dispatch that will consume the
+repair, so a carried finding reaches an act rather than staying a label. That
+scheduled act is a re-execution — a declared check satisfied by a paraphrase of
+its output does not count, and the milestone owning independent re-execution must
+re-execute rather than copy an earlier row.
+
 Where a finding reports a contradiction, it names which half holds and why: of two
 plan instructions that are mutually unsatisfiable, it states which one the tree
 supports, and where a premise was not read from the tree, it names the premise the

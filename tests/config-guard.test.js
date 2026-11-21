@@ -1688,8 +1688,9 @@ describe("delegation provenance field example", () => {
     });
 
     it("carries provenance values into the rendered dispatch when the lines are indented", async () => {
-      // Provenance is optional, so an unextracted line renders as an empty
-      // header with no error — the silent drop this case pins.
+      // Leading indentation must not cost the field: the extractor tolerates
+      // it, so indented provenance still counts toward the required check and
+      // its values survive into the rendered header.
       const prompt = `DISPATCH TO: committer
 MODE: checkpoint
 SESSION DATE: 2026-10-19
@@ -1721,6 +1722,8 @@ MODE: swarm
  MILESTONE ID: M3
 INTENT KD: knowledge/intent-example-ses_abc123-gen0.md
 SESSION DATE: 2026-10-19
+BASELINE BRANCH: main
+HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_abc123
 GENERATION: 0
 SCOPE: Execute milestone M3
