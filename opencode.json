@@ -8,7 +8,7 @@
   "experimental": {
     "subagent_depth": 2
   },
-  "model": "opencode/mimo-v2.6-flash-free",
+  "model": "opencode/deepseek-v4.1-flash-free",
   "default_agent": "overseer",
   "agents": {
     "build": {
