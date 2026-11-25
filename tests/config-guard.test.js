@@ -200,6 +200,16 @@ const ANALYZER_READ_BASELINE_COMMANDS = [
   "diff*", "tree*", "which*", "type*", "stat*", "du*", "df*",
 ];
 const COMMITTER_LIST_COMMANDS = ["ls*", "git ls-files*"];
+// The corrected permission-wall matrix: the audit roles' tracked-file inventory
+// verb plus the analysis role's node probe family. One coherent decision, so
+// the membership is pinned as a unit — a row that drifts out of a role file or
+// a role that grows an entry the decision never granted reddens here.
+const PERMISSION_WALL_MATRIX = {
+  "explorer.md": ["git ls-files*"],
+  "analyzer.md": ["git ls-files*", "node --version*", "node --check*", "node --test*"],
+  "inspector.md": ["git ls-files*"],
+  "artisan.md": ["git ls-files*"],
+};
 const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
 const SCAN_COMMANDS = ["npm audit*", "npm run audit*", "pip audit*"];
 // Per-command owners: the python scan probe is a scanner-role grant (the
@@ -1285,6 +1295,61 @@ describe("committer plan/spec read contract", () => {
     expect(missing).toEqual([]);
     const grantedEdits = editPatterns.filter((p) => /^knowledge\/(composed|process|report)-/.test(p));
     expect(grantedEdits).toEqual([]);
+  });
+
+  it("keeps the blanket read deny on the committer — the read tool is out of its entitlement by design", () => {
+    // The rejected committer read proposal must not sneak back through a later
+    // edit: the wildcard read stays denied and no wildcard read allow appears.
+    const readRules = actionEntries(readAgent("committer.md"), "read");
+    const blanket = readRules.filter((e) => e.pattern === "*");
+    expect(blanket.map((e) => e.mode)).toEqual(["deny"]);
+    expect(readRules.filter((e) => e.pattern === "*" && e.mode === "allow")).toEqual([]);
+  });
+});
+
+describe("permission-wall grant matrix", () => {
+  const files = agentFiles();
+  const entriesByFile = new Map(
+    files.map((f) => [f, bashEntries(readAgent(f))])
+  );
+
+  it("holds every matrix entry as an allow in its pinned role file", () => {
+    const missing = [];
+    for (const [f, commands] of Object.entries(PERMISSION_WALL_MATRIX)) {
+      const allowed = entriesByFile.get(f).filter((e) => e.mode === "allow").map((e) => e.pattern);
+      for (const cmd of commands) {
+        if (!allowed.includes(cmd)) missing.push(`${f}: ${cmd}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the file-inventory verb out of roles outside the matrix rows", () => {
+    // The committer's inventory entry is pre-existing and stands outside the
+    // matrix; every other role must not grow it without re-opening the decision.
+    const offenders = [];
+    for (const f of files) {
+      if (f === "committer.md") continue;
+      const pinned = PERMISSION_WALL_MATRIX[f] ?? [];
+      if (pinned.includes("git ls-files*")) continue;
+      for (const { pattern, mode } of entriesByFile.get(f)) {
+        if (pattern === "git ls-files*" && mode === "allow") offenders.push(`${f}: ${pattern}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("holds no bare git ls wildcard in any role file", () => {
+    // The metadata-family escape: a grant written as the broad `ls` subcommand
+    // sweeps every ls-shaped subcommand under it, so only the exact verb form is admissible.
+    const offenders = [];
+    for (const f of files) {
+      for (const { pattern } of entriesByFile.get(f)) {
+        const stripped = pattern.replace(/\*+$/, "");
+        if (stripped === "git ls" || stripped === "git ls *") offenders.push(`${f}: ${pattern}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 

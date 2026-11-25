@@ -131,6 +131,9 @@ permissions:
     resource: "git rm*"
     effect: allow
   - action: shell
+    resource: "git ls-files*"
+    effect: allow
+  - action: shell
     resource: "gh issue view*"
     effect: allow
   - action: shell

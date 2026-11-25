@@ -116,6 +116,9 @@ permissions:
     resource: "git log --oneline*"
     effect: allow
   - action: shell
+    resource: "git ls-files*"
+    effect: allow
+  - action: shell
     resource: "docker compose ps*"
     effect: allow
   - action: shell
