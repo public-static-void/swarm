@@ -31,8 +31,13 @@ const AGENTS_DIR = join(ROOT, "agents");
 // regression this regex catches.
 const RETIRED_RESUME_FIELD = /\bTASK ID\b|\btask_id\b/;
 
+// Guards compare contract content, not checkout line endings: a Windows
+// checkout (core.autocrlf) yields CRLF bytes, and every LF-anchored regex,
+// split, and exact-line comparison below would see trailing \r. Normalizing
+// at the read site keeps the guards platform-neutral; an LF checkout reads
+// byte-identically.
 function readRoot(name) {
-  return readFileSync(join(ROOT, name), "utf8");
+  return readFileSync(join(ROOT, name), "utf8").replace(/\r\n/g, "\n");
 }
 
 function agentFiles() {
@@ -40,7 +45,7 @@ function agentFiles() {
 }
 
 function readAgent(name) {
-  return readFileSync(join(AGENTS_DIR, name), "utf8");
+  return readFileSync(join(AGENTS_DIR, name), "utf8").replace(/\r\n/g, "\n");
 }
 
 // The rendered body of a delegation-gate template. Parsed, never raw-matched:
