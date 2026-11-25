@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 import { tmpdir } from "os";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -4693,6 +4693,26 @@ Body`;
       await hooks["tool.definition"]({ toolID: "memory_note" }, output);
       expect(output.description).toContain("memory_note");
       expect(output.description).toContain("tools.memory_note");
+      // The description is model-facing: markup-shaped fragments (a backticked
+      // call-as directive) and non-ASCII length glyphs give a text-emitting
+      // model dialects something to echo back instead of a real call.
+      expect(output.description).not.toMatch(/`[a-z_]+/);
+      expect(output.description).not.toContain("≤");
+    });
+
+    // The same hygiene applies at both description homes — the server-map
+    // entry and the definition re-assertion carry the identical string.
+    it("keeps both memory_note description homes free of markup and non-ASCII glyphs", () => {
+      const source = readFileSync(
+        join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "plugins", "knowledge-gate", "index.js"),
+        "utf8"
+      );
+      const homes = source.split("\n").filter((line) => line.includes("Write a short-term memory note"));
+      expect(homes).toHaveLength(2);
+      for (const line of homes) {
+        expect(line).not.toContain("≤");
+        expect(line).not.toMatch(/`[a-z_]+/);
+      }
     });
   });
 
