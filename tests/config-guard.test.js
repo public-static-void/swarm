@@ -2648,6 +2648,34 @@ describe("rule layers state their rules self-containedly", () => {
 // a grant with no instruction admits a skill nothing tells the role to load.
 // The grant is read from the permission block; the instruction is read from
 // the delegation-step section that carries it.
+// The canonical impl-KD naming rule. The check-off prefix `impl-<milestoneId>-`
+// is a machine stake: a per-step impl KD named without the milestone token
+// silently stalls the registry check-off, and one named with it prematurely
+// checks off an unfinished milestone. The rule therefore lands once per dispatch
+// at milestone close, per-step evidence rides the CHECKPOINT KDs the Committer
+// writes, and this pin stakes both changed homes while the unconditional
+// per-step Committer-dispatch sentence stays where the checkpoint machinery
+// reads it.
+describe("canonical milestone-scoped impl-KD naming", () => {
+  const implTemplate = readRoot(join("skills", "template-impl", "SKILL.md"));
+  const artisan = readAgent("artisan.md");
+
+  it("names the milestone token in the impl template's filename contract", () => {
+    expect(implTemplate).toContain("impl-{{milestone_id}}");
+    expect(implTemplate).toContain("milestone {{milestone ID}}");
+  });
+
+  it("keeps the per-step impl-KD instruction out of the Artisan layer", () => {
+    expect(artisan).not.toContain("implementation summary per step");
+    expect(artisan).not.toContain("After each plan step: create an impl KD");
+  });
+
+  it("keeps the milestone-close timing and the unconditional per-step checkpoint dispatch in place", () => {
+    expect(artisan).toContain("one milestone-scoped implementation summary per dispatch");
+    expect(artisan).toContain("This dispatch is unconditional");
+  });
+});
+
 describe("Overseer escalation skill grant", () => {
   const overseer = readAgent("overseer.md");
   const allowedSkills = actionEntries(overseer, "skill")
