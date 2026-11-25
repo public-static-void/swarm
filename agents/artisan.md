@@ -612,7 +612,8 @@ The resume handle travels as the subagent call's `sessionID` argument: pass the 
 - returned an empty result;
 - stopped mid-task before completing;
 - exhausted its token budget;
-- worked a milestone that a VERIFY FAIL verdict reopened.
+- worked a milestone that a VERIFY FAIL verdict reopened;
+- emitted a tool call as literal markup text and went idle without executing — re-dispatch the same instance with an explicit completion scope: name the still-required actions and deliverables, and record the idle failure as a friction row in the producing KD.
 
 **Start a fresh instance** (omit `sessionID`) for a genuinely new task, including when the prior dispatch:
 - is looping or repeating the same action without progress;
