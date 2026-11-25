@@ -873,7 +873,8 @@ function applyCap(issues, cap) {
 // Cap for the overseer INTENT injection, read at transform call time
 // (not module load — required for per-test env control). Env contract:
 // unset/empty/invalid/negative → 10 (default); "0" → unbounded (0 = no cap);
-// positive integer → that value.
+// positive integer → that value. When the cap truncates the set, the
+// injection carries a trailing notice line with the residual count.
 function envOpenIssueCap() {
   const raw = (process.env.KNOWLEDGE_GATE_MAX_OPEN_ISSUES || "").trim();
   if (raw === "") return 10;
@@ -2984,6 +2985,10 @@ async function knowledgeGateServer(input, options) {
       // The injected set is bounded (KNOWLEDGE_GATE_MAX_OPEN_ISSUES cap,
       // default 10) and optionally routed (KNOWLEDGE_GATE_ISSUE_AUDIENCE filter);
       // the filter runs BEFORE the cap so the cap measures the audience-matched set.
+      // When the cap truncates the set, one notice line follows the issue lines
+      // naming the residual count — silent truncation would hide open issues.
+      // The notice is never shaped like an issue line, so the marker count keeps
+      // equalling the injected issue lines and line-shape filters stay exact.
       // The habit-builder EVOLVE branch above stays unfiltered and uncapped.
       if (agent === "overseer") {
         const scanned = scanOpenIssuesWorkspaceAware();
@@ -3004,9 +3009,17 @@ async function knowledgeGateServer(input, options) {
             ? `\nInclude these in the Triage Notes section of your intent KD. ` +
               `Reference the issue IDs and recommend which ones to address in this session.`
             : "";
+          // Residual count of issues the cap dropped; emitted only when the
+          // cap actually truncated. The notice deliberately avoids the
+          // "- [scope/id]" line shape so snapshot line filters stay exact.
+          const notice = capped.length < filtered.length
+            ? `\n(${filtered.length - capped.length} more open issues beyond cap — ` +
+              `KNOWLEDGE_GATE_MAX_OPEN_ISSUES lifts it; stores under knowledge/)`
+            : "";
           output.system.push(
             `[Knowledge Gate] Open issues from all stores detected:\n` +
             `<!-- issues-snapshot v1: ${injected} open, stable order -->\n${issueSummary}` +
+            notice +
             directive
           );
           debug(`issue snapshot: surfaced ${injected} open issues to Overseer (directive ${directive ? "included" : "suppressed"})`);

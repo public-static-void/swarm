@@ -1155,6 +1155,8 @@ Body`;
         // so 3 issue files × 2 = 6
         expect(lines[1]).toBe("<!-- issues-snapshot v1: 6 open, stable order -->");
         expect(issueLines(hint)).toHaveLength(6);
+        // Nothing was truncated (under cap): no notice line appears.
+        expect(hint.includes("more open issues beyond cap")).toBe(false);
       });
 
       it("reports the post-cap count in the marker", async () => {
@@ -1185,6 +1187,18 @@ Body`;
         expect(hint).toBeTruthy();
         expect(hint).toContain("<!-- issues-snapshot v1: 10 open, stable order -->");
         expect(issueLines(hint)).toHaveLength(10);
+
+        // Truncation must be visible: the block ends with a notice naming the
+        // residual count, and the notice is never shaped like an issue line, so
+        // line-shape filters keep counting exactly the injected issue lines.
+        // 12 fixture files mirrored across the two stores = 24 open, cap 10
+        // drops 14.
+        const lines = hint.split("\n");
+        const tail = lines[lines.length - 1];
+        expect(tail).toBe(
+          "(14 more open issues beyond cap — KNOWLEDGE_GATE_MAX_OPEN_ISSUES lifts it; stores under knowledge/)"
+        );
+        expect(tail.startsWith("- [")).toBe(false);
       });
 
       it("reports the post-audience count in the marker", async () => {
