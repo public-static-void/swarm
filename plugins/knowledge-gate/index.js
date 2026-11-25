@@ -3142,10 +3142,12 @@ async function knowledgeGateServer(input, options) {
     await ctx.session.hook("context", handleContext);
     try { await ctx.session.hook("compaction", handleContext); } catch {}
     try { await ctx.session.hook("generate", handleContext); } catch {}
-    // Custom memory/issue tools: V1 defines them with zod schemas via the V1
-    // `tool()` helper; V2 registers via transform with JSON Schema. The V1
-    // execute functions validate internally, so expose a permissive schema
-    // and wrap execute to return V2 { content }.
+    // Custom memory/issue tools: each V1 map entry's `args` points at its
+    // V2_SCHEMAS JSON Schema entry — the single source of truth — so the
+    // registration exposes that typed schema as the model-facing input, and
+    // only an entry without typed args falls back to a permissive shape.
+    // The V1 execute functions validate internally; execute is wrapped to
+    // return V2 { content }.
     await ctx.tool.transform((editor) => {
       const defs = v1.tool || {};
       for (const [name, t] of Object.entries(defs)) {
@@ -3153,7 +3155,7 @@ async function knowledgeGateServer(input, options) {
           editor.add({
             name,
             description: t?.description || name,
-            input: { type: "object", properties: {}, additionalProperties: true },
+            input: t.args && typeof t.args === "object" ? t.args : { type: "object", properties: {}, additionalProperties: true },
             execute: async (input, toolCtx) => {
               const sessionID = toolCtx?.sessionID;
               const agent = toolCtx?.agent

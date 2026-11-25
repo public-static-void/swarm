@@ -4723,6 +4723,7 @@ Body`;
     // looks like to the plugin.
     function makeSetupCtx({ failTool } = {}) {
       const added = [];
+      const addedDefs = [];
       const handlers = [];
       const ctx = {
         location: { directory: tempRoot },
@@ -4738,13 +4739,14 @@ Body`;
               add: (def) => {
                 if (failTool && def.name === failTool) throw new Error(`registry rejected ${def.name}`);
                 added.push(def.name);
+                addedDefs.push(def);
               },
             };
             await apply(editor);
           },
         },
       };
-      return { ctx, added, handlers };
+      return { ctx, added, addedDefs, handlers };
     }
 
     async function runContextHandler(handlers, event) {
@@ -4763,6 +4765,35 @@ Body`;
       const { ctx, added } = makeSetupCtx();
       await pluginModule.default.setup(ctx);
       expect(added.sort()).toEqual([...REGISTERED_TOOL_NAMES].sort());
+    });
+
+    // The model-facing schema is what the harness validates against, so a
+    // tool whose V1 definition carries a typed args schema must be registered
+    // with that same schema — a permissive stand-in would hide argument
+    // shape errors from the model until the handler rejects them.
+    it("registers each typed tool with its own schema as the model-facing input", async () => {
+      const { ctx, addedDefs } = makeSetupCtx();
+      await pluginModule.default.setup(ctx);
+      expect(addedDefs).toHaveLength(REGISTERED_TOOL_NAMES.length);
+
+      for (const def of addedDefs) {
+        const typed = hooks.tool[def.name]?.args;
+        expect(typed, `${def.name} V1 definition carries a typed args schema`).toBeTruthy();
+
+        // The registration reuses the single-schema object rather than a copy.
+        expect(def.input, `${def.name} input`).toBe(typed);
+        expect(Object.keys(def.input.properties ?? {}).length, `${def.name} properties`)
+          .toBeGreaterThan(0);
+        if (typed.required) {
+          expect(def.input.required, `${def.name} required keys`).toEqual(typed.required);
+        }
+      }
+
+      // A permissive fallback entry would have no properties and accept any
+      // argument — none of the current typed tools may degrade to it.
+      const permissive = (def) =>
+        def.input.additionalProperties === true && Object.keys(def.input.properties ?? {}).length === 0;
+      expect(addedDefs.filter(permissive).map((def) => def.name)).toEqual([]);
     });
 
     it("records a failed registration by tool name and keeps registering the rest", async () => {
