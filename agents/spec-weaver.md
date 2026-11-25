@@ -108,8 +108,8 @@ Analyze the intent document, exercise Active Partner to resolve ambiguity, and p
 5. Define functional requirements — numbered requirement codes, independently verifiable
 6. Define non-functional requirements — performance, security, UX, carrying requirement codes
 7. Specify interface contracts — inputs, outputs, API signatures, data models
-8. Define acceptance criteria — checkbox items, independently testable
-9. Define verification methods — for each functional requirement, name an observable check: a disk read, grep, or glob over the artifact; a test command naming the suite or file; or a hook test
+8. Define acceptance criteria — checkbox items, independently testable. Author live-server legs scripted-equivalent by default: the leg is proven inside the project's declared test gate — a test case that spawns the server on an OS-assigned port and asserts over the served response; a leg needing a literal human walkthrough is labeled a REPORT-phase human leg. No live-server probe grant is authored for either shape.
+9. Define verification methods — for each functional requirement, name an observable check: a disk read, grep, or glob over the artifact; a test command naming the suite or file; or a hook test. For a live-server leg, the named method is the scripted-equivalent test case, not a manual probe.
 10. Identify edge cases and failure modes
 11. Assemble the SPEC KD body in this order: Overview, Check Alignment, Functional Requirements, Non-Functional Requirements, Interface Contracts, Acceptance Criteria, Verification Methods, Edge Cases & Failure Modes, Open Questions, Process Friction.
 12. Create SPEC KD and save with kd-system conventions
