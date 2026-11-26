@@ -31,8 +31,13 @@ const AGENTS_DIR = join(ROOT, "agents");
 // regression this regex catches.
 const RETIRED_RESUME_FIELD = /\bTASK ID\b|\btask_id\b/;
 
+// Guards compare contract content, not checkout line endings: a Windows
+// checkout (core.autocrlf) yields CRLF bytes, and every LF-anchored regex,
+// split, and exact-line comparison below would see trailing \r. Normalizing
+// at the read site keeps the guards platform-neutral; an LF checkout reads
+// byte-identically.
 function readRoot(name) {
-  return readFileSync(join(ROOT, name), "utf8");
+  return readFileSync(join(ROOT, name), "utf8").replace(/\r\n/g, "\n");
 }
 
 function agentFiles() {
@@ -40,7 +45,7 @@ function agentFiles() {
 }
 
 function readAgent(name) {
-  return readFileSync(join(AGENTS_DIR, name), "utf8");
+  return readFileSync(join(AGENTS_DIR, name), "utf8").replace(/\r\n/g, "\n");
 }
 
 // The rendered body of a delegation-gate template. Parsed, never raw-matched:
@@ -195,6 +200,16 @@ const ANALYZER_READ_BASELINE_COMMANDS = [
   "diff*", "tree*", "which*", "type*", "stat*", "du*", "df*",
 ];
 const COMMITTER_LIST_COMMANDS = ["ls*", "git ls-files*"];
+// The corrected permission-wall matrix: the audit roles' tracked-file inventory
+// verb plus the analysis role's node probe family. One coherent decision, so
+// the membership is pinned as a unit — a row that drifts out of a role file or
+// a role that grows an entry the decision never granted reddens here.
+const PERMISSION_WALL_MATRIX = {
+  "explorer.md": ["git ls-files*"],
+  "analyzer.md": ["git ls-files*", "node --version*", "node --check*", "node --test*"],
+  "inspector.md": ["git ls-files*"],
+  "artisan.md": ["git ls-files*"],
+};
 const SCAN_AGENTS = ["inspector.md", "analyzer.md", "artisan.md"];
 const SCAN_COMMANDS = ["npm audit*", "npm run audit*", "pip audit*"];
 // Per-command owners: the python scan probe is a scanner-role grant (the
@@ -1280,6 +1295,61 @@ describe("committer plan/spec read contract", () => {
     expect(missing).toEqual([]);
     const grantedEdits = editPatterns.filter((p) => /^knowledge\/(composed|process|report)-/.test(p));
     expect(grantedEdits).toEqual([]);
+  });
+
+  it("keeps the blanket read deny on the committer — the read tool is out of its entitlement by design", () => {
+    // The rejected committer read proposal must not sneak back through a later
+    // edit: the wildcard read stays denied and no wildcard read allow appears.
+    const readRules = actionEntries(readAgent("committer.md"), "read");
+    const blanket = readRules.filter((e) => e.pattern === "*");
+    expect(blanket.map((e) => e.mode)).toEqual(["deny"]);
+    expect(readRules.filter((e) => e.pattern === "*" && e.mode === "allow")).toEqual([]);
+  });
+});
+
+describe("permission-wall grant matrix", () => {
+  const files = agentFiles();
+  const entriesByFile = new Map(
+    files.map((f) => [f, bashEntries(readAgent(f))])
+  );
+
+  it("holds every matrix entry as an allow in its pinned role file", () => {
+    const missing = [];
+    for (const [f, commands] of Object.entries(PERMISSION_WALL_MATRIX)) {
+      const allowed = entriesByFile.get(f).filter((e) => e.mode === "allow").map((e) => e.pattern);
+      for (const cmd of commands) {
+        if (!allowed.includes(cmd)) missing.push(`${f}: ${cmd}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("keeps the file-inventory verb out of roles outside the matrix rows", () => {
+    // The committer's inventory entry is pre-existing and stands outside the
+    // matrix; every other role must not grow it without re-opening the decision.
+    const offenders = [];
+    for (const f of files) {
+      if (f === "committer.md") continue;
+      const pinned = PERMISSION_WALL_MATRIX[f] ?? [];
+      if (pinned.includes("git ls-files*")) continue;
+      for (const { pattern, mode } of entriesByFile.get(f)) {
+        if (pattern === "git ls-files*" && mode === "allow") offenders.push(`${f}: ${pattern}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("holds no bare git ls wildcard in any role file", () => {
+    // The metadata-family escape: a grant written as the broad `ls` subcommand
+    // sweeps every ls-shaped subcommand under it, so only the exact verb form is admissible.
+    const offenders = [];
+    for (const f of files) {
+      for (const { pattern } of entriesByFile.get(f)) {
+        const stripped = pattern.replace(/\*+$/, "");
+        if (stripped === "git ls" || stripped === "git ls *") offenders.push(`${f}: ${pattern}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 
@@ -2578,6 +2648,34 @@ describe("rule layers state their rules self-containedly", () => {
 // a grant with no instruction admits a skill nothing tells the role to load.
 // The grant is read from the permission block; the instruction is read from
 // the delegation-step section that carries it.
+// The canonical impl-KD naming rule. The check-off prefix `impl-<milestoneId>-`
+// is a machine stake: a per-step impl KD named without the milestone token
+// silently stalls the registry check-off, and one named with it prematurely
+// checks off an unfinished milestone. The rule therefore lands once per dispatch
+// at milestone close, per-step evidence rides the CHECKPOINT KDs the Committer
+// writes, and this pin stakes both changed homes while the unconditional
+// per-step Committer-dispatch sentence stays where the checkpoint machinery
+// reads it.
+describe("canonical milestone-scoped impl-KD naming", () => {
+  const implTemplate = readRoot(join("skills", "template-impl", "SKILL.md"));
+  const artisan = readAgent("artisan.md");
+
+  it("names the milestone token in the impl template's filename contract", () => {
+    expect(implTemplate).toContain("impl-{{milestone_id}}");
+    expect(implTemplate).toContain("milestone {{milestone ID}}");
+  });
+
+  it("keeps the per-step impl-KD instruction out of the Artisan layer", () => {
+    expect(artisan).not.toContain("implementation summary per step");
+    expect(artisan).not.toContain("After each plan step: create an impl KD");
+  });
+
+  it("keeps the milestone-close timing and the unconditional per-step checkpoint dispatch in place", () => {
+    expect(artisan).toContain("one milestone-scoped implementation summary per dispatch");
+    expect(artisan).toContain("This dispatch is unconditional");
+  });
+});
+
 describe("Overseer escalation skill grant", () => {
   const overseer = readAgent("overseer.md");
   const allowedSkills = actionEntries(overseer, "skill")
@@ -2780,10 +2878,17 @@ describe("short-term memory bare channel", () => {
     expect(section).toContain("tools.memory_note");
   });
 
-  it("carries the bare invocation in the write channel descriptions", () => {
+  it("carries the bare invocation in exactly one description home", () => {
     const source = readKnowledgeGateSource();
+    // The bare-invocation contract itself is pinned behaviorally by the
+    // plugin suite's tool.definition output-shape case (the definition
+    // output must contain both plain substrings). Here the static
+    // occurrence count guards single-homing: the call-as sentence lives in
+    // the tool map once — a second literal copy is the drift-prone mirror
+    // the definition hook replaces by sourcing the map entry.
     const occurrences = source.split("tools.memory_note").length - 1;
-    expect(occurrences).toBeGreaterThanOrEqual(2);
+    expect(occurrences).toBe(1);
+    expect(source).toContain("Callable as memory_note, or through Code Mode as tools.memory_note.");
   });
 
   it("keeps prompts and sources free of the prefixed channel name", () => {
@@ -2812,7 +2917,12 @@ describe("short-term memory bare channel", () => {
 describe("short-term note deletion scope", () => {
   it("bounds the note-delete channel to short-term notes", () => {
     const source = readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
-    const deleteSection = source.slice(source.indexOf('if (toolID === "memory_note_delete")'));
+    // Single-home contract: the note-delete description lives in its tool-map
+    // entry, so the slice anchors on that home rather than a definition-hook
+    // literal — the blast-radius assertions below are unchanged.
+    const home = source.indexOf("      memory_note_delete: {");
+    expect(home, "the tool map carries a memory_note_delete home").toBeGreaterThanOrEqual(0);
+    const deleteSection = source.slice(home);
     expect(deleteSection).toContain("short-term");
     expect(deleteSection).not.toContain("byproduct");
     expect(deleteSection).not.toContain("/tmp/opencode");

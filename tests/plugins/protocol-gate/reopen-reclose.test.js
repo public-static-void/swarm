@@ -161,7 +161,10 @@ ${table}
   }
 
   async function landAndSettle(artisan, relPath, content, callID) {
-    createKD(relPath.split("/").pop(), content);
+    // The write may present the path in any shape (relative, dot-prefixed,
+    // platform-absolute); the landed file is addressed by its basename, using
+    // the same separator-tolerant extraction the plugin applies.
+    createKD(relPath.split(/[\\/]/).pop(), content);
     await hooks["tool.execute.after"](
       { tool: "write", sessionID: artisan, callID },
       {}

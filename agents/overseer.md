@@ -233,7 +233,8 @@ When re-dispatching an agent for the same task, choose the target instance delib
 - returned an empty result;
 - stopped mid-task before completing;
 - exhausted its token budget;
-- worked on a milestone that a VERIFY FAIL verdict reopened — reuse the same artisans who worked on the reopened milestones so they continue from their existing context.
+- worked on a milestone that a VERIFY FAIL verdict reopened — reuse the same artisans who worked on the reopened milestones so they continue from their existing context;
+- emitted a tool call as literal markup text and went idle without executing — re-dispatch the same instance with an explicit completion scope: name the still-required actions and deliverables, and record the idle failure as a friction row in the producing KD.
 
 **Start a fresh instance** (omit `sessionID`) for a genuinely new task, including when the agent:
 - is looping or repeating the same action without progress;

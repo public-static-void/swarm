@@ -5,7 +5,7 @@ description: "KD template for creating IMPLEMENTATION SUMMARY documents. Load th
 
 ---
 
-title: "IMPLEMENTATION SUMMARY: {{feature name}} — {{step reference}}"
+title: "IMPLEMENTATION SUMMARY: {{feature name}} — milestone {{milestone ID}}"
 version: 1.0.0
 status: draft
 type: impl
@@ -14,7 +14,8 @@ author: Artisan
 superseded_by: null
 ---
 
-<!-- Filename: knowledge/impl-{{feature}}-{{session_id}}-gen{{generation}}.md -->
+<!-- Filename: knowledge/impl-{{milestone_id}}-{{feature}}-{{session_id}}-gen{{generation}}.md -->
+<!-- One impl KD per milestone dispatch, written once at milestone close; per-step evidence rides the CHECKPOINT KDs the Committer writes at each step. -->
 <!-- GENERATION: {{generation}} is the lifecycle counter from protocol-gate state. Each lifecycle's KDs are scoped to its generation (`-genN-` after the session ID) so stale KDs from prior lifecycles are never matched. Use the generation value provided by the dispatcher. -->
 
 # IMPLEMENTATION SUMMARY: {{feature}}

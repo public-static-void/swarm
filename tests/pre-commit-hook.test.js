@@ -16,7 +16,18 @@ describe("pre-commit hook", () => {
   it("exists at the version-controlled path and is executable", () => {
     const stat = statSync(HOOK_PATH);
     expect(stat.isFile()).toBe(true);
-    expect(stat.mode & 0o111).not.toBe(0);
+    if (process.platform === "win32") {
+      // The Windows filesystem cannot express the POSIX exec bit; the git
+      // index mode is the portable record of the hook's executability and is
+      // what makes POSIX checkouts (and git's own hook runner) see it.
+      const entry = execFileSync("git", ["ls-files", "-s", "--", ".githooks/pre-commit"], {
+        cwd: ROOT,
+        encoding: "utf8",
+      }).trim();
+      expect(entry.split(" ")[0]).toBe("100755");
+    } else {
+      expect(stat.mode & 0o111).not.toBe(0);
+    }
   });
 
   // Gate identity is run-verified, never string-pinned: every declared gate
@@ -51,7 +62,11 @@ describe("pre-commit hook", () => {
     }
   }
 
-  it("executes every repository gate it declares", () => {
+  // The stubbed hook is an sh script run by its shebang; Windows has no
+  // shebang interpreter, so the spawn itself is POSIX-only. Both stub-runner
+  // cases skip there — the non-zero-exit case would otherwise pass vacuously
+  // on a spawn ENOENT rather than on a failing gate.
+  it.skipIf(process.platform === "win32")("executes every repository gate it declares", () => {
     const hook = readFileSync(HOOK_PATH, "utf8");
     const lines = gateLines();
     expect(lines.length).toBeGreaterThanOrEqual(2);
@@ -69,7 +84,7 @@ describe("pre-commit hook", () => {
     });
   });
 
-  it("exits non-zero when any gate slot fails", () => {
+  it.skipIf(process.platform === "win32")("exits non-zero when any gate slot fails", () => {
     const hook = readFileSync(HOOK_PATH, "utf8");
     const lines = gateLines();
     expect(lines.length).toBeGreaterThanOrEqual(2);

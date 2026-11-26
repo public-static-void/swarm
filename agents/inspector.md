@@ -122,6 +122,9 @@ permissions:
     resource: "git log --oneline*"
     effect: allow
   - action: shell
+    resource: "git ls-files*"
+    effect: allow
+  - action: shell
     resource: "gh issue view*"
     effect: allow
   - action: shell
@@ -307,7 +310,7 @@ At VERIFY, the REVIEW KD is the lifecycle acceptance proof: full suite re-run, d
 4. Run the test and security scan workflow:
    - The project declares its verification gates in its own manifests, task definitions and project documentation. Read the declared command for each gate — the suite, the dependency audit, the SAST scan — and run it through the matching grant.
    - Run the full test suite with the project's declared test command.
-   - Run the dependency scan with the project's declared audit command. Exit 0 = no high/critical findings; non-zero = high/critical findings must be resolved or justified before the lifecycle advances. Low/medium findings are recorded in the review KD's Audit section and pass through as non-blocking. A reachable registry is required — a connectivity failure is not a vulnerability finding and the outcome is recorded in the review KD's Audit section.
+   - Run the dependency scan with the project's declared audit command. Exit 0 = no high/critical findings; non-zero = high/critical findings must be resolved or justified before the lifecycle advances. Low/medium findings are recorded in the review KD's Audit section and pass through as non-blocking. A reachable registry is required — a connectivity failure is not a vulnerability finding and the outcome is recorded in the review KD's Audit section. A dependency audit that reports no lockfile against an empty dependency surface is a structural state: record it per the loaded security-audit skill's zero-dependency tree idiom and carry the dependency-inventory check as that row's substitute evidence.
    - Run the SAST scan with the project's declared scan command. Warnings are scan findings to record in the review KD's Audit section; errors (syntax or error-level rules) must be resolved or justified.
    - When no grant matches a declared gate, record the declared gate and the declared-vs-run delta in the review KD's Audit section rather than substituting a command from another ecosystem. A declared gate the verifier cannot run is a recorded delta, not a silent gap.
    - The review KD's Audit section records the actual scan output (commands, exit codes, findings) instead of a "no SAST tooling" caveat — the scan tooling above is part of the repo baseline.

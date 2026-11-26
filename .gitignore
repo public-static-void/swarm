@@ -42,3 +42,4 @@ bun.lock
 
 # Opencode Internal
 service.json
+cli.json

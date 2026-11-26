@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 import { tmpdir } from "os";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -1155,6 +1155,8 @@ Body`;
         // so 3 issue files × 2 = 6
         expect(lines[1]).toBe("<!-- issues-snapshot v1: 6 open, stable order -->");
         expect(issueLines(hint)).toHaveLength(6);
+        // Nothing was truncated (under cap): no notice line appears.
+        expect(hint.includes("more open issues beyond cap")).toBe(false);
       });
 
       it("reports the post-cap count in the marker", async () => {
@@ -1185,6 +1187,18 @@ Body`;
         expect(hint).toBeTruthy();
         expect(hint).toContain("<!-- issues-snapshot v1: 10 open, stable order -->");
         expect(issueLines(hint)).toHaveLength(10);
+
+        // Truncation must be visible: the block ends with a notice naming the
+        // residual count, and the notice is never shaped like an issue line, so
+        // line-shape filters keep counting exactly the injected issue lines.
+        // 12 fixture files mirrored across the two stores = 24 open, cap 10
+        // drops 14.
+        const lines = hint.split("\n");
+        const tail = lines[lines.length - 1];
+        expect(tail).toBe(
+          "(14 more open issues beyond cap — KNOWLEDGE_GATE_MAX_OPEN_ISSUES lifts it; stores under knowledge/)"
+        );
+        expect(tail.startsWith("- [")).toBe(false);
       });
 
       it("reports the post-audience count in the marker", async () => {
@@ -4679,6 +4693,28 @@ Body`;
       await hooks["tool.definition"]({ toolID: "memory_note" }, output);
       expect(output.description).toContain("memory_note");
       expect(output.description).toContain("tools.memory_note");
+      // The description is model-facing: markup-shaped fragments (a backticked
+      // call-as directive) and non-ASCII length glyphs give a text-emitting
+      // model dialects something to echo back instead of a real call.
+      expect(output.description).not.toMatch(/`[a-z_]+/);
+      expect(output.description).not.toContain("≤");
+    });
+
+    // Single-homing contract: the description lives in exactly one source
+    // home (the server map); the definition hook sources it from there at
+    // runtime, so a re-appearing second literal copy — which drifts — is a
+    // failure. The hygiene assertions apply to the one home.
+    it("keeps the single memory_note description home free of markup and non-ASCII glyphs", () => {
+      const source = readFileSync(
+        join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "plugins", "knowledge-gate", "index.js"),
+        "utf8"
+      );
+      const homes = source.split("\n").filter((line) => line.includes("Write a short-term memory note"));
+      expect(homes).toHaveLength(1);
+      for (const line of homes) {
+        expect(line).not.toContain("≤");
+        expect(line).not.toMatch(/`[a-z_]+/);
+      }
     });
   });
 
@@ -4709,10 +4745,12 @@ Body`;
     // looks like to the plugin.
     function makeSetupCtx({ failTool } = {}) {
       const added = [];
+      const addedDefs = [];
       const handlers = [];
       const ctx = {
         location: { directory: tempRoot },
         options: {},
+        app: { version: "test-version" },
         session: {
           hook: async (name, handler) => {
             handlers.push({ name, handler });
@@ -4724,13 +4762,14 @@ Body`;
               add: (def) => {
                 if (failTool && def.name === failTool) throw new Error(`registry rejected ${def.name}`);
                 added.push(def.name);
+                addedDefs.push(def);
               },
             };
             await apply(editor);
           },
         },
       };
-      return { ctx, added, handlers };
+      return { ctx, added, addedDefs, handlers };
     }
 
     async function runContextHandler(handlers, event) {
@@ -4749,6 +4788,123 @@ Body`;
       const { ctx, added } = makeSetupCtx();
       await pluginModule.default.setup(ctx);
       expect(added.sort()).toEqual([...REGISTERED_TOOL_NAMES].sort());
+    });
+
+    // The model-facing schema is what the harness validates against, so a
+    // tool whose V1 definition carries a typed args schema must be registered
+    // with that same schema — a permissive stand-in would hide argument
+    // shape errors from the model until the handler rejects them.
+    it("registers each typed tool with its own schema as the model-facing input", async () => {
+      const { ctx, addedDefs } = makeSetupCtx();
+      await pluginModule.default.setup(ctx);
+      expect(addedDefs).toHaveLength(REGISTERED_TOOL_NAMES.length);
+
+      for (const def of addedDefs) {
+        const typed = hooks.tool[def.name]?.args;
+        expect(typed, `${def.name} V1 definition carries a typed args schema`).toBeTruthy();
+
+        // The registration reuses the single-schema object rather than a copy.
+        expect(def.input, `${def.name} input`).toBe(typed);
+        expect(Object.keys(def.input.properties ?? {}).length, `${def.name} properties`)
+          .toBeGreaterThan(0);
+        if (typed.required) {
+          expect(def.input.required, `${def.name} required keys`).toEqual(typed.required);
+        }
+      }
+
+      // A permissive fallback entry would have no properties and accept any
+      // argument — none of the current typed tools may degrade to it.
+      const permissive = (def) =>
+        def.input.additionalProperties === true && Object.keys(def.input.properties ?? {}).length === 0;
+      expect(addedDefs.filter(permissive).map((def) => def.name)).toEqual([]);
+    });
+
+    // Whether a tool sits on the direct wire list or only in the Code Mode
+    // catalog is a registration knob (`options.codemode`). Left undeclared,
+    // a host default governs it and the surface can flip silently between
+    // process cohorts; every registration must state the value explicitly.
+    it("declares an explicit boolean codemode call surface on every registration", async () => {
+      const { ctx, addedDefs } = makeSetupCtx();
+      await pluginModule.default.setup(ctx);
+      expect(addedDefs).toHaveLength(REGISTERED_TOOL_NAMES.length);
+
+      for (const def of addedDefs) {
+        const options = def.options;
+        expect(options, `${def.name} registration carries an options object`).toBeTruthy();
+        expect(typeof options.codemode, `${def.name} options.codemode`).toBe("boolean");
+      }
+    });
+
+    // The per-request definition hook must re-assert the same description the
+    // registration exposed, sourced from the single tool-map home: a second
+    // literal copy drifts (it already disagrees with the map for
+    // memory_write and issue_move), so the hook's output must equal the map
+    // entry for every registered tool.
+    it("re-asserts each tool description from the single map home, never a copy", async () => {
+      for (const toolID of REGISTERED_TOOL_NAMES) {
+        const output = { description: "" };
+        await hooks["tool.definition"]({ toolID }, output);
+        expect(output.description, `${toolID} description re-asserted from the tool map`)
+          .toBe(hooks.tool[toolID].description);
+      }
+    });
+
+    // The bare short-term channel contract doubles as a call-surface probe:
+    // for per-request ground truth of what the model actually saw, each
+    // request carrying memory_*/issue_* tools records one always-on line
+    // naming the session, agent, harness version, and each visible tool's
+    // input propCount/requiredCount. Repeats of an identical shape for the
+    // same session record once, so sustained traffic cannot flood the log,
+    // and a shape change is what earns the next line. The observation must
+    // not alter the tools the request delivers.
+    it("records per-session tool-shape probes without changing the request tools", async () => {
+      const priorDebug = process.env.KNOWLEDGE_GATE_DEBUG;
+      delete process.env.KNOWLEDGE_GATE_DEBUG; // the record is always-on
+      const { ctx, handlers } = makeSetupCtx();
+      await pluginModule.default.setup(ctx);
+
+      const typedInput = { type: "object", properties: { a: { type: "string" } }, required: ["a"] };
+      const tools = {};
+      for (const name of REGISTERED_TOOL_NAMES) {
+        tools[name] = { description: `stale ${name} description`, input: { ...typedInput, properties: { a: { type: "string" }, [`${name}_p`]: { type: "string" } } } };
+      }
+      tools.builtins_are_ignored = { description: "not a gate tool", input: { type: "object", properties: {} } };
+      const event = { sessionID: "probe-shape", agent: "artisan", system: [], tools };
+      await runContextHandler(handlers, event);
+
+      const log = readFileSync(KG_TEMP_LOG_FILE, "utf8");
+      const probeLines = log.split("\n").filter((l) => l.includes("TOOL_SHAPE"));
+      expect(probeLines.length, "one shape record for the request").toBe(1);
+      const line = probeLines[0];
+      expect(line).toContain('session="probe-shape"');
+      expect(line).toContain('agent="artisan"');
+      expect(line).toContain('version="test-version"');
+      for (const name of REGISTERED_TOOL_NAMES) {
+        // 2 visible props (a and <name>_p) and 1 required.
+        expect(line, `${name} shape recorded`).toContain(`${name}:props=2,req=1`);
+      }
+      expect(line).not.toContain("builtins_are_ignored");
+
+      // Repetition of the same incoming shape adds no second line. The
+      // record is built fresh because the definition pass mutates the
+      // project_name-carrying schemas in place — a live shape change would
+      // legitimately earn its own record on the next request.
+      const tools2 = {};
+      for (const name of REGISTERED_TOOL_NAMES) {
+        tools2[name] = { description: `stale ${name} description`, input: { type: "object", properties: { a: { type: "string" }, [`${name}_p`]: { type: "string" } }, required: ["a"] } };
+      }
+      const event2 = { sessionID: "probe-shape", agent: "artisan", system: [], tools: tools2 };
+      await runContextHandler(handlers, event2);
+      const log2 = readFileSync(KG_TEMP_LOG_FILE, "utf8");
+      expect(log2.split("\n").filter((l) => l.includes("TOOL_SHAPE")).length).toBe(1);
+
+      // Observation preserved the request surface: every tool entry still
+      // reaches the model with the re-asserted map description.
+      for (const name of REGISTERED_TOOL_NAMES) {
+        expect(event.tools[name].description).toBe(hooks.tool[name].description);
+      }
+      if (priorDebug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+      else process.env.KNOWLEDGE_GATE_DEBUG = priorDebug;
     });
 
     it("records a failed registration by tool name and keeps registering the rest", async () => {

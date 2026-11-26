@@ -135,7 +135,7 @@ Tests verify behavior, not wording. Group tests by behavior — one group per be
 
 ### VERIFY Acceptance Proof
 
-VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the full suite re-run, dependency and SAST scans, and the traceability matrix above carrying declared gate → actually-run gate → Test/Check → PASS/FAIL per row. The frontmatter verdict field carries the single lifecycle acceptance verdict under the `reopen_target` mandate (a FAIL names its checked-off row ids in that field) and the fresh PASS contract (a PASS advances when the review KD is newer than the newest impl KD; a stale PASS blocks pending re-review).
+VERIFY produces the lifecycle acceptance proof in exactly one REVIEW KD: the full suite re-run, dependency and SAST scans, and the traceability matrix above carrying declared gate → actually-run gate → Test/Check → PASS/FAIL per row. A dependency audit that is structurally inapplicable to a zero-dependency tree is recorded per the security-audit skill's zero-dependency tree idiom, with the dependency-inventory check as that row's substitute evidence. The frontmatter verdict field carries the single lifecycle acceptance verdict under the `reopen_target` mandate (a FAIL names its checked-off row ids in that field) and the fresh PASS contract (a PASS advances when the review KD is newer than the newest impl KD; a stale PASS blocks pending re-review).
 
 ## Verdicts
 

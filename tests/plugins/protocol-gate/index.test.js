@@ -520,10 +520,12 @@ superseded_by: null
     try {
       // beforeEach server({}) captured no directory → cwd fallback.
       expect(hooks.getKnowledgeDir(s)).toBe(join(process.cwd(), "knowledge"));
-      // Learned session dir wins over init root and cwd.
-      const learned = join(tmpdir(), `pg-learned-${s}`);
-      hooks.learnKnowledgeDirFromArgs(s, { filePath: join(learned, "knowledge", "intent-x.md") });
-      expect(hooks.getKnowledgeDir(s)).toBe(join(learned, "knowledge"));
+      // Learned session dir wins over init root and cwd. The learning seam
+      // recognizes POSIX-absolute paths, so the precedence fixture uses a
+      // leading-slash path on every platform (no filesystem access here).
+      const learned = `/tmp/pg-learned-${s}`;
+      hooks.learnKnowledgeDirFromArgs(s, { filePath: `${learned}/knowledge/intent-x.md` });
+      expect(hooks.getKnowledgeDir(s)).toBe(`${learned}/knowledge`);
       // Other sessions are unaffected (no cross-contamination).
       expect(hooks.getKnowledgeDir("other-session")).toBe(join(process.cwd(), "knowledge"));
       // Relative paths never teach.
@@ -568,10 +570,16 @@ superseded_by: null
     delete process.env.PROTOCOL_GATE_KNOWLEDGE_DIR;
     delete process.env.KNOWLEDGE_GATE_PROJECT_ROOT;
     try {
-      // Separate workspace: invisible from process.cwd().
-      const proj = mkdtempSync(join(tmpdir(), "pg-ws-"));
-      mkdirSync(join(proj, "knowledge"), { recursive: true });
       const s = sid("kdir-e2e");
+      // Separate workspace: invisible from process.cwd(). Built under a
+      // leading-slash /tmp path so the learning seam recognizes the write's
+      // absolute filePath on win32 as well (Node resolves drive-relative /tmp
+      // there); on POSIX this is the same root tmpdir() returns. The name is
+      // session- and process-scoped, and cleared first, so no stale KD from
+      // an earlier run can pre-satisfy the disk check.
+      const proj = join("/tmp", `pg-ws-${s}-${process.pid}`);
+      rmSync(proj, { recursive: true, force: true });
+      mkdirSync(join(proj, "knowledge"), { recursive: true });
       await initOverseer(s);
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.INTENT);
       const abs = join(proj, "knowledge", `intent-a-${s}.md`);
@@ -8712,7 +8720,15 @@ RESULT KD: knowledge/impl-M1-foo-${s}.md`;
       // Absent: the row transition the park state forecloses — a checked-off
       // row is never rewritten, and the session is parked before that write.
       expect(log).not.toContain("land a row transition");
-      expect(log).toContain("registry=milestones-feature-");
+      // The field names this session's registry file. The source strips the
+      // directory with a POSIX split idiom, so a win32-resolved path keeps
+      // its backslashes and the field carries the full path there; the
+      // naming contract holds in both shapes.
+      if (process.platform === "win32") {
+        expect(log).toMatch(/registry=[^\s]*milestones-feature-/);
+      } else {
+        expect(log).toContain("registry=milestones-feature-");
+      }
     });
   });
 });

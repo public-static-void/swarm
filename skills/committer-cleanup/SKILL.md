@@ -31,7 +31,7 @@ Load this skill when dispatched in CLEANUP mode by the Overseer (Phase 11 — co
    - Mixed types in one file: classify by dominant type (majority of lines changed). If roughly equal, flag to split across files if possible; otherwise classify by primary intent.
    - feat + refactor in same file: classify as feat with refactor note in body. Split when refactor exceeds 50% of changed lines.
 
-6. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage for the files this task changed. Stage all tracked files changed by the task. If any gitignored file appears staged, unstage it immediately. Silently skip ignored files; report which files were skipped if relevant.
+6. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage for the files this task changed. Stage all tracked files changed by the task. If any gitignored file appears staged, unstage it immediately. Silently skip ignored files; report which files were skipped if relevant. Untracked residue under the project's ignore-covered scratch dir (conventionally `out/`) is swept at cleanup, not carried into any batch. Tracked files modified outside the dispatch's named payload stay unstaged; a hands-off list carried by the dispatch binds every batch.
 
 7. **Edge cases**:
    - **Empty commit**: If the filtered set is empty, report "no changes to commit" and exit cleanly.
@@ -92,7 +92,7 @@ After verification passes:
 **Commit message format:** `<type>(<scope>): <description>`
 - **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
 - **scope**: the component or module affected
-- **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning. The format defines the positive shape; internal tracking metadata is excluded because it is not part of the format.
+- **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning. The message states the local change in docs form; process trace stays in the KDs.
 
 ## Exit
 
