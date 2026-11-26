@@ -90,6 +90,12 @@ pip-audit --format json > pip-audit-report.json
 
 Cross-reference findings with NVD CVE database and project-specific allowlists for accepted risks.
 
+### Zero-Dependency Tree Idiom
+
+When the manifest declares no dependencies and no lockfile exists, the dependency-audit tool exits 1 with `ENOLOCK`: the condition is structural — the tool is inapplicable to an empty dependency surface — and the audit records it as such, with the substitute gate below carrying the dependency posture evidence.
+
+The substitute gate is the dependency-inventory check: the manifest's dependency sections are empty and every import resolves to a runtime builtin; the audit row records the check's output as its actually-run evidence. Where the project declares no SAST scan, the named fallback is the manual rule-based sweep over the checklist above, recorded in the audit section as the scan substitute.
+
 ### Secure Configuration Checklist Pattern
 
 Validate configuration against a security baseline:
