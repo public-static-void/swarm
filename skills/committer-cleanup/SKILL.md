@@ -92,7 +92,7 @@ After verification passes:
 **Commit message format:** `<type>(<scope>): <description>`
 - **type**: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`
 - **scope**: the component or module affected
-- **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning. The format defines the positive shape; internal tracking metadata is excluded because it is not part of the format.
+- **description**: what changed and why, from a user perspective — written as if telling a colleague who has not read the code, focusing on semantic meaning. The message states the local change in docs form; process trace stays in the KDs.
 
 ## Exit
 
