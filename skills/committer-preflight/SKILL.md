@@ -27,7 +27,7 @@ Load this skill when dispatched in PREFLIGHT mode by the Overseer (Phase 2 — g
        5. `git pull --ff-only` — fast-forward to latest remote state
        6. On pull failure: report the failure reason, proceed to step 4 from the current state.
    - **Dirty repo**:
-     - **Stash**: Run `git stash push` to save pending changes.
+     - **Stash**: Run `git stash push` to save pending changes. Pending changes to files the dispatch or INTENT names hands-off stay in the working tree: run the stash with the pathspecs of the remaining pending files.
        - If stash fails: log the error with details about what prevented the stash (files preventing stash, merge conflicts, etc.) and abort. Attempt pull after the working tree is stable.
      - **Pull flow**: Apply the same default-branch pull flow as the clean-repo remote-configured path (steps 1-5 above), including the detached HEAD check.
      - **Restore**: The stash is popped in step 4 after the working branch is established.

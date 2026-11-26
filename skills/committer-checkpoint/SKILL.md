@@ -30,7 +30,7 @@ Load this skill when dispatched in CHECKPOINT mode by an Artisan with a change s
    - If a single file's changes cross multiple concerns, classify by dominant concern. If roughly equal, flag for potential file-level split.
    - feat + refactor in same file: classify as feat with refactor note in body. Split when refactor exceeds 50% of changed lines.
 
-5. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage for the files this task changed. Stage all tracked files changed by the task. If any gitignored file appears staged, unstage it immediately. Silently skip ignored files; report which files were skipped if relevant.
+5. **Check gitignore** — Before staging, `git status --porcelain`. Verify `.gitignore` coverage for the files this task changed. Stage all tracked files changed by the task. If any gitignored file appears staged, unstage it immediately. Silently skip ignored files; report which files were skipped if relevant. Tracked files modified outside the dispatch's named payload stay unstaged; a hands-off list carried by the dispatch binds every batch.
 
 6. **Edge cases**:
    - **Empty commit**: If the filtered set is empty, report "no changes to commit", then proceed to `## Exit`, which writes the CHECKPOINT KD — the knowledge-only handoff records without committing.
