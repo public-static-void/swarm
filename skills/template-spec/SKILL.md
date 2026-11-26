@@ -47,7 +47,7 @@ superseded_by: null
 
 Acceptance criteria for gitignored artifacts (`knowledge/`, `knowledge/issues/`, `knowledge/memory/`) are verified from disk via `read`/`glob`/`grep`. Rewrite any AC about a gitignored artifact that cannot be verified from disk so it verifies from disk.
 
-Acceptance-criteria legs with a live-server component are authored scripted-equivalent by default: the leg is proven inside the project's declared test gate — a test case that spawns the server on an OS-assigned port and asserts over the served response. A leg that requires a literal human walkthrough is labeled a REPORT-phase human leg at SPEC time. No live-server probe grant is added for either shape.
+Acceptance-criteria legs with a live-server component are authored scripted-equivalent by default: the leg is proven inside the project's declared test gate — a test case that spawns the server on an OS-assigned port and asserts over the served response. A leg that requires a literal human walkthrough is labeled for the REPORT-phase walkthrough.
 
 ## Verification Methods
 

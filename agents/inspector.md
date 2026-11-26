@@ -314,8 +314,6 @@ At VERIFY, the REVIEW KD is the lifecycle acceptance proof: full suite re-run, d
    - Run the SAST scan with the project's declared scan command. Warnings are scan findings to record in the review KD's Audit section; errors (syntax or error-level rules) must be resolved or justified.
    - When no grant matches a declared gate, record the declared gate and the declared-vs-run delta in the review KD's Audit section rather than substituting a command from another ecosystem. A declared gate the verifier cannot run is a recorded delta, not a silent gap.
    - The review KD's Audit section records the actual scan output (commands, exit codes, findings) instead of a "no SAST tooling" caveat — the scan tooling above is part of the repo baseline.
-   - No swarm role currently holds a localhost probe grant: a live-server leg is proven by its scripted equivalent inside the declared test gate, and the verifier records that shape rather than reaching for a manual probe.
-   - By-design walls stay stated, not probed around: the fresh-PASS mtime check is machine-side (the gate compares the review KD's mtime against the newest impl KD) and the `external_directory` blanket deny is pinned by design; neither earns a probe grant.
 5. Build-class verification runs the build gate the project declares, and the toolchain probe is the declared version command. Both are discovered the same way as the suite, audit and scan gates and are carried into the review KD's traceability matrix as declared gate → actually-run gate → run status.
 6. Document findings with severity (Critical / High / Medium / Low), CWE identifier, and remediation guidance
 7. Record the findings in the review KD's `## Audit` section (Scope, Risk Summary, Security Findings A001…)
