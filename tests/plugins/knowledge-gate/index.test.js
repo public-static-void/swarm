@@ -4750,6 +4750,7 @@ Body`;
       const ctx = {
         location: { directory: tempRoot },
         options: {},
+        app: { version: "test-version" },
         session: {
           hook: async (name, handler) => {
             handlers.push({ name, handler });
@@ -4846,6 +4847,64 @@ Body`;
         expect(output.description, `${toolID} description re-asserted from the tool map`)
           .toBe(hooks.tool[toolID].description);
       }
+    });
+
+    // The bare short-term channel contract doubles as a call-surface probe:
+    // for per-request ground truth of what the model actually saw, each
+    // request carrying memory_*/issue_* tools records one always-on line
+    // naming the session, agent, harness version, and each visible tool's
+    // input propCount/requiredCount. Repeats of an identical shape for the
+    // same session record once, so sustained traffic cannot flood the log,
+    // and a shape change is what earns the next line. The observation must
+    // not alter the tools the request delivers.
+    it("records per-session tool-shape probes without changing the request tools", async () => {
+      const priorDebug = process.env.KNOWLEDGE_GATE_DEBUG;
+      delete process.env.KNOWLEDGE_GATE_DEBUG; // the record is always-on
+      const { ctx, handlers } = makeSetupCtx();
+      await pluginModule.default.setup(ctx);
+
+      const typedInput = { type: "object", properties: { a: { type: "string" } }, required: ["a"] };
+      const tools = {};
+      for (const name of REGISTERED_TOOL_NAMES) {
+        tools[name] = { description: `stale ${name} description`, input: { ...typedInput, properties: { a: { type: "string" }, [`${name}_p`]: { type: "string" } } } };
+      }
+      tools.builtins_are_ignored = { description: "not a gate tool", input: { type: "object", properties: {} } };
+      const event = { sessionID: "probe-shape", agent: "artisan", system: [], tools };
+      await runContextHandler(handlers, event);
+
+      const log = readFileSync(KG_TEMP_LOG_FILE, "utf8");
+      const probeLines = log.split("\n").filter((l) => l.includes("TOOL_SHAPE"));
+      expect(probeLines.length, "one shape record for the request").toBe(1);
+      const line = probeLines[0];
+      expect(line).toContain('session="probe-shape"');
+      expect(line).toContain('agent="artisan"');
+      expect(line).toContain('version="test-version"');
+      for (const name of REGISTERED_TOOL_NAMES) {
+        // 2 visible props (a and <name>_p) and 1 required.
+        expect(line, `${name} shape recorded`).toContain(`${name}:props=2,req=1`);
+      }
+      expect(line).not.toContain("builtins_are_ignored");
+
+      // Repetition of the same incoming shape adds no second line. The
+      // record is built fresh because the definition pass mutates the
+      // project_name-carrying schemas in place — a live shape change would
+      // legitimately earn its own record on the next request.
+      const tools2 = {};
+      for (const name of REGISTERED_TOOL_NAMES) {
+        tools2[name] = { description: `stale ${name} description`, input: { type: "object", properties: { a: { type: "string" }, [`${name}_p`]: { type: "string" } }, required: ["a"] } };
+      }
+      const event2 = { sessionID: "probe-shape", agent: "artisan", system: [], tools: tools2 };
+      await runContextHandler(handlers, event2);
+      const log2 = readFileSync(KG_TEMP_LOG_FILE, "utf8");
+      expect(log2.split("\n").filter((l) => l.includes("TOOL_SHAPE")).length).toBe(1);
+
+      // Observation preserved the request surface: every tool entry still
+      // reaches the model with the re-asserted map description.
+      for (const name of REGISTERED_TOOL_NAMES) {
+        expect(event.tools[name].description).toBe(hooks.tool[name].description);
+      }
+      if (priorDebug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+      else process.env.KNOWLEDGE_GATE_DEBUG = priorDebug;
     });
 
     it("records a failed registration by tool name and keeps registering the rest", async () => {

@@ -3059,6 +3059,10 @@ async function knowledgeGateServer(input, options) {
       ctx?.options
     );
     const agentBySession = new Map();
+    // The harness version rides the shape probe records: cohort comparisons
+    // across binary updates need the version stamped on each line.
+    let harnessVersion = "unknown";
+    try { harnessVersion = ctx?.app?.version || "unknown"; } catch {}
     const pushSystem = (event, text) => {
       if (!event?.system || typeof text !== "string" || !text) return;
       try {
@@ -3081,6 +3085,39 @@ async function knowledgeGateServer(input, options) {
         const out = { system: [] };
         await v1["experimental.chat.system.transform"]?.({ sessionID, agent }, out);
         for (const line of out.system || []) pushSystem(event, line);
+      } catch {}
+      // Per-request shape probe: record what the model actually sees for the
+      // gate tools — visible id plus input propCount/requiredCount — once per
+      // distinct shape per session. The record is always-on rather than
+      // debug-gated: discriminator data for call-surface cohorts must survive
+      // the default-off debug posture, and the per-(session, shape) dedupe
+      // key is what bounds log volume under sustained traffic.
+      try {
+        const probeTools = event?.tools;
+        if (probeTools) {
+          const shapes = [];
+          for (const toolID of Object.keys(probeTools)) {
+            if (!/^(memory_|issue_)/.test(toolID)) continue;
+            const entry = probeTools[toolID] || {};
+            const propCount = entry.input && entry.input.properties ? Object.keys(entry.input.properties).length : 0;
+            const requiredCount = Array.isArray(entry.input?.required) ? entry.input.required.length : 0;
+            shapes.push(`${toolID}:props=${propCount},req=${requiredCount}`);
+          }
+          if (shapes.length) {
+            const signature = shapes.join(";");
+            gateRecordEvent(
+              "TOOL_SHAPE",
+              [
+                ["session", `"${sessionID}"`],
+                ["agent", `"${agent || "unknown"}"`],
+                ["version", `"${harnessVersion}"`],
+                ["tools", signature],
+              ],
+              undefined,
+              `tool-shape:${sessionID}|${signature}`
+            );
+          }
+        }
       } catch {}
       try {
         const tools = event?.tools;
