@@ -2878,10 +2878,17 @@ describe("short-term memory bare channel", () => {
     expect(section).toContain("tools.memory_note");
   });
 
-  it("carries the bare invocation in the write channel descriptions", () => {
+  it("carries the bare invocation in exactly one description home", () => {
     const source = readKnowledgeGateSource();
+    // The bare-invocation contract itself is pinned behaviorally by the
+    // plugin suite's tool.definition output-shape case (the definition
+    // output must contain both plain substrings). Here the static
+    // occurrence count guards single-homing: the call-as sentence lives in
+    // the tool map once — a second literal copy is the drift-prone mirror
+    // the definition hook replaces by sourcing the map entry.
     const occurrences = source.split("tools.memory_note").length - 1;
-    expect(occurrences).toBeGreaterThanOrEqual(2);
+    expect(occurrences).toBe(1);
+    expect(source).toContain("Callable as memory_note, or through Code Mode as tools.memory_note.");
   });
 
   it("keeps prompts and sources free of the prefixed channel name", () => {
@@ -2910,7 +2917,12 @@ describe("short-term memory bare channel", () => {
 describe("short-term note deletion scope", () => {
   it("bounds the note-delete channel to short-term notes", () => {
     const source = readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
-    const deleteSection = source.slice(source.indexOf('if (toolID === "memory_note_delete")'));
+    // Single-home contract: the note-delete description lives in its tool-map
+    // entry, so the slice anchors on that home rather than a definition-hook
+    // literal — the blast-radius assertions below are unchanged.
+    const home = source.indexOf("      memory_note_delete: {");
+    expect(home, "the tool map carries a memory_note_delete home").toBeGreaterThanOrEqual(0);
+    const deleteSection = source.slice(home);
     expect(deleteSection).toContain("short-term");
     expect(deleteSection).not.toContain("byproduct");
     expect(deleteSection).not.toContain("/tmp/opencode");

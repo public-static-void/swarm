@@ -2803,59 +2803,17 @@ async function knowledgeGateServer(input, options) {
 
     // --- Hook: tool.definition ---
     // Re-assert the memory/issue tool descriptions on every LLM call. The
-    // tools are registered via the tool hook (pluginTools above); this hook
-    // keeps the LLM-facing description stable across tool.definition passes.
+    // description lives in exactly one source home — the tool-map entry the
+    // registration reads — so this pass re-states that same string and can
+    // no longer drift from what was registered; a second literal copy had
+    // already forked (memory_write and issue_move disagreed with the map).
     async function toolDefinition(input, output) {
       const { toolID } = input;
 
-      if (toolID === "memory_search") {
-        output.description = "Search knowledge/memory/ for prior session insights. Args: tags (string array), topic (string), limit (integer, default 5), store (optional project|generic|swarm — restricts search to one store). Returns JSON array of matching entries, each carrying a store field.";
-        debug(`toolDefinition: provided description for memory_search`);
-      }
-
-      if (toolID === "memory_write") {
-        output.description = "Write a validated memory entry to knowledge/memory/. Args: entry (object with fields: id (optional), source_kd, tags, topic, insight, type, created, session, version), scope (required project|generic|swarm), project_name (optional — overrides the project subfolder when scope is project). Validates schema, checks tags against controlled vocabulary, deduplicates, auto-assigns ID, and writes to disk. Only Scribe agent has permission to write.";
-        debug(`toolDefinition: provided description for memory_write`);
-      }
-
-      if (toolID === "memory_note") {
-        output.description = "Write a short-term memory note to knowledge/short-term/{session}/{agent}/. Every agent may write into its own namespace for the current session; the note is session-scoped scratch state. At 100 notes per agent per session the oldest note is evicted. Args: topic (string max 100 chars), content (string max 2000 chars), tags (optional, 0-5 strings), scope (optional project|generic|swarm). Returns { message, id } or { error }. Callable as memory_note, or through Code Mode as tools.memory_note.";
-        debug(`toolDefinition: provided description for memory_note`);
-      }
-
-      if (toolID === "memory_note_read") {
-        output.description = "Read short-term memory notes from knowledge/short-term/. Args: id (string ST-...) to read one note; agent and/or session (strings) to read a namespace (Scribe only — the promotion path). Agents may read only their own notes; Scribe may read any agent's notes. Returns the note object, an array of note objects, or { error }.";
-        debug(`toolDefinition: provided description for memory_note_read`);
-      }
-
-      if (toolID === "memory_notes_list") {
-        output.description = "List short-term memory notes in knowledge/short-term/. Returns a summary array [{ id, agent, created, topic }]. Non-Scribe agents see only their own notes in the current session; Scribe sees any agent's notes — or all agents' notes in a session when no agent is given.";
-        debug(`toolDefinition: provided description for memory_notes_list`);
-      }
-
-      if (toolID === "memory_note_delete") {
-        output.description = "Delete a short-term memory note from knowledge/short-term/. Args: id (string ST-...). The owner may delete own notes; Scribe may delete any agent's notes. Removes note-{NNN}.json permanently — the short-term store is session-scoped scratch state.";
-        debug(`toolDefinition: provided description for memory_note_delete`);
-      }
-
-      if (toolID === "issue_write") {
-        output.description = "Write a validated issue to the store named by scope (project|generic|swarm). Only Habit Builder may write. Args: issue (object with fields: id (optional), title, severity, status, created, session, assigned_to, tags, scope, description, source_kd_reference, recommended_fix, acceptance_criteria), project_name (optional — overrides the project subfolder when scope is project). Validates schema, auto-assigns per-store numeric ID, and writes {store}/knowledge/issues/issue-{N}.md with scope persisted in frontmatter.";
-        debug(`toolDefinition: provided description for issue_write`);
-      }
-
-      if (toolID === "issue_update") {
-        output.description = "Update an existing issue in the store named by scope. Only Habit Builder may update. Args: id (number), scope (required project|generic|swarm), changes (object with any of: status, resolution, assigned_to, append_section {heading, body}), project_name (optional — overrides the project subfolder when scope is project). Flipping status to resolved and/or passing a resolution closes the issue: status flips and a ## Resolution (YYYY-MM-DD) section is appended. append_section appends a ## heading section with the supplied body, leaving the frontmatter and every pre-existing body byte untouched and the status unchanged; appending to a resolved issue requires status in the same call. Any other changes key is an error naming the key. Returns { message, id, path } — plus byte_delta { before, after, appended } on an append — or { error }.";
-        debug(`toolDefinition: provided description for issue_update`);
-      }
-
-      if (toolID === "issue_move") {
-        output.description = "Move an issue between stores (project|generic|swarm). Only Habit Builder may move issues. Args: id (number, required), from_scope (required), to_scope (required), reason (optional string), project_name (optional — overrides the project subfolder when to_scope is project). Copies the issue to the target store, updates scope in frontmatter, and deletes from source. Returns { message, id, path } or { error }.";
-        debug(`toolDefinition: provided description for issue_move`);
-      }
-
-      if (toolID === "issue_read") {
-        output.description = "Read an issue from the store named by scope (project|generic|swarm). Only Habit Builder may read — the role that curates the issue stores; callers outside that set are refused before any store access. Args: id (number, required), scope (required project|generic|swarm — the store to search), project_name (optional — overrides the project subfolder when scope is project). Reads the issue file from the scope's store and returns the full issue (frontmatter fields plus body sections: Description, Source KD Reference, Recommended Fix, Acceptance Criteria, Resolution). Returns the issue object or { error }.";
-        debug(`toolDefinition: provided description for issue_read`);
+      const home = pluginTools[toolID];
+      if (home && typeof home.description === "string") {
+        output.description = home.description;
+        debug(`toolDefinition: re-asserted description for ${toolID} from the tool map`);
       }
 
       // Declare the optional project_name parameter in the exposed schema for
@@ -3147,7 +3105,10 @@ async function knowledgeGateServer(input, options) {
     // registration exposes that typed schema as the model-facing input, and
     // only an entry without typed args falls back to a permissive shape.
     // The V1 execute functions validate internally; execute is wrapped to
-    // return V2 { content }.
+    // return V2 { content }. `codemode:false` declares the call surface
+    // explicitly instead of inheriting a host default that differs across
+    // process cohorts: the prose and hints teach bare-name direct calls, so
+    // the tools must sit on the direct wire for that contract to hold.
     await ctx.tool.transform((editor) => {
       const defs = v1.tool || {};
       for (const [name, t] of Object.entries(defs)) {
@@ -3156,6 +3117,7 @@ async function knowledgeGateServer(input, options) {
             name,
             description: t?.description || name,
             input: t.args && typeof t.args === "object" ? t.args : { type: "object", properties: {}, additionalProperties: true },
+            options: { codemode: false },
             execute: async (input, toolCtx) => {
               const sessionID = toolCtx?.sessionID;
               const agent = toolCtx?.agent

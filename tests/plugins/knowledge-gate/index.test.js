@@ -4700,15 +4700,17 @@ Body`;
       expect(output.description).not.toContain("≤");
     });
 
-    // The same hygiene applies at both description homes — the server-map
-    // entry and the definition re-assertion carry the identical string.
-    it("keeps both memory_note description homes free of markup and non-ASCII glyphs", () => {
+    // Single-homing contract: the description lives in exactly one source
+    // home (the server map); the definition hook sources it from there at
+    // runtime, so a re-appearing second literal copy — which drifts — is a
+    // failure. The hygiene assertions apply to the one home.
+    it("keeps the single memory_note description home free of markup and non-ASCII glyphs", () => {
       const source = readFileSync(
         join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "plugins", "knowledge-gate", "index.js"),
         "utf8"
       );
       const homes = source.split("\n").filter((line) => line.includes("Write a short-term memory note"));
-      expect(homes).toHaveLength(2);
+      expect(homes).toHaveLength(1);
       for (const line of homes) {
         expect(line).not.toContain("≤");
         expect(line).not.toMatch(/`[a-z_]+/);
@@ -4814,6 +4816,36 @@ Body`;
       const permissive = (def) =>
         def.input.additionalProperties === true && Object.keys(def.input.properties ?? {}).length === 0;
       expect(addedDefs.filter(permissive).map((def) => def.name)).toEqual([]);
+    });
+
+    // Whether a tool sits on the direct wire list or only in the Code Mode
+    // catalog is a registration knob (`options.codemode`). Left undeclared,
+    // a host default governs it and the surface can flip silently between
+    // process cohorts; every registration must state the value explicitly.
+    it("declares an explicit boolean codemode call surface on every registration", async () => {
+      const { ctx, addedDefs } = makeSetupCtx();
+      await pluginModule.default.setup(ctx);
+      expect(addedDefs).toHaveLength(REGISTERED_TOOL_NAMES.length);
+
+      for (const def of addedDefs) {
+        const options = def.options;
+        expect(options, `${def.name} registration carries an options object`).toBeTruthy();
+        expect(typeof options.codemode, `${def.name} options.codemode`).toBe("boolean");
+      }
+    });
+
+    // The per-request definition hook must re-assert the same description the
+    // registration exposed, sourced from the single tool-map home: a second
+    // literal copy drifts (it already disagrees with the map for
+    // memory_write and issue_move), so the hook's output must equal the map
+    // entry for every registered tool.
+    it("re-asserts each tool description from the single map home, never a copy", async () => {
+      for (const toolID of REGISTERED_TOOL_NAMES) {
+        const output = { description: "" };
+        await hooks["tool.definition"]({ toolID }, output);
+        expect(output.description, `${toolID} description re-asserted from the tool map`)
+          .toBe(hooks.tool[toolID].description);
+      }
     });
 
     it("records a failed registration by tool name and keeps registering the rest", async () => {
