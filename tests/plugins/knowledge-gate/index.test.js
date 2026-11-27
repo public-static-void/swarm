@@ -4970,4 +4970,157 @@ Body`;
       expect(output.system.join("\n")).toContain("memory_search tool");
     });
   });
+
+  describe("gate log write-time trim", () => {
+    const TRIM_PROBE_TOOLS = [
+      "memory_search",
+      "memory_write",
+      "memory_update",
+      "memory_delete",
+      "memory_note",
+      "memory_note_read",
+      "memory_notes_list",
+      "memory_note_delete",
+      "issue_read",
+      "issue_write",
+      "issue_update",
+      "issue_move",
+    ];
+
+    // Retention at the always-on record seam: before appending a record, the
+    // seam rewrites the log to a complete-line tail (cap/2) and appends one
+    // LOG_TRIMMED record. The bound lives on disk, so it survives process
+    // restarts — unlike the process-local probe dedupe that only bounds a
+    // single run. The TOOL_SHAPE probe is the write trigger (one record per
+    // distinct session); equal-length session names keep record bytes uniform
+    // so the trim sequence below is exact.
+    function trimCtx() {
+      const handlers = [];
+      const ctx = {
+        location: { directory: tempRoot },
+        options: {},
+        app: { version: "test-version" },
+        session: {
+          hook: async (name, handler) => {
+            handlers.push({ name, handler });
+          },
+        },
+        tool: {
+          transform: async (apply) => {
+            await apply({ add: () => {} });
+          },
+        },
+      };
+      return { ctx, handlers };
+    }
+
+    async function probeOnce(handlers, sessionID) {
+      const typedInput = { type: "object", properties: { a: { type: "string" } }, required: ["a"] };
+      const tools = {};
+      for (const name of TRIM_PROBE_TOOLS) {
+        tools[name] = {
+          description: `shape ${name}`,
+          input: { ...typedInput, properties: { a: { type: "string" }, [`${name}_p`]: { type: "string" } } },
+        };
+      }
+      const entry = handlers.find((h) => h.name === "context");
+      await entry.handler({ sessionID, agent: "artisan", system: [], tools });
+    }
+
+    function trimTemp(name) {
+      const trimDir = mkdtempSync(join(tmpdir(), `${name}-`));
+      const priorLogDir = process.env.KNOWLEDGE_GATE_LOG_DIR;
+      const priorDebug = process.env.KNOWLEDGE_GATE_DEBUG;
+      const priorMax = process.env.KNOWLEDGE_GATE_LOG_MAX_BYTES;
+      delete process.env.KNOWLEDGE_GATE_DEBUG; // the record is always-on
+      process.env.KNOWLEDGE_GATE_LOG_DIR = trimDir;
+      return {
+        trimDir,
+        logFile: join(trimDir, "knowledge-gate.log"),
+        restore() {
+          if (priorMax === undefined) delete process.env.KNOWLEDGE_GATE_LOG_MAX_BYTES;
+          else process.env.KNOWLEDGE_GATE_LOG_MAX_BYTES = priorMax;
+          process.env.KNOWLEDGE_GATE_LOG_DIR = priorLogDir;
+          if (priorDebug === undefined) delete process.env.KNOWLEDGE_GATE_DEBUG;
+          else process.env.KNOWLEDGE_GATE_DEBUG = priorDebug;
+        },
+      };
+    }
+
+    it("rewrites the log to a bounded complete-line tail with one LOG_TRIMMED record per trim", async () => {
+      const t = trimTemp("kg-trim");
+      try {
+        const { ctx, handlers } = trimCtx();
+        await pluginModule.default.setup(ctx);
+
+        // Measure one record's exact byte length with the cap far above it.
+        process.env.KNOWLEDGE_GATE_LOG_MAX_BYTES = "100000000";
+        await probeOnce(handlers, "trim-sess-A0");
+        const first = readFileSync(t.logFile, "utf8").split("\n").filter((l) => l.length > 0);
+        expect(first, "one always-on record per probe request").toHaveLength(1);
+        const L = Buffer.byteLength(first[0]) + 1;
+        rmSync(t.logFile);
+
+        // cap = 5 records: the seventh append's pre-append check trims to the
+        // last two complete lines plus one LOG_TRIMMED record; the eighth
+        // lands back under the cap.
+        const cap = 5 * L;
+        process.env.KNOWLEDGE_GATE_LOG_MAX_BYTES = String(cap);
+        for (const tag of ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8"]) {
+          await probeOnce(handlers, `trim-sess-${tag}`);
+        }
+
+        const lines = readFileSync(t.logFile, "utf8").split("\n").filter((l) => l.length > 0);
+        const trimLines = lines.filter((l) => l.includes("LOG_TRIMMED"));
+        expect(trimLines, "exactly one trim event, one record").toHaveLength(1);
+
+        // Every surviving line is a complete, parseable gate line — the tail
+        // cut landed on a line boundary, never mid-record.
+        for (const l of lines) {
+          expect(l, `line parses: ${l}`).toMatch(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[knowledge-gate\] /);
+        }
+
+        const m = trimLines[0].match(/LOG_TRIMMED: kept (\d+) of (\d+), dropped (\d+) lines$/);
+        expect(m, `trim record shape: ${trimLines[0]}`).toBeTruthy();
+        expect(Number(m[1]), "kept bytes").toBe(2 * L);
+        expect(Number(m[2]), "pre-trim bytes").toBe(6 * L);
+        expect(Number(m[3]), "dropped lines").toBe(4);
+
+        // The newest records survive a trim; the pre-trim head is gone.
+        const log = lines.join("\n");
+        expect(log).toContain('session="trim-sess-A5"');
+        expect(log).toContain('session="trim-sess-A8"');
+        expect(log).not.toContain('session="trim-sess-A4"');
+        expect(log).not.toContain('session="trim-sess-A1"');
+
+        // Bounded at the cap in the same file — no rotation siblings.
+        expect(statSync(t.logFile).size).toBeLessThanOrEqual(cap);
+        expect(readdirSync(t.trimDir).filter((f) => /^knowledge-gate\.log/.test(f))).toEqual(["knowledge-gate.log"]);
+      } finally {
+        t.restore();
+        rmSync(t.trimDir, { recursive: true, force: true });
+      }
+    });
+
+    it("stays silent below the 2 MB default when KNOWLEDGE_GATE_LOG_MAX_BYTES is unset", async () => {
+      const t = trimTemp("kg-trim-default");
+      try {
+        delete process.env.KNOWLEDGE_GATE_LOG_MAX_BYTES;
+        const { ctx, handlers } = trimCtx();
+        await pluginModule.default.setup(ctx);
+        for (let i = 0; i < 70; i++) {
+          await probeOnce(handlers, `trim-sess-D${String(i).padStart(3, "0")}`);
+        }
+        const log = readFileSync(t.logFile, "utf8");
+        expect(log).not.toContain("LOG_TRIMMED");
+        expect(statSync(t.logFile).size).toBeGreaterThan(10_000);
+        // The default cap is one literal number per gate, pinned at its home.
+        const src = readFileSync(fileURLToPath(new URL("../../../plugins/knowledge-gate/index.js", import.meta.url)), "utf8");
+        expect(src).toContain("LOG_MAX_BYTES_DEFAULT = 2_000_000");
+      } finally {
+        t.restore();
+        rmSync(t.trimDir, { recursive: true, force: true });
+      }
+    });
+  });
 });
