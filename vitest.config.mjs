@@ -7,6 +7,13 @@ export default defineConfig({
     include: ["tests/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
     // Defense in depth: the explicit exclude keeps the vendored references/
     // tree out of collection even when include patterns widen later.
-    exclude: ["references/**"]
+    exclude: ["references/**"],
+    // The git-spawning suites wait on synchronous child processes whose
+    // runtime is what the environment owes them under concurrent agent git
+    // activity (the pre-commit hook runs the suite while agents run git), so
+    // the budget is a deliberate value at this single config site rather than
+    // a framework default crossed by load.
+    testTimeout: 30_000,
+    hookTimeout: 30_000
   }
 });

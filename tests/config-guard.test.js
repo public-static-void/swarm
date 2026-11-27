@@ -3978,6 +3978,20 @@ describe("config-file ignore coverage", () => {
   });
 });
 
+// The git-spawning legs wait on synchronous child processes whose runtime is
+// what the environment owes them under concurrent agent git activity — these
+// are correctness guards, so a framework-default wall-clock ceiling buys the
+// repo nothing and gets crossed under load. The budget is therefore a chosen
+// value at the single config site; this pin keeps it explicit so the suites
+// never silently inherit an implicit default again.
+describe("vitest timeout budget", () => {
+  it("declares test and hook timeout budgets of thirty seconds at the config site", () => {
+    const config = readRoot("vitest.config.mjs");
+    expect(config, "vitest.config.mjs must state testTimeout explicitly").toMatch(/\btestTimeout:\s*30_000\b/);
+    expect(config, "vitest.config.mjs must state hookTimeout explicitly").toMatch(/\bhookTimeout:\s*30_000\b/);
+  });
+});
+
 // A rule names no technology stack. Verification gates are project-owned: a
 // project declares them in its own manifests, task definitions and project
 // documentation, so a rule that names one ecosystem's binary, command or
