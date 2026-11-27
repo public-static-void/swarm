@@ -1766,14 +1766,14 @@ describe("delegation provenance field example", () => {
     expect(undocumented).toEqual([]);
   });
 
-  describe("leading-space provenance", () => {
+  describe("leading-space field carry", () => {
     let hooks;
     let logDir;
     let priorLogDir;
 
     beforeAll(async () => {
       priorLogDir = process.env.DELEGATION_GATE_LOG_DIR;
-      logDir = mkdtempSync(join(tmpdir(), "provenance-guard-"));
+      logDir = mkdtempSync(join(tmpdir(), "header-guard-"));
       process.env.DELEGATION_GATE_LOG_DIR = logDir;
       hooks = await pluginModule.server({}, {});
     });
@@ -1784,24 +1784,21 @@ describe("delegation provenance field example", () => {
       rmSync(logDir, { recursive: true, force: true });
     });
 
-    it("carries provenance values into the rendered dispatch when the lines are indented", async () => {
+    it("carries a required field's value into the rendered dispatch when the line is indented", async () => {
       // Leading indentation must not cost the field: the extractor tolerates
-      // it, so indented provenance still counts toward the required check and
-      // its values survive into the rendered header.
+      // it, so an indented required line still counts toward the required
+      // check and its value survives into the rendered header.
       const prompt = `DISPATCH TO: committer
 MODE: checkpoint
-SESSION DATE: 2026-10-19
 SESSION ID: ses_abc123
 GENERATION: 0
- BASELINE BRANCH: fix/example-branch
- HEAD SHA: 8a6fea9
-SCOPE: Checkpoint commit for the provenance guard
-RESULT KD: knowledge/checkpoint-provenance-ses_abc123-gen0.md`;
+ SESSION DATE: 2026-10-19
+SCOPE: Checkpoint commit for the header guard
+RESULT KD: knowledge/checkpoint-header-ses_abc123-gen0.md`;
 
       const output = { args: { prompt, subagent_type: "committer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc123", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("BASELINE BRANCH: fix/example-branch");
-      expect(output.args.prompt).toContain("HEAD SHA: 8a6fea9");
+      expect(output.args.prompt).toContain("SESSION DATE: 2026-10-19");
     });
 
     it("states the swarm-only scope of the exempt field in the dispatcher hint", async () => {
@@ -1819,8 +1816,6 @@ MODE: swarm
  MILESTONE ID: M3
 INTENT KD: knowledge/intent-example-ses_abc123-gen0.md
 SESSION DATE: 2026-10-19
-BASELINE BRANCH: main
-HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_abc123
 GENERATION: 0
 SCOPE: Execute milestone M3

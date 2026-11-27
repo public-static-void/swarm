@@ -6803,8 +6803,6 @@ The defect details live in the Audit section below.
 MODE: swarm
 INTENT KD: knowledge/intent-foo.md
 SESSION DATE: 2026-07-15
-BASELINE BRANCH: main
-HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ${s}
 MILESTONE ID: M1
 SCOPE: Implement feature X
