@@ -1139,9 +1139,53 @@ function warn(msg) {
 // diagnosable from the log alone, and a normal run carries no flag — the
 // 2026-10-21 CLEANUP non-advance left no trace for exactly that reason. Callers
 // emit one line per verdict, never per tool call.
+//
+// Write-time size-bounded retention: the dedupe sets below bound a process's
+// record count, but the file itself grows across restarts, so the cap lives
+// at this gate's only always-on write seam and stays honest on disk. Before
+// appending, a log over the cap is rewritten to its tail (cap/2, cut only at
+// complete-line boundaries) plus one LOG_TRIMMED record, keeping the newest
+// records visible. The cap is per-gate through the env seam below; a rare
+// multi-process double-trim only costs one redundant record, so no lock is
+// introduced. Same file, no rotation siblings — siblings would be new
+// residue the same retention effort retires.
+const LOG_MAX_BYTES_DEFAULT = 2_000_000;
+
+function logCapBytes() {
+  const raw = parseInt(process.env.PROTOCOL_GATE_LOG_MAX_BYTES, 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : LOG_MAX_BYTES_DEFAULT;
+}
+
+function trimLogTail(logFile) {
+  let size;
+  try {
+    size = statSync(logFile).size;
+  } catch (_) {
+    return; // no log yet — nothing to retain
+  }
+  const cap = logCapBytes();
+  if (size <= cap) return;
+  try {
+    const buf = readFileSync(logFile);
+    const window = buf.subarray(Math.max(0, buf.length - Math.floor(cap / 2)));
+    const boundary = window.indexOf(0x0a);
+    const kept = boundary === -1 ? Buffer.alloc(0) : window.subarray(boundary + 1);
+    let totalLines = 0;
+    for (let i = 0; i < buf.length; i++) if (buf[i] === 0x0a) totalLines++;
+    let keptLines = 0;
+    for (let i = 0; i < kept.length; i++) if (kept[i] === 0x0a) keptLines++;
+    const trimLine = `[${new Date().toISOString()}] [protocol-gate] LOG_TRIMMED: kept ${kept.length} of ${buf.length}, dropped ${totalLines - keptLines} lines\n`;
+    writeFileSync(logFile, Buffer.concat([kept, Buffer.from(trimLine, "utf8")]));
+  } catch (_) {
+    _droppedLogCount++;
+  }
+}
+
 function gateRecord(msg) {
   try {
-    appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
+    const logFile = getLogFile();
+    trimLogTail(logFile);
+    appendFileSync(logFile, `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
   } catch (_) {
     _droppedLogCount++;
   }
