@@ -31,23 +31,25 @@ milestones:
 
 ## State Model
 
-**State values**: `pending`, `assigned`, `in-progress`, `checked-off`, `failed`.
+**State values**: `pending`, `assigned`, `in-progress`, `evidence-landed`, `checked-off`, `failed`.
 
-**State transitions**:
+**State transitions** (writer ownership: the write hooks settle rows to their evidence state; exactly one mechanism — the VERIFY verdict-PASS commit — records completion):
 
 | From                           | To              | Writer        | Condition                                                                                                                                                                                                                    |
 | ------------------------------ | --------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | (creation)                     | pending         | Pathfinder    | registry written at DECOMPOSE                                                                                                                                                                                                |
 | pending / in-progress / failed | assigned        | protocol-gate | SWARM task dispatch with matching MILESTONE_ID                                                                                                                                                                               |
 | assigned                       | in-progress     | protocol-gate | SWARM task dispatch fires — same pass as assigned                                                                                                                                                                            |
-| in-progress                    | checked-off     | protocol-gate | Artisan writes the milestone-scoped impl KD `impl-<milestone_id>-<name>-<session_id>[-gen{N}].md` — the KD on disk is the verifiable evidence; in-progress rows complete on that evidence                                    |
+| in-progress                    | evidence-landed | protocol-gate | Live same-session milestone-scoped impl KD `impl-<milestone_id>-<name>-<session_id>[-gen{N}].md` arrives through a write hook — the row records landed, attributed evidence and nothing more                                   |
+| in-progress / evidence-landed  | checked-off     | protocol-gate | VERIFY verdict `PASS` commit: the sole completion writer — every settled row flips as part of the same commit that advances VERIFY→EXTRACT                                                                                      |
 | assigned / in-progress         | failed          | protocol-gate | automatic safety trigger during SWARM: 15-failure force-advance, 5-redispatch cap, or pendingVerification timeout marks the stuck row(s) failed, logs SAFETY_STUCK, and STAYS in SWARM — no automatic advance to VERIFY      |
 | assigned / in-progress         | failed          | Artisan       | escalation without completion                                                                                                                                                                                                |
-| checked-off                    | (no transition) | protocol-gate | checked-off rows stay checked-off across re-dispatch; a backward transition to SWARM (BACKWARD: true) resets dispatch counters and keeps checked-off rows checked-off                                                        |
+| checked-off / evidence-landed  | in-progress     | protocol-gate | FAIL verdict reopen citing the row (`reopen_target`): the row reopens and its invalidated impl KD is supersede-stamped in place                                                                                               |
+| checked-off / evidence-landed  | (no transition) | protocol-gate | evaluation reads settled and completed rows and leaves them in place — the SWARM gate's disk check and the reconcile scan observe evidence and write no rows; a backward transition to SWARM (BACKWARD: true) resets dispatch counters and keeps rows as they are |
 
 ## SWARM→VERIFY Gate
 
-SWARM advances to VERIFY when every milestone row is `checked-off` AND each row has its milestone-scoped impl KD on disk (`checkAllMilestonesCheckedOff` — registry state cross-checked against `checkMilestoneCheckedOff` disk evidence). The gate fails closed on missing/empty/unparsable registries (records `REGISTRY_MISSING`/`REGISTRY_EMPTY` on the gate log even with the debug flag unset). Count signals (`MILESTONE_COUNT`, dispatch counts) have no gating effect. The user's `/phase` override is the escape hatch from a stuck SWARM and logs `SAFETY_ESCAPE`.
+SWARM advances to VERIFY when every milestone row carries its milestone-scoped live impl KD on disk (`checkAllMilestonesCheckedOff` — per-row disk evidence, computed purely: evaluation reads the evidence and leaves the registry bytes in place). The row completion record (`checked-off`) follows the verdict: the VERIFY verdict `PASS` commit promotes every `evidence-landed` row as part of the same commit that advances the lifecycle. The gate fails closed on missing/empty/unparsable registries (records `REGISTRY_MISSING`/`REGISTRY_EMPTY` on the gate log even with the debug flag unset). Count signals (`MILESTONE_COUNT`, dispatch counts) have no gating effect. The user's `/phase` override is the escape hatch from a stuck SWARM and logs `SAFETY_ESCAPE`.
 
 ## Parsing Contract
 
