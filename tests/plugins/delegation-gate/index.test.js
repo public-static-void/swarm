@@ -1255,6 +1255,67 @@ KD PATHS: knowledge/plan-foo.md`;
         delete process.env.DELEGATION_GATE_DEBUG;
       }
     });
+
+    describe("write-time log trim at the warn seam", () => {
+      // The advisory warn is the gate's record seam; past the cap the seam
+      // rewrites the log to a complete-line tail and appends one LOG_TRIMMED
+      // record, so the bound lives on disk and survives process restarts.
+      const LOG_FILE = () => join(logDir, "delegation-gate.log");
+
+      beforeEach(() => {
+        // A sibling case deletes the suite debug flag in its finally —
+        // re-assert it so the warn path is deterministically live here.
+        process.env.DELEGATION_GATE_DEBUG = "1";
+      });
+
+      async function dispatchPastCap(times) {
+        writeKd(`exploration-a-${SID}-gen1.md`);
+        writeKd(`analysis-b-${SID}-gen1.md`);
+        for (let i = 0; i < times; i++) {
+          await dispatch("evolve", `knowledge/exploration-a-${SID}-gen1.md`, { generation: 1 });
+        }
+      }
+
+      it("trims the log past the DELEGATION_GATE_LOG_MAX_BYTES cap to a bounded parseable tail", async () => {
+        const cap = 600;
+        process.env.DELEGATION_GATE_LOG_MAX_BYTES = String(cap);
+        try {
+          await dispatchPastCap(12);
+          const lines = readLog().split("\n").filter((l) => l.length > 0);
+          const trimLines = lines.filter((l) => l.includes("LOG_TRIMMED"));
+          expect(trimLines.length, "sustained warns triggered at least one trim").toBeGreaterThanOrEqual(1);
+
+          // Whole-line boundary: every surviving line is a complete gate line.
+          for (const l of lines) {
+            expect(l, `line parses: ${l}`).toMatch(/^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] \[delegation-gate\] /);
+          }
+          // One record per trim event, self-consistent byte/line accounting.
+          for (const t of trimLines) {
+            const m = t.match(/LOG_TRIMMED: kept (\d+) of (\d+), dropped (\d+) lines$/);
+            expect(m, `trim record shape: ${t}`).toBeTruthy();
+            expect(Number(m[1]), "kept < total").toBeLessThan(Number(m[2]));
+            expect(Number(m[3]), "dropped at least one line").toBeGreaterThanOrEqual(1);
+          }
+          // The last record was appended after the trim check, so the file
+          // stays within the cap plus one record — never re-unbounded.
+          const maxLine = Math.max(...lines.map((l) => Buffer.byteLength(l) + 1));
+          expect(statSync(LOG_FILE()).size).toBeLessThanOrEqual(cap + maxLine);
+          // Same file, tail rewrite: no rotation siblings in the log dir.
+          expect(readdirSync(logDir).filter((f) => /^delegation-gate\.log/.test(f))).toEqual(["delegation-gate.log"]);
+        } finally {
+          delete process.env.DELEGATION_GATE_LOG_MAX_BYTES;
+        }
+      });
+
+      it("stays silent below the 2 MB default when DELEGATION_GATE_LOG_MAX_BYTES is unset", async () => {
+        delete process.env.DELEGATION_GATE_LOG_MAX_BYTES;
+        await dispatchPastCap(12);
+        expect(readLog()).not.toContain("LOG_TRIMMED");
+        // The default cap is one literal number per gate, pinned at its home.
+        const src = readFileSync(fileURLToPath(new URL("../../../plugins/delegation-gate/index.js", import.meta.url)), "utf8");
+        expect(src).toContain("LOG_MAX_BYTES_DEFAULT = 2_000_000");
+      });
+    });
   });
 
   describe("Tool Doc Injection", () => {
