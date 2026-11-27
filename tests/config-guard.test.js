@@ -3263,6 +3263,24 @@ describe("protocol-gate tool-identity single source of truth", () => {
     expect(missing).toEqual([]);
   });
 
+  // Same precedent as the memory_search pin above: a capability family is
+  // admitted in every phase, because a per-phase subset leaves the enablement
+  // question open in the taught surface that the grants have already settled.
+  it("binds the web family to every phase allowlist", () => {
+    for (const tool of ["webfetch", "websearch"]) {
+      const missing = PHASE_NAMES.filter((p) => !(protocolPhases.TOOL_ALLOWLIST[p] || []).includes(tool));
+      expect(missing, tool).toEqual([]);
+      for (const phase of PHASE_NAMES) {
+        expect(protocolPhases.admitTool(phase, tool), `${phase}:${tool}`).toBe(true);
+      }
+    }
+    // The closed set is derived from the table, so it is checked in every
+    // phase, not at one site: any id the table omits stays refused everywhere.
+    for (const phase of PHASE_NAMES) {
+      expect(protocolPhases.admitTool(phase, "frobnicate"), `${phase}:frobnicate`).toBe(false);
+    }
+  });
+
   it("keeps the knowledge-gate memory_search hint emitted for every agent", () => {
     const knowledgeGate = readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
     expect(knowledgeGate).toContain("memory_search tool");
