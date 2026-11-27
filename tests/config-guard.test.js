@@ -10,7 +10,7 @@ import {
 } from "fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import pluginModule from "../plugins/delegation-gate/index.js";
 import * as protocolPhases from "../plugins/protocol-gate/phases.js";
 
@@ -1417,6 +1417,33 @@ describe("memory_search reachability", () => {
   });
 });
 
+// The web family belongs to the research roles: the analyzer gathers external
+// context during INVESTIGATE and the explorer during EXPLORE, and no other
+// role's dispatch scope reaches outside the repo. The host asks the user before
+// a web action no rule settles, and a mid-run prompt inside a subagent session
+// stalls the delegation — so every definition states an explicit effect and
+// the default never stands behind any role.
+const WEB_ALLOW_HOLDERS = ["analyzer.md", "explorer.md"];
+
+describe("web family grant scoping", () => {
+  const files = agentFiles();
+
+  function webEffects(content, action) {
+    return permissionRules(content)
+      .filter((r) => r.action === action && r.resource === "*")
+      .map((r) => r.effect);
+  }
+
+  it("allows the web family exactly in the research roles and denies it everywhere else", () => {
+    for (const action of ["webfetch", "websearch"]) {
+      for (const file of files) {
+        const expected = WEB_ALLOW_HOLDERS.includes(file) ? ["allow"] : ["deny"];
+        expect(webEffects(readAgent(file), action), `${file}:${action}`).toEqual(expected);
+      }
+    }
+  });
+});
+
 // The issue store belongs to the role that curates it: the Habit Builder writes,
 // updates and moves issues, so it is also the one role that reads them. A grant
 // in any other definition puts the store's read path outside that role, and the
@@ -1739,14 +1766,14 @@ describe("delegation provenance field example", () => {
     expect(undocumented).toEqual([]);
   });
 
-  describe("leading-space provenance", () => {
+  describe("leading-space field carry", () => {
     let hooks;
     let logDir;
     let priorLogDir;
 
     beforeAll(async () => {
       priorLogDir = process.env.DELEGATION_GATE_LOG_DIR;
-      logDir = mkdtempSync(join(tmpdir(), "provenance-guard-"));
+      logDir = mkdtempSync(join(tmpdir(), "header-guard-"));
       process.env.DELEGATION_GATE_LOG_DIR = logDir;
       hooks = await pluginModule.server({}, {});
     });
@@ -1757,24 +1784,21 @@ describe("delegation provenance field example", () => {
       rmSync(logDir, { recursive: true, force: true });
     });
 
-    it("carries provenance values into the rendered dispatch when the lines are indented", async () => {
+    it("carries a required field's value into the rendered dispatch when the line is indented", async () => {
       // Leading indentation must not cost the field: the extractor tolerates
-      // it, so indented provenance still counts toward the required check and
-      // its values survive into the rendered header.
+      // it, so an indented required line still counts toward the required
+      // check and its value survives into the rendered header.
       const prompt = `DISPATCH TO: committer
 MODE: checkpoint
-SESSION DATE: 2026-10-19
 SESSION ID: ses_abc123
 GENERATION: 0
- BASELINE BRANCH: fix/example-branch
- HEAD SHA: 8a6fea9
-SCOPE: Checkpoint commit for the provenance guard
-RESULT KD: knowledge/checkpoint-provenance-ses_abc123-gen0.md`;
+ SESSION DATE: 2026-10-19
+SCOPE: Checkpoint commit for the header guard
+RESULT KD: knowledge/checkpoint-header-ses_abc123-gen0.md`;
 
       const output = { args: { prompt, subagent_type: "committer" } };
       await hooks["tool.execute.before"]({ tool: "task", sessionID: "ses_abc123", callID: "c1" }, output);
-      expect(output.args.prompt).toContain("BASELINE BRANCH: fix/example-branch");
-      expect(output.args.prompt).toContain("HEAD SHA: 8a6fea9");
+      expect(output.args.prompt).toContain("SESSION DATE: 2026-10-19");
     });
 
     it("states the swarm-only scope of the exempt field in the dispatcher hint", async () => {
@@ -1792,8 +1816,6 @@ MODE: swarm
  MILESTONE ID: M3
 INTENT KD: knowledge/intent-example-ses_abc123-gen0.md
 SESSION DATE: 2026-10-19
-BASELINE BRANCH: main
-HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SESSION ID: ses_abc123
 GENERATION: 0
 SCOPE: Execute milestone M3
@@ -3263,6 +3285,23 @@ describe("protocol-gate tool-identity single source of truth", () => {
     expect(missing).toEqual([]);
   });
 
+  // The web family lives in the host's permission layer, not the phase layer:
+  // this table polices and advertises for the overseer session only, and a
+  // subagent's web call passes through to the host, where the role's ordered
+  // grants and the configured search provider settle it without a prompt.
+  // Admitting the family here would widen the overseer's phase surface for a
+  // condition that never passed through this gate, so every entry stays free
+  // of the ids and admission fails in every phase.
+  it("keeps the web family out of every phase allowlist", () => {
+    for (const phase of PHASE_NAMES) {
+      const allowed = protocolPhases.TOOL_ALLOWLIST[phase] || [];
+      expect(allowed, phase).not.toContain("webfetch");
+      expect(allowed, phase).not.toContain("websearch");
+      expect(protocolPhases.admitTool(phase, "webfetch"), `${phase}:webfetch`).toBe(false);
+      expect(protocolPhases.admitTool(phase, "websearch"), `${phase}:websearch`).toBe(false);
+    }
+  });
+
   it("keeps the knowledge-gate memory_search hint emitted for every agent", () => {
     const knowledgeGate = readFileSync(join(ROOT, "plugins", "knowledge-gate", "index.js"), "utf8");
     expect(knowledgeGate).toContain("memory_search tool");
@@ -3864,6 +3903,146 @@ describe("plugin logs ignore coverage", () => {
   });
 });
 
+// The shipped config arrives as two tracked templates rather than one live
+// file: the zen template carries the upstream default verbatim, the local
+// template carries a machine-local provider setup written entirely from
+// placeholder constants. A clone therefore holds no live config until its
+// operator copies one template, and provider values stay on the machine that
+// owns them. The contract below is the whitelist itself: each template must
+// equal its declared structure exactly, so anything outside the declared
+// shape — including any value an operator might later write into their own
+// config — is unrepresentable in a passing template.
+const ZEN_TEMPLATE = "opencode.json.zen.template";
+const LOCAL_TEMPLATE = "opencode.json.local.template";
+
+const AGENTS_DISABLED = {
+  build: { disabled: true },
+  plan: { disabled: true },
+  general: { disabled: true },
+  explore: { disabled: true },
+  scout: { disabled: true },
+};
+
+const SHARED_SKELETON = {
+  $schema: "https://opencode.ai/config.json",
+  plugins: ["./plugins/protocol-gate", "./plugins/delegation-gate", "./plugins/knowledge-gate"],
+  experimental: { subagent_depth: 2 },
+  default_agent: "overseer",
+  websearch: { provider: "random" },
+  agents: AGENTS_DISABLED,
+};
+
+const ZEN_STRUCTURE = {
+  ...SHARED_SKELETON,
+  model: "opencode/deepseek-v4.1-flash-free",
+};
+
+const LOCAL_STRUCTURE = {
+  ...SHARED_SKELETON,
+  model: "local/local-model",
+  compaction: { auto: true, buffer: 131072 },
+  providers: {
+    local: {
+      name: "Local Provider",
+      package: "@opencode/ai/providers/openai-compatible",
+      settings: { baseURL: "https://example.invalid/v1", apiKey: "REPLACE_ME" },
+      models: {
+        "local-model": { name: "Local Model", tool_call: true, reasoning: true },
+      },
+    },
+  },
+};
+
+describe("config template guards", () => {
+  it("tracks two config templates at the repo root, each parseable", () => {
+    for (const name of [ZEN_TEMPLATE, LOCAL_TEMPLATE]) {
+      expect(existsSync(join(ROOT, name)), `${name} must exist at the repo root`).toBe(true);
+      expect(() => JSON.parse(readRoot(name))).not.toThrow();
+    }
+  });
+
+  it("ships the zen template as its declared structure exactly", () => {
+    expect(JSON.parse(readRoot(ZEN_TEMPLATE))).toEqual(ZEN_STRUCTURE);
+  });
+
+  it("ships the local template as its declared placeholder structure exactly", () => {
+    expect(JSON.parse(readRoot(LOCAL_TEMPLATE))).toEqual(LOCAL_STRUCTURE);
+  });
+
+  it("settles the websearch provider so a granted search never prompts", () => {
+    // The host opens a provider-selection prompt on the first search when no
+    // provider is configured. Naming one in the shipped skeleton skips it;
+    // "random" resolves from whatever providers the machine connects and needs
+    // no key the repo could guess, so the prompt condition is removed for
+    // every copy of either template.
+    for (const name of [ZEN_TEMPLATE, LOCAL_TEMPLATE]) {
+      expect(JSON.parse(readRoot(name)).websearch, name).toEqual({ provider: "random" });
+    }
+  });
+
+  it("states the copy-step workflow in README and keeps it out of role bodies", () => {
+    const gitSection = headingSection(readRoot("README.md"), "## The Git Contract");
+    expect(gitSection).toContain(ZEN_TEMPLATE);
+    expect(gitSection).toContain(LOCAL_TEMPLATE);
+    expect(gitSection).toMatch(/copy one template to `opencode\.json`/);
+    // README is the only prose surface allowed to name the live config: the
+    // audience sweep that keeps role bodies project-neutral covers the
+    // absence half, and this names the copy step itself.
+    const liveConfig = /(?<![A-Za-z0-9_-])opencode\.json(?![A-Za-z0-9_-])/i;
+    expect(liveConfig.test(readRoot("AGENTS.md")), "AGENTS.md must not name the live config").toBe(false);
+    for (const file of agentFiles()) {
+      expect(liveConfig.test(bodyRegion(readAgent(file))), `agents/${file} must not name the live config`).toBe(false);
+    }
+  });
+});
+
+// Coverage of the live-config ignore, asked of git at runtime like the plugin
+// logs block above: the rule and the untracking must answer together, since an
+// ignore rule over a still-tracked path changes nothing. The template pair is
+// the scoped negative — the same matcher answers no for the paths the
+// repository does ship, so the yes cannot be a wildcard.
+describe("config-file ignore coverage", () => {
+  it("ignores the live config", () => {
+    expect(gitIgnored("opencode.json")).toBe(true);
+  });
+
+  it("tracks nothing at the live config path", () => {
+    const tracked = trackedUnder("opencode.json");
+    expect(tracked, `tracked at opencode.json: ${tracked.join(", ")}`).toEqual([]);
+  });
+
+  it("leaves both shipped templates unignored", () => {
+    for (const name of [ZEN_TEMPLATE, LOCAL_TEMPLATE]) {
+      expect(gitIgnored(name), `${name} must not be swallowed by the live-config rule`).toBe(false);
+    }
+  });
+
+  it("states the live-config rule in .gitignore", () => {
+    const lines = readRoot(".gitignore")
+      .split("\n")
+      .map((line) => line.trim());
+    expect(lines).toContain("opencode.json");
+  });
+
+  it("fails rather than skips when git cannot answer", () => {
+    expect(() => gitIgnored("opencode.json", "git-absent-probe")).toThrow(/could not run/);
+  });
+});
+
+// The git-spawning legs wait on synchronous child processes whose runtime is
+// what the environment owes them under concurrent agent git activity — these
+// are correctness guards, so a framework-default wall-clock ceiling buys the
+// repo nothing and gets crossed under load. The budget is therefore a chosen
+// value at the single config site; this pin keeps it explicit so the suites
+// never silently inherit an implicit default again.
+describe("vitest timeout budget", () => {
+  it("declares test and hook timeout budgets of thirty seconds at the config site", () => {
+    const config = readRoot("vitest.config.mjs");
+    expect(config, "vitest.config.mjs must state testTimeout explicitly").toMatch(/\btestTimeout:\s*30_000\b/);
+    expect(config, "vitest.config.mjs must state hookTimeout explicitly").toMatch(/\bhookTimeout:\s*30_000\b/);
+  });
+});
+
 // A rule names no technology stack. Verification gates are project-owned: a
 // project declares them in its own manifests, task definitions and project
 // documentation, so a rule that names one ecosystem's binary, command or
@@ -4408,7 +4587,7 @@ function readmeFactsFindings({ readme, pkg, config, inspector }) {
 describe("README facts", () => {
   const readme = readRoot("README.md");
   const pkg = JSON.parse(readRoot("package.json"));
-  const config = JSON.parse(readRoot("opencode.json"));
+  const config = JSON.parse(readRoot(ZEN_TEMPLATE));
   const inspector = readAgent("inspector.md");
   const findingsFor = (overrides = {}) =>
     readmeFactsFindings({ readme, pkg, config, inspector, ...overrides });
@@ -5327,7 +5506,7 @@ function readmeClaimTokens(readme = readRoot("README.md")) {
     if (runSection.includes(`\`${name}\``)) tokens.push(`script:${name}`);
   }
   const pluginSection = headingSection(readme, "## Plugins Enforce the Architecture Structurally");
-  for (const name of declaredPluginFacts(JSON.parse(readRoot("opencode.json")))) {
+  for (const name of declaredPluginFacts(JSON.parse(readRoot(ZEN_TEMPLATE)))) {
     if (pluginSection.includes(name)) tokens.push(`plugin:${name}`);
   }
   if (/\bInspector\b/.test(headingSection(readme, "## The Git Contract"))) {
@@ -5340,7 +5519,7 @@ function readmeClaimTokens(readme = readRoot("README.md")) {
 // the role whose body states that it runs the declared gates.
 function sourceFactTokens(
   pkg = JSON.parse(readRoot("package.json")),
-  config = JSON.parse(readRoot("opencode.json")),
+  config = JSON.parse(readRoot(ZEN_TEMPLATE)),
   inspector = readAgent("inspector.md")
 ) {
   return [
@@ -5524,5 +5703,76 @@ describe("duplicated rules agree", () => {
     expect(
       agreementFindings(AGREEMENT_PAIRS, { [`${README_FACTS_ID}:declaring sources`]: grown })
     ).toEqual([`${README_FACTS_ID}: declaring sources names script:coverage`]);
+  });
+});
+
+// A fresh clone carries only tracked artifacts: the two templates and no live
+// config. The fixtures that read the shipped configuration must run against a
+// tree of that shape, so a read site reaching for the live file reds in this
+// suite rather than erroring on the first checkout without a local config.
+describe("fresh-clone integrity", () => {
+  const SHIPPED = [
+    ZEN_TEMPLATE,
+    LOCAL_TEMPLATE,
+    ".gitignore",
+    "README.md",
+    "package.json",
+    join("agents", "inspector.md"),
+  ];
+
+  let clone;
+
+  // Setup fails loudly, same discipline as the tracked-index fixture above: a
+  // half-built tree would redden the assertions below for a staging reason
+  // rather than for the read site's behavior.
+  const gitIn = (args) => {
+    const result = spawnSync("git", args, { cwd: clone });
+    if (result.error) {
+      throw new Error(`git ${args.join(" ")} could not run: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+      throw new Error(`git ${args.join(" ")} exited ${result.status}: ${String(result.stderr).trim()}`);
+    }
+    return String(result.stdout);
+  };
+
+  const readClone = (rel) => readFileSync(join(clone, rel), "utf8").replace(/\r\n/g, "\n");
+
+  beforeAll(() => {
+    clone = mkdtempSync(join(tmpdir(), "config-guard-clone-"));
+    for (const rel of SHIPPED) {
+      const dest = join(clone, rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, readFileSync(join(ROOT, rel)));
+    }
+    gitIn(["init", "-q"]);
+    // -f keeps staging deterministic: the tracked set is exactly the shipped
+    // files, independent of any ignore rule in the fixture tree or the host.
+    gitIn(["add", "-f", "--", ...SHIPPED]);
+  });
+
+  afterAll(() => {
+    rmSync(clone, { recursive: true, force: true });
+  });
+
+  it("carries the templates and no live config", () => {
+    expect(existsSync(join(clone, "opencode.json")), "a clone must not arrive with a live config").toBe(false);
+    const tracked = gitIn(["ls-files"]).split("\n").filter(Boolean);
+    expect(tracked).toContain(ZEN_TEMPLATE);
+    expect(tracked).toContain(LOCAL_TEMPLATE);
+    expect(tracked).not.toContain("opencode.json");
+  });
+
+  it("reads the config fixture and the plugin facts from the template alone", () => {
+    const config = JSON.parse(readClone(ZEN_TEMPLATE));
+    expect(config.plugins.length).toBe(3);
+    expect(declaredPluginFacts(config)).toEqual(["protocol-gate", "delegation-gate", "knowledge-gate"]);
+  });
+
+  it("derives the same source fact tokens as this tree without a live config", () => {
+    const pkg = JSON.parse(readClone("package.json"));
+    const config = JSON.parse(readClone(ZEN_TEMPLATE));
+    const inspector = readClone(join("agents", "inspector.md"));
+    expect(sourceFactTokens(pkg, config, inspector)).toEqual(sourceFactTokens());
   });
 });

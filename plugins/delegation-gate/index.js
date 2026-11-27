@@ -33,7 +33,7 @@
 // enabled, a timestamped pid-attributed `gate loaded` line is appended to
 // the log. Write/mkdir failures are counted via getDroppedLogCount() and
 // surfaced in the enablement state — never silently dropped, never stderr.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { Plugin } from "@opencode/plugin";
@@ -71,7 +71,7 @@ const ERRORS = {
   CODE_BLOCK: { code: "CODE_BLOCK", message: "Code blocks detected in prompt", guidance: "Remove all code blocks from delegation prompt" },
   FOREIGN_PATH: { code: "FOREIGN_PATH", message: "Foreign paths detected", guidance: "Use only knowledge/*.md paths" },
   BARE_KD_PATH: { code: "BARE_KD_PATH", message: "Bare KD path without structured fields", guidance: "Include required fields: agent, mode, intent_kd, session_date" },
-  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Put the delegation fields as KEY: value lines in the prompt parameter, one per line. Required: agent (DISPATCH TO), mode (MODE), session_date (SESSION DATE), baseline_branch (BASELINE BRANCH), head_sha (HEAD SHA), intent_kd (INTENT KD) for every mode except checkpoint and cleanup, and result_kd (RESULT KD) for KD-producing modes. Optional line fields: SCOPE, GENERATION, SESSION ID" },
+  MISSING_STRUCTURED_FIELDS: { code: "MISSING_STRUCTURED_FIELDS", message: "Missing required structured fields", guidance: "Put the delegation fields as KEY: value lines in the prompt parameter, one per line. Required: agent (DISPATCH TO), mode (MODE), session_date (SESSION DATE), intent_kd (INTENT KD) for every mode except checkpoint and cleanup, and result_kd (RESULT KD) for KD-producing modes. Optional line fields: SCOPE, GENERATION, SESSION ID" },
   INVALID_SCOPE: { code: "INVALID_SCOPE", message: "Scope validation failed", guidance: "Scope should not contain code blocks (security) or absolute /home/ paths (info leak)" },
   INVALID_RESULT_KD: { code: "INVALID_RESULT_KD", message: "Invalid result KD path", guidance: "When provided, result KD must match knowledge/*.md pattern" },
   MISSING_KD_REFERENCE: { code: "MISSING_KD_REFERENCE", message: "No KD path reference found", guidance: "Include at least one knowledge/*.md path" },
@@ -297,10 +297,53 @@ function resetLogCollapse() {
 // File-only logging gated behind DELEGATION_GATE_DEBUG.
 // Previously wrote to stderr which bled into user prompts; moved to file.
 // Emissions are per-event and rare by nature.
+//
+// Write-time size-bounded retention: an advisory-warn log left unchecked
+// grows across restarts, so the cap lives at this gate's record seam and
+// stays honest on disk. Before appending, a log over the cap is rewritten to
+// its tail (cap/2, cut only at complete-line boundaries) plus one LOG_TRIMMED
+// record, keeping the newest records visible. The cap is per-gate through the
+// env seam below; a rare multi-process double-trim only costs one redundant
+// record, so no lock is introduced. Same file, no rotation siblings —
+// siblings would be new residue the same retention effort retires.
+const LOG_MAX_BYTES_DEFAULT = 2_000_000;
+
+function logCapBytes() {
+  const raw = parseInt(process.env.DELEGATION_GATE_LOG_MAX_BYTES, 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : LOG_MAX_BYTES_DEFAULT;
+}
+
+function trimLogTail(logFile) {
+  let size;
+  try {
+    size = statSync(logFile).size;
+  } catch (_) {
+    return; // no log yet — nothing to retain
+  }
+  const cap = logCapBytes();
+  if (size <= cap) return;
+  try {
+    const buf = readFileSync(logFile);
+    const window = buf.subarray(Math.max(0, buf.length - Math.floor(cap / 2)));
+    const boundary = window.indexOf(0x0a);
+    const kept = boundary === -1 ? Buffer.alloc(0) : window.subarray(boundary + 1);
+    let totalLines = 0;
+    for (let i = 0; i < buf.length; i++) if (buf[i] === 0x0a) totalLines++;
+    let keptLines = 0;
+    for (let i = 0; i < kept.length; i++) if (kept[i] === 0x0a) keptLines++;
+    const trimLine = `[${new Date().toISOString()}] [delegation-gate] LOG_TRIMMED: kept ${kept.length} of ${buf.length}, dropped ${totalLines - keptLines} lines\n`;
+    writeFileSync(logFile, Buffer.concat([kept, Buffer.from(trimLine, "utf8")]));
+  } catch (_) {
+    _droppedLogCount++;
+  }
+}
+
 function warn(msg) {
   if (isDebugEnabled()) {
     try {
-      appendFileSync(getLogFile(), `[${new Date().toISOString()}] [delegation-gate] WARNING: ${msg}\n`);
+      const logFile = getLogFile();
+      trimLogTail(logFile);
+      appendFileSync(logFile, `[${new Date().toISOString()}] [delegation-gate] WARNING: ${msg}\n`);
     } catch (_) {
       _droppedLogCount++;
     }
@@ -350,7 +393,7 @@ function loadTemplates(config) {
     const intentKdLine = mode === "cleanup" || mode === "checkpoint" ? "" : "INTENT KD: {intent_kd}\n";
     const milestoneLine = mode === "swarm" ? "MILESTONE ID: {milestone_id}\n" : "";
     const kdPathsLine = mode === "explore" ? "" : "KD PATHS: {kd_paths}\n";
-    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${milestoneLine}${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nBASELINE BRANCH: {baseline_branch}\nHEAD SHA: {head_sha}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n${kdPathsLine}\n---\n\n`;
+    return `DISPATCH TO: {agent}\nMODE: ${mode}\n${milestoneLine}${intentKdLine}SESSION DATE: {session_date}\nSESSION ID: {session_id}\nGENERATION: {generation}\nSCOPE: {scope}\nRESULT KD: {result_kd}\n${kdPathsLine}\n---\n\n`;
   };
 
   for (const [mode, content] of Object.entries(defaultTemplates)) {
@@ -396,7 +439,7 @@ function extractFromText(text, fields, override = false) {
     // Leading indentation is tolerated: optional fields carry no required-field
     // check, so a line the extractor skips renders as an empty header with no
     // error at all. Indentation must not cost a field silently.
-    const match = line.match(/^[ \t]*(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|BASELINE[. _]BRANCH|HEAD[. _]SHA|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
+    const match = line.match(/^[ \t]*(?:#{1,6}\s*)?(?:\*\*)?(MODE|MILESTONE[. _]ID|INTENT[. _]KD|SESSION[. _]DATE|SESSION[. _]ID|GENERATION|SCOPE|RESULT[. _]KD|KD[. _]PATHS)(?:\*\*)?:\s*(.*)/i);
     if (match) {
       let key = match[1].toLowerCase().replace(/[\s.]+/g, "_");
       const assigned = override || !fields[key];
@@ -871,10 +914,10 @@ async function delegationGateServer(input, options) {
       // intent_kd is not required for the committer-owned modes (checkpoint,
       // cleanup) — their templates render no INTENT KD reference, so requiring
       // the field serves no purpose. Only non-committer modes need intent_kd
-      // to identify the upstream KD. baseline_branch and head_sha are provenance
-      // every dispatch must carry: a prompt cannot state tree facts it has not
-      // read, and the gate is where that gets enforced.
-      const requiredFields = ["agent", "mode", "session_date", "baseline_branch", "head_sha"];
+      // to identify the upstream KD. Tree state lives in the tree: the gate
+      // requires only the fields every dispatch can be checked against, and
+      // the implementing agent reconciles the working tree on its first step.
+      const requiredFields = ["agent", "mode", "session_date"];
       if (fields.mode?.toLowerCase() !== "checkpoint" && fields.mode?.toLowerCase() !== "cleanup") {
         requiredFields.push("intent_kd");
       }
@@ -891,7 +934,7 @@ async function delegationGateServer(input, options) {
 
       for (const field of requiredFields) {
         // Empty or whitespace-only counts as missing: the extractor trims, so
-        // `BASELINE BRANCH:` with no value lands here as "" and must not pass.
+        // `SESSION DATE:` with no value lands here as "" and must not pass.
         const value = fields[field];
         if (value === undefined || value === null || String(value).trim() === "") {
           debug(`VALIDATION FAILED: missing required field '${field}'`);

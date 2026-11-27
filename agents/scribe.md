@@ -69,10 +69,10 @@ permissions:
     effect: deny
   - action: webfetch
     resource: "*"
-    effect: allow
+    effect: deny
   - action: websearch
     resource: "*"
-    effect: allow
+    effect: deny
   - action: external_directory
     resource: "*"
     effect: deny

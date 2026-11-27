@@ -312,7 +312,7 @@ ${table}
       expect(readFileSync(join(knowledgeDir, "impl-M2-other-ses_lv_supersede.md"), "utf8")).toContain("status: draft");
     });
 
-    it("agrees at stuck-row reconciliation: only a live artifact promotes the row", () => {
+    it("agrees at stuck-row reconciliation: only a live artifact is reported, and the registry stays byte-identical", () => {
       const s = "ses_lv_reconcile";
       hooks.sessionPhaseMap.set(`${s}:sid`, s);
       writeKD("milestones-feature-ses_lv_reconcile.md", registryContent([["M1", "in-progress"], ["M2", "in-progress"]]));
@@ -320,15 +320,23 @@ ${table}
       writeKD("impl-M2-stamped-ses_lv_reconcile.md", kd("status: superseded\n"));
 
       const registry = hooks.readMilestoneRegistry(s, hooks.sessionPhaseMap);
-      const promoted = hooks.reconcileStuckRowsFromDiskEvidence(s, hooks.sessionPhaseMap, registry);
-      expect(promoted).toBe(1);
+      const before = readFileSync(join(knowledgeDir, "milestones-feature-ses_lv_reconcile.md"), "utf8");
+      const settled = hooks.reconcileStuckRowsFromDiskEvidence(s, hooks.sessionPhaseMap, registry);
+      // The scan writes nothing — no row changes, no settlement lands.
+      expect(settled).toBe(0);
 
       const after = readFileSync(join(knowledgeDir, "milestones-feature-ses_lv_reconcile.md"), "utf8");
-      expect(after).toContain("  M1: checked-off");
+      expect(after).toBe(before);
+      expect(after).toContain("  M1: in-progress");
       expect(after).toContain("  M2: in-progress");
+
+      // The live artifact is named by a report; the stamped one never is.
+      const log = readFileSync(join(logDir, "protocol-gate.log"), "utf8");
+      expect(log).toContain("RECONCILE_CHECKOFF: milestone=M1 file=impl-M1-live-ses_lv_reconcile.md");
+      expect(log).not.toContain("RECONCILE_CHECKOFF: milestone=M2");
     });
 
-    it("agrees at the write hook: a non-live impl KD never promotes and names its reason", async () => {
+    it("agrees at the write hook: a non-live impl KD never settles the row and names its reason", async () => {
       const s = "ses_lv_hook";
       const artisan = "ses_lv_hook_artisan";
       await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});

@@ -36,10 +36,10 @@ permissions:
     effect: deny
   - action: webfetch
     resource: "*"
-    effect: allow
+    effect: deny
   - action: websearch
     resource: "*"
-    effect: allow
+    effect: deny
   - action: external_directory
     resource: "*"
     effect: deny
@@ -594,8 +594,6 @@ MODE: checkpoint
 SESSION DATE: 2026-08-03
 SESSION ID: ses_abc123
 GENERATION: 0
-BASELINE BRANCH: main
-HEAD SHA: 219f80d977ca0370e6b1b9e4818da972083116c6
 SCOPE: Implement feature X — files modified, nature of changes (feat/fix/refactor)
 RESULT KD: knowledge/checkpoint-step1-ses_abc123-gen0.md`
 })

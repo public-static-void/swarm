@@ -186,7 +186,7 @@ ${table}
     expect(readFileSync(join(knowledgeDir, `impl-M6-first-${s}-gen0.md`), "utf8")).toBe(stampedSnapshot);
   });
 
-  it("a fresh canonical write promotes the reopened row and opens the gate", async () => {
+  it("a fresh canonical write settles the reopened row and opens the gate", async () => {
     const s = "trap-fresh-write-3";
     await startSwarmWithRegistry(s, [["M6", "checked-off"]]);
     createKD(`impl-M6-first-${s}-gen0.md`, implKD(s));
@@ -194,14 +194,16 @@ ${table}
     const reopened = hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M6", ["in-progress"], { reopen: true, trigger: "test-reopen" });
     expect(reopened.ok).toBe(true);
 
-    // Fresh evidence at a new canonical path carries a live status — both
-    // paths agree the row is complete.
+    // Fresh evidence at a new canonical path carries a live status — the
+    // settle lands the row and the cross-check reads the same artifact.
     const freshBody = `${implKD(s)}\n# Fix evidence\n`;
     await artisanWrite(`trap-fresh-write-3-art`, `knowledge/impl-M6-fix-${s}-gen0.md`, freshBody);
 
-    expect(readRegistry()).toContain("  M6: checked-off");
+    expect(readRegistry()).toContain("  M6: evidence-landed");
     const crossCheck = hooks.checkMilestoneCheckedOff(s, hooks.sessionPhaseMap, "M6");
-    expect(crossCheck.checkedOff).toBe(true);
+    expect(crossCheck.state).toBe("evidence-landed");
+    expect(crossCheck.checkedOff).toBe(false);
+    expect(crossCheck.implKDOnDisk).toBe(true);
     expect(crossCheck.implKD).toBe(`impl-M6-fix-${s}-gen0.md`);
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
   });
@@ -217,7 +219,7 @@ ${table}
     expect(reopened.ok).toBe(true);
 
     // The fix-up lands in place preserving the reopen stamp, but its bytes
-    // differ from the stamped snapshot — genuine post-stamp work. Promotion
+    // differ from the stamped snapshot — genuine post-stamp work. The settle
     // defers until the landed bytes are verified, so the row stays open
     // before the file lands.
     const fixBody = `${implKD(s, "superseded")}\n# Fix evidence: rebuilt behavior\n`;
@@ -242,8 +244,8 @@ ${table}
     expect(landed).toContain("status: amended");
     expect(landed).toContain(`superseded_by: impl-M6-first-${s}-gen0.md`);
     expect(landed).toContain("# Fix evidence: rebuilt behavior");
-    expect(readRegistry()).toContain("  M6: checked-off");
-    expect(hooks.checkMilestoneCheckedOff(s, hooks.sessionPhaseMap, "M6").checkedOff).toBe(true);
+    expect(readRegistry()).toContain("  M6: evidence-landed");
+    expect(hooks.checkMilestoneCheckedOff(s, hooks.sessionPhaseMap, "M6").implKDOnDisk).toBe(true);
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
     const log = readFileSync(join(protocolLogDir, "protocol-gate.log"), "utf8");
     expect(log).toContain("STAMP_CLEAR_PENDING");
@@ -251,7 +253,7 @@ ${table}
     expect(log).toContain("milestone M6");
   });
 
-  it("a fix-up that already carries live frontmatter records lineage and promotes", async () => {
+  it("a fix-up that already carries live frontmatter records lineage and settles", async () => {
     const s = "trap-clear-live-5";
     await startSwarmWithRegistry(s, [["M6", "checked-off"]]);
     createKD(`impl-M6-first-${s}-gen0.md`, implKD(s));
@@ -259,14 +261,14 @@ ${table}
     hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M6", ["in-progress"], { reopen: true, trigger: "test-reopen" });
 
     // The fix-up rewrites the frontmatter to draft itself but carries no
-    // lineage yet — the gate records superseded_by on landing, then promotes.
+    // lineage yet — the gate records superseded_by on landing, then settles.
     const fixBody = `${implKD(s)}\n# Fix evidence: rebuilt behavior\n`;
     await artisanWriteAndLand(`trap-clear-live-5-art`, `knowledge/impl-M6-first-${s}-gen0.md`, fixBody);
 
     const landed = readFileSync(join(knowledgeDir, `impl-M6-first-${s}-gen0.md`), "utf8");
     expect(landed).toContain("status: draft");
     expect(landed).toContain(`superseded_by: impl-M6-first-${s}-gen0.md`);
-    expect(readRegistry()).toContain("  M6: checked-off");
+    expect(readRegistry()).toContain("  M6: evidence-landed");
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
     const log = readFileSync(join(protocolLogDir, "protocol-gate.log"), "utf8");
     expect(log).toContain("STAMP_LINEAGE_RECORDED");
@@ -304,13 +306,13 @@ ${table}
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
 
     // Genuine in-place fix-up (stamp preserved in the incoming bytes, new
-    // work below the frontmatter) clears on landing and re-completes the row.
+    // work below the frontmatter) clears on landing and re-settles the row.
     const fixBody = `${implKD(s, "superseded")}\n# Fix evidence: addresses review findings\n`;
     await artisanWriteAndLand(`trap-sequence-7-art`, `knowledge/impl-M6-first-${s}-gen0.md`, fixBody);
 
     const landed = readFileSync(join(knowledgeDir, `impl-M6-first-${s}-gen0.md`), "utf8");
     expect(landed).toContain("status: amended");
-    expect(readRegistry()).toContain("  M6: checked-off");
+    expect(readRegistry()).toContain("  M6: evidence-landed");
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
     // Disk-advancement precedes agent routing with zero manual override: the
     // parent session advanced SWARM→VERIFY through the evidence path.

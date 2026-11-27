@@ -1139,9 +1139,53 @@ function warn(msg) {
 // diagnosable from the log alone, and a normal run carries no flag — the
 // 2026-10-21 CLEANUP non-advance left no trace for exactly that reason. Callers
 // emit one line per verdict, never per tool call.
+//
+// Write-time size-bounded retention: the dedupe sets below bound a process's
+// record count, but the file itself grows across restarts, so the cap lives
+// at this gate's only always-on write seam and stays honest on disk. Before
+// appending, a log over the cap is rewritten to its tail (cap/2, cut only at
+// complete-line boundaries) plus one LOG_TRIMMED record, keeping the newest
+// records visible. The cap is per-gate through the env seam below; a rare
+// multi-process double-trim only costs one redundant record, so no lock is
+// introduced. Same file, no rotation siblings — siblings would be new
+// residue the same retention effort retires.
+const LOG_MAX_BYTES_DEFAULT = 2_000_000;
+
+function logCapBytes() {
+  const raw = parseInt(process.env.PROTOCOL_GATE_LOG_MAX_BYTES, 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : LOG_MAX_BYTES_DEFAULT;
+}
+
+function trimLogTail(logFile) {
+  let size;
+  try {
+    size = statSync(logFile).size;
+  } catch (_) {
+    return; // no log yet — nothing to retain
+  }
+  const cap = logCapBytes();
+  if (size <= cap) return;
+  try {
+    const buf = readFileSync(logFile);
+    const window = buf.subarray(Math.max(0, buf.length - Math.floor(cap / 2)));
+    const boundary = window.indexOf(0x0a);
+    const kept = boundary === -1 ? Buffer.alloc(0) : window.subarray(boundary + 1);
+    let totalLines = 0;
+    for (let i = 0; i < buf.length; i++) if (buf[i] === 0x0a) totalLines++;
+    let keptLines = 0;
+    for (let i = 0; i < kept.length; i++) if (kept[i] === 0x0a) keptLines++;
+    const trimLine = `[${new Date().toISOString()}] [protocol-gate] LOG_TRIMMED: kept ${kept.length} of ${buf.length}, dropped ${totalLines - keptLines} lines\n`;
+    writeFileSync(logFile, Buffer.concat([kept, Buffer.from(trimLine, "utf8")]));
+  } catch (_) {
+    _droppedLogCount++;
+  }
+}
+
 function gateRecord(msg) {
   try {
-    appendFileSync(getLogFile(), `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
+    const logFile = getLogFile();
+    trimLogTail(logFile);
+    appendFileSync(logFile, `[${new Date().toISOString()}] [protocol-gate] ${msg}\n`);
   } catch (_) {
     _droppedLogCount++;
   }
@@ -1335,21 +1379,31 @@ function clearPerMilestoneRedispatchKeys(phaseRedispatchCount, sessionID) {
   }
 }
 
+// The registry row-state grammar (SPEC item C):
+// `stuck → in-progress → evidence-landed → checked-off`, with the FAIL-reopen
+// edge back to the pre-evidence state. `evidence-landed` names landed, live,
+// attributed evidence; the completion record `checked-off` is written by
+// exactly one mechanism — the VERIFY verdict-PASS commit (see
+// promoteEvidenceRowsOnVerdictPass). Named constant so every writer and every
+// reader spell the state from one source.
+const EVIDENCE_LANDED_STATE = "evidence-landed";
+
 // Advances a milestone row in the session's milestone registry KD through the
 // given state chain (e.g. ["assigned", "in-progress"]) on a SWARM dispatch.
 // Only the machine-readable `## Milestone States` YAML block is rewritten — the
 // human-readable Milestone Details table stays untouched. A row already at the
-// final state is left alone (idempotent). Reaching checked-off is restricted to
-// in-progress milestones — the artisan checks off only after its impl KD lands,
-// so pending/assigned/failed rows are rejected with invalid-transition. Row
+// final state is left alone (idempotent). `evidence-landed` is admissible while
+// work is being done (the write-hook settle); `checked-off` is admissible only
+// from `in-progress` or the settled `evidence-landed` state, so a
+// pending/assigned/failed row is rejected with invalid-transition. Row
 // matching is case-insensitive (impl KDs may carry any casing for the milestone
 // token) and the replacement preserves the registry row's own casing.
 // The write is atomic (tmp + fsync + rename) so a crash mid-write can never
 // leave a torn registry YAML on disk.
-// A checked-off row is immutable for every caller EXCEPT the SWARM re-dispatch
-// path (opts.reopen). When the Overseer re-dispatches a checked-off milestone
-// after inspector findings, the row re-opens to a non-terminal state so the
-// SWARM→VERIFY gate fails closed again until the fix is re-verified.
+// A checked-off row is immutable for every caller EXCEPT the reopen path
+// (opts.reopen). When a FAIL verdict reopens a milestone after review, the row
+// returns to a non-terminal state so the SWARM gate fails closed again until
+// the fix is re-verified.
 // Returns { ok, path, changed } on success or { ok: false, reason } otherwise.
 function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states, opts = {}) {
   const located = locateMilestoneRegistry(sessionID, sessionPhaseMap);
@@ -1370,12 +1424,30 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
   if (current === finalState) {
     return { ok: true, path: located.path, changed: false };
   }
-  if (finalState === "checked-off" && current !== "in-progress") {
+  // The evidence settle writes `evidence-landed`: admitted only while work is
+  // being done (assigned/pending/failed/in-progress rows) or as an idempotent
+  // re-settle of a row that already reached or passed the evidence state. A
+  // checked-off row is completion-recorded, so the evidence writer never
+  // re-opens it — the reopen path carries opts.reopen and targets the
+  // pre-evidence state.
+  if (finalState === EVIDENCE_LANDED_STATE) {
+    if (current === "in-progress") {
+      // the ordinary settle: live evidence on a row being worked
+    } else if (current === "checked-off" || current === EVIDENCE_LANDED_STATE) {
+      return { ok: true, path: located.path, changed: false };
+    } else {
+      return { ok: false, reason: "invalid-transition" };
+    }
+  }
+  // Completion belongs to the verdict commit: `checked-off` is admissible from
+  // the settled evidence state as well as from `in-progress` (a row re-opened by
+  // a FAIL verdict re-completes through the same single writer).
+  if (finalState === "checked-off" && current !== "in-progress" && current !== EVIDENCE_LANDED_STATE) {
     return { ok: false, reason: "invalid-transition" };
   }
   if (current === "checked-off") {
-    // Only the SWARM re-dispatch path re-opens completed rows; every other
-    // writer leaves them immutable so evidence is never silently lost.
+    // Only the reopen path re-opens completed rows; every other writer leaves
+    // them immutable so evidence is never silently lost.
     if (!opts.reopen || finalState === "checked-off") {
       return { ok: true, path: located.path, changed: false };
     }
@@ -1389,9 +1461,10 @@ function updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, states
     atomicWriteFileSync(located.path, newContent);
     // A successful re-open invalidates the milestone's prior completion
     // evidence (supersedeMilestoneImplKDs) — otherwise the next SWARM→VERIFY
-    // evaluation would instantly re-check-off the row from the stale impl KD
-    // the Inspector just found deficient.
-    if (opts.reopen && current === "checked-off") {
+    // evaluation would instantly settle the row again from the stale impl KD
+    // the Inspector just found deficient. A settled evidence-landed row carries
+    // the same live evidence, so the stamp belongs to its reopen too.
+    if (opts.reopen && (current === "checked-off" || current === EVIDENCE_LANDED_STATE)) {
       const invalidated = supersedeMilestoneImplKDs(sessionID, sessionPhaseMap, milestoneId);
       // Always-on reopen record: milestone, the artifacts this reopen
       // invalidated, and the cause. The record carries the stamped set the
@@ -2179,13 +2252,15 @@ function settleStampClearForArtifact(sessionID, sessionPhaseMap, { dir, base, mi
   }
   dropStampSnapshot(sessionPhaseMap, sessionID, rowId, base);
   persistSessionState(sessionPhaseMap, sessionID);
-  // Promotion is the ordinary registry transition and is recorded either way —
-  // a row that stays open must be explainable from the log alone.
+  // The settle is the ordinary registry transition and is recorded either way —
+  // a row that stays at its working state must be explainable from the log
+  // alone. Settlement lands the re-landed evidence at `evidence-landed`; the
+  // completion record stays the VERIFY verdict commit's.
   const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   const resolvedId = resolveMilestoneRowId(registry, base, rowId);
-  const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, resolvedId, ["checked-off"]);
+  const result = settleMilestoneEvidence(sessionID, sessionPhaseMap, resolvedId);
   const promoted = !!(result.ok && result.changed);
-  const reason = promoted ? "amended-evidence" : (result.ok ? "already-checked-off" : result.reason);
+  const reason = promoted ? "amended-evidence" : (result.ok ? "already-evidence-landed" : result.reason);
   gateRecordEvent("CHECKOFF", [
     ["milestone", resolvedId],
     ["artifact", base],
@@ -2242,6 +2317,41 @@ function checkMilestoneCheckedOff(sessionID, sessionPhaseMap, milestoneId) {
     state,
     implKD
   };
+}
+
+// The evidence settle: live, same-session, same-generation milestone
+// evidence moves a row from its working state to `evidence-landed` — the
+// artifact landed and is attributed, and nothing more. A row past the evidence
+// state is left where it is (completion and reopen own those states), so every
+// evidence transport may call this idempotently.
+function settleMilestoneEvidence(sessionID, sessionPhaseMap, milestoneId) {
+  return updateMilestoneRegistry(sessionID, sessionPhaseMap, milestoneId, [EVIDENCE_LANDED_STATE]);
+}
+
+// The sole writer of `checked-off`: the VERIFY verdict-PASS gate
+// outcome's commit promotes every settled evidence row as part of committing
+// VERIFY→EXTRACT. The promotion is recorded per row under the kept CHECKOFF
+// token; a promotion-side line here is the completion record, so it carries the
+// verdict as its cause.
+function promoteEvidenceRowsOnVerdictPass(sessionID, sessionPhaseMap, reviewFile) {
+  const registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
+  if (!registry) return 0;
+  let promoted = 0;
+  for (const row of registry.rows) {
+    if (row.state !== EVIDENCE_LANDED_STATE) continue;
+    const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["checked-off"]);
+    if (result.ok && result.changed) {
+      promoted++;
+      gateRecordEvent("CHECKOFF", [
+        ["milestone", row.id],
+        ["promoted", "true"],
+        ["reason", "verdict-pass"]
+      ], `VERIFY verdict PASS review KD ${reviewFile} completes milestone ${row.id} — the verdict commit is the row completion record`, `CHECKOFF|${gateRecordMilestoneTag(row.id)}|p:true|r:verdict-pass`);
+    } else if (!result.ok) {
+      gateRecord(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (verdict PASS) — ${result.reason} promoted=false`);
+    }
+  }
+  return promoted;
 }
 
 // Parses the session's milestone registry rows from the machine-readable
@@ -2343,32 +2453,33 @@ function emitGenerationMismatchSkips(knowledgeDir, files, sessionID, milestoneId
   }
 }
 
-// Disk-evidence reconciliation: before the all-checked-off
-// verdict is computed, every non-checked-off row (`in-progress`, `assigned`,
-// `pending`, `failed`) whose milestone-scoped impl KD exists on disk under the
-// SAME session id AND at the persisted lifecycle generation is promoted to
-// checked-off. Evidence matching is generation-pinned (filename `-gen{N}`
-// equals the persisted generation; legacy suffix-less files count as
-// generation 0); rows without pinned evidence are never promoted and keep
-// blocking the gate. Same-session files that miss the pin are named by a
-// GEN_MISMATCH_SKIP diagnostic — see the DIVERGENCE RECOVERY PROCEDURE above
-// for the operator-invoked recovery (diagnose → scoped-remove → redispatch).
+// Disk-evidence reconciliation: before the all-checked-off verdict is computed,
+// every working row (`in-progress`, `assigned`, `pending`, `failed`) whose
+// milestone-scoped impl KD exists on disk under the SAME session id AND at the
+// persisted lifecycle generation is REPORTED — evaluation observes evidence and
+// never rewrites the registry. The row state is written by the write-hook
+// settle (live evidence → `evidence-landed`) and the VERIFY verdict commit
+// (PASS → `checked-off`); the gate's `ok` is derived from the evidence this
+// scan names, so a stuck row with live evidence still satisfies advancement.
+// Evidence matching is generation-pinned (filename `-gen{N}` equals the
+// persisted generation; legacy suffix-less files count as generation 0); rows
+// without pinned evidence are never reported as evidence and keep blocking the
+// gate. Same-session files that miss the pin are named by a GEN_MISMATCH_SKIP
+// diagnostic — see the DIVERGENCE RECOVERY PROCEDURE above for the
+// operator-invoked recovery (diagnose → scoped-remove → redispatch).
 //
 // RESTART REQUIRED: plugins load once per opencode process, so this
-// gate-logic change — reconciliation and the loud auto-checkoff diagnostics —
-// takes effect only after opencode restarts. Live behavior lags disk until
-// then; operators should restart after pulling gate-logic fixes.
+// gate-logic change — the reporter-only reconciliation and its always-on
+// diagnostics — takes effect only after opencode restarts. Live behavior lags
+// disk until then; operators should restart after pulling gate-logic fixes.
 //
-// Promotion goes through the existing strict registry writer as two audited
-// steps (<stuck> → in-progress → checked-off): updateMilestoneRegistry's
-// transition rules stay untouched (SPEC A1 — the reconcile path is separate).
-// Single top-level readdir shared across rows; idempotent — once all
-// rows are checked-off there are no stuck rows and the scan is skipped
-// entirely. A missing/unparsable registry never reaches here (the
-// caller fails closed first); reconciliation never fabricates rows.
+// Single top-level readdir shared across rows; idempotent — once every row has
+// reached the evidence state there is nothing to report and the scan is skipped
+// entirely. A missing/unparsable registry never reaches here (the caller fails
+// closed first); reconciliation never fabricates rows.
 function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry) {
   // Settlement is attempted here too (FR-06 point c): a stamped artifact whose
-  // fix-up write landed outside the write hook re-closes its row at the next
+  // fix-up write landed outside the write hook re-lands its row at the next
   // reconciliation instead of staying stuck, and its record names the transport
   // that settled it.
   const settled = settleStampClearsForSession(sessionID, sessionPhaseMap, "stuck-row");
@@ -2376,7 +2487,7 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
     const refreshed = readMilestoneRegistry(sessionID, sessionPhaseMap);
     if (refreshed) registry = refreshed;
   }
-  const stuck = registry.rows.filter(r => r.state !== "checked-off");
+  const stuck = registry.rows.filter(r => r.state !== "checked-off" && r.state !== EVIDENCE_LANDED_STATE);
   if (stuck.length === 0) return settled;
   const knowledgeDir = getKnowledgeDir(sessionID);
   let files = [];
@@ -2384,15 +2495,14 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
   const persistedGeneration = getCurrentGeneration(sessionPhaseMap, sessionID);
   // Refusal precedes generation resolution and the mismatch evaluation in the
   // loop below: while several candidates disagree with the persisted counter,
-  // no row promotes from any generation and no skip is recorded.
+  // no evidence is reported against any generation and no skip is recorded.
   if (refuseAmbiguousAnchor(sessionPhaseMap, sessionID)) return settled;
   const generation = getActiveLifecycleGeneration(sessionPhaseMap, sessionID);
-  let promoted = 0;
   for (const row of stuck) {
     const prefix = `impl-${row.id}-`;
     // Shared pinned predicate: only live (non-frontmatter-superseded)
-    // same-session, active-lifecycle-generation evidence promotes — the
-    // write-hook check-off consults the same resolution over the incoming
+    // same-session, active-lifecycle-generation evidence counts — the
+    // write-hook settle consults the same resolution over the incoming
     // path, so both agree on skewed rows.
     const evidence = files.find(f => isLiveMilestoneEvidence(knowledgeDir, f, sessionID, row.id, generation));
     if (!evidence) {
@@ -2439,20 +2549,21 @@ function reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry
       }
       continue;
     }
-    const opened = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"]);
-    if (!opened.ok) {
-      warn(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile ${row.state} → in-progress) — ${opened.reason}`);
-      continue;
-    }
-    const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["checked-off"]);
-    if (!result.ok) {
-      warn(`AUTO_CHECKOFF_FAILED: milestone ${row.id} (reconcile in-progress → checked-off) — ${result.reason}`);
-      continue;
-    }
-    gateRecord(`RECONCILE_CHECKOFF: milestone ${row.id} promoted ${row.state} → checked-off (impl KD ${evidence})`);
-    promoted++;
+    // The evidence is observed, not acted on: the write hook owns the settle
+    // to the evidence state and the VERIFY verdict owns completion, so this
+    // pass names the evidence it saw and leaves every registry byte where it
+    // found it. The kept record token carries promoted=false — the
+    // promotion-side line changed owner, the vocabulary stays. One
+    // always-on line per row-and-evidence pair keeps a row whose state was
+    // never written explainable from the log alone.
+    gateRecordEvent("RECONCILE_CHECKOFF", [
+      ["milestone", row.id],
+      ["file", evidence],
+      ["state", row.state],
+      ["promoted", "false"]
+    ], `milestone ${row.id} stays ${row.state} — live impl-KD evidence ${evidence} is on disk; the write hook settles the row and the VERIFY verdict completes it`, `RECONCILE_CHECKOFF|${gateRecordMilestoneTag(row.id)}a:${evidence}|s:${row.state}`);
   }
-  return promoted + settled;
+  return settled;
 }
 
 // Explicit, audited remediation path for orphaned legacy evidence: advances
@@ -2552,17 +2663,18 @@ function reconcileSupersededMilestone(sessionID, sessionPhaseMap, milestoneId, a
   return { ok: true, milestoneId, evidence: restored, actor: who };
 }
 
-// The all-checked-off gate — SWARM→VERIFY advances ONLY when every registry
-// row is checked-off AND its milestone-scoped impl KD is on disk
-// (checkMilestoneCheckedOff semantics: registry state + disk evidence).
-// Fails closed on missing (REGISTRY_MISSING) and empty (REGISTRY_EMPTY)
-// registries. Before the verdict is computed, evidence-backed stuck rows are
-// reconciled to checked-off (reconcileStuckRowsFromDiskEvidence) and the
-// registry is re-read after any promotion. Returns { ok, total, checkedOff, rows }.
+// The all-checked-off gate — SWARM→VERIFY advances when every registry row
+// carries its milestone-scoped live impl KD on disk (`implKDOnDisk`, the disk
+// half of checkMilestoneCheckedOff). The row COMPLETION record (`checked-off`)
+// is written later, by the VERIFY verdict-PASS commit, so advancement follows
+// evidence presence while completion follows the verdict. Fails closed
+// on missing (REGISTRY_MISSING) and empty (REGISTRY_EMPTY) registries.
+// Evaluation is pure: it never rewrites the registry — reconcile reports and
+// the write hooks settle. Returns { ok, total, checkedOff, rows }.
 function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
   // Stamp settlement is attempted at every SWARM gate evaluation (FR-06 point
-  // b), before the registry is read, so a row the settlement re-closes is
-  // already checked-off when the verdict is computed.
+  // b), before the registry is read, so a row the settlement re-lands is
+  // already at the evidence state when the verdict is computed.
   const settled = settleStampClearsForSession(sessionID, sessionPhaseMap, "swarm-gate");
   let registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
   if (!registry) {
@@ -2589,10 +2701,12 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
     debug(`REGISTRY_EMPTY: milestone registry has no rows for session ${sessionID} — SWARM cannot advance`);
     return { ok: false, total: 0, checkedOff: 0, rows: [] };
   }
-  // Reconcile evidence-backed stuck rows BEFORE computing ok — the
-  // promotion writes land in the registry, so re-read it when rows changed.
-  const reconciled = reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry);
-  if (settled > 0 || reconciled > 0) {
+  // The scan reports evidence-backed stuck rows and their skips — a reporter
+  // now, it leaves the registry byte-identical. The only evaluation-time
+  // registry write left is stamp settlement (disk-state convergence), so the
+  // registry is re-read only when a settlement landed.
+  reconcileStuckRowsFromDiskEvidence(sessionID, sessionPhaseMap, registry);
+  if (settled > 0) {
     registry = readMilestoneRegistry(sessionID, sessionPhaseMap);
     if (!registry) {
       gateRecordEvent("REGISTRY_MISSING", [
@@ -2606,10 +2720,14 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
       return { ok: false, total: 0, checkedOff: 0, rows: [] };
     }
   }
+  // `checkedOff` here is the gate's per-row evidence verdict — the disk half of
+  // the cross-check. A row satisfies the SWARM gate once its live milestone
+  // evidence is on disk; the registry row state follows the settle and the
+  // verdict, not this computation.
   const rows = registry.rows.map(r => ({
     id: r.id,
     state: r.state,
-    checkedOff: checkMilestoneCheckedOff(sessionID, sessionPhaseMap, r.id).checkedOff
+    checkedOff: checkMilestoneCheckedOff(sessionID, sessionPhaseMap, r.id).implKDOnDisk
   }));
   const checkedOff = rows.filter(r => r.checkedOff).length;
   const ok = checkedOff === rows.length;
@@ -2627,8 +2745,8 @@ function checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap) {
       ["total", rows.length],
       ["reason", "not-all-checked-off"],
       ["promoted", "false"]
-    ], `SWARM gate: ${checkedOff}/${rows.length} milestones checked-off — blocked by: ${blockedBy}`, `SWARM_GATE_BLOCKED|${sessionID}|b:${blockedBy}|c:${checkedOff}/${rows.length}`);
-    warn(`SWARM gate: ${checkedOff}/${rows.length} milestones checked-off — blocked by: ${blockedBy}`);
+    ], `SWARM gate: ${checkedOff}/${rows.length} milestones carry live impl-KD evidence — blocked by: ${blockedBy}`, `SWARM_GATE_BLOCKED|${sessionID}|b:${blockedBy}|c:${checkedOff}/${rows.length}`);
+    warn(`SWARM gate: ${checkedOff}/${rows.length} milestones carry live impl-KD evidence — blocked by: ${blockedBy}`);
   }
   return { ok, total: rows.length, checkedOff, rows };
 }
@@ -2970,9 +3088,9 @@ function reopenCheckedOffMilestones(sessionID, sessionPhaseMap, citedMilestoneId
   }
   const cited = new Set((citedMilestoneIds || []).map(id => String(id).toUpperCase()));
   for (const row of registry.rows) {
-    if (row.state === "checked-off" && cited.has(String(row.id).toUpperCase())) {
+    if ((row.state === "checked-off" || row.state === EVIDENCE_LANDED_STATE) && cited.has(String(row.id).toUpperCase())) {
       const result = updateMilestoneRegistry(sessionID, sessionPhaseMap, row.id, ["in-progress"], { reopen: true, trigger });
-      debug(`reopen: milestone ${row.id} checked-off → in-progress (${JSON.stringify(result)})`);
+      debug(`reopen: milestone ${row.id} ${row.state} → in-progress (${JSON.stringify(result)})`);
     }
   }
 }
@@ -3125,11 +3243,13 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
       debug(`REOPEN_TARGET_INVALID: ${cause}`);
       return false;
     }
-    // A target naming rows that are not checked-off reopens nothing. Say so per
-    // row rather than leaving a reader to infer it from an unchanged registry.
+    // A target that is already open reopens nothing — a row at either working
+    // state (in-progress or the settled evidence state) is a reopen target or
+    // already open, never a completion record. Say so per row rather than
+    // leaving a reader to infer it from an unchanged registry.
     for (const id of resolvable) {
       const row = registry.rows.find(r => String(r.id).toUpperCase() === id);
-      if (!row || row.state === "checked-off") continue;
+      if (!row || row.state === "checked-off" || row.state === EVIDENCE_LANDED_STATE) continue;
       gateRecordEvent("REOPEN_NOOP", [
         ["session", sessionID],
         ["milestone", row.id],
@@ -3257,6 +3377,12 @@ function evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Optio
     ], `PASS review KD ${verdictInfo.filename} predates the newest impl KD — VERIFY advancement is blocked until a fresh review; the fix cycle landed after the verdict it would have to judge`, `STALE_PASS|${sessionID}|a:${verdictInfo.filename}|i:${newestImpl}`);
     return false;
   }
+  // The verdict commit: PASS is the single mechanism that records row
+  // completion. The promotion runs before this gate outcome returns true, and
+  // the caller commits VERIFY→EXTRACT on the same call — so every settled
+  // evidence row reaches `checked-off` exactly as the verified verdict lands,
+  // and no earlier write, scan or evaluation can reach that state.
+  promoteEvidenceRowsOnVerdictPass(sessionID, sessionPhaseMap, verdictInfo.filename);
   // The merged review+audit surface advances on a single review KD.
   // The regression side stays OR (checkPhaseStateConsistency) so a single-KD
   // VERIFY holds instead of directly regressing to SWARM — otherwise the
@@ -3861,13 +3987,15 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
     return evaluateVerifyVerdict(sessionID, sessionFiles, sessionPhaseMap, f1Options);
   }
 
-  // SWARM advancement requires ALL registry milestones to be
-  // checked-off with their impl KDs on disk (checkAllMilestonesCheckedOff).
-  // The milestone registry is the live state SSOT — the legacy dispatch-count
-  // gate (MILESTONE_COUNT, swarmDispatchCount) has no gating effect. Fails
-  // closed on missing/empty/unparsable registries (REGISTRY_MISSING/EMPTY).
-  // Under an override at SWARM, the milestone registry file's mtime is the
-  // evidence timestamp — a stale registry never re-advances SWARM (contract #5).
+  // SWARM advancement requires live milestone-scoped impl KD evidence for
+  // every registry row (checkAllMilestonesCheckedOff — the advance
+  // commits on evidence presence; the row's completion record follows the
+  // VERIFY verdict). The milestone registry is the live state SSOT — the legacy
+  // dispatch-count gate (MILESTONE_COUNT, swarmDispatchCount) has no gating
+  // effect. Fails closed on missing/empty/unparsable registries
+  // (REGISTRY_MISSING/EMPTY). Under an override at SWARM, the milestone
+  // registry file's mtime is the evidence timestamp — a stale registry never
+  // re-advances SWARM (contract #5).
   if (phase === STATES.SWARM) {
     const gate = checkAllMilestonesCheckedOff(sessionID, sessionPhaseMap);
     let result = gate.ok;
@@ -3880,23 +4008,23 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
       overrideNote = `, override fresh-evidence: registry mtime=${registryMtime} >= since=${overrideAnchor} → ${result}`;
       if (!result) {
         // The gate's evidence passed and a pin is what refuses the transition.
-        // Always-on because this is the wedge shape: a pin taken while every row
-        // was already checked-off can never be satisfied — a checked-off row is
-        // never rewritten, so the registry that would carry the fresh mtime is
-        // never written. Without the record the lifecycle parks with no trace
-        // and reads as "the gate is disabled".
+        // Always-on because this is the wedge shape: a pin taken while every
+        // row already carried its evidence can never be satisfied — a settled
+        // row is never rewritten by evaluation, so the registry that would
+        // carry a fresh timestamp is never written. Without the record the
+        // lifecycle parks with no trace and reads as "the gate is disabled".
         gateRecordEvent("SWARM_GATE_PARKED", [
           ["session", sessionID],
           ["registry", registry ? registry.path.split("/").pop() : "<none>"],
           ["registryMtime", registryMtime],
           ["since", overrideAnchor],
           ["reason", "stale-registry"]
-        ], `every milestone row is checked-off with its impl KD on disk, so the all-checked-off gate passed; the override's freshness pin is unmet because the registry write that would carry a fresh timestamp cannot happen — a checked-off row is never rewritten. Walk the phase past SWARM with /phase: evidence cannot satisfy the pin and a retry changes nothing`, `SWARM_GATE_PARKED|${sessionID}|r:${registryMtime}|s:${overrideAnchor}`);
+        ], `every milestone row carries live impl-KD evidence, so the all-checked-off gate passed; the override's freshness pin is unmet because the registry write that would carry a fresh timestamp cannot happen — evaluation never rewrites a settled row. Walk the phase past SWARM with /phase: evidence cannot satisfy the pin and a retry changes nothing`, `SWARM_GATE_PARKED|${sessionID}|r:${registryMtime}|s:${overrideAnchor}`);
       }
     } else if (overrideActive && terminalHop) {
       // A terminal override hop completes on its ordinary advancement gate.
-      // SWARM does not author the registry (a checked-off row is never
-      // rewritten), so the registry-mtime anchor can never be satisfied at a
+      // SWARM does not author the registry (a settled row is never rewritten
+      // by evaluation), so the registry-mtime anchor can never be satisfied at a
       // terminal SWARM hop — applying it would park the documented
       // origin-return permanently. A genuine single-phase pin keeps the anchor
       // (contract #5), handled by the branch above.
@@ -3911,8 +4039,8 @@ function checkDiskAdvancement(sessionID, phase, sessionPhaseMap, swarmDispatchCo
       const blockedBy = stuck.map(r => r.id).join(", ");
       const reason = gate.rows.length > 0 ? "not-all-checked-off" : "no-registry";
       const cause = gate.rows.length > 0
-        ? `the SWARM disk check declines: ${gate.checkedOff}/${gate.total} milestone rows are checked-off with impl-KD evidence on disk; every row must be checked-off before SWARM advances`
-        : "the SWARM disk check declines: the milestone registry is missing, empty, or unparsable, so no row can be checked-off";
+        ? `the SWARM disk check declines: ${gate.checkedOff}/${gate.total} milestone rows carry live impl-KD evidence on disk; every row needs its evidence before SWARM advances`
+        : "the SWARM disk check declines: the milestone registry is missing, empty, or unparsable, so no row can carry evidence";
       gateRecordEvent("SWARM_GATE_BLOCKED", [
         ["session", sessionID],
         ["phase", "SWARM"],
@@ -4978,29 +5106,33 @@ async function protocolGateServer(input, options) {
         // the SSOT of milestone IDs. Hyphenated IDs (e.g. `M-core`) are
         // truncated to their first token (`M`) by the legacy extractor, so
         // the row whose ID prefix-matches the impl KD's name portion is the
-        // authoritative ID to check off. An exact row-ID match is preferred
+        // authoritative ID to settle. An exact row-ID match is preferred
         // over a prefix match — `impl-M-core-...` prefix-matches both `M`
         // and `M-core`, and the exact row wins.
         const registry = readMilestoneRegistry(candidate, sessionPhaseMap);
         const resolvedId = resolveMilestoneRowId(registry, relPath, milestoneId);
-        const result = updateMilestoneRegistry(candidate, sessionPhaseMap, resolvedId, ["checked-off"]);
-        debug(`auto check-off: impl KD for milestone ${resolvedId} (parent ${candidate}) → ${JSON.stringify(result)}`);
-        // Always-on promotion record: one line per evaluation, naming the
+        // Landed live evidence settles the row to `evidence-landed`. The
+        // completion record is the VERIFY verdict commit's alone,
+        // so no evidence transport on this path writes `checked-off`.
+        const result = settleMilestoneEvidence(candidate, sessionPhaseMap, resolvedId);
+        debug(`evidence settle: impl KD for milestone ${resolvedId} (parent ${candidate}) → ${JSON.stringify(result)}`);
+        // Always-on settle record: one line per evaluation, naming the
         // artifact and the outcome. Without it a row that stays open after a
         // write is indistinguishable from a write the gate never saw.
-        const promoted = result.ok && result.changed;
+        const settled = result.ok && result.changed;
+        const settleReason = settled ? "live-evidence" : (result.ok ? "already-evidence-landed" : result.reason);
         gateRecordEvent("CHECKOFF", [
           ["milestone", resolvedId],
           ["artifact", artifactBase],
-          ["promoted", promoted ? "true" : "false"],
-          ["reason", promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)],
+          ["promoted", settled ? "true" : "false"],
+          ["reason", settleReason],
           ["transport", transport]
-        ], null, `CHECKOFF|${gateRecordMilestoneTag(resolvedId)}a:${artifactBase}|p:${promoted ? "true" : "false"}|r:${promoted ? "live-evidence" : (result.ok ? "already-checked-off" : result.reason)}|t:${transport}`);
-        // Only a SUCCESSFUL check-off resets the per-milestone
-        // redispatch budget. A failed registry update keeps the counter so
-        // retries still count toward the cap; a re-opened milestone
-        // starts fresh because its budget was cleared at the earlier
-        // check-off — the desired re-open semantics.
+        ], null, `CHECKOFF|${gateRecordMilestoneTag(resolvedId)}a:${artifactBase}|p:${settled ? "true" : "false"}|r:${settleReason}|t:${transport}`);
+        // Only a SUCCESSFUL settle resets the per-milestone redispatch
+        // budget. A failed registry update keeps the counter so retries still
+        // count toward the cap; a re-opened milestone starts fresh because
+        // its budget was cleared at the earlier settle — the desired re-open
+        // semantics.
         if (result.ok) {
           phaseRedispatchCount.delete(milestoneRedispatchKey(candidate, resolvedId));
           debug(`COUNTER_RESET: per-milestone redispatch key deleted for ${resolvedId} (session ${candidate})`);
@@ -5168,6 +5300,8 @@ async function protocolGateServer(input, options) {
       }
       freshAdvancement.set(candidate, { phase: newPhase, diskCheckCount: 0 });
       const gateEvidence = checkAllMilestonesCheckedOff(candidate, sessionPhaseMap);
+      // Advance evidence is read back as the gate names it — checkedOff/total
+      // rows carrying live impl-KD evidence.
       const reason = `all milestones checked-off: ${gateEvidence.checkedOff}/${gateEvidence.total}`;
       advancementAnnouncements.set(candidate, {
         from: getPhaseName(currentPhase),
@@ -6957,6 +7091,11 @@ if (!(await advanceFromDiskEvidence(sessionID))) {
       checkMilestoneCheckedOff,
       readMilestoneRegistry,
       checkAllMilestonesCheckedOff,
+      // Row-state grammar (SPEC item C): the evidence settle and the
+      // verdict-owned completion writer, plus the state token itself.
+      EVIDENCE_LANDED_STATE,
+      settleMilestoneEvidence,
+      promoteEvidenceRowsOnVerdictPass,
       reconcileStuckRowsFromDiskEvidence,
       reconcileSupersededMilestone,
       supersedeMilestoneImplKDs,

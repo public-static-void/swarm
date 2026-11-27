@@ -1,0 +1,54 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    "./plugins/protocol-gate",
+    "./plugins/delegation-gate",
+    "./plugins/knowledge-gate"
+  ],
+  "experimental": {
+    "subagent_depth": 2
+  },
+  "model": "local/local-model",
+  "compaction": {
+    "auto": true,
+    "buffer": 131072
+  },
+  "default_agent": "overseer",
+  "websearch": {
+    "provider": "random"
+  },
+  "providers": {
+    "local": {
+      "name": "Local Provider",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "https://example.invalid/v1",
+        "apiKey": "REPLACE_ME"
+      },
+      "models": {
+        "local-model": {
+          "name": "Local Model",
+          "tool_call": true,
+          "reasoning": true
+        }
+      }
+    }
+  },
+  "agents": {
+    "build": {
+      "disabled": true
+    },
+    "plan": {
+      "disabled": true
+    },
+    "general": {
+      "disabled": true
+    },
+    "explore": {
+      "disabled": true
+    },
+    "scout": {
+      "disabled": true
+    }
+  }
+}

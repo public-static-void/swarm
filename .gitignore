@@ -43,3 +43,7 @@ bun.lock
 # Opencode Internal
 service.json
 cli.json
+
+# The operator's live config, produced by copying one of the tracked templates;
+# the machine's provider values stay on the machine that owns them.
+opencode.json

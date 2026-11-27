@@ -162,18 +162,18 @@ ${table}
     expect(skipped).toContain(`intent-feature-${s}-gen5.md`);
 
     // Paired positive: the same bytes at the lifecycle's own generation
-    // promote — the refusal above keys on generation, not on the artifact.
+    // settle — the refusal above keys on generation, not on the artifact.
     createKD(`impl-M1-feat-${s}-gen6.md`, implKD(s));
     await writeAsArtisan(`${s}-art`, `knowledge/impl-M1-feat-${s}-gen5.md`, implKD(s));
     createKD(`impl-M1-feat-${s}-gen5.md`, implKD(s));
 
-    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+    expect(registryBody(s, 5)).toContain("  M1: evidence-landed");
     expect(readLog()).toContain("CHECKOFF");
     expect(readLog()).toContain("promoted=true");
     expect(readLog()).toContain("reason=live-evidence");
   });
 
-  it("promotes a row end-to-end on a document written at the active generation, and the gate reads it back", async () => {
+  it("settles a row end-to-end on a document written at the active generation, and the gate reads it back", async () => {
     const s = "lcgen-promote-1";
     await openLifecycle(s, { persistedGen: 6, anchorGen: 5 });
     clearLog();
@@ -184,13 +184,13 @@ ${table}
     // The promotion record names the artifact and the reason.
     const log = readLog();
     expect(log).toContain(`CHECKOFF: milestone=M1 artifact=impl-M1-feat-${s}-gen5.md promoted=true reason=live-evidence`);
-    // The registry write is the gate's, not a caller's: the row reads
-    // checked-off after the write hook ran.
-    expect(registryBody(s, 5)).toContain("  M1: checked-off");
-    // And the disk predicate the SWARM gate consumes agrees — registry state
-    // plus the landed artifact, both resolved at the lifecycle's generation.
+    // The registry write is the gate's, not a caller's: the row settles to
+    // its evidence state after the write hook ran.
+    expect(registryBody(s, 5)).toContain("  M1: evidence-landed");
+    // And the disk predicate the SWARM gate consumes agrees — the landed
+    // artifact, resolved at the lifecycle's generation.
     const row = hooks.checkMilestoneCheckedOff(s, hooks.sessionPhaseMap, "M1");
-    expect(row.state).toBe("checked-off");
+    expect(row.state).toBe("evidence-landed");
     expect(row.implKDOnDisk).toBe(true);
     expect(row.implKD).toBe(`impl-M1-feat-${s}-gen5.md`);
   });
@@ -213,11 +213,11 @@ ${table}
     expect(registryBody(s, 5)).toContain("  M1: in-progress");
 
     // Paired positive: an edit that carries a whole document is a document, so
-    // it promotes — the deferral keys on payload shape, not on the tool name.
+    // it settles — the deferral keys on payload shape, not on the tool name.
     await editAsArtisan(`${s}-art`, `knowledge/impl-M2-feat-${s}-gen5.md`, implKD(s));
 
     expect(readLog()).toContain(`CHECKOFF: milestone=M2 artifact=impl-M2-feat-${s}-gen5.md promoted=true reason=live-evidence`);
-    expect(registryBody(s, 5)).toContain("  M2: checked-off");
+    expect(registryBody(s, 5)).toContain("  M2: evidence-landed");
   });
 
   it("names an unmatched impl-KD path whose filename carries no generation for any candidate", async () => {
@@ -234,10 +234,10 @@ ${table}
     expect(registryBody(s, 5)).toContain("  M1: in-progress");
 
     // Paired positive: the same milestone at the session's own generation is
-    // matched and promoted, so the unmatched record above is about the token.
+    // matched and settled, so the unmatched record above is about the token.
     await writeAsArtisan(`${s}-art`, `knowledge/impl-M1-orphan-${s}-gen5.md`, implKD(s));
 
-    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+    expect(registryBody(s, 5)).toContain("  M1: evidence-landed");
   });
 
   it("refuses promotion and advancement while two lifecycle INTENTs disagree with the persisted counter", async () => {
@@ -246,7 +246,7 @@ ${table}
     // An earlier, unfinished lifecycle of the same session left its INTENT and
     // registry behind at the counter's own generation. Its artifact is older,
     // so the anchor rule picks the gen5 INTENT — and with two candidates on
-    // disk nothing records which lifecycle is running, so no row may promote
+    // disk nothing records which lifecycle is running, so no row may settle
     // while the anchor and the counter disagree.
     const older = join(knowledgeDir, `intent-feature-${s}-gen6.md`);
     createKD(`intent-feature-${s}-gen6.md`, intentKD(s));
@@ -292,7 +292,7 @@ ${table}
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
 
     // Paired positive: adoption settles the disagreement — the counter takes
-    // the anchor's number — and the same evidence then promotes and advances.
+    // the anchor's number — and the same evidence then lands and advances.
     expect(hooks.adoptLifecycleGenerationOnIntent(s, `knowledge/intent-feature-${s}-gen5.md`))
       .toEqual({ ok: true, generation: 5 });
     writeFileSync(registryPath(s, 5), registryContent([["M1", "in-progress"], ["M2", "checked-off"]]));
@@ -300,7 +300,7 @@ ${table}
     await writeAsArtisan(`${s}-art`, `knowledge/impl-M1-feat-${s}-gen5.md`, implKD(s));
 
     expect(readLog()).toContain(`CHECKOFF: milestone=M1 artifact=impl-M1-feat-${s}-gen5.md promoted=true reason=live-evidence`);
-    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+    expect(registryBody(s, 5)).toContain("  M1: evidence-landed");
     expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, new Map())).toBe(true);
   });
 
@@ -379,11 +379,11 @@ ${table}
     expect(log).toContain("reason=no-generation-token");
     expect(log).toContain("promoted=false");
 
-    // Paired positive: the same artifact under this session's marker promotes
+    // Paired positive: the same artifact under this session's marker settles
     // the row, so the record above is about the missing token.
     await writeAsArtisan(`${s}-art`, `knowledge/impl-M1-feat-${s}-gen5.md`, implKD(s));
     createKD(`impl-M1-feat-${s}-gen5.md`, implKD(s));
-    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+    expect(registryBody(s, 5)).toContain("  M1: evidence-landed");
   });
 
   it("records a SWARM gate parked by a pin whose freshness anchor no rewrite can satisfy", async () => {
@@ -442,7 +442,7 @@ ${table}
 
     const log = readLog();
     expect(log).toContain(`CHECKOFF: milestone=M1 artifact=impl-M1-feat-${s}-gen5.md promoted=true reason=live-evidence transport=after-hook`);
-    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+    expect(registryBody(s, 5)).toContain("  M1: evidence-landed");
   });
 
   it("declines the deferred settlement when the landed bytes are not live", async () => {
@@ -464,11 +464,11 @@ ${table}
     expect(registryBody(s, 5)).toContain("  M1: in-progress");
   });
 
-  it("promotes on the landed bytes when a live document replaces a stamp and the stamp loop finds nothing to clear", async () => {
+  it("settles on the landed bytes when a live document replaces a stamp and the stamp loop finds nothing to clear", async () => {
     const s = "lcgen-stamp-landed-1";
     await openLifecycle(s, { persistedGen: 6, anchorGen: 5 });
     // The prior evidence was stamped superseded by a reopen, so the write hook
-    // sees a stale file and defers the check-off to the landed bytes.
+    // sees a stale file and defers the settle to the landed bytes.
     createKD(`impl-M1-feat-${s}-gen5.md`, implKD(s, "superseded"));
     clearLog();
 
@@ -477,14 +477,14 @@ ${table}
     expect(registryBody(s, 5)).toContain("  M1: in-progress");
 
     // The runtime lands the author's live document, which is no longer stamped:
-    // the stamp loop has nothing to clear, so only the deferred check-off can
+    // the stamp loop has nothing to clear, so only the deferred settle can
     // evaluate what landed.
     writeFileSync(join(knowledgeDir, `impl-M1-feat-${s}-gen5.md`), implKD(s));
     await hooks["tool.execute.after"]({ tool: "write", sessionID: `${s}-art` }, {});
 
     const log = readLog();
     expect(log).toContain(`CHECKOFF: milestone=M1 artifact=impl-M1-feat-${s}-gen5.md promoted=true reason=live-evidence transport=after-hook`);
-    expect(registryBody(s, 5)).toContain("  M1: checked-off");
+    expect(registryBody(s, 5)).toContain("  M1: evidence-landed");
   });
 
   it("refuses to start a lifecycle at a generation another unfinished lifecycle holds", async () => {

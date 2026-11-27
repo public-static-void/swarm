@@ -294,7 +294,7 @@ ${escalationSection}`;
       artifact: `impl-M6-first-${s}-gen0.md`
     });
 
-    // 3. Settlement and promotion: the clear and the check-off are recorded.
+    // 3. Settlement: the clear and the evidence settle are recorded.
     await landAndSettle(artisan, relPath, fixBody, "c-obs-t3-b");
     const cleared = records("STAMP_CLEARED");
     expect(cleared, "no always-on STAMP_CLEARED record").toHaveLength(1);
@@ -309,9 +309,9 @@ ${escalationSection}`;
       artifact: `impl-M6-first-${s}-gen0.md`,
       promoted: "true"
     });
-    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M6: checked-off");
+    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M6: evidence-landed");
 
-    // 4. An unchanged re-evaluation adds no line: the promotion path is
+    // 4. An unchanged re-evaluation adds no line: the settle path is
     //    re-driven with identical bytes and identical state.
     const liveBody = readFileSync(join(knowledgeDir, `impl-M6-first-${s}-gen0.md`), "utf8");
     await artisanWrite(artisan, relPath, liveBody, "c-obs-t3-c");
@@ -323,7 +323,7 @@ ${escalationSection}`;
   });
 
   // Settlement declines rather than guesses. Each token below is one reason the
-  // gate refuses to promote, and each refusal is visible with no debug flag:
+  // gate refuses to settle, and each refusal is visible with no debug flag:
   // the row stays open, the artifact stays on disk, and one record says why.
   describe("settlement declines", () => {
     function declinedExactly(reason) {
@@ -449,12 +449,12 @@ ${escalationSection}`;
     });
   });
 
-  // A reopened row re-closes through the ordinary redispatch route: the fix-up
+  // A reopened row re-settles through the ordinary redispatch route: the fix-up
   // lands over the stamped artifact, the gate amends its own stamp, and the row
-  // promotes only after the landed bytes are read back. Nothing here uses a
+  // settles only after the landed bytes are read back. Nothing here uses a
   // manual transition — the transports below are the ones a writer actually has.
-  describe("re-close across write transports", () => {
-    it("a full-content write that declares the sanctioned state re-closes the row", async () => {
+  describe("re-settle across write transports", () => {
+    it("a full-content write that declares the sanctioned state re-settles the row", async () => {
       const s = "reclose-write-a";
       const artisan = "reclose-write-a-artisan";
       const base = `impl-M6-first-${s}-gen0.md`;
@@ -464,8 +464,8 @@ ${escalationSection}`;
 
       const fixBody = `${implKD(s, "amended")}\n# Fix evidence: rebuilt behavior\n`;
       await artisanWrite(artisan, relPath, fixBody, "c-a");
-      // Before the bytes land, the stamp on disk still governs: no checked-off
-      // row may sit over a superseded artifact.
+      // Before the bytes land, the stamp on disk still governs: no settled row
+      // may sit over a superseded artifact.
       expect(readRegistry(s)).toContain("  M6: in-progress");
       expect(readFileSync(join(knowledgeDir, base), "utf8")).toContain("status: superseded");
 
@@ -474,7 +474,7 @@ ${escalationSection}`;
       expect(landed).toContain("status: amended");
       expect(landed).toContain(`superseded_by: ${base}`);
       expect(landed).toContain("# Fix evidence: rebuilt behavior");
-      expect(readRegistry(s)).toContain("  M6: checked-off");
+      expect(readRegistry(s)).toContain("  M6: evidence-landed");
       // The author wrote a live status, so the gate recorded the lineage the
       // artifact gained rather than claiming it cleared its own stamp.
       expect(records("STAMP_LINEAGE_RECORDED")).toHaveLength(1);
@@ -488,7 +488,7 @@ ${escalationSection}`;
       });
     });
 
-    it("an edit patch re-closes only after the landed bytes are verified", async () => {
+    it("an edit patch re-settles only after the landed bytes are verified", async () => {
       const s = "reclose-edit-b";
       const artisan = "reclose-edit-b-artisan";
       const base = `impl-M6-first-${s}-gen0.md`;
@@ -505,11 +505,12 @@ ${escalationSection}`;
         { args: { filePath: relPath, newString: "# Fix evidence\n" } }
       );
       expect(readRegistry(s)).toContain("  M6: in-progress");
-      expect(readRegistry(s)).not.toContain("  M6: checked-off");
+      expect(readRegistry(s)).not.toContain("  M6: evidence-landed");
       expect(readFileSync(join(knowledgeDir, base), "utf8")).toContain("status: superseded");
 
-      // The patch applies: new body, stamp preserved — the case that used to
-      // leave a checked-off row sitting over a superseded artifact.
+      // The patch applies: new body, stamp preserved — the shape that can leave
+      // a settled row sitting over a superseded artifact when the landed bytes
+      // are never read back.
       createKD(base, `${implKD(s, "superseded")}\n# Fix evidence\n`);
       await hooks["tool.execute.after"]({ tool: "edit", sessionID: artisan, callID }, {});
 
@@ -518,7 +519,7 @@ ${escalationSection}`;
       expect(landed).not.toContain("status: superseded");
       expect(landed).toContain(`superseded_by: ${base}`);
       expect(landed).toContain("# Fix evidence");
-      expect(readRegistry(s)).toContain("  M6: checked-off");
+      expect(readRegistry(s)).toContain("  M6: evidence-landed");
       expect(records("STAMP_CLEARED")).toHaveLength(1);
       expect(records("STAMP_DECLINED")).toHaveLength(0);
     });
@@ -540,7 +541,7 @@ ${escalationSection}`;
         const fixBody = `${implKD(s, "superseded")}\n# Fix evidence: ${name}\n`;
         await artisanWrite(artisan, relPath, fixBody, `c-c-${name}`);
         await landAndSettle(artisan, relPath, fixBody, `c-c-${name}`);
-        expect(readRegistry(s), name).toContain("  M6: checked-off");
+        expect(readRegistry(s), name).toContain("  M6: evidence-landed");
         const landed = readFileSync(join(knowledgeDir, base), "utf8");
         expect(landed, name).toContain("status: amended");
         expect(landed, name).toContain("# Fix evidence: " + name);
@@ -561,16 +562,16 @@ ${escalationSection}`;
       await gateEvaluate(s, "c-d");
       expect(records("STAMP_CLEARED")).toHaveLength(1);
       expect(readFileSync(join(knowledgeDir, base), "utf8")).toContain("status: amended");
-      expect(readRegistry(s)).toContain("  M6: checked-off");
+      expect(readRegistry(s)).toContain("  M6: evidence-landed");
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
     });
 
     // A basename is not an identity: a copy that happens to share the stamped
-    // artifact's name is not that artifact. Settlement promotes a row only from
+    // artifact's name is not that artifact. Settlement lands a row only from
     // the file the SWARM gate reads back, so a collide-with-a-copy write must
-    // promote nothing and must leave the digest that lets the canonical file
+    // settle nothing and must leave the digest that lets the canonical file
     // settle later.
-    it("a same-basename write outside the knowledge directory promotes nothing", async () => {
+    it("a same-basename write outside the knowledge directory settles nothing", async () => {
       const s = "reclose-copy-e";
       const artisan = "reclose-copy-e-artisan";
       const base = `impl-M6-first-${s}-gen0.md`;
@@ -594,10 +595,10 @@ ${escalationSection}`;
       // the canonical stamp unsettleable and the exit a hand edit.
       const snapshots = hooks.getStampSnapshots(hooks.sessionPhaseMap, s);
       expect(snapshots?.[`M6|${base}`], "the stamp digest was dropped for an unsettled artifact").toBeTruthy();
-      // 2. Nothing is promoted: the row stays open and no CHECKOFF claims it.
-      expect(readRegistry(s), "the copy promoted the row").toContain("  M6: in-progress");
-      const promotions = records("CHECKOFF").map(parseRecord).filter((r) => r.fields.promoted === "true");
-      expect(promotions, "a CHECKOFF promoted from the copy").toHaveLength(0);
+      // 2. Nothing settles: the row stays open and no CHECKOFF claims it.
+      expect(readRegistry(s), "the copy settled the row").toContain("  M6: in-progress");
+      const settleClaims = records("CHECKOFF").map(parseRecord).filter((r) => r.fields.promoted === "true");
+      expect(settleClaims, "a CHECKOFF settled from the copy").toHaveLength(0);
       // 3. The canonical artifact still declares itself invalidated, and the
       // copy the gate does not own is left exactly as the writer wrote it.
       expect(readFileSync(canonicalPath, "utf8"), "the canonical artifact was amended from a copy").toBe(canonicalBefore);
@@ -620,7 +621,7 @@ ${escalationSection}`;
       const amendedBody = `${implKD(s, "amended")}\n# Fix evidence: canonical\n`;
       await artisanWrite(artisan, relPath, amendedBody, "c-e2");
       await landAndSettle(artisan, relPath, amendedBody, "c-e2");
-      expect(readRegistry(s), "a legitimate amendment could no longer settle").toContain("  M6: checked-off");
+      expect(readRegistry(s), "a legitimate amendment could no longer settle").toContain("  M6: evidence-landed");
       const landed = readFileSync(canonicalPath, "utf8");
       expect(landed).toContain("status: amended");
       expect(landed).toContain("# Fix evidence: canonical");
@@ -662,7 +663,7 @@ ${escalationSection}`;
       await landAndSettle(artisan, relPath, fixBody, "c-transport-hook");
 
       onlySettlement("STAMP_CLEARED", "after-hook");
-      expect(readRegistry(s)).toContain("  M6: checked-off");
+      expect(readRegistry(s)).toContain("  M6: evidence-landed");
     });
 
     it("the SWARM gate evaluation attributes its record to the gate", async () => {
@@ -677,7 +678,7 @@ ${escalationSection}`;
       await gateEvaluate(s, "c-transport-gate");
 
       onlySettlement("STAMP_CLEARED", "swarm-gate");
-      expect(readRegistry(s)).toContain("  M6: checked-off");
+      expect(readRegistry(s)).toContain("  M6: evidence-landed");
     });
 
     it("stuck-row reconciliation attributes its record to the reconciler", async () => {
@@ -692,7 +693,7 @@ ${escalationSection}`;
       hooks.reconcileStuckRowsFromDiskEvidence(s, hooks.sessionPhaseMap, registry);
 
       onlySettlement("STAMP_CLEARED", "stuck-row");
-      expect(readRegistry(s)).toContain("  M6: checked-off");
+      expect(readRegistry(s)).toContain("  M6: evidence-landed");
     });
 
     it("a decline names the transport that refused, not just the reason", async () => {
@@ -881,7 +882,7 @@ audited
   // A suspended row survives a restart. The digest is persisted with the rest of
   // the phase state, so a gate that comes back up can still tell a genuine
   // fix-up from the stamp it wrote — losing it would strand the row forever,
-  // forgetting it would promote over a stamp the gate no longer recognises.
+  // forgetting it would settle over a stamp the gate no longer recognises.
   it("stamp digests survive a restart and still settle", async () => {
     const s = "reclose-restart";
     const base = `impl-M6-first-${s}-gen0.md`;
@@ -913,6 +914,6 @@ audited
     );
     const landed = readFileSync(join(knowledgeDir, base), "utf8");
     expect(landed).toContain("status: amended");
-    expect(readRegistry(s)).toContain("  M6: checked-off");
+    expect(readRegistry(s)).toContain("  M6: evidence-landed");
   });
 });
