@@ -105,7 +105,7 @@ ${table}
     return readdirSync(knowledgeDir);
   }
 
-  it("reopen stamps prior evidence in place and fresh evidence re-completes the row with no phase override", async () => {
+  it("reopen stamps prior evidence in place and fresh evidence re-settles the row with no phase override", async () => {
     const s = "m6-supersede-1";
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -124,13 +124,13 @@ ${table}
     expect(stale).toContain("status: superseded");
     expect(hooks.findMilestoneImplKD(s, hooks.sessionPhaseMap, "M6")).toBeNull();
 
-    // The stale file no longer re-checks off the row — the gate stays closed.
+    // The stale file no longer re-settles the row — the gate stays closed.
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
 
-    // Fresh canonical evidence re-completes the row without any override.
+    // Fresh canonical evidence re-settles the row without any override.
     await writeImplKD("m6-supersede-1-art", `knowledge/impl-M6-fix-${s}-gen0.md`, implKD(s));
     const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-    expect(content).toContain("  M6: checked-off");
+    expect(content).toContain("  M6: evidence-landed");
     expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
     expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`)).toBeUndefined();
   });
@@ -167,7 +167,7 @@ ${table}
 
     hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M6", ["in-progress"], { reopen: true, trigger: "test-reopen-1" });
     await writeImplKD("m6-supersede-3-art", `knowledge/impl-M6-fix-${s}-gen0.md`, implKD(s));
-    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M6: checked-off");
+    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M6: evidence-landed");
     hooks.updateMilestoneRegistry(s, hooks.sessionPhaseMap, "M6", ["in-progress"], { reopen: true, trigger: "test-reopen-2" });
 
     const renamed = knowledgeFiles().filter((f) => f.endsWith(".superseded.md"));

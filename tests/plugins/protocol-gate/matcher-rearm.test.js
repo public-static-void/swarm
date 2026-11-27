@@ -101,7 +101,7 @@ ${table}
     return `---\ntitle: "IMPLEMENTATION SUMMARY: test"\nversion: 1.0.0\nstatus: ${status}\ntype: impl\nsession_id: "${sessionID}"\nauthor: Artisan\nsuperseded_by: null\n---\n\n# IMPLEMENTATION SUMMARY: test\n`;
   }
 
-  it("reopen → canonical rewrite with skewed generation stays open — a pinned rewrite re-checks off with no /phase override", async () => {
+  it("reopen → canonical rewrite with skewed generation stays open — a pinned rewrite re-settles with no /phase override", async () => {
     const s = "m5-rearm-1";
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -120,15 +120,15 @@ ${table}
     // The skew is named loudly on the write path.
     expect(readFileSync(join(protocolLogDir, "protocol-gate.log"), "utf8")).toContain("GEN_MISMATCH_SKIP");
 
-    // Paired positive: a rewrite at the persisted generation re-checks off.
+    // Paired positive: a rewrite at the persisted generation re-settles.
     await writeImplKD("m5-rearm-1-art", `knowledge/impl-M5-fix-${s}-gen0.md`, implKD(s));
 
     const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-    expect(content).toContain("  M5: checked-off");
+    expect(content).toContain("  M5: evidence-landed");
     expect(hooks.sessionPhaseMap.get(`${s}:overrideUntil`)).toBeUndefined();
   });
 
-  it("foreign-session evidence never checks off a row (session-id match stays mandatory)", async () => {
+  it("foreign-session evidence never settles a row (session-id match stays mandatory)", async () => {
     const s = "m5-rearm-2";
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -141,7 +141,7 @@ ${table}
     expect(content).toContain("  M5: in-progress");
   });
 
-  it("the strict writer still guards transitions: a non-in-progress row never checks off", async () => {
+  it("the strict writer still guards transitions: a non-in-progress row never settles", async () => {
     const s = "m5-rearm-3";
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
     hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -154,7 +154,7 @@ ${table}
     expect(content).toContain("  M5: planned");
   });
 
-  it("a rewrite after backtrack stays checked off while the same fail verdict is unchanged", async () => {
+  it("a rewrite after backtrack settles the row and a consumed FAIL verdict leaves it settled", async () => {
     const s = "m5-rearm-4";
     await hooks["chat.params"]({ sessionID: s, agent: "overseer" }, {});
     hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -175,7 +175,7 @@ ${table}
     expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: in-progress");
 
     // The fix cycle rewrites canonical draft evidence: the write hook defers,
-    // and the landed bytes promote the row — promotion never precedes landing.
+    // and the landed bytes settle the row — the settle never precedes landing.
     await hooks["chat.params"]({ sessionID: `${s}-art`, agent: "artisan" }, {});
     await hooks["tool.execute.before"](
       { tool: "write", sessionID: `${s}-art`, callID: "c2" },
@@ -183,7 +183,7 @@ ${table}
     );
     createKD(`impl-M5-fix-${s}-gen0.md`, draftImpl);
     await hooks["tool.execute.after"]({ tool: "write", sessionID: `${s}-art`, callID: "c2" }, {});
-    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: checked-off");
+    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: evidence-landed");
 
     // Back in VERIFY with the SAME unchanged FAIL verdict: the consumed
     // verdict must not regress again — no reopen, no re-stamp of the fresh
@@ -194,7 +194,7 @@ ${table}
       { args: { pattern: "knowledge/*.md" } }
     );
     expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
-    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: checked-off");
+    expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M5: evidence-landed");
     expect(readFileSync(join(knowledgeDir, `impl-M5-fix-${s}-gen0.md`), "utf8")).toContain("status: draft");
   });
 });

@@ -2527,7 +2527,7 @@ Amendment body.
       expect(inProgress.checkedOff).toBe(false);
     });
 
-    it("marks a milestone checked-off when the artisan writes its milestone-scoped impl KD", async () => {
+    it("settles a milestone to evidence-landed when the artisan writes its milestone-scoped impl KD", async () => {
       const overseer = sid("m4-auto-1");
       await initOverseer(overseer);
       hooks.sessionPhaseMap.set(overseer, hooks.STATES.SWARM);
@@ -2542,11 +2542,11 @@ Amendment body.
       );
 
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
-      expect(content).toContain("  M4: checked-off");
+      expect(content).toContain("  M4: evidence-landed");
     });
 
-    it("checks off a hyphenated milestone row when the impl KD carries the hyphenated ID", async () => {
-      // A registry row `M-core` (in-progress) transitions to checked-off
+    it("settles a hyphenated milestone row when the impl KD carries the hyphenated ID", async () => {
+      // A registry row `M-core` (in-progress) settles to `evidence-landed`
       // when `impl-M-core-feature-<session>-gen0.md` lands — the legacy first-token
       // extractor would yield `M`, so the row resolution must use the registry SSOT.
       const overseer = sid("mcore-auto-1");
@@ -2563,10 +2563,10 @@ Amendment body.
       );
 
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
-      expect(content).toContain("  M-core: checked-off");
+      expect(content).toContain("  M-core: evidence-landed");
     });
 
-    it("does not check off when the impl KD uses the legacy unscoped naming", async () => {
+    it("does not settle when the impl KD uses the legacy unscoped naming", async () => {
       const overseer = sid("m4-auto-2");
       await initOverseer(overseer);
       hooks.sessionPhaseMap.set(overseer, hooks.STATES.SWARM);
@@ -2584,10 +2584,10 @@ Amendment body.
       expect(content).toContain("  M4: in-progress");
     });
 
-    it("checks off from the impl KD filename even when the parent session is not in-memory SWARM", async () => {
-      // The check-off guard is the registry's in-progress row + the impl KD on
+    it("settles from the impl KD filename even when the parent session is not in-memory SWARM", async () => {
+      // The settle guard is the registry's in-progress row + the impl KD on
       // disk — NOT the parent session's in-memory phase. After a restart
-      // the map may not reflect SWARM, yet the milestone must still check off.
+      // the map may not reflect SWARM, yet the row must still settle.
       const overseer = sid("m4-auto-3");
       await initOverseer(overseer);
       hooks.sessionPhaseMap.set(overseer, hooks.STATES.VERIFY);
@@ -2602,7 +2602,7 @@ Amendment body.
       );
 
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
-      expect(content).toContain("  M4: checked-off");
+      expect(content).toContain("  M4: evidence-landed");
     });
 
     it("leaves the registry untouched when the dispatch carries no MILESTONE ID", async () => {
@@ -2698,7 +2698,7 @@ Amendment body.
       expect(system).not.toContain(subagent);
     });
 
-    it("checks off a milestone after restart — parent session and generation derived from the impl KD filename + on-disk state", async () => {
+    it("settles a milestone after restart — parent session and generation derived from the impl KD filename + on-disk state", async () => {
       // Simulate a restart: the fresh plugin instance has an EMPTY
       // overseerSessions set. Only the persisted .state file and the registry
       // on disk remain — autoCheckOffMilestone must derive the parent session
@@ -2721,15 +2721,15 @@ Amendment body.
         );
 
         const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}${suffix}.md`), "utf8");
-        expect(content).toContain("  M1: checked-off");
+        expect(content).toContain("  M1: evidence-landed");
       }
     });
 
     it("reconstructs every row state from disk after restart — no in-memory data required", async () => {
       const s = sid("m3-recon-1");
       // m1 in-progress WITHOUT its impl KD, m2 checked-off with its impl KD on
-      // disk. The in-memory map is EMPTY. A stuck row without evidence is
-      // never promoted — the gate stays blocked on M1 alone.
+      // disk. The in-memory map is EMPTY. A stuck row without evidence stays
+      // blocked — the gate fails on M1 alone.
       createRegistry(s, [["M1", "in-progress"], ["M2", "checked-off"]]);
       createKD(`impl-M2-recon-${s}.md`);
 
@@ -2742,15 +2742,15 @@ Amendment body.
         { id: "M2", state: "checked-off", checkedOff: true }
       ]);
 
-      // Once M1's impl KD lands, reconciliation promotes the row from disk
-      // evidence alone — no manual registry write, no in-memory data. The
-      // gate reconstructs all-checked-off from disk (reconcile-or-fail-loud);
-      // a manual check-off call is not part of the contract.
+      // Once M1's impl KD lands, the gate reads the evidence from disk and
+      // opens — evaluation never rewrites the registry, so the row keeps its
+      // state until a write hook settles it. Purity of the scan is asserted
+      // here: the registry bytes carry the restart-restored states.
       createKD(`impl-M1-recon-${s}.md`);
       const gate2 = hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap);
       expect(gate2.ok).toBe(true);
       expect(gate2.checkedOff).toBe(2);
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
     });
 
     it("atomic registry write leaves no tmp residue and the YAML stays valid", async () => {
@@ -3158,14 +3158,15 @@ Amendment body.
       createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"], ["M3", "pending"]]);
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(false);
 
-      // Evidence lands for both stuck rows → reconciliation promotes them at
-      // the next evaluation and the gate opens without manual repair.
+      // Evidence lands for both stuck rows → the next evaluation reports the
+      // evidence and the gate opens without manual repair. Evaluation is pure:
+      // the rows keep their states (the write hook and verdict own writes).
       createKD(`impl-M2-feature-${s}.md`);
       createKD(`impl-M3-feature-${s}.md`);
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      expect(content).toContain("  M2: checked-off");
-      expect(content).toContain("  M3: checked-off");
+      expect(content).toContain("  M2: in-progress");
+      expect(content).toContain("  M3: pending");
     });
 
     it("missing, empty, and unparsable registries fail closed with a log, never advance", async () => {
@@ -3380,7 +3381,7 @@ Amendment body.
       ).rejects.toThrow("SAFETY_STUCK");
     });
 
-    it("a successful check-off resets the per-milestone budget; re-dispatch starts fresh", async () => {
+    it("a successful settle resets the per-milestone budget; re-dispatch starts fresh", async () => {
       const s = sid("f1-ac005");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3388,7 +3389,7 @@ Amendment body.
       createRegistry(s, [["M1", "in-progress"]]);
       hooks.phaseRedispatchCount.set(`${s}:M1`, 5);
 
-      // Artisan writes its milestone-scoped impl KD → auto check-off resets the budget.
+      // Artisan writes its milestone-scoped impl KD → the evidence settle resets the budget.
       const artisan = sid("f1-ac005-art");
       await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
       await hooks["tool.execute.before"](
@@ -3396,8 +3397,8 @@ Amendment body.
         { args: { filePath: `knowledge/impl-M1-feature-${s}.md`, content: liveImplKD() } }
       );
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      expect(content).toContain("  M1: checked-off");
-      // The per-milestone counter is deleted on successful check-off.
+      expect(content).toContain("  M1: evidence-landed");
+      // The per-milestone counter is deleted on a successful settle.
       expect(hooks.phaseRedispatchCount.get(`${s}:M1`)).toBeUndefined();
 
       // Re-dispatch re-open starts a fresh budget — zero prior attempts.
@@ -3664,7 +3665,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       createRegistry(s, [["M1", "checked-off"], ["M2", "in-progress"]]);
       createKD(`impl-M1-feature-${s}.md`);
 
-      // The artisan writes the final impl KD. The before-hook checks off the
+      // The artisan writes the final impl KD. The before-hook settles the
       // row, but the file has NOT landed yet — the gate must stay closed.
       const artisan = sid("m5-postwrite-art");
       await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
@@ -3673,7 +3674,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
         { args: { filePath: `knowledge/impl-M2-feature-${s}.md`, content: liveImplKD() } }
       );
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.SWARM);
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M2: checked-off");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M2: evidence-landed");
 
       // The write completes — the impl KD lands on disk. The after-hook
       // evaluates the gate and advances the parent session without any
@@ -3723,7 +3724,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
     }
 
-    it("refuses a generation-skewed stuck row at gate evaluation and keeps the gate blocked — pinned evidence promotes", async () => {
+    it("refuses a generation-skewed stuck row at gate evaluation and keeps the gate blocked — pinned evidence is reported", async () => {
       const s = sid("m1-rec-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3751,23 +3752,24 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       const refused = readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8");
       expect(refused).toContain("  M1: in-progress");
 
-      // Paired positive: evidence at the persisted generation promotes.
+      // Paired positive: evidence at the persisted generation is reported.
       createKD(`impl-M1-feat-${s}-gen1.md`);
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
-        expect(readLoudLog()).toContain(`RECONCILE_CHECKOFF: milestone M1 promoted in-progress → checked-off (impl KD impl-M1-feat-${s}-gen1.md)`);
+        expect(readLoudLog()).toContain(`RECONCILE_CHECKOFF: milestone=M1 file=impl-M1-feat-${s}-gen1.md state=in-progress promoted=false`);
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
-      // The promotion is persisted — the registry row itself now reads checked-off.
+      // The scan is a reporter — the registry row keeps its state; the write
+      // hook settles and the VERIFY verdict completes.
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8");
-      expect(content).toContain("  M1: checked-off");
+      expect(content).toContain("  M1: in-progress");
     });
 
-    it("reconciliation is idempotent — re-evaluation with all rows checked-off emits nothing further and leaves the registry stable", async () => {
+    it("reconciliation reporting is idempotent — re-evaluation emits nothing further and leaves the registry stable", async () => {
       const s = sid("m1-rec-2");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -3780,14 +3782,15 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
         expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
-        expect(readLoudLog()).toContain("RECONCILE_CHECKOFF: milestone M1 promoted pending → checked-off");
+        expect(readLoudLog()).toContain("RECONCILE_CHECKOFF: milestone=M1 file=impl-M1-idem-");
       } finally {
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
 
       const before = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      // Second call — should not emit further RECONCILE_CHECKOFF.
+      // Second call — the deduped report emits nothing further and the scan
+      // never touches the registry bytes.
       try { rmSync(logPath); } catch (_) {}
       process.env.PROTOCOL_GATE_DEBUG = "1";
       try {
@@ -3892,7 +3895,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       }
     });
 
-    it("a FAIL-review-cited milestone's stale impl KDs are superseded — the reopened row is not instantly re-checked-off, and fresh evidence re-completes it", async () => {
+    it("a FAIL-review-cited milestone's stale impl KDs are superseded — the reopened row is not instantly re-completed, and fresh evidence re-opens the gate", async () => {
       const s = sid("m1-supersede-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.VERIFY);
@@ -3922,9 +3925,9 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       // The stale evidence no longer re-checks-off the row — the gate stays closed.
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
 
-      // Fresh fix evidence → auto check-off completes the row → gate opens.
-      // The before-hook fires the check-off; the write tool itself lands the
-      // impl KD right after — both halves of the write operation.
+      // Fresh fix evidence → the settle lands the row at its evidence state →
+      // the gate opens. The before-hook fires the settle; the write tool
+      // itself lands the impl KD right after — both halves of the write.
       const artisan = sid("m1-supersede-1-art");
       await hooks["chat.params"]({ sessionID: artisan, agent: "artisan" }, {});
       await hooks["tool.execute.before"](
@@ -3933,7 +3936,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       );
       createKD(`impl-M1-fix-${s}-gen0.md`);
       content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      expect(content).toContain("  M1: checked-off");
+      expect(content).toContain("  M1: evidence-landed");
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
     });
 
@@ -3996,7 +3999,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       }
     });
 
-    it("live impl evidence alongside superseded files promotes the row via the live file with zero SUPERSEDED_EVIDENCE", async () => {
+    it("live impl evidence alongside superseded files reports the row via the live file with zero SUPERSEDED_EVIDENCE", async () => {
       const s = sid("m1-live-plus-superseded");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -4016,7 +4019,8 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
+      // The reporter names the evidence; the row keeps its state.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
     });
 
     it("the explicit remediation path restores the canonical filename and advances a superseded-only row, emitting SUPERSEDED_RECONCILED", async () => {
@@ -4118,10 +4122,10 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(hooks.matchesSessionKDAnyGeneration(`impl-M2-x-${s}.md`, s)).toBe(true);
     });
 
-    it("checks off a milestone when the writing session's agent is not recorded (unknown-agent silent skip)", async () => {
+    it("settles a milestone when the writing session's agent is not recorded (unknown-agent silent skip)", async () => {
       // The writing session never calls chat.params with an agent, so it is
       // absent from sessionAgentMap — the write-path trigger must still fire
-      // the check-off (the registry state machine is the guard, not the agent).
+      // the settle (the registry state machine is the guard, not the agent).
       const overseer = sid("m1-unknown-1");
       await initOverseer(overseer);
       hooks.sessionPhaseMap.set(overseer, hooks.STATES.SWARM);
@@ -4135,7 +4139,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       );
 
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8");
-      expect(content).toContain("  M1: checked-off");
+      expect(content).toContain("  M1: evidence-landed");
     });
 
     it("emits a file-only AUTO_CHECKOFF_NON_ARTISAN diagnostic for an unknown writer and never writes to stderr", async () => {
@@ -4162,14 +4166,14 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
         try { rmSync(logPath); } catch (_) {}
         stderrSpy.mockRestore();
       }
-      // The diagnostic is emit-always — the check-off still proceeds.
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8")).toContain("  M1: checked-off");
+      // The diagnostic is emit-always — the settle still proceeds.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${overseer}.md`), "utf8")).toContain("  M1: evidence-landed");
     });
 
-    it("declines a generation-mismatched same-session write with a GEN_MISMATCH_SKIP diagnostic — a pinned write checks off", async () => {
+    it("declines a generation-mismatched same-session write with a GEN_MISMATCH_SKIP diagnostic — a pinned write settles", async () => {
       // The lifecycle persists generation 1; the impl KD filename embeds gen 0.
       // The live hook is generation-pinned, so skewed same-session evidence
-      // declines with a GEN_MISMATCH_SKIP instead of checking off — recovery
+      // declines with a GEN_MISMATCH_SKIP instead of settling — recovery
       // is diagnose → scoped-remove → redispatch with current-generation
       // evidence. No gate round-trip is required for pinned evidence.
       const s = sid("m1-genmis-1");
@@ -4206,19 +4210,19 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(false);
       expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: in-progress");
 
-      // Paired positive: a write at the persisted generation checks the row
-      // off directly.
+      // Paired positive: a write at the persisted generation settles the row
+      // at its evidence state.
       await hooks["tool.execute.before"](
         { tool: "write", sessionID: writer, callID: "c2" },
         { args: { filePath: `knowledge/impl-M1-feat-${s}-gen1.md`, content: liveImplKD() } }
       );
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: evidence-landed");
       // The write tool lands the impl KD on disk after the before-hook.
       createKD(`impl-M1-feat-${s}-gen1.md`);
 
       // The gate confirms the row against the pinned disk evidence.
       expect(hooks.checkAllMilestonesCheckedOff(s, hooks.sessionPhaseMap).ok).toBe(true);
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: checked-off");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}-gen1.md`), "utf8")).toContain("  M1: evidence-landed");
     });
   });
 
@@ -4227,7 +4231,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       try { return readFileSync(logPath, "utf8"); } catch (_) { return ""; }
     }
 
-    it("an Overseer read call in SWARM triggers reconciliation and promotes a stuck row", async () => {
+    it("an Overseer read call in SWARM triggers reconciliation and reports a stuck row's evidence", async () => {
       const s = sid("m2-read-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -4243,23 +4247,24 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
         { args: { filePath: `knowledge/milestones-feature-${s}.md` } }
       );
 
-      // Reconciliation promoted the stuck row.
+      // The scan reported the evidence; the row keeps its state (purity).
       const content = readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8");
-      expect(content).toContain("  M1: checked-off");
-      // All milestones checked-off → the gate advanced SWARM → VERIFY.
+      expect(content).toContain("  M1: in-progress");
+      // Every row carries evidence → the gate advanced SWARM → VERIFY.
       expect(hooks.sessionPhaseMap.get(s)).toBe(hooks.STATES.VERIFY);
     });
 
-    it("DISK_CHECK_TOOLS includes shell and the gate promotes a stuck row at unit level", async () => {
+    it("DISK_CHECK_TOOLS includes shell and the gate opens on a stuck row's evidence at unit level", async () => {
       // Static assertion — the widened tool set is exported for tests.
       expect(hooks.DISK_CHECK_TOOLS).toContain("shell");
       expect(hooks.DISK_CHECK_TOOLS).toContain("read");
       expect(hooks.DISK_CHECK_TOOLS).toContain("skill");
 
-      // Behavioral: the exact function the disk check invokes promotes the
-      // stuck row. The full tool-hook shell path is unreachable in SWARM — the
-      // SWARM allowlist excludes shell and the allowlist check runs before the
-      // disk check (BR-3; widening the allowlist is out of scope).
+      // Behavioral: the exact function the disk check invokes satisfies the
+      // gate from the row's on-disk evidence. The full tool-hook shell path
+      // is unreachable in SWARM — the SWARM allowlist excludes shell and the
+      // allowlist check runs before the disk check (BR-3; widening the
+      // allowlist is out of scope).
       const s = sid("m2-shell-1");
       await initOverseer(s);
       hooks.sessionPhaseMap.set(s, hooks.STATES.SWARM);
@@ -4268,7 +4273,7 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
       createKD(`impl-M1-feature-${s}.md`);
 
       expect(hooks.checkDiskAdvancement(s, hooks.STATES.SWARM, hooks.sessionPhaseMap, hooks.swarmDispatchCount)).toBe(true);
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
     });
 
     it("PREFLIGHT allowlist does not include edit — the intent KD is corrected in INTENT, not PREFLIGHT", async () => {
@@ -4323,8 +4328,9 @@ ${registryContent([["M1", "checked-off"], ["M2", "checked-off"]])}
         delete process.env.PROTOCOL_GATE_DEBUG;
         try { rmSync(logPath); } catch (_) {}
       }
-      // The registry YAML block reads checked-off — no re-affirm dispatch needed.
-      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: checked-off");
+      // The gate advanced on the reported evidence — no re-affirm dispatch
+      // needed — and the evaluation left the row state untouched.
+      expect(readFileSync(join(knowledgeDir, `milestones-feature-${s}.md`), "utf8")).toContain("  M1: in-progress");
     });
   });
 
