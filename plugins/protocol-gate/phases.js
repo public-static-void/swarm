@@ -47,18 +47,18 @@ export const PHASE_INSTRUCTIONS = {
 // own ownership rules (owner-only reads, Scribe's promotion scan) stay with the
 // knowledge-gate, not the phase layer.
 export const TOOL_ALLOWLIST = {
-  INTENT: ["write", "edit", "read", "skill", "shell", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch"],
-  PREFLIGHT: ["subagent", "glob", "shell", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch", "skill"],
-  EXPLORE: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch", "skill"],
-  INVESTIGATE: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch", "skill"],
-  ALIGN: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch", "skill"],
-  DECOMPOSE: ["subagent", "glob", "read", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch", "skill"],
-  SWARM: ["subagent", "glob", "read", "skill", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch"],
-  VERIFY: ["subagent", "glob", "read", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch", "skill"],
-  EXTRACT: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch", "skill"],
-  EVOLVE: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch", "skill"],
-  CLEANUP: ["subagent", "glob", "shell", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch", "skill"],
-  REPORT: ["edit", "read", "write", "skill", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "webfetch", "websearch"]
+  INTENT: ["write", "edit", "read", "skill", "shell", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search"],
+  PREFLIGHT: ["subagent", "glob", "shell", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  EXPLORE: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  INVESTIGATE: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  ALIGN: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  DECOMPOSE: ["subagent", "glob", "read", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  SWARM: ["subagent", "glob", "read", "skill", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search"],
+  VERIFY: ["subagent", "glob", "read", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  EXTRACT: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  EVOLVE: ["subagent", "glob", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  CLEANUP: ["subagent", "glob", "shell", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search", "skill"],
+  REPORT: ["edit", "read", "write", "skill", "memory_note", "memory_note_read", "memory_notes_list", "memory_note_delete", "memory_search"]
 };
 
 // Tools that are never phase-blocked because they carry or delegate work: the

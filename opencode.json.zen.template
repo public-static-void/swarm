@@ -10,6 +10,9 @@
   },
   "model": "opencode/deepseek-v4.1-flash-free",
   "default_agent": "overseer",
+  "websearch": {
+    "provider": "random"
+  },
   "agents": {
     "build": {
       "disabled": true

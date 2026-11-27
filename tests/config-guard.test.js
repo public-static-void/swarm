@@ -1417,6 +1417,33 @@ describe("memory_search reachability", () => {
   });
 });
 
+// The web family belongs to the research roles: the analyzer gathers external
+// context during INVESTIGATE and the explorer during EXPLORE, and no other
+// role's dispatch scope reaches outside the repo. The host asks the user before
+// a web action no rule settles, and a mid-run prompt inside a subagent session
+// stalls the delegation — so every definition states an explicit effect and
+// the default never stands behind any role.
+const WEB_ALLOW_HOLDERS = ["analyzer.md", "explorer.md"];
+
+describe("web family grant scoping", () => {
+  const files = agentFiles();
+
+  function webEffects(content, action) {
+    return permissionRules(content)
+      .filter((r) => r.action === action && r.resource === "*")
+      .map((r) => r.effect);
+  }
+
+  it("allows the web family exactly in the research roles and denies it everywhere else", () => {
+    for (const action of ["webfetch", "websearch"]) {
+      for (const file of files) {
+        const expected = WEB_ALLOW_HOLDERS.includes(file) ? ["allow"] : ["deny"];
+        expect(webEffects(readAgent(file), action), `${file}:${action}`).toEqual(expected);
+      }
+    }
+  });
+});
+
 // The issue store belongs to the role that curates it: the Habit Builder writes,
 // updates and moves issues, so it is also the one role that reads them. A grant
 // in any other definition puts the store's read path outside that role, and the
@@ -3263,21 +3290,20 @@ describe("protocol-gate tool-identity single source of truth", () => {
     expect(missing).toEqual([]);
   });
 
-  // Same precedent as the memory_search pin above: a capability family is
-  // admitted in every phase, because a per-phase subset leaves the enablement
-  // question open in the taught surface that the grants have already settled.
-  it("binds the web family to every phase allowlist", () => {
-    for (const tool of ["webfetch", "websearch"]) {
-      const missing = PHASE_NAMES.filter((p) => !(protocolPhases.TOOL_ALLOWLIST[p] || []).includes(tool));
-      expect(missing, tool).toEqual([]);
-      for (const phase of PHASE_NAMES) {
-        expect(protocolPhases.admitTool(phase, tool), `${phase}:${tool}`).toBe(true);
-      }
-    }
-    // The closed set is derived from the table, so it is checked in every
-    // phase, not at one site: any id the table omits stays refused everywhere.
+  // The web family lives in the host's permission layer, not the phase layer:
+  // this table polices and advertises for the overseer session only, and a
+  // subagent's web call passes through to the host, where the role's ordered
+  // grants and the configured search provider settle it without a prompt.
+  // Admitting the family here would widen the overseer's phase surface for a
+  // condition that never passed through this gate, so every entry stays free
+  // of the ids and admission fails in every phase.
+  it("keeps the web family out of every phase allowlist", () => {
     for (const phase of PHASE_NAMES) {
-      expect(protocolPhases.admitTool(phase, "frobnicate"), `${phase}:frobnicate`).toBe(false);
+      const allowed = protocolPhases.TOOL_ALLOWLIST[phase] || [];
+      expect(allowed, phase).not.toContain("webfetch");
+      expect(allowed, phase).not.toContain("websearch");
+      expect(protocolPhases.admitTool(phase, "webfetch"), `${phase}:webfetch`).toBe(false);
+      expect(protocolPhases.admitTool(phase, "websearch"), `${phase}:websearch`).toBe(false);
     }
   });
 
@@ -3907,6 +3933,7 @@ const SHARED_SKELETON = {
   plugins: ["./plugins/protocol-gate", "./plugins/delegation-gate", "./plugins/knowledge-gate"],
   experimental: { subagent_depth: 2 },
   default_agent: "overseer",
+  websearch: { provider: "random" },
   agents: AGENTS_DISABLED,
 };
 
@@ -3945,6 +3972,17 @@ describe("config template guards", () => {
 
   it("ships the local template as its declared placeholder structure exactly", () => {
     expect(JSON.parse(readRoot(LOCAL_TEMPLATE))).toEqual(LOCAL_STRUCTURE);
+  });
+
+  it("settles the websearch provider so a granted search never prompts", () => {
+    // The host opens a provider-selection prompt on the first search when no
+    // provider is configured. Naming one in the shipped skeleton skips it;
+    // "random" resolves from whatever providers the machine connects and needs
+    // no key the repo could guess, so the prompt condition is removed for
+    // every copy of either template.
+    for (const name of [ZEN_TEMPLATE, LOCAL_TEMPLATE]) {
+      expect(JSON.parse(readRoot(name)).websearch, name).toEqual({ provider: "random" });
+    }
   });
 
   it("states the copy-step workflow in README and keeps it out of role bodies", () => {
